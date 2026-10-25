@@ -125,8 +125,8 @@ date with `main` before they merge. When another PR merges first:
 
 1. Rebase on `main` (or press **Update branch** on the PR).
 2. If `main`'s version is now equal to or above yours, the `version` check
-   fails with `main is now <version>`. Raise your version above it and run
-   `cargo update -w` again.
+   fails with `version <yours> is not above origin/main's <main's>`. Raise
+   your version above it and run `cargo update -w` again.
 3. Push. CI runs again on the updated branch.
 
 Thank you for helping improve lvpm.

@@ -60,7 +60,7 @@ to. `Access to the path 'C:\WINDOWS\system32\install.ps1' is denied` means
 you are in a directory that is not yours, not that anything is wrong with
 the download. lvpm installs per-user and needs no elevation.
 
-Options: `-Version v0.2.0` pins a release, `-InstallDir <DIR>` and
+Options: `-Version v0.4.0` pins a release, `-InstallDir <DIR>` and
 `-NoPath` control where it goes, `-Sha256 <hash>` adds a hash you obtained
 elsewhere as a further check, `-Stable` skips pre-releases. If PowerShell
 refuses to run scripts:
@@ -92,7 +92,10 @@ Move `lvpm` to a folder on your `PATH`, for example `~/.local/bin`.
 
 Every merge to `main` publishes the version in `Cargo.toml` as release
 `v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`.
-Each PR must raise the version (see [CONTRIBUTING.md](CONTRIBUTING.md)). The
+Each PR must raise the version (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+Releases run one at a time. If merges land faster than releases finish, a
+waiting release can be replaced by a newer one, so a version in between is
+never released; the next release has the higher version. The
 workflow is [release.yml](.github/workflows/release.yml); the design is in
 [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 

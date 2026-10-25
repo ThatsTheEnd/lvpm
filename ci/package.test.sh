@@ -6,7 +6,8 @@ work=$(mktemp -d); trap 'cd /; rm -rf "$work"' EXIT
 failures=0
 check() { # check <name> <command...>
   local name=$1; shift
-  if "$@" >/dev/null 2>&1; then echo "ok   $name"; else echo "FAIL $name"; failures=$((failures+1)); fi
+  local out
+  if out=$("$@" 2>&1); then echo "ok   $name"; else echo "FAIL $name: $out"; failures=$((failures+1)); fi
 }
 
 printf 'MZ stub' > "$work/lvpm.exe"

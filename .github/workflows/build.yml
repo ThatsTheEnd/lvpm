@@ -4,6 +4,11 @@ name: Build
 # builds exactly what main releases.
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: The commit to check out; empty means the commit that triggered the run
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -12,7 +17,7 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -22,10 +27,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal && rustup default stable
         shell: bash
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: build-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: build-${{ matrix.os }}-
       - name: cargo build --release
         run: cargo build --release --locked
         shell: bash
@@ -42,3 +57,4 @@ jobs:
           path: target/release/${{ matrix.bin }}
           if-no-files-found: error
           retention-days: 7
+          overwrite: true

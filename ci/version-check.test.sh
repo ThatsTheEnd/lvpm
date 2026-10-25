@@ -4,6 +4,7 @@ set -uo pipefail
 script="$(cd "$(dirname "$0")" && pwd)/version-check.sh"
 root=$(mktemp -d); trap 'cd /; rm -rf "$root"' EXIT # Windows can't delete the cwd
 failures=0; n=0
+export GITHUB_STEP_SUMMARY="$root/summary" # never write into the CI job's own summary
 
 write() { # write <toml version or empty> [<lock version>] [<lock-core version>]
   { echo '[workspace.package]'; [ -n "$1" ] && echo "version = \"$1\""
@@ -58,8 +59,15 @@ setup 0.3.0; expect 0 "release without a base comparison passes"
 setup 0.2.1 v0.3.0; pr 0.3.0; expect 1 "release of an existing tag fails" "tag v0.3.0 already exists" "Raise the version above 0.3.0 in a new PR."
 setup 0.2.1 v0.4.0; pr 0.3.0; expect 1 "release below the highest tag fails" 0.3.0 v0.4.0 "in a new PR."
 setup 0.2.1 v0.2.1; pr 0.3.0 0.2.1 0.3.0; expect 1 "release with a stale lock fails" "lvpm 0.2.1"
+: > "$GITHUB_STEP_SUMMARY"
+setup 0.2.1 v0.3.0; pr 0.3.0; expect 1 "release failure is written to the job summary"
+if grep -qF "tag v0.3.0 already exists" "$GITHUB_STEP_SUMMARY" && grep -qF "in a new PR." "$GITHUB_STEP_SUMMARY"
+then echo "ok   job summary holds the failure and the next action"
+else echo "FAIL job summary: $(cat "$GITHUB_STEP_SUMMARY")"; failures=$((failures+1)); fi
 mode=--print-version
-setup 0.2.1; pr 0.3.0; expect 0 "print-version prints the version" 0.3.0
+setup 0.2.1; pr 0.3.0
+if [ "$(bash "$script" --print-version)" = 0.3.0 ]; then echo "ok   print-version prints exactly the version"
+else echo "FAIL print-version printed '$(bash "$script" --print-version)'"; failures=$((failures+1)); fi
 mode=
 
 for row in 0.3.0:true 0.99.99:true 1.0.0:false; do

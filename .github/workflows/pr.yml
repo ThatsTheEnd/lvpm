@@ -62,10 +62,14 @@ jobs:
   # The same build and packaging main releases with.
   build:
     uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
 
   package:
     needs: [build]
     uses: ./.github/workflows/package.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha }}
 
   lint:
     name: lint
@@ -84,7 +88,7 @@ jobs:
             [[ "$f" == *.test.sh ]] && continue
             echo "::group::$f"; bash "$f" || status=1; echo "::endgroup::"
           done
-          for f in ci/lint/*.test.sh ci/package.test.sh; do
+          for f in ci/lint/*.test.sh ci/*.test.sh; do
             echo "::group::$f"; bash "$f" || status=1; echo "::endgroup::"
           done
           exit $status

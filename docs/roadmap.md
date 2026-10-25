@@ -139,7 +139,10 @@ records) and make it first-class. An earlier Python prototype,
 
 ## Packaging and distribution (from idea.txt)
 
-- **One-command install of a released `lvpm.exe`.** A GitHub Release per tag
+- **One-command install of a released `lvpm.exe`** — done: every merge to
+  `main` publishes a release with the Windows zip, a Linux tar.gz and
+  `SHA256SUMS` (see "What is automated" below), and `install.ps1` installs it.
+  The original idea, kept for the reasoning: a GitHub Release per tag
   carrying `lvpm.exe` (built by CI, so the relink VI embedded in it is the one
   from that commit), and an `install.ps1` at a stable URL for
   `irm https://…/install.ps1 | iex`: downloads the latest release (or

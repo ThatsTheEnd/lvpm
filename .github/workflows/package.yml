@@ -4,6 +4,11 @@ name: Package
 # the Windows zip with scripts/install.ps1. Call it after build.yml.
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: The commit to check out; empty means the commit that triggered the run
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -16,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
@@ -36,6 +42,7 @@ jobs:
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   verify-installer:
     name: verify installer
@@ -45,6 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
