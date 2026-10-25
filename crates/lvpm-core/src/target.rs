@@ -97,7 +97,7 @@ pub fn detect() -> Result<Vec<LvTarget>> {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn detect() -> Result<Vec<LvTarget>> {
+pub fn detect() -> Result<Vec<LvTarget>> {
     // LabVIEW on Linux lives under /usr/local/natinst/LabVIEW-<year>-64
     let mut out = Vec::new();
     if let Ok(rd) = std::fs::read_dir("/usr/local/natinst") {
