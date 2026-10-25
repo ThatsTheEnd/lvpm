@@ -30,7 +30,7 @@ The user asked for LabVIEW 2024, 2025 and 2026 on Windows and Linux. NI publishe
 
 1. **version** (ubuntu). Reads `[workspace.package] version` from `Cargo.toml` on the PR head and on `origin/main`. Passes only when:
    - the head version is plain `MAJOR.MINOR.PATCH` (no pre-release or build suffix);
-   - it is strictly greater, by SemVer precedence, than the `main` version **and** than the highest `v*` tag in the repository (no tag → only the `main` comparison applies);
+   - it is strictly greater, by SemVer precedence, than the `main` version **and** than the highest plain `vX.Y.Z` tag in the repository (tags such as `v0.9.0-rc.1` or `nightly` are ignored; no plain tag means only the `main` comparison applies);
    - `Cargo.lock` records the same version for `lvpm` and `lvpm-core`.
 2. **test** (matrix: `windows-2022`, `ubuntu-latest`). `cargo test --workspace --locked`. The `@labview` scenarios skip here, as they do today without `LVPM_TEST_LABVIEW`.
 3. **build** (matrix: `windows-2022` → `x86_64-pc-windows-msvc`, `ubuntu-latest` → `x86_64-unknown-linux-gnu`). `cargo build --release --locked`, uploads the binary as a workflow artifact. Also builds the acceptance test binary for Windows (`cargo test --no-run`) and uploads it with its feature files and goldens, for job 4.
@@ -44,7 +44,7 @@ The user asked for LabVIEW 2024, 2025 and 2026 on Windows and Linux. NI publishe
 
    Each cell mounts the built binary and `ci/e2e/` into the container and runs the smoke script (C2). The Windows 2026 cell also runs the `@labview` acceptance scenarios with `LVPM_TEST_LABVIEW=1`.
 
-Every job has `timeout-minutes: 90`. The workflow uses `concurrency: pr-${{ github.event.pull_request.number }}` with `cancel-in-progress: true`. It needs no secrets: the images are public, so PRs from forks run the same checks.
+Every job sets `timeout-minutes`: 90 for the test, build and E2E jobs, and 5 for the version and ci-ok jobs. The workflow uses `concurrency: pr-${{ github.event.pull_request.number }}` with `cancel-in-progress: true`. It needs no secrets: the images are public, so PRs from forks run the same checks.
 
 ### E2E smoke flow (C2)
 
@@ -79,7 +79,7 @@ The workflow uses `concurrency: release` with `cancel-in-progress: false`, so tw
 
 - **Version source:** `[workspace.package] version` in the root `Cargo.toml`. No other file carries the version.
 - **Release asset contract:** the names and checksum file `scripts/install.ps1` already resolves (`lvpm-*-windows-x64.zip`, `SHA256SUMS`, tag `v<version>`). This change does not alter how the installer selects or verifies an asset; it only adds a Linux archive the installer ignores.
-- **Branch protection (repository setting, not code):** `main` requires the PR workflow's `version`, `test`, `build` and `e2e` checks to pass and requires the branch to be up to date before merge. This is what makes "build only on main" safe, and it stops two PRs merging with the same version. The README's CI section documents the setting; a repository admin applies it.
+- **Branch protection (repository setting, not code):** `main` requires only the `ci-ok` check and requires the branch to be up to date before merge. `ci-ok` needs every PR job, so new jobs and matrix rows add no required checks. This is what makes "build only on main" safe, and it stops two PRs merging with the same version. The README's CI section documents the setting; a repository admin applies it.
 
 ### Constraints
 
@@ -136,7 +136,7 @@ The workflow uses `concurrency: release` with `cancel-in-progress: false`, so tw
 | PR workflow | The GitHub Actions workflow that runs on a pull request to `main` (C1). | verified |
 | Release workflow | The workflow that runs on a push to `main` and publishes a release (C3). | verified |
 | Version | `[workspace.package] version` in the root `Cargo.toml`, SemVer `MAJOR.MINOR.PATCH`. | verified |
-| Highest tag | The greatest `v*` git tag in `ThatsTheEnd/lvpm` by SemVer precedence. | unverified → inferable (A9) |
+| Highest tag | The greatest plain `vX.Y.Z` git tag in `ThatsTheEnd/lvpm` by SemVer precedence (tags such as `v0.9.0-rc.1` or `nightly` are ignored; no plain tag means only the `main` comparison applies). | unverified → inferable (A9) |
 | Matrix cell | One LabVIEW-version/OS image the E2E job runs in. | verified |
 | Smoke flow | The fixed CLI sequence C2 runs in each cell. | verified |
 | Headless mode | `LV_RTE_HEADLESS=1`: `lvpm install` never starts LabVIEW and acts as `--locked`. | verified (README) |

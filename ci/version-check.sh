@@ -24,14 +24,15 @@ pr=$(ws_version < Cargo.toml)
 [ -n "$pr" ] || fail "no workspace version was found in Cargo.toml ([workspace.package] version)."
 plain "$pr" || fail "version '$pr' must be MAJOR.MINOR.PATCH: digits only, no leading zeros, no prefix or suffix."
 
+[ -f Cargo.lock ] || fail "Cargo.lock is missing."
 for crate in lvpm lvpm-core; do
   locked=$(lock_version "$crate")
   [ "$locked" = "$pr" ] || fail "Cargo.lock records $crate ${locked:-<missing>} but Cargo.toml says $pr. Run \`cargo update -w\`."
 done
 
-tip=$(git show "$base:Cargo.toml" | ws_version)
+tip=$(git show "$base:Cargo.toml" 2>/dev/null | ws_version) || fail "could not read $base:Cargo.toml."
 plain "$tip" || fail "could not read a plain version from $base:Cargo.toml (got '$tip')."
-forked=$(git show "$(git merge-base HEAD "$base"):Cargo.toml" 2>/dev/null | ws_version || true)
+mb=$(git merge-base HEAD "$base" 2>/dev/null) && forked=$(git show "$mb:Cargo.toml" | ws_version) || forked=""
 if ! above "$pr" "$tip"; then
   [ -n "$forked" ] && [ "$forked" != "$tip" ] && fail "main is now $tip; rebase and raise above $tip." "$tip"
   fail "version $pr is not above $base's $tip." "$tip"

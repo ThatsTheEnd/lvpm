@@ -3,9 +3,12 @@
 //! Only anchored patterns are replaced, never "anything that looks like a
 //! number": the sandbox's own root path, loopback address and venv port, the
 //! LabVIEW installation the venv is bound to (its directory and build number),
-//! ISO-8601 timestamps, epoch seconds under their JSON keys, and durations such
-//! as `0.3s`. A version like `2.0` or a word ending in `s` must come out
-//! unchanged, and so must a path that merely begins like an anchored one.
+//! the machine's temp dir (`<TEMP>`), the LabVIEW VI Server port (`<LV_PORT>`),
+//! lvpm's own version in the relink VI's name (`<LVPM_VERSION>`), ISO-8601
+//! timestamps, epoch seconds under their JSON keys, and durations such as
+//! `0.3s`; the `archive_sha256` field is removed with its comma. A version like
+//! `2.0` or a word ending in `s` must come out unchanged, and so must a path
+//! that merely begins like an anchored one.
 
 use regex::Regex;
 use std::path::Path;
@@ -118,7 +121,7 @@ pub fn normalise(text: &str, anchors: &Anchors) -> String {
         &format!("lvpm-relink-package-{LVPM_VERSION_TOKEN}.vi"),
     );
     let text = replace_regex(&text, &EPOCH_SECONDS, &format!("${{1}}{EPOCH_TOKEN}"));
-    // Timestamps before durations: a `12:00:00` must not be read as `00s`.
+    // Replace timestamps first so no later pattern sees their digits.
     let text = replace_regex(&text, &TIMESTAMP, TIMESTAMP_TOKEN);
     replace_regex(&text, &DURATION, DURATION_TOKEN)
 }

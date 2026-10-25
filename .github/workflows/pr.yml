@@ -22,6 +22,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
       - name: Self-test the version check
         run: bash ci/version-check.test.sh
       - name: Check the version is raised
@@ -39,10 +40,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          # core_io.rs runs clippy as part of the suite.
-          components: clippy
+          persist-credentials: false
+      # rustup ships on both runner images; no third-party action to pin.
+      # core_io.rs runs clippy as part of the suite.
+      - name: Install Rust stable with clippy
+        run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+        shell: bash
       - name: cargo test
         run: |
           echo "::group::cargo test --workspace --locked"
@@ -50,8 +53,8 @@ jobs:
           echo "::endgroup::"
         shell: bash
 
-  # The only required check: branch protection names ci-ok, so adding a job or
-  # a matrix row never changes the required checks.
+  # Branch protection should require only ci-ok (an admin sets it; see the
+  # spec), so adding a job or a matrix row never changes the required checks.
   ci-ok:
     name: ci-ok
     if: always()
@@ -63,10 +66,8 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          bad=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<<"$NEEDS")
-          rest=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "failure" and .value.result != "cancelled") | "\(.key): skipped (downstream)"' <<<"$NEEDS")
-          if [ -n "$bad$rest" ]; then
-            printf '%s\n%s\n' "$bad" "$rest" | sed '/^$/d; s/^/::error::/'
-            exit 1
-          fi
+          # Root causes (failure, cancelled) first, then jobs skipped because of them.
+          bad=$(jq -r 'to_entries | map(select(.value.result != "success")) | sort_by(.value.result == "skipped") | .[]
+            | "::error::\(.key): \(if .value.result == "skipped" then "skipped (downstream)" else .value.result end)"' <<<"$NEEDS")
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
           echo "every PR job passed"
