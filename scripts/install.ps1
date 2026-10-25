@@ -39,7 +39,7 @@
     Do not add InstallDir to the user PATH.
 
 .PARAMETER Repo
-    GitHub repository as owner/name. Default: Flydroid/lvpm
+    GitHub repository as owner/name. Default: ThatsTheEnd/lvpm
 
 .PARAMETER BuildLocal
     Build this checkout with cargo build --release --locked, package it,
@@ -71,7 +71,7 @@ param(
     [string]$Sha256,
     [switch]$NoPath,
     [ValidatePattern('^[\w.-]+/[\w.-]+$')]
-    [string]$Repo = 'Flydroid/lvpm',
+    [string]$Repo = 'ThatsTheEnd/lvpm',
     [switch]$BuildLocal,
     [string]$Archive
 )

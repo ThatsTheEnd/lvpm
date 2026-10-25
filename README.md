@@ -50,7 +50,7 @@ except `lvpm --version` at the end. Read it first; it is short.
 
 ```powershell
 cd $env:TEMP
-irm https://raw.githubusercontent.com/Flydroid/lvpm/main/scripts/install.ps1 -OutFile install.ps1
+irm https://raw.githubusercontent.com/ThatsTheEnd/lvpm/main/scripts/install.ps1 -OutFile install.ps1
 .\install.ps1
 ```
 
@@ -69,7 +69,7 @@ refuses to run scripts:
 ### By hand
 
 Download `lvpm-<version>-windows-x64.zip` from the
-[Releases](https://github.com/Flydroid/lvpm/releases) page, right-click it,
+[Releases](https://github.com/ThatsTheEnd/lvpm/releases) page, right-click it,
 tick **Unblock**, extract, and put the folder on your `PATH`.
 
 ### From source
