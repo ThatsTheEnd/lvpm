@@ -1,0 +1,111 @@
+name: Release
+
+# Every merge to main releases the version in Cargo.toml. The release is a
+# draft until every asset is uploaded, so a failed run leaves at most a draft,
+# which install.ps1 skips and a re-run replaces. No tests run here: the PR's
+# required ci-ok check already ran them on this exact tree.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build, package and check the installer, but create no tag and no release
+        type: boolean
+        default: true
+
+# One release at a time, in merge order; never cancel a release mid-publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Check the version is not released yet
+        id: check
+        run: |
+          bash ci/version-check.sh --release
+          version=$(bash ci/version-check.sh --print-version)
+          prerelease=$(bash ci/version-check.sh --print-prerelease "$version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version (pre-release: $prerelease)" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: [guard]
+    uses: ./.github/workflows/build.yml
+
+  package:
+    needs: [guard, build]
+    uses: ./.github/workflows/package.yml
+
+  publish:
+    name: publish
+    needs: [guard, package]
+    # Only main publishes; a dry run or a run on any other branch stops here.
+    if: github.ref == 'refs/heads/main' && !inputs.dry_run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.guard.outputs.version }}
+      PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
+      - name: Remove a draft left by a failed run
+        run: |
+          # A published release would have failed guard, because its tag exists.
+          if [ "$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null)" = "true" ]; then
+            gh release delete "$TAG" --yes
+            echo "Removed the leftover draft $TAG." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Create the draft release
+        run: gh release create "$TAG" --draft --generate-notes --target "$GITHUB_SHA" --title "$TAG" $([ "$PRERELEASE" = true ] && echo --prerelease)
+      - name: Upload the assets
+        run: gh release upload "$TAG" dist/*
+      - name: Publish the release
+        run: gh release edit "$TAG" --draft=false
+
+  # Reusable-workflow caller jobs cannot add steps, so this one job reports a
+  # failure anywhere in the run.
+  release-report:
+    name: release report
+    if: failure()
+    needs: [guard, build, package, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Say what failed and what to do next
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          job=$(jq -r 'to_entries | map(select(.value.result == "failure" or .value.result == "cancelled")) | .[0].key // "unknown"' <<<"$NEEDS")
+          if [ "$job" = guard ]; then
+            next="the version is already released or below the highest tag; raise the version in a new PR (see guard's summary)."
+          else
+            next="re-run the failed jobs; a leftover draft release is replaced. See the README's \"Release failed\" runbook."
+          fi
+          echo "Release v${VERSION:-<unknown>} failed in $job: $next" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::error::Release v${VERSION:-<unknown>} failed in $job"

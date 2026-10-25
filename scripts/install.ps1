@@ -141,6 +141,15 @@ function Invoke-GitHubApi([string]$Path) {
     Invoke-RestMethod -Uri "$api/$Path" -Headers $headers -MaximumRedirection 5
 }
 
+# The newest release that is not a draft (a failed release run leaves one),
+# and, with -Stable, not a pre-release. ci/lint/install-drafts.sh tests it.
+function Select-Release($Releases, [bool]$Stable) {
+    # Piping a variable enumerates it; see the note where this is called.
+    @($Releases) |
+        Where-Object { -not $_.draft -and (-not $Stable -or -not $_.prerelease) } |
+        Select-Object -First 1
+}
+
 # ------------------------------------------------------ resolve release ----
 
 if ($Archive) {
@@ -156,9 +165,7 @@ if ($Archive) {
     # whole array instead of each release and matches nothing. Bind it to a
     # variable first; piping a variable enumerates it.
     $releases = Invoke-GitHubApi 'releases?per_page=30'
-    $release = @($releases) |
-        Where-Object { -not $_.draft -and (-not $Stable -or -not $_.prerelease) } |
-        Select-Object -First 1
+    $release = Select-Release $releases $Stable
     if (-not $release) {
         throw "no release found in $Repo" + $(if ($Stable) { ' (every release is a pre-release; drop -Stable)' })
     }
