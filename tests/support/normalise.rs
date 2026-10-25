@@ -21,6 +21,7 @@ pub const TEMP_TOKEN: &str = "<TEMP>";
 pub const EPOCH_TOKEN: &str = "<EPOCH>";
 pub const TIMESTAMP_TOKEN: &str = "<TS>";
 pub const DURATION_TOKEN: &str = "<DUR>";
+pub const LVPM_VERSION_TOKEN: &str = "<LVPM_VERSION>";
 /// What may follow an anchored path or address without being part of it. The
 /// end of the text counts; `\w` and `-` continue a name, so they do not.
 const BOUNDARY: &str = r"(?P<next>[^\w-]|$)";
@@ -28,6 +29,15 @@ const BOUNDARY: &str = r"(?P<next>[^\w-]|$)";
 static TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
         .expect("timestamp pattern is valid")
+});
+/// lvpm's own version in the relink VI's file name, so a release bump leaves
+/// the recordings alone.
+static RELINK_VI_VERSION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"\blvpm-relink-package-{}\.vi\b",
+        regex::escape(env!("CARGO_PKG_VERSION"))
+    ))
+    .expect("relink VI pattern is valid")
 });
 static DURATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d+(\.\d+)?s\b").expect("duration pattern is valid"));
@@ -102,6 +112,11 @@ pub fn normalise(text: &str, anchors: &Anchors) -> String {
         }
     }
     let text = replace_regex(&text, &ARCHIVE_SHA256, "");
+    let text = replace_regex(
+        &text,
+        &RELINK_VI_VERSION,
+        &format!("lvpm-relink-package-{LVPM_VERSION_TOKEN}.vi"),
+    );
     let text = replace_regex(&text, &EPOCH_SECONDS, &format!("${{1}}{EPOCH_TOKEN}"));
     // Timestamps before durations: a `12:00:00` must not be read as `00s`.
     let text = replace_regex(&text, &TIMESTAMP, TIMESTAMP_TOKEN);
@@ -356,8 +371,15 @@ mod tests {
     #[test]
     fn the_machines_temp_dir_is_replaced_and_the_sandbox_inside_it_comes_first() {
         assert_eq!(
-            sandbox(r"with C:\Users\me\AppData\Local\Temp\lvpm-relink-package-0.2.1.vi"),
-            r"with <TEMP>\lvpm-relink-package-0.2.1.vi"
+            sandbox(r"with C:\Users\me\AppData\Local\Temp\lvpm-relink-package-0.0.1.vi"),
+            r"with <TEMP>\lvpm-relink-package-0.0.1.vi"
+        );
+        assert_eq!(
+            sandbox(&format!(
+                r"with C:\Users\me\AppData\Local\Temp\lvpm-relink-package-{}.vi",
+                env!("CARGO_PKG_VERSION")
+            )),
+            r"with <TEMP>\lvpm-relink-package-<LVPM_VERSION>.vi"
         );
         let mut anchors = Anchors::new(Path::new(
             r"C:\Users\me\AppData\Local\Temp\lvpm-acceptance-x",
