@@ -1,0 +1,44 @@
+name: Build
+
+# The one build definition: pr.yml and release.yml both call it, so a PR
+# builds exactly what main releases.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows, runner: windows-2022, bin: lvpm.exe }
+          - { os: linux, runner: ubuntu-latest, bin: lvpm }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+        shell: bash
+      - name: cargo build --release
+        run: cargo build --release --locked
+        shell: bash
+      - name: Check the binary runs and reports the workspace version
+        run: |
+          want=$(bash ci/version-check.sh --print-version)
+          got=$(target/release/${{ matrix.bin }} --version)
+          echo "$got"
+          [[ "$got" == *"$want"* ]] || { echo "::error::lvpm --version printed '$got', expected $want"; exit 1; }
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lvpm-${{ matrix.os }}
+          path: target/release/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 7
