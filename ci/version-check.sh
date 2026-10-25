@@ -16,7 +16,8 @@ fail() { # fail <message> [<version to raise above>]
   exit 1
 }
 ws_version() { tr -d '\r' | awk '/^\[/{s=($0=="[workspace.package]")} s && /^version *=/{gsub(/^[^"]*"|".*$/,""); print; exit}'; }
-lock_version() { tr -d '\r' < Cargo.lock | awk -v n="name = \"$1\"" '$0==n{getline; gsub(/^[^"]*"|".*$/,""); print; exit}'; }
+# No pipe and no early exit: Cargo.lock outgrows the pipe buffer, so `tr | awk ...exit` could die of SIGPIPE under pipefail.
+lock_version() { awk -v n="name = \"$1\"" '{sub(/\r$/,"")} !d && $0==n{getline; gsub(/^[^"]*"|".*$/,""); print; d=1}' Cargo.lock; }
 plain() { [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
 above() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]; }
 

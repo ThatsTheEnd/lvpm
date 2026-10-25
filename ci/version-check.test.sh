@@ -49,6 +49,8 @@ setup 0.9.0 v0.9.0; pr 0.10.0; expect 0 "numeric compare passes"
 setup 0.2.1 v0.2.1; pr 0.3.0; stray; expect 0 "version outside [workspace.package] ignored"
 setup 0.2.1 v0.2.1; pr ""; stray; expect 1 "only a stray version fails" "no workspace version was found"
 setup 0.2.1 v0.2.1; pr 0.3.0; rm Cargo.lock; commit nolock; expect 1 "missing lock fails" "Cargo.lock is missing"
+setup 0.2.1 v0.2.1; pr 0.3.0; git checkout -q main; git rm -q Cargo.toml; commit nobase; git checkout -q pr
+expect 1 "unreadable base fails" "could not read main:Cargo.toml"
 
 for row in 0.3.0:true 0.99.99:true 1.0.0:false; do
   got=$(bash "$script" --print-prerelease "${row%%:*}")
