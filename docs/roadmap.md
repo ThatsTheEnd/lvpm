@@ -182,6 +182,17 @@ records) and make it first-class. An earlier Python prototype,
 
 ## CI for lvpm itself: the container as the end-to-end test
 
+**What is automated** ([spec](specs/lvpm-ci-pipeline.md)):
+
+- PR checks: the version-bump gate, `cargo test` on Windows and Linux, the
+  release build of both binaries, packaging, an installer check, and the
+  `ci/` lints. `ci-ok` is the one required check.
+- The release: every merge to `main` publishes `v<version>` with the Windows
+  zip, the Linux tar.gz and `SHA256SUMS`.
+
+**What is still manual:** relink, MassCompile and Caraya (steps 2, 4 and 5
+below). The smoke flow in NI's LabVIEW images is the next CI step.
+
 lvpm's unit tests cover parsing and planning; what they cannot cover is the
 part that matters — a real LabVIEW loading, relinking and compiling what
 lvpm installed. NI's container image is a clean LabVIEW that is thrown away

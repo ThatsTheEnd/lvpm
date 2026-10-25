@@ -72,6 +72,48 @@ Download `lvpm-<version>-windows-x64.zip` from the
 [Releases](https://github.com/ThatsTheEnd/lvpm/releases) page, right-click it,
 tick **Unblock**, extract, and put the folder on your `PATH`.
 
+### On Linux
+
+Releases are pre-releases while the version is 0.x, so GitHub's "latest"
+link skips them. Open the
+[Releases](https://github.com/ThatsTheEnd/lvpm/releases) list and download
+`lvpm-<version>-linux-x64.tar.gz` and `SHA256SUMS` from the newest release,
+then:
+
+```sh
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf lvpm-<version>-linux-x64.tar.gz
+./lvpm --version
+```
+
+Move `lvpm` to a folder on your `PATH`, for example `~/.local/bin`.
+
+### How releases are made
+
+Every merge to `main` publishes the version in `Cargo.toml` as release
+`v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`.
+Each PR must raise the version (see [CONTRIBUTING.md](CONTRIBUTING.md)). The
+workflow is [release.yml](.github/workflows/release.yml); the design is in
+[the CI spec](docs/specs/lvpm-ci-pipeline.md).
+
+### Release failed
+
+Failed runs show as red **Release** runs on `main` under
+[Actions](https://github.com/ThatsTheEnd/lvpm/actions/workflows/release.yml).
+
+1. Read the run's job summary. It names the version, the job that failed and
+   what to do next.
+2. If **guard** says `tag v<version> already exists`, open the
+   [Releases](https://github.com/ThatsTheEnd/lvpm/releases) list first. A
+   published `v<version>` with 3 assets means the release is done and there
+   is nothing to fix. Otherwise the version is taken: raise it in a new PR.
+3. For any other job, re-run the failed jobs. A draft release left by the
+   failed run is deleted and created again, and the installer never picks a
+   draft.
+
+Releases before v0.4.0 (v0.2.1 and older) are in the repository this one
+was forked from. Releases here start at v0.4.0.
+
 ### From source
 
 ```console
