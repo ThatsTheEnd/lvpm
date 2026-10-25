@@ -33,11 +33,11 @@ for f in pr.yml build.yml package.yml; do
   text=$(tr -d '\r' < "$dir/$f")
   grep -qE '^permissions:$' <<<"$text" && grep -qE '^  contents: read$' <<<"$text" \
     || report_violation "$dir/$f must set top-level 'permissions: contents: read'."
-  ! grep -qE '\b[a-z-]+: *write\b|permissions: *write-all' <<<"$text" \
+  ! grep -qE '\b[a-z-]+: *["'\'']?write\b|permissions: *["'\'']?write-all' <<<"$text" \
     || report_violation "$dir/$f must not grant a write permission."
   ! grep -qE '\b(pull_request_target|workflow_run)\b' <<<"$text" \
     || report_violation "$dir/$f must not run on pull_request_target or workflow_run: both give fork code secrets."
-  secrets=$(grep -noE 'secrets\.[A-Za-z_]+|secrets\[|\(secrets\)|secrets: *inherit' <<<"$text" | grep -v 'secrets\.GITHUB_TOKEN$' || true)
+  secrets=$(grep -noE 'secrets\.[A-Za-z0-9_]+|secrets\[|\(secrets\)|secrets: *inherit' <<<"$text" | grep -v 'secrets\.GITHUB_TOKEN$' || true)
   [ -z "$secrets" ] || report_violation "$dir/$f uses a secret other than GITHUB_TOKEN: $secrets"
 done
 

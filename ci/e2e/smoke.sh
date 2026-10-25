@@ -24,7 +24,7 @@ cd "$work/project"
   while :; do
     for c in /proc/[0-9]*/comm; do
       read -r name < "$c" 2>/dev/null || continue
-      [[ ${name,,} == labview ]] && echo "$name" > "$seen"
+      if [[ ${name,,} == labview ]]; then echo "$name" > "$seen"; fi
     done
     sleep 0.2
   done
@@ -72,6 +72,8 @@ expect "$pkg $version in the list" grep -qE "^$pkg +$version " <<<"$out"
 step "uninstall" "$lvpm" uninstall "$pkg"
 expect "$installed to be gone" test ! -e "$installed"
 n=$((n+1)); out=
+# The sampler never exits on its own: a dead one checked nothing.
+kill -0 $sampler 2>/dev/null || fail "FAILED at step $n/$total: the LabVIEW sampler stopped"
 kill $sampler 2>/dev/null; wait $sampler 2>/dev/null || true
 [ ! -e "$seen" ] || fail "FAILED at step $n/$total: LabVIEW was started ($(cat "$seen"))"
 

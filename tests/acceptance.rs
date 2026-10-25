@@ -137,14 +137,14 @@ fn has_labview_tag(scenario: &Scenario) -> bool {
     scenario.tags.iter().any(|tag| tag == LABVIEW_TAG)
 }
 
-/// How many `@labview` scenarios of a feature the harness ran, and how many
-/// it did not run, by reason.
+/// How many scenarios of a feature the harness ran (`@labview` ones) and did
+/// not run, by reason.
 #[derive(Default)]
 struct ScenarioCounts {
     labview_ran: usize,
-    labview: usize,
-    unsafe_to_run: usize,
-    pending: usize,
+    labview_not_run: usize,
+    unsafe_not_run: usize,
+    pending_not_run: usize,
 }
 
 /// Whatever a scenario started on its venv is stopped, whether it passed or not.
@@ -162,7 +162,7 @@ fn after_scenario<'a>(
     })
 }
 
-/// Run one feature file; the scenarios it did not run, and how it went.
+/// Run one feature file; its scenario counts, and how it went.
 fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>) {
     let labview_not_run = Arc::new(AtomicUsize::new(0));
     let unsafe_not_run = Arc::new(AtomicUsize::new(0));
@@ -217,9 +217,9 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
     };
     let counts = ScenarioCounts {
         labview_ran: labview_ran.load(Ordering::SeqCst),
-        labview: labview_not_run.load(Ordering::SeqCst),
-        unsafe_to_run: unsafe_not_run.load(Ordering::SeqCst),
-        pending: pending_not_run.load(Ordering::SeqCst),
+        labview_not_run: labview_not_run.load(Ordering::SeqCst),
+        unsafe_not_run: unsafe_not_run.load(Ordering::SeqCst),
+        pending_not_run: pending_not_run.load(Ordering::SeqCst),
     };
     (counts, outcome)
 }
@@ -255,9 +255,9 @@ fn run_features() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
         let (counts, outcome) = run_feature(path, mode);
         labview_ran += counts.labview_ran;
-        labview_not_run += counts.labview;
-        unsafe_not_run += counts.unsafe_to_run;
-        pending_not_run += counts.pending;
+        labview_not_run += counts.labview_not_run;
+        unsafe_not_run += counts.unsafe_not_run;
+        pending_not_run += counts.pending_not_run;
         if let Err(why) = outcome {
             failures.push(format!("{feature}: {why}"));
         }

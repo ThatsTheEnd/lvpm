@@ -26,6 +26,7 @@ expect 1 "an image without an os suffix fails" pr.yml 's#2025q3patch1-linux#2025
 expect 1 "a condition naming an image fails" pr.yml "s/if: matrix.os == 'windows'/if: contains(matrix.image, '-windows')/" "names an image"
 expect 1 "no matrix rows fails" pr.yml '/image: "nationalinstruments/d' "no e2e matrix rows"
 expect 1 "write permission fails" build.yml 's/^  contents: read/  contents: write/' "build.yml must set"
+expect 1 "a quoted write permission fails" build.yml 's/^  contents: read/  contents: read\n  packages: "write"/' "must not grant a write"
 expect 1 "a missing permissions block fails" package.yml '/^permissions:/d' "package.yml must set"
 expect 1 "a job-level write grant fails" pr.yml '/^  e2e:/a\    permissions: { packages: write }' "must not grant a write permission"
 expect 1 "a latest tag fails" pr.yml 's#labview:2026q3-linux#labview:latest#' "is not a nationalinstruments/labview"

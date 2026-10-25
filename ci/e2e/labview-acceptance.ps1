@@ -27,19 +27,22 @@ function Fail([string] $message, [string] $log = '') {
     exit 1
 }
 
-# The plan has the scenarios start no LabVIEW. One is started here instead, so
-# a slow first start is not charged to the first scenario; the container is
-# thrown away afterwards.
+# The plan leaves starting LabVIEW to the scenarios. This script starts one up
+# front on purpose, so a slow first start is not charged to the first scenario;
+# the container is thrown away afterwards.
 $labview = "C:\Program Files\National Instruments\LabVIEW $Year"
 $ini = Join-Path $labview 'LabVIEW.ini'
-# The same fallback as lvpm's vi_server_port, so this waits where lvpm connects.
+# shortcut: the same fallback as lvpm's vi_server_port (3363), so this waits
+# where lvpm connects; 2026 itself defaults to 3364, so an image whose
+# LabVIEW.ini sets no port fails here. Fix both together if that happens.
 $port = 3363
 if ((Test-Path $ini) -and ((Get-Content -Raw $ini) -match '(?m)^server\.tcp\.port\s*=\s*"?(\d+)')) { $port = [int]$Matches[1] }
 if (-not (Test-Path (Join-Path $labview 'LabVIEW.exe'))) { Fail "infrastructure: no LabVIEW.exe under $labview" }
-$lv = Start-Process (Join-Path $labview 'LabVIEW.exe') -PassThru
+Start-Process (Join-Path $labview 'LabVIEW.exe')
 $deadline = (Get-Date).AddMinutes(5)
 while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue)) {
-    if ($lv.HasExited) { Fail "infrastructure: LabVIEW exited (code $($lv.ExitCode)) before VI Server answered on port $port" }
+    # By name, not by the started process: LabVIEW.exe may hand off and exit.
+    if (-not (Get-Process LabVIEW -ErrorAction SilentlyContinue)) { Fail "infrastructure: LabVIEW exited before VI Server answered on port $port" }
     if ((Get-Date) -gt $deadline) { Fail "infrastructure: LabVIEW did not answer VI Server on port $port within 5 minutes" }
     Start-Sleep 5
 }

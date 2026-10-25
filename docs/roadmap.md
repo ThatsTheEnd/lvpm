@@ -189,7 +189,7 @@ records) and make it first-class. An earlier Python prototype,
 
 - PR checks: the version-bump gate, `cargo test` on Windows and Linux, the
   release build of both binaries, packaging, an installer check, and the
-  `ci/` lints. `ci-ok` is the one required check.
+  `ci/` lints. `ci-ok` is meant to be the one required check (an admin sets it).
 - The release: every merge to `main` publishes `v<version>` with the Windows
   zip, the Linux tar.gz and `SHA256SUMS`.
 

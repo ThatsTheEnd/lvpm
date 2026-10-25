@@ -4,6 +4,8 @@ $here = $PSScriptRoot
 $work = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory $work | Out-Null
 $failures = 0
+# The flow fails on any LabVIEW process, so an open one fails every scenario.
+if (Get-Process LabVIEW -ErrorAction SilentlyContinue) { 'close LabVIEW before running this self-test'; exit 1 }
 $llbRel = 'user.lib\_OpenG.lib\boolean\boolean.llb'
 
 # A stub lvpm. STUB_FAIL names the subcommand that fails; STUB_LABVIEW=1 starts
@@ -54,6 +56,6 @@ Expect-Run 1 'an unreachable registry is infrastructure' 'infrastructure: regist
 Expect-Run 1 'a missing package file fails install' "FAILED at step 4/7: expected $work\LabVIEW 2026\$llbRel to exist" @{ STUB_NOFILE = '1' }
 
 # Only the stub's own LabVIEW, never one the developer has open.
-Get-Process LabVIEW -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$work*" } | Stop-Process -Force
+Get-Process LabVIEW -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.Contains((Split-Path $work -Leaf)) } | Stop-Process -Force
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 if ($failures) { "$failures scenario(s) failed"; exit 1 } else { 'all smoke scenarios passed' }
