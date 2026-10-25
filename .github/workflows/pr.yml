@@ -27,12 +27,35 @@ jobs:
       - name: Check the version is raised
         run: bash ci/version-check.sh origin/main
 
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # core_io.rs runs clippy as part of the suite.
+          components: clippy
+      - name: cargo test
+        run: |
+          echo "::group::cargo test --workspace --locked"
+          cargo test --workspace --locked
+          echo "::endgroup::"
+        shell: bash
+
   # The only required check: branch protection names ci-ok, so adding a job or
   # a matrix row never changes the required checks.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [version]
+    needs: [version, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
