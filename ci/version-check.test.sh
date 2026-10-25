@@ -22,7 +22,7 @@ setup() { # setup <main version> [tags...]: a repo on branch pr forked from main
 }
 expect() { # expect <0|1> <name> [<substring>...]: run the check on branch pr against main
   local want=$1 name=$2; shift 2
-  local out; out=$(bash "$script" main 2>&1); local got=$?
+  local out; out=$(bash "$script" "${mode:-main}" 2>&1); local got=$?
   local ok=1; [ "$got" = "$want" ] || ok=0
   for s in "$@"; do [[ "$out" == *"$s"* ]] || ok=0; done
   if [ $ok = 1 ]; then echo "ok   $name"; else echo "FAIL $name (exit $got): $out"; failures=$((failures+1)); fi
@@ -51,6 +51,16 @@ setup 0.2.1 v0.2.1; pr ""; stray; expect 1 "only a stray version fails" "no work
 setup 0.2.1 v0.2.1; pr 0.3.0; rm Cargo.lock; commit nolock; expect 1 "missing lock fails" "Cargo.lock is missing"
 setup 0.2.1 v0.2.1; pr 0.3.0; git checkout -q main; git rm -q Cargo.toml; commit nobase; git checkout -q pr
 expect 1 "unreadable base fails" "could not read main:Cargo.toml"
+
+mode=--release
+setup 0.2.1 v0.2.1; pr 0.3.0; expect 0 "release of an untagged version passes" "v0.3.0 is not tagged yet"
+setup 0.3.0; expect 0 "release without a base comparison passes"
+setup 0.2.1 v0.3.0; pr 0.3.0; expect 1 "release of an existing tag fails" "tag v0.3.0 already exists" "Raise the version above 0.3.0 in a new PR."
+setup 0.2.1 v0.4.0; pr 0.3.0; expect 1 "release below the highest tag fails" 0.3.0 v0.4.0 "in a new PR."
+setup 0.2.1 v0.2.1; pr 0.3.0 0.2.1 0.3.0; expect 1 "release with a stale lock fails" "lvpm 0.2.1"
+mode=--print-version
+setup 0.2.1; pr 0.3.0; expect 0 "print-version prints the version" 0.3.0
+mode=
 
 for row in 0.3.0:true 0.99.99:true 1.0.0:false; do
   got=$(bash "$script" --print-prerelease "${row%%:*}")
