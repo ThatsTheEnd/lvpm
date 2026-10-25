@@ -9,6 +9,10 @@ on:
         description: The commit to check out; empty means the commit that triggered the run
         type: string
         default: ''
+      acceptance:
+        description: Also build the acceptance tests for the Windows LabVIEW container
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +61,27 @@ jobs:
         with:
           name: lvpm-${{ matrix.os }}
           path: target/release/${{ matrix.bin }}
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      # CARGO_MANIFEST_DIR and CARGO_BIN_EXE_lvpm are fixed at compile time, so
+      # the tests are built at the path the container mounts them at.
+      - name: Build the acceptance tests at C:\src\lvpm
+        if: inputs.acceptance && matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          robocopy . C:\src\lvpm /E /XD target .git /NFL /NDL /NJH /NJS /NP | Out-Null
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          cargo test --manifest-path C:\src\lvpm\Cargo.toml --test acceptance --no-run --locked
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: inputs.acceptance && matrix.os == 'windows'
+        with:
+          name: lvpm-acceptance
+          path: |
+            C:/src/lvpm/target/debug/lvpm.exe
+            C:/src/lvpm/target/debug/deps/acceptance-*.exe
+            C:/src/lvpm/tests
           if-no-files-found: error
           retention-days: 7
           overwrite: true
