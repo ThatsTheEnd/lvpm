@@ -36,8 +36,8 @@ Not affiliated with JKI or NI. Working, in active development; see
 
 ## Install lvpm
 
-Windows 10/11 with LabVIEW 2020 or later. Linux target detection exists but
-is untested.
+Windows 10/11 with LabVIEW 2020 or later. Linux is built and tested in NI's
+LabVIEW Linux images (see [Continuous integration](#continuous-integration)).
 
 ### With the install script
 
@@ -100,6 +100,24 @@ never starts, so it reports nothing: check the Releases list if a version is
 missing. The
 workflow is [release.yml](.github/workflows/release.yml); the design is in
 [the CI spec](docs/specs/lvpm-ci-pipeline.md).
+
+### Continuous integration
+
+Every PR runs [pr.yml](.github/workflows/pr.yml): the version check, `cargo
+test` on Windows and Linux, the release build and packaging, the CI lint
+checks, and the CLI smoke flow (targets, search, `lock --check`, install,
+list, uninstall) inside NI's LabVIEW images:
+
+| Image | OS | LabVIEW | Also runs |
+| --- | --- | --- | --- |
+| `nationalinstruments/labview:2025q3patch1-linux` | Linux | 2025 | |
+| `nationalinstruments/labview:2026q3-linux` | Linux | 2026 | |
+| `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
+
+Branch protection on `main` requires one check, `ci-ok`, which passes only
+when every other job passed, and requires branches to be up to date before
+merging. Adding a job or an image row never changes the required checks.
+The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 
 ### Release failed
 
