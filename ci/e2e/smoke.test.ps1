@@ -1,11 +1,11 @@
 # Self-test for smoke.ps1, with a stub lvpm: the same scenarios as smoke.test.sh.
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
+# The flow fails on any LabVIEW process, so an open one fails every scenario.
+if (Get-Process LabVIEW -ErrorAction SilentlyContinue) { 'close LabVIEW before running this self-test'; exit 1 }
 $work = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory $work | Out-Null
 $failures = 0
-# The flow fails on any LabVIEW process, so an open one fails every scenario.
-if (Get-Process LabVIEW -ErrorAction SilentlyContinue) { 'close LabVIEW before running this self-test'; exit 1 }
 $llbRel = 'user.lib\_OpenG.lib\boolean\boolean.llb'
 
 # A stub lvpm. STUB_FAIL names the subcommand that fails; STUB_LABVIEW=1 starts

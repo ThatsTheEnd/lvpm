@@ -74,7 +74,7 @@ expect "$installed to be gone" test ! -e "$installed"
 n=$((n+1)); out=
 # The sampler never exits on its own: a dead one checked nothing.
 kill -0 $sampler 2>/dev/null || fail "FAILED at step $n/$total: the LabVIEW sampler stopped"
-kill $sampler 2>/dev/null; wait $sampler 2>/dev/null || true
+kill $sampler 2>/dev/null || true; wait $sampler 2>/dev/null || true
 [ ! -e "$seen" ] || fail "FAILED at step $n/$total: LabVIEW was started ($(cat "$seen"))"
 
 echo "smoke flow passed all $total steps (LabVIEW $year)"

@@ -41,7 +41,8 @@ if (-not (Test-Path (Join-Path $labview 'LabVIEW.exe'))) { Fail "infrastructure:
 Start-Process (Join-Path $labview 'LabVIEW.exe')
 $deadline = (Get-Date).AddMinutes(5)
 while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue)) {
-    # By name, not by the started process: LabVIEW.exe may hand off and exit.
+    # By name, not by the started process, in case LabVIEW.exe hands off and
+    # exits (not measured in the image; a renamed child would fail here).
     if (-not (Get-Process LabVIEW -ErrorAction SilentlyContinue)) { Fail "infrastructure: LabVIEW exited before VI Server answered on port $port" }
     if ((Get-Date) -gt $deadline) { Fail "infrastructure: LabVIEW did not answer VI Server on port $port within 5 minutes" }
     Start-Sleep 5
