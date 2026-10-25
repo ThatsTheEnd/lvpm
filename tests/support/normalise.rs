@@ -8,7 +8,8 @@
 //! timestamps, epoch seconds under their JSON keys, and durations such as
 //! `0.3s`; the `archive_sha256` field is removed with its comma; and a relative
 //! or token-rooted path such as `<SANDBOX>\work` or JSON's `dest\\LabVIEW` is
-//! spelled with `/`, so a recording made on Windows matches Linux. A version like
+//! spelled with `/`, so a recording made on Windows matches Linux; for the same
+//! reason the OS's "file not found" message becomes `<OS_NOT_FOUND>`. A version like
 //! `2.0` or a word ending in `s` must come out unchanged, and so must a path
 //! that merely begins like an anchored one.
 
@@ -27,6 +28,7 @@ pub const EPOCH_TOKEN: &str = "<EPOCH>";
 pub const TIMESTAMP_TOKEN: &str = "<TS>";
 pub const DURATION_TOKEN: &str = "<DUR>";
 pub const LVPM_VERSION_TOKEN: &str = "<LVPM_VERSION>";
+pub const NOT_FOUND_TOKEN: &str = "<OS_NOT_FOUND>";
 /// What may follow an anchored path or address without being part of it. The
 /// end of the text counts; `\w` and `-` continue a name, so they do not.
 const BOUNDARY: &str = r"(?P<next>[^\w-]|$)";
@@ -57,6 +59,12 @@ static EPOCH_SECONDS: LazyLock<Regex> = LazyLock::new(|| {
 /// as it did without the field.
 static ARCHIVE_SHA256: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#",\s*"archive_sha256":\s*"[0-9a-f]{64}""#).expect("archive hash pattern is valid")
+});
+
+/// The OS's own "not found" message, which Windows and Linux word differently.
+static NOT_FOUND: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"The system cannot find the (?:path|file) specified\. \(os error [23]\)|No such file or directory \(os error 2\)")
+        .expect("not found pattern is valid")
 });
 
 /// A relative or token-rooted path written with `\` (or JSON's `\\`). A run
@@ -135,6 +143,7 @@ pub fn normalise(text: &str, anchors: &Anchors) -> String {
     // Replace timestamps first so no later pattern sees their digits.
     let text = replace_regex(&text, &TIMESTAMP, TIMESTAMP_TOKEN);
     let text = replace_regex(&text, &DURATION, DURATION_TOKEN);
+    let text = replace_regex(&text, &NOT_FOUND, NOT_FOUND_TOKEN);
     BACKSLASHED_PATH
         .replace_all(&text, |caps: &regex::Captures| {
             // shortcut: a relative path later in the same segment as an absolute
@@ -428,6 +437,19 @@ mod tests {
         let anchors = Anchors::new(Path::new("/w"));
         let text = r"port 3412 v26.3 at C:\Program Files\National Instruments\LabVIEW 2026";
         assert_eq!(normalise(text, &anchors), text);
+    }
+
+    #[test]
+    fn the_os_not_found_message_is_the_same_token_on_every_os() {
+        for message in [
+            "The system cannot find the path specified. (os error 3)",
+            "The system cannot find the file specified. (os error 2)",
+            "No such file or directory (os error 2)",
+        ] {
+            assert_eq!(sandbox(&format!("    {message}")), "    <OS_NOT_FOUND>");
+        }
+        let other = "Access is denied. (os error 5)";
+        assert_eq!(sandbox(other), other);
     }
 
     #[test]
