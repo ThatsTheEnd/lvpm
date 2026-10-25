@@ -6,7 +6,9 @@
 //! the machine's temp dir (`<TEMP>`), the LabVIEW VI Server port (`<LV_PORT>`),
 //! lvpm's own version in the relink VI's name (`<LVPM_VERSION>`), ISO-8601
 //! timestamps, epoch seconds under their JSON keys, and durations such as
-//! `0.3s`; the `archive_sha256` field is removed with its comma. A version like
+//! `0.3s`; the `archive_sha256` field is removed with its comma; and a relative
+//! or token-rooted path such as `<SANDBOX>\work` or JSON's `dest\\LabVIEW` is
+//! spelled with `/`, so a recording made on Windows matches Linux. A version like
 //! `2.0` or a word ending in `s` must come out unchanged, and so must a path
 //! that merely begins like an anchored one.
 
@@ -55,6 +57,15 @@ static EPOCH_SECONDS: LazyLock<Regex> = LazyLock::new(|| {
 /// as it did without the field.
 static ARCHIVE_SHA256: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#",\s*"archive_sha256":\s*"[0-9a-f]{64}""#).expect("archive hash pattern is valid")
+});
+
+/// A relative or token-rooted path written with `\` (or JSON's `\\`). A run
+/// right after `:` or `\`, or after a space inside an absolute Windows path,
+/// belongs to that path, which an anchor either already replaced or must leave
+/// alone, so it keeps its backslashes.
+static BACKSLASHED_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?P<pre>^|[^\w.<>:\\-])(?P<path>[\w.<>-]+(?:\\\\?[\w.<>-]+)+)")
+        .expect("backslashed path pattern is valid")
 });
 
 /// What is specific to one scenario's sandbox.
@@ -123,7 +134,20 @@ pub fn normalise(text: &str, anchors: &Anchors) -> String {
     let text = replace_regex(&text, &EPOCH_SECONDS, &format!("${{1}}{EPOCH_TOKEN}"));
     // Replace timestamps first so no later pattern sees their digits.
     let text = replace_regex(&text, &TIMESTAMP, TIMESTAMP_TOKEN);
-    replace_regex(&text, &DURATION, DURATION_TOKEN)
+    let text = replace_regex(&text, &DURATION, DURATION_TOKEN);
+    BACKSLASHED_PATH
+        .replace_all(&text, |caps: &regex::Captures| {
+            // shortcut: a relative path later in the same segment as an absolute
+            // one stays backslashed; split segments further if a recording needs it.
+            let before = &text[..caps.get(0).map_or(0, |m| m.start())];
+            let segment = &before[before.rfind(['\n', '"', '(']).map_or(0, |i| i + 1)..];
+            if segment.contains(":\\") {
+                return caps[0].to_string();
+            }
+            let path = caps["path"].replace(r"\\", "/").replace('\\', "/");
+            format!("{}{path}", &caps["pre"])
+        })
+        .into_owned()
 }
 
 /// `port 3412` in a message, `"port": 3412` in venv.json.
@@ -204,7 +228,7 @@ mod tests {
     fn the_sandbox_root_is_replaced_in_both_separator_spellings_and_either_drive_case() {
         assert_eq!(
             sandbox(r"wrote C:\Users\me\Temp\.tmpAb12\dest\a.txt"),
-            r"wrote <SANDBOX>\dest\a.txt"
+            "wrote <SANDBOX>/dest/a.txt"
         );
         assert_eq!(
             sandbox("wrote C:/Users/me/Temp/.tmpAb12/dest/a.txt"),
@@ -212,7 +236,7 @@ mod tests {
         );
         assert_eq!(
             sandbox(r"wrote c:\Users\me\Temp\.tmpAb12\dest"),
-            r"wrote <SANDBOX>\dest"
+            "wrote <SANDBOX>/dest"
         );
     }
 
@@ -322,7 +346,7 @@ mod tests {
     fn the_labview_install_dir_is_replaced_in_both_separator_spellings() {
         assert_eq!(
             sandbox(r"bound to C:\Program Files\National Instruments\LabVIEW 2026\LabVIEW.exe"),
-            r"bound to <LABVIEW>\LabVIEW.exe"
+            "bound to <LABVIEW>/LabVIEW.exe"
         );
         assert_eq!(
             sandbox("C:/Program Files/National Instruments/LabVIEW 2026/vi.lib"),
@@ -367,7 +391,7 @@ mod tests {
                 r"at C:\Users\me\AppData\Local\Temp\lvpm-relink.vi",
                 &anchors
             ),
-            r"at <TEMP>\lvpm-relink.vi"
+            "at <TEMP>/lvpm-relink.vi"
         );
     }
 
@@ -375,14 +399,14 @@ mod tests {
     fn the_machines_temp_dir_is_replaced_and_the_sandbox_inside_it_comes_first() {
         assert_eq!(
             sandbox(r"with C:\Users\me\AppData\Local\Temp\lvpm-relink-package-0.0.1.vi"),
-            r"with <TEMP>\lvpm-relink-package-0.0.1.vi"
+            "with <TEMP>/lvpm-relink-package-0.0.1.vi"
         );
         assert_eq!(
             sandbox(&format!(
                 r"with C:\Users\me\AppData\Local\Temp\lvpm-relink-package-{}.vi",
                 env!("CARGO_PKG_VERSION")
             )),
-            r"with <TEMP>\lvpm-relink-package-<LVPM_VERSION>.vi"
+            "with <TEMP>/lvpm-relink-package-<LVPM_VERSION>.vi"
         );
         let mut anchors = Anchors::new(Path::new(
             r"C:\Users\me\AppData\Local\Temp\lvpm-acceptance-x",
@@ -393,7 +417,7 @@ mod tests {
                 r"C:\Users\me\AppData\Local\Temp\lvpm-acceptance-x\work and C:\Users\me\AppData\Local\Temp\other",
                 &anchors
             ),
-            r"<SANDBOX>\work and <TEMP>\other"
+            "<SANDBOX>/work and <TEMP>/other"
         );
         let sibling = r"C:\Users\me\AppData\Local\Temp2\x";
         assert_eq!(sandbox(sibling), sibling);
@@ -404,5 +428,24 @@ mod tests {
         let anchors = Anchors::new(Path::new("/w"));
         let text = r"port 3412 v26.3 at C:\Program Files\National Instruments\LabVIEW 2026";
         assert_eq!(normalise(text, &anchors), text);
+    }
+
+    #[test]
+    fn relative_and_token_rooted_paths_are_spelled_with_slashes() {
+        assert_eq!(
+            sandbox(r"at dest\LabVIEW (dest\.lvpm\installed\beta.json)"),
+            "at dest/LabVIEW (dest/.lvpm/installed/beta.json)"
+        );
+        assert_eq!(
+            sandbox(r#""target": "scratch dest\\LabVIEW""#),
+            r#""target": "scratch dest/LabVIEW""#
+        );
+        assert_eq!(
+            sandbox(r"<SANDBOX>\work\.lv-venv"),
+            "<SANDBOX>/work/.lv-venv"
+        );
+        for untouched in [r"C:\x\y", r"a \ b", "dest/LabVIEW"] {
+            assert_eq!(sandbox(untouched), untouched);
+        }
     }
 }
