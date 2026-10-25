@@ -1,0 +1,49 @@
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Self-test the version check
+        run: bash ci/version-check.test.sh
+      - name: Check the version is raised
+        run: bash ci/version-check.sh origin/main
+
+  # The only required check: branch protection names ci-ok, so adding a job or
+  # a matrix row never changes the required checks.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [version]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          bad=$(jq -r 'to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | "\(.key): \(.value.result)"' <<<"$NEEDS")
+          rest=$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "failure" and .value.result != "cancelled") | "\(.key): skipped (downstream)"' <<<"$NEEDS")
+          if [ -n "$bad$rest" ]; then
+            printf '%s\n%s\n' "$bad" "$rest" | sed '/^$/d; s/^/::error::/'
+            exit 1
+          fi
+          echo "every PR job passed"
