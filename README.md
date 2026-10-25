@@ -95,7 +95,9 @@ Every merge to `main` publishes the version in `Cargo.toml` as release
 Each PR must raise the version (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 Releases run one at a time. If merges land faster than releases finish, a
 waiting release can be replaced by a newer one, so a version in between is
-never released; the next release has the higher version. The
+never released; the next release has the higher version. A replaced run
+never starts, so it reports nothing: check the Releases list if a version is
+missing. The
 workflow is [release.yml](.github/workflows/release.yml); the design is in
 [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 
@@ -110,9 +112,12 @@ Failed runs show as red **Release** runs on `main` under
    [Releases](https://github.com/ThatsTheEnd/lvpm/releases) list first. A
    published `v<version>` with 3 assets means the release is done and there
    is nothing to fix. Otherwise the version is taken: raise it in a new PR.
-3. For any other job, re-run the failed jobs. A draft release left by the
-   failed run is deleted and created again, and the installer never picks a
-   draft.
+3. If **publish** failed at "Check the version is still not released", a
+   newer version was released after this run started: raise the version in a
+   new PR.
+4. For any other job, re-run the failed jobs, but not while another Release
+   run is in progress. A draft release left by the failed run is deleted and
+   created again, and the installer never picks a draft.
 
 Releases before v0.4.0 (v0.2.1 and older) are in the repository this one
 was forked from. Releases here start at v0.4.0.

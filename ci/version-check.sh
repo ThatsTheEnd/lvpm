@@ -18,7 +18,7 @@ esac
 fail() { # fail <message> [<version to raise above>]
   local lines=("version check failed: $1")
   if [ -n "${2:-}" ] && [ -n "$release" ]; then
-    lines+=("Nothing was built, tagged or published. Raise the version above $2 in a new PR.")
+    lines+=("Nothing was tagged or published. Raise the version above $2 in a new PR.")
   elif [ -n "${2:-}" ]; then
     lines+=("Raise \`[workspace.package] version\` in Cargo.toml above $2, then run \`cargo update -w\`.")
   fi

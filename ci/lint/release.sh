@@ -23,11 +23,14 @@ done
 report_if=$(job_key release-report if)
 [[ "$report_if" == *"'failure'"* && "$report_if" == *"'cancelled'"* ]] \
   || report_violation "job 'release-report' must run when a job failed or was cancelled."
-publish_if=$(job_key publish if)
-[[ "$publish_if" == *"github.ref == 'refs/heads/main'"* && "$publish_if" == *"!inputs.dry_run"* ]] \
-  || report_violation "job 'publish' must run only on refs/heads/main and not on a dry run."
+publish_gate="github.ref == 'refs/heads/main' && !inputs.dry_run"
+[ "$(job_key publish if)" = "$publish_gate" ] \
+  || report_violation "job 'publish' must have 'if: $publish_gate' (only on refs/heads/main and not on a dry run)."
 # No pipe into grep -q: its early exit would fail the pipe under pipefail. \s also matches a CR.
 grep -qE '^  cancel-in-progress: false\s*$' "$file" || report_violation "concurrency must set 'cancel-in-progress: false'."
+! grep -qE 'cancel-in-progress: *true' "$file" || report_violation "no 'cancel-in-progress: true' allowed."
+grep -qF "  group: \${{ $publish_gate && 'release' || 'release-no-publish' }}" "$file" \
+  || report_violation "the concurrency group must put only runs that can publish in group 'release'."
 publish_body=$(tr -d '\r' < "$file" | awk '/^  publish:/ {p=1; next} /^  [A-Za-z0-9_-]+:/ {p=0} p')
 check_line=$(grep -n 'version-check.sh --release' <<<"$publish_body" | head -n1 | cut -d: -f1 || true)
 create_line=$(grep -n 'gh release create' <<<"$publish_body" | head -n1 | cut -d: -f1 || true)
