@@ -16,8 +16,8 @@ cd "$repo"
 bash ci/package.sh 9.8.7 "$work/lvpm.exe" "$work/lvpm" "$work/out" || { echo "FAIL package.sh exited $?"; exit 1; }
 out="$work/out"
 want=$'LICENSE-APACHE\nLICENSE-MIT\nREADME.md\nlvpm.exe'
-check "zip holds the binary and the docs" test "$(unzip -Z1 "$out/lvpm-9.8.7-windows-x64.zip" | sort)" = "$want"
-check "tar holds the binary and the docs" test "$(tar -tzf "$out/lvpm-9.8.7-linux-x64.tar.gz" | sort)" = "${want/lvpm.exe/lvpm}"
+check "zip holds the binary and the docs" test "$(unzip -Z1 "$out/lvpm-9.8.7-windows-x64.zip" | LC_ALL=C sort)" = "$want"
+check "tar holds the binary and the docs" test "$(tar -tzf "$out/lvpm-9.8.7-linux-x64.tar.gz" | LC_ALL=C sort)" = "${want/lvpm.exe/lvpm}"
 check "tar binary is mode 0755" bash -c "tar -tvzf '$out/lvpm-9.8.7-linux-x64.tar.gz' lvpm | grep -q '^-rwxr-xr-x'"
 check "SHA256SUMS lists both archives" test "$(awk '{print $2}' "$out/SHA256SUMS")" = $'lvpm-9.8.7-windows-x64.zip\nlvpm-9.8.7-linux-x64.tar.gz'
 check "SHA256SUMS verifies" bash -c "cd '$out' && sha256sum -c SHA256SUMS"
