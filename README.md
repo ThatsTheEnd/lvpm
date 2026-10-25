@@ -114,9 +114,9 @@ list, uninstall) inside NI's LabVIEW images:
 | `nationalinstruments/labview:2026q3-linux` | Linux | 2026 | |
 | `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
 
-Branch protection on `main` requires one check, `ci-ok`, which passes only
-when every other job passed, and requires branches to be up to date before
-merging. Adding a job or an image row never changes the required checks.
+Branch protection on `main` must require one check, `ci-ok`, which passes
+only when every other job passed, and branches up to date before merging; an
+admin sets this in the repository settings. Adding a job or an image row never changes the required checks.
 The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 
 ### Release failed
@@ -684,7 +684,8 @@ runs.
   but runs to completion reports as ok.
 - A failure part-way through unpacking leaves files behind with no manifest,
   and one failed download aborts the rest of the plan.
-- Windows is the tested platform.
+- On Linux, CI runs only the smoke flow above; the `@labview` acceptance
+  scenarios run on Windows only.
 - In a venv, install hooks are extracted but never run (they act on the
   LabVIEW installation, not on an overlay), and file groups aimed at machine
   locations (`<OS ...>`, `<temp>`) are skipped. Both are recorded in the

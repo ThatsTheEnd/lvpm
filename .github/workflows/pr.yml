@@ -83,7 +83,7 @@ jobs:
     name: e2e (${{ matrix.os }} ${{ matrix.year }})
     needs: [build]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -114,6 +114,7 @@ jobs:
           if ($free -lt 25) { "::error::infrastructure: $free GB free, need 25"; exit 1 }
       - name: Pull ${{ matrix.image }}
         shell: bash
+        timeout-minutes: 50
         run: |
           for i in 1 2 3; do
             docker pull "$IMAGE" && exit 0
@@ -136,7 +137,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           docker run --rm --isolation=process --entrypoint powershell -e GITHUB_STEP_SUMMARY=C:\out\summary.md `
-            -v "${PWD}\bin:C:\lvpm" -v "${PWD}\ci\e2e:C:\e2e" -v "${PWD}\out:C:\out" `
+            -v "${PWD}\bin:C:\lvpm:ro" -v "${PWD}\ci\e2e:C:\e2e:ro" -v "${PWD}\out:C:\out" `
             $env:IMAGE -NoProfile -ExecutionPolicy Bypass -File C:\e2e\smoke.ps1 C:\lvpm\lvpm.exe C:\e2e\fixture $env:YEAR
           exit $LASTEXITCODE
       - uses: actions/download-artifact@v4
@@ -147,7 +148,8 @@ jobs:
       - name: The @labview acceptance scenarios
         if: matrix.acceptance
         shell: pwsh
-        run: ci/e2e/labview-acceptance.ps1 -Image $env:IMAGE
+        timeout-minutes: 30
+        run: ci/e2e/labview-acceptance.ps1 -Image $env:IMAGE -Year $env:YEAR
       - name: Copy the e2e summary
         if: always()
         shell: bash

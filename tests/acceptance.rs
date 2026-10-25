@@ -137,10 +137,10 @@ fn has_labview_tag(scenario: &Scenario) -> bool {
     scenario.tags.iter().any(|tag| tag == LABVIEW_TAG)
 }
 
-/// How many scenarios of a feature the harness did not run, and why, and how
-/// many `@labview` ones it ran.
+/// How many `@labview` scenarios of a feature the harness ran, and how many
+/// it did not run, by reason.
 #[derive(Default)]
-struct NotRun {
+struct ScenarioCounts {
     labview_ran: usize,
     labview: usize,
     unsafe_to_run: usize,
@@ -163,12 +163,12 @@ fn after_scenario<'a>(
 }
 
 /// Run one feature file; the scenarios it did not run, and how it went.
-fn run_feature(path: PathBuf, mode: Mode) -> (NotRun, Result<(), String>) {
+fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>) {
     let labview_not_run = Arc::new(AtomicUsize::new(0));
     let unsafe_not_run = Arc::new(AtomicUsize::new(0));
     let pending_not_run = Arc::new(AtomicUsize::new(0));
     let labview_ran = Arc::new(AtomicUsize::new(0));
-    let (counted_labview, counted_unsafe, counted_pending, counted_ran) = (
+    let (counted_labview, counted_unsafe, counted_pending, counted_labview_ran) = (
         labview_not_run.clone(),
         unsafe_not_run.clone(),
         pending_not_run.clone(),
@@ -195,7 +195,7 @@ fn run_feature(path: PathBuf, mode: Mode) -> (NotRun, Result<(), String>) {
             .fail_on_skipped()
             .filter_run(path, move |_, _, scenario| {
                 let (counter, runs) = match select(&scenario.tags, test_labview, only_labview) {
-                    Selection::Run if has_labview_tag(scenario) => (&counted_ran, true),
+                    Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
                     Selection::Run => return true,
                     Selection::NotLabview => return false,
                     Selection::Unsafe => (&counted_unsafe, false),
@@ -215,13 +215,13 @@ fn run_feature(path: PathBuf, mode: Mode) -> (NotRun, Result<(), String>) {
         )),
         false => Ok(()),
     };
-    let not_run = NotRun {
+    let counts = ScenarioCounts {
         labview_ran: labview_ran.load(Ordering::SeqCst),
         labview: labview_not_run.load(Ordering::SeqCst),
         unsafe_to_run: unsafe_not_run.load(Ordering::SeqCst),
         pending: pending_not_run.load(Ordering::SeqCst),
     };
-    (not_run, outcome)
+    (counts, outcome)
 }
 
 /// The default main thread stack is 1 MiB on Windows, which the cucumber
@@ -253,11 +253,11 @@ fn run_features() {
     let mut labview_ran = 0;
     for feature in FEATURE_FILES {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
-        let (not_run, outcome) = run_feature(path, mode);
-        labview_ran += not_run.labview_ran;
-        labview_not_run += not_run.labview;
-        unsafe_not_run += not_run.unsafe_to_run;
-        pending_not_run += not_run.pending;
+        let (counts, outcome) = run_feature(path, mode);
+        labview_ran += counts.labview_ran;
+        labview_not_run += counts.labview;
+        unsafe_not_run += counts.unsafe_to_run;
+        pending_not_run += counts.pending;
         if let Err(why) = outcome {
             failures.push(format!("{feature}: {why}"));
         }

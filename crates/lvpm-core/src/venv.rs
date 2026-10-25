@@ -214,8 +214,8 @@ pub fn create(
     let min_year = min_lv.map(project::labview_year).transpose()?;
 
     ensure!(!targets.is_empty(), "no LabVIEW installations detected");
-    let target = target::select_for_project(targets, labview_version, min_lv, min_year)?
-        .ok_or_else(|| {
+    let target =
+        target::select_for_project(targets, labview_version, min_year)?.ok_or_else(|| {
             anyhow!(
                 "which LabVIEW? pass --labview-version <YYYY>, or set labview in {}\n\
                  hint: `lvpm targets` lists what is installed",

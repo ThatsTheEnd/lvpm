@@ -32,7 +32,6 @@ $sampler = Start-Job {
 function Fail([string] $message) {
     Write-Host "::error::$message"
     if ($summary) { Add-Content $summary "$message`n`n``````n$script:out`n``````" }
-    Stop-Job $sampler; Set-Location $env:TEMP; Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
     exit 1
 }
 
@@ -63,20 +62,24 @@ function Expect([string] $what, [bool] $ok) {
     if (-not $ok) { Fail "FAILED at step $script:n/${total}: expected $what" }
 }
 
-Step 'targets' @('targets')
-Expect "LabVIEW $Year in the targets" ($script:out -match "LabVIEW $Year")
-Step 'search' @('search', $pkg)
-Expect "$pkg in the search" ($script:out -match "(?m)^$pkg ")
-Step 'lock check' @('lock', '--check')
-Step 'install' @('install')
-Expect "$installed to exist" (Test-Path $installed)
-Step 'list' @('list')
-Expect "$pkg $version in the list" ($script:out -match "(?m)^$pkg +$([regex]::Escape($version)) ")
-Step 'uninstall' @('uninstall', $pkg)
-Expect "$installed to be gone" (-not (Test-Path $installed))
-$script:n++; $script:out = ''
-$seen = if ($sampler.State -eq 'Completed') { Receive-Job $sampler }
-if ($seen) { Fail "FAILED at step $script:n/${total}: LabVIEW was started ($seen)" }
-
-Stop-Job $sampler; Set-Location $env:TEMP; Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+try {
+    Step 'targets' @('targets')
+    Expect "LabVIEW $Year in the targets" ($script:out -match "LabVIEW $Year")
+    Step 'search' @('search', $pkg)
+    Expect "$pkg in the search" ($script:out -match "(?m)^$pkg ")
+    Step 'lock check' @('lock', '--check')
+    Step 'install' @('install')
+    Expect "$installed to exist" (Test-Path $installed)
+    Step 'list' @('list')
+    Expect "$pkg $version in the list" ($script:out -match "(?m)^$pkg +$([regex]::Escape($version)) ")
+    Step 'uninstall' @('uninstall', $pkg)
+    Expect "$installed to be gone" (-not (Test-Path $installed))
+    $script:n++; $script:out = ''
+    # Running: never saw LabVIEW. Completed: saw it. Anything else: no check ran.
+    if ($sampler.State -notin 'Running', 'Completed') { Fail "FAILED at step $script:n/${total}: the LabVIEW sampler stopped ($($sampler.State))" }
+    $seen = if ($sampler.State -eq 'Completed') { Receive-Job $sampler }
+    if ($seen) { Fail "FAILED at step $script:n/${total}: LabVIEW was started ($seen)" }
+} finally {
+    Remove-Job $sampler -Force; Set-Location $env:TEMP; Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+}
 Write-Host "smoke flow passed all $total steps (LabVIEW $Year)"

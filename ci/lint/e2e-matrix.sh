@@ -2,7 +2,8 @@
 # Checks the e2e matrix and the PR workflows are wired safely: every row's image
 # is an NI LabVIEW tag whose -linux/-windows suffix matches the row's os, no
 # step condition names an image, the workflows a PR runs only read the repo,
-# and no secret but GITHUB_TOKEN is used.
+# never run on a trigger that hands fork code secrets, and use no secret but
+# GITHUB_TOKEN.
 # Usage: e2e-matrix.sh [<workflow dir>]  (default .github/workflows)
 set -euo pipefail
 dir="${1:-.github/workflows}"
@@ -10,8 +11,10 @@ pr="$dir/pr.yml"
 [ -f "$pr" ] || { echo "e2e lint: $pr not found" >&2; exit 1; }
 errors=0
 report_violation() { echo "e2e lint: $1" >&2; errors=$((errors+1)); }
+# Read each file once: grep -q on a pipe can end tr with SIGPIPE, which pipefail reports.
+pr_text=$(tr -d '\r' < "$pr")
 
-rows=$(tr -d '\r' < "$pr" | grep -E '^ *- \{.*\bimage:' || true)
+rows=$(grep -E '^ *- \{.*\bimage:' <<<"$pr_text" || true)
 [ -n "$rows" ] || report_violation "$pr: no e2e matrix rows with an image found."
 while IFS= read -r row; do
   [ -n "$row" ] || continue
@@ -22,16 +25,19 @@ while IFS= read -r row; do
   [ "${BASH_REMATCH[1]}" = "$os" ] || report_violation "$pr: image '$image' does not match its row's os '$os'."
 done <<<"$rows"
 
-named=$(tr -d '\r' < "$pr" | grep -nE '^ *if:.*(image|labview:|-linux|-windows)' || true)
+named=$(grep -nE '^ *if:.*(image|labview:|-linux|-windows)' <<<"$pr_text" || true)
 [ -z "$named" ] || report_violation "$pr: a condition names an image; branch on the row's os instead: $named"
 
 for f in pr.yml build.yml package.yml; do
   [ -f "$dir/$f" ] || { report_violation "$dir/$f not found."; continue; }
-  tr -d '\r' < "$dir/$f" | grep -qE '^permissions:$' && tr -d '\r' < "$dir/$f" | grep -qE '^  contents: read$' \
+  text=$(tr -d '\r' < "$dir/$f")
+  grep -qE '^permissions:$' <<<"$text" && grep -qE '^  contents: read$' <<<"$text" \
     || report_violation "$dir/$f must set top-level 'permissions: contents: read'."
-  ! tr -d '\r' < "$dir/$f" | grep -qE '\b(contents|packages|actions|id-token|pull-requests|issues|statuses|deployments|checks|security-events|attestations): *write|permissions: *write-all' \
+  ! grep -qE '\b[a-z-]+: *write\b|permissions: *write-all' <<<"$text" \
     || report_violation "$dir/$f must not grant a write permission."
-  secrets=$(tr -d '\r' < "$dir/$f" | grep -noE 'secrets\.[A-Za-z_]+' | grep -v 'secrets\.GITHUB_TOKEN$' || true)
+  ! grep -qE '\b(pull_request_target|workflow_run)\b' <<<"$text" \
+    || report_violation "$dir/$f must not run on pull_request_target or workflow_run: both give fork code secrets."
+  secrets=$(grep -noE 'secrets\.[A-Za-z_]+|secrets\[|\(secrets\)|secrets: *inherit' <<<"$text" | grep -v 'secrets\.GITHUB_TOKEN$' || true)
   [ -z "$secrets" ] || report_violation "$dir/$f uses a secret other than GITHUB_TOKEN: $secrets"
 done
 

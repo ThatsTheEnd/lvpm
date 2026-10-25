@@ -27,8 +27,8 @@ jobs:
       matrix:
         include:
           - { os: windows, runner: windows-2022, bin: lvpm.exe }
-          # Ubuntu 22.04 (glibc 2.35) is what NI's LabVIEW Linux images run; a binary
-          # built on a newer glibc does not start there.
+          # NI's LabVIEW Linux images run Ubuntu 22.04; a binary built against a
+          # newer glibc than theirs may not start there.
           - { os: linux, runner: ubuntu-22.04, bin: lvpm }
     steps:
       - uses: actions/checkout@v4

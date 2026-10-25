@@ -154,19 +154,22 @@ pub fn select(targets: &[LvTarget], want: &str) -> Result<LvTarget> {
     );
 }
 
-/// The installation a project means: `flag` (`--labview-version`) if given,
-/// else the manifest's `labview` year, else, when that year is not installed,
-/// the oldest newer one, since the manifest's year is a minimum.
+/// The installation a project means: `requested` (`--labview-version`) if
+/// given, else the manifest's `labview` year, else, when that year is not
+/// installed, the oldest newer one, since the manifest's year is a minimum.
 pub(crate) fn select_for_project(
     targets: &[LvTarget],
-    flag: Option<&str>,
-    min_lv: Option<&str>,
+    requested: Option<&str>,
     min_year: Option<u32>,
 ) -> Result<Option<LvTarget>> {
-    let Some(want) = flag.or(min_lv) else {
+    let Some(want) = requested
+        .map(str::to_string)
+        .or(min_year.map(|y| y.to_string()))
+    else {
         return Ok(None);
     };
-    let t = match (flag, min_year) {
+    let want = want.as_str();
+    let t = match (requested, min_year) {
         (None, Some(year)) if !targets.iter().any(|t| t.year() == year) => targets
             .iter()
             .filter(|t| t.year() > year)
@@ -573,10 +576,9 @@ mod tests {
 
     #[test]
     fn a_project_takes_its_year_else_the_oldest_newer_one_never_an_older_one() {
-        let pick = |have: &[u32], flag: Option<&str>, min: Option<u32>| {
+        let pick = |have: &[u32], requested: Option<&str>, min: Option<u32>| {
             let targets: Vec<_> = have.iter().map(|y| lv(*y)).collect();
-            let min_lv = min.map(|y| y.to_string());
-            select_for_project(&targets, flag, min_lv.as_deref(), min).map(|t| t.map(|t| t.year()))
+            select_for_project(&targets, requested, min).map(|t| t.map(|t| t.year()))
         };
         assert_eq!(
             pick(&[2024, 2025, 2026], None, Some(2025)).unwrap(),

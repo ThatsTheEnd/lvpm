@@ -53,6 +53,7 @@ Expect-Run 1 'a LabVIEW process fails the flow' 'FAILED at step 7/7: LabVIEW was
 Expect-Run 1 'an unreachable registry is infrastructure' 'infrastructure: registry unreachable at step 2/7' @{ STUB_OFFLINE = '1' }
 Expect-Run 1 'a missing package file fails install' "FAILED at step 4/7: expected $work\LabVIEW 2026\$llbRel to exist" @{ STUB_NOFILE = '1' }
 
-Get-Process LabVIEW -ErrorAction SilentlyContinue | Stop-Process -Force
+# Only the stub's own LabVIEW, never one the developer has open.
+Get-Process LabVIEW -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$work*" } | Stop-Process -Force
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 if ($failures) { "$failures scenario(s) failed"; exit 1 } else { 'all smoke scenarios passed' }
