@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lvpm-core", "crates/lvpm-testkit"]
+members = ["crates/lvpm-core", "crates/lvpm-testkit", "crates/lvpm-tui"]
 
 [workspace.package]
 version = "0.8.0"

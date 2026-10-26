@@ -9,7 +9,3 @@
 pub mod events;
 pub mod feed;
 pub mod fixtures;
-
-/// A scenario with a step that starts with this runs in lvpm-tui's harness;
-/// the root harness runs every other scenario of a shared feature file.
-pub const TUI_STEP_PREFIX: &str = "the TUI ";

@@ -1,0 +1,22 @@
+[package]
+name = "lvpm-tui"
+version.workspace = true
+edition.workspace = true
+description = "Terminal user interface of lvpm, the open-source package manager for LabVIEW (.vip) packages"
+license.workspace = true
+repository.workspace = true
+# `tests/steps.rs` is a module of the acceptance runner, not a test target.
+autotests = false
+
+[dependencies]
+clap = { version = "4.6.6", features = ["derive"] }
+lvpm-core = { path = "../lvpm-core" }
+ratatui = "0.30.2"
+
+[dev-dependencies]
+cucumber = "0.23.0"
+futures = "0.3.34"
+
+[[test]]
+name = "acceptance"
+harness = false
