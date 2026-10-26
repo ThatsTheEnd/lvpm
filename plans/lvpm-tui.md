@@ -179,8 +179,8 @@ in the traceability matrix.
 ### Slice 1: Catalog listing, uncapped
 
 **Depends-on:** none
-**Files:** `src/main.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/ops/query.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/steps/mod.rs`, `tests/acceptance.rs`, `tests/golden/search-all/`
-**Feature files:** `tests/features/lvpm-tui/slice-1-catalog.feature`
+**Files:** `src/main.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-core/src/ops/query.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/steps/recording.rs`, `tests/steps/sync.rs`, `tests/support/feed.rs`, `tests/steps/mod.rs`, `tests/acceptance.rs`, `tests/golden/search-all/`
+**Feature files:** `tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature`
 
 **Behavior:**
 

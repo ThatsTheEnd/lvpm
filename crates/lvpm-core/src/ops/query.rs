@@ -26,7 +26,7 @@ pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
 /// Every version of every package the sources list, by name and then newest
 /// first, narrowed to names or display names containing `query` in any case.
 /// A source that cannot be read is named in `failed` and the others are still
-/// listed; when every source fails, so does this.
+/// listed; when every source fails and nothing is imported, so does this.
 pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
     let manifest = env.manifest_for(None, None)?;
     let mut failed = Vec::new();
@@ -34,7 +34,8 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
         failed.push((source.to_string(), format!("{error:#}")));
         Ok(())
     })?;
-    if !failed.is_empty() && failed.len() == loaded.sources.len() {
+    let all_failed = !failed.is_empty() && failed.len() == loaded.sources.len();
+    if all_failed && loaded.index.entries.is_empty() {
         let why: Vec<String> = failed.iter().map(|(s, e)| format!("{s}: {e}")).collect();
         anyhow::bail!("no package source could be read:\n  {}", why.join("\n  "));
     }
@@ -43,7 +44,13 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
         .matching(query.unwrap_or(""))
         .cloned()
         .collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name).then(b.version.cmp(&a.version)));
+    // Names that differ only in case are one package, so they sort together.
+    entries.sort_by(|a, b| {
+        (a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase()))
+        .then(b.version.cmp(&a.version))
+    });
     Ok(Catalog {
         entries,
         sources: loaded.sources,
@@ -231,6 +238,29 @@ mod tests {
         assert_eq!(catalog.failed.len(), 1);
         assert_eq!(catalog.failed[0].0, missing.to_string_lossy());
         assert!(catalog.failed[0].1.contains("is not a directory"));
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn names_sort_ignoring_case() {
+        let packages = [("Beta", "0.1", "Beta"), ("alpha", "1.0", "Alpha")];
+        let (cwd, env) = catalog_env("catalog-case", &[&packages]);
+        assert_eq!(
+            rows(&catalog(&env, None).unwrap()),
+            ["alpha 1.0", "Beta 0.1"]
+        );
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn imported_packages_are_listed_when_every_source_fails() {
+        let (cwd, mut env) = catalog_env("catalog-imported", &[&[("alpha", "1.0", "Alpha")]]);
+        cache_add(&env, &cwd.join("folder-0").join("alpha-1.0.vip")).unwrap();
+        env.config.local_sources = vec![cwd.join("missing")];
+        let catalog = catalog(&env, None).unwrap();
+        assert_eq!(rows(&catalog), ["alpha 1.0"]);
+        assert_eq!(catalog.entries[0].source, "cache");
+        assert_eq!(catalog.failed.len(), 1);
         let _ = std::fs::remove_dir_all(&cwd);
     }
 
