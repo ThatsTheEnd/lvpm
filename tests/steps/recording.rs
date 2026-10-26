@@ -303,6 +303,21 @@ const ROWS: &[Row] = &[
     },
 ];
 
+/// The rows whose setup needs no LabVIEW, so run on any machine.
+pub(super) fn rows_without_labview() -> impl Iterator<Item = &'static str> {
+    ROWS.iter()
+        .filter(|row| {
+            !matches!(
+                row.setup,
+                Setup::NoProjectWithLabview
+                    | Setup::VenvForLabview
+                    | Setup::LabviewProject
+                    | Setup::VenvWith(_)
+            )
+        })
+        .map(|row| row.name)
+}
+
 #[when(expr = "the characterization row {string} runs")]
 pub(super) async fn row_runs(world: &mut CliWorld, name: String) {
     let row = ROWS

@@ -10,7 +10,7 @@ Feature: Machine-readable output
     When "lvpm --json <command>" runs in <place>
     Then every stdout line is a JSON object
     And the last line is the only one with a "result" key
-    And the result is <result>
+    And the JSON result is <result>
     And the exit code is 0
     And the output matches the "json-<recording>" recording
 
@@ -18,47 +18,58 @@ Feature: Machine-readable output
       | command                               | place      | result                                  | recording     |
       | search alpha                          | any folder | a list with one entry, "alpha" 1.0      | search        |
       | search zzz                            | any folder | an empty list                           | search-none   |
-      | search --all                          | any folder | a list of "alpha" 1.0 and "beta" 0.1    | search-all    |
-      | info alpha                            | any folder | an object with "name" "alpha"           | info          |
+      | search --all                          | any folder | an object whose "entries" are "alpha" 1.0 and "beta" 0.1 | search-all |
+      | info alpha                            | any folder | an object whose "entry" is "alpha" 1.0  | info          |
       | list --prefix dest                    | any folder | a list with one manifest, "beta" 0.1    | list          |
-      | targets                               | any folder | a list                                  | targets       |
-      | config get venv.dir                   | any folder | {"key": "venv.dir", "value": null}      | config-get    |
+      | config get venv.dir                   | any folder | {"key": "venv.dir", "values": [".lv-venv"]} | config-get |
       | config set venv.dir venvs             | any folder | {"command": "config"}                   | config-set    |
-      | cache add pkgs                        | any folder | {"command": "cache"}                    | cache-add     |
+      | cache add pkgs                        | any folder | a list                                  | cache-add     |
       | install alpha --prefix dest --dry-run | any folder | {"command": "install"}                  | install       |
       | uninstall beta --prefix dest          | any folder | {"command": "uninstall"}                | uninstall     |
-      | relink beta --prefix dest             | any folder | {"command": "relink"}                   | relink        |
-      | run-hooks beta --prefix dest          | any folder | {"command": "run-hooks"}                | run-hooks     |
-      | refresh --prefix dest                 | any folder | {"command": "refresh"}                  | refresh       |
       | lock --check                          | the project | {"up_to_date": true}                   | lock-check    |
       | lock                                  | the project | {"command": "lock"}                    | lock          |
       | sync --prefix dest                    | the project | {"command": "sync"}                    | sync          |
       | add beta --prefix dest                | the project | {"command": "add"}                     | add           |
       | remove alpha --prefix dest            | the project | {"command": "remove"}                  | remove        |
-      | venv status                           | the project | an object with "exists" false          | venv-status   |
+      | venv status                           | any folder | an object with "exists" false           | venv-status   |
 
+  # start, refresh and run-hooks have no row: they never use a venv, and the
+  # harness refuses to run them on the user's LabVIEW installation. They end
+  # in the same result line as the rows below.
   @labview
   Scenario Outline: the commands that need a LabVIEW
-    Given the project has a venv on the detected LabVIEW
+    Given <setup>
     When "lvpm --json <command>" runs in the project
     Then the last line is the only one with a "result" key and it is {"command": "<name>"}
     And the exit code is 0
 
     Examples:
-      | command          | name   |
-      | venv create      | venv   |
-      | launch           | launch |
-      | start            | start  |
+      | setup                                          | command                        | name    |
+      | the project has a venv on the detected LabVIEW | launch                         | launch  |
+      | a venv with beta installed                     | relink --all                   | relink  |
+
+  @labview
+  Scenario: venv create on a project with no venv
+    Given the project needs the detected LabVIEW and has no venv
+    When "lvpm --json venv create" runs in the project
+    Then the last line is the only one with a "result" key and it is {"command": "venv"}
+    And the exit code is 0
+
+  Scenario: targets is a list, with no recording since it names this machine's LabVIEWs
+    When "lvpm --json targets" runs in any folder
+    Then every stdout line is a JSON object
+    And the JSON result is a list
+    And the exit code is 0
 
   Scenario: a failure ends in one error object and exit code 1
-    When "lvpm --json info nothing" runs
+    When "lvpm --json info nothing" runs in any folder
     Then the last stdout line is the only one with an "error" key
     And its message names the sources searched
     And the exit code is 1
 
   Scenario: events followed by a failure
     Given the archive of "alpha" 1.0 is corrupt
-    When "lvpm --json install alpha --prefix dest" runs
+    When "lvpm --json install alpha --prefix dest" runs in any folder
     Then stdout has a "phase_started" event for download before the last line
     And the last line is the only one with an "error" key
     And the exit code is 1
@@ -70,12 +81,12 @@ Feature: Machine-readable output
     And the exit code is 1
 
   Scenario: malformed arguments under --json
-    When "lvpm --json install" runs
+    When "lvpm --json install --no-such-flag" runs
     Then stdout is empty
     And the exit code is 2
 
   Scenario: install progress reports its phases in order, skipped ones too
-    When "lvpm --json install alpha --prefix dest" runs
+    When "lvpm --json install alpha --prefix dest" runs in any folder
     Then the "phase" values of its phase events are, in order, resolve, download, unpack, relink, hooks, refresh
     And relink, hooks and refresh are "phase_skipped" events with reason "scratch_destination"
 

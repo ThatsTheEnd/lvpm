@@ -11,6 +11,7 @@ pub mod headless;
 pub mod in_process;
 pub mod install;
 pub mod installation;
+pub mod json;
 pub mod lock;
 pub mod manifest;
 pub mod query;
