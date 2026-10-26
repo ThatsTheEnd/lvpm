@@ -99,7 +99,7 @@ link. Checked 2026-10-26 from each repository's `.vipb`.
 
 | Wave | Slices | Can run in parallel |
 |---|---|---|
-| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands | yes (S5 and S10a–d touch `src/main.rs`; S5, S10a and S10b also touch `events.rs` and `src/render/mod.rs`: merge one first, rebase the others) |
+| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands, S11 dependency groups | yes (S5, S10a–d and S11 touch `src/main.rs`; S5, S10a and S10b also touch `events.rs` and `src/render/mod.rs`; S10a and S11 touch `manifest_edit.rs`: merge one first, rebase the others) |
 | 2 | S1 `lvpm build` | — |
 | 3 | S1b VIPM round trip, S2 publish to folder, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S2, S5b and S9 touch `src/main.rs`; S1b, S5b and S9 touch `ops/build.rs`; S1b and S2 touch `tests/features/build-slices/`: merge one first, rebase the others) |
 | 4 | S6 attestations and policy, S7a `.lvpkg`, S7c `@org` scopes | yes (S6 and S7c touch `project.rs` and `lockfile.rs`; S7a and S7c touch `index.rs`) |
@@ -514,3 +514,31 @@ Demo: `lvpm sync --yes` in CI.
 
 Decide in `/specs`: whether `lvpm update` is an alias of `lock --upgrade`
 plus `sync`, or is left out with a README note saying why.
+
+### Slice S11: Dependency groups
+
+**Depends-on:** none
+**Files:** `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/manifest_edit.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/ops/add_remove.rs`, `crates/lvpm-core/src/ops/uninstall.rs`, `src/main.rs`, `tests/features/lvpm-lockfile/`
+
+Goal: CI installs tooling a developer doesn't need, and the other way round,
+from one lock. Names as in
+[ADR 1](../adr/0001-manifest-project-and-distribution.md).
+
+In scope:
+- `[dependency-groups.<name>]` beside `[dev-dependencies]`, which is the group `dev`.
+- The lockfile records, per package, the groups that are the only ones needing it (today's `dev = true`).
+- `lvpm add/remove --group <name>`; `--dev` stays as `--group dev`.
+- `lvpm sync --group <name>` adds a group; `--no-dev` keeps working.
+
+Out of scope: `--only-group`, a configurable default set of groups.
+
+Acceptance criteria:
+- [ ] `lvpm sync --group ci` installs the `ci` group; `lvpm sync` alone leaves it out and removes it if installed.
+- [ ] A package that the main dependencies and `ci` both need is installed by every `sync`.
+- [ ] Adding or removing a group entry makes the lock stale, as a dependency change does today.
+- [ ] A `[dependency-groups.dev]` table fails with a message naming `[dev-dependencies]`.
+- [ ] Every existing dev scenario still passes unchanged.
+
+Demo: a pilot project with a `ci` group; `lvpm sync` on a dev machine, `lvpm sync --group ci` in CI.
+
+Decide in `/specs`: the lockfile field's name and shape; whether `sync` installs `dev` by default (today it does).

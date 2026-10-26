@@ -51,7 +51,18 @@ lvpm has no users yet, so no names need a migration.
    version.
 6. **Dependencies stay in `[dependencies]` and `[dev-dependencies]`.**
    `[distribution]` does not get a second list.
-7. **The command stays `lvpm build`.** For a `ppl` package it runs the LabVIEW
+7. **Dependency groups.** `[dev-dependencies]` stays, spelled as in
+   `vipm.toml`, and is the group `dev`. Other groups go in
+   `[dependency-groups.<name>]`, the way uv uses PEP 735 groups (for example
+   `ci`). A `[dependency-groups.dev]` table is an error, so `dev` has one
+   spelling. Groups use the `[dependencies]` syntax. Slice S11 adds them.
+8. **Paths are relative and explicit.** Every path in `lvpm.toml`, including
+   `top-level-library` and a `.lvproj`, is relative to the folder that holds
+   `lvpm.toml`, uses forward slashes, and must stay inside that folder. lvpm
+   never picks a `.lvproj` on its own: the file is always named. A build spec
+   is named with all three parts LabVIEW's `ExecuteBuildSpec` needs: the
+   `.lvproj`, the target and the build spec name.
+9. **The command stays `lvpm build`.** For a `ppl` package it runs the LabVIEW
    build spec and then packs the result, as `uv build` calls its backend and then
    ships the distribution.
 
@@ -72,7 +83,23 @@ vendor       = "Hexagon"
 display-name = "Motion Library"
 ```
 
-The key that names a PPL's build spec is fixed by the slice that adds PPLs.
+A `ppl` package names its build spec like this; the table's final key names
+are fixed by the slice that adds PPLs:
+
+```toml
+[distribution.ppl]
+project    = "Motion.lvproj"   # relative to lvpm.toml, always named
+target     = "My Computer"
+build-spec = "Motion PPL"
+```
+
+```toml
+[dev-dependencies]                   # the group "dev"
+jki_lib_caraya = "*"
+
+[dependency-groups.ci]
+hexagon_ci_tools = "*"
+```
 
 ## Consequences
 
@@ -81,6 +108,9 @@ The key that names a PPL's build spec is fixed by the slice that adds PPLs.
   lock and venv code the lower bound, so they don't change. A plain `labview = "2025"` (the current README form)
   becomes an error that suggests `">=2025"`.
 - `package.toml` inside a `.lvpkg` (S7a) reuses these key names.
+- S11 changes the lockfile's per-package `dev = true` into a list of groups,
+  before any lockfile is public.
+- `lvpm launch` keeps taking the `.lvproj` as an argument.
 - A `vipm.toml` and an `lvpm.toml` side by side share `[project]`,
   `[dependencies]` and `[dev-dependencies]`. Only the LabVIEW key and the
   packaging table differ, and both differ on purpose.

@@ -51,6 +51,7 @@ Each one is usable on its own. Ticks mean done.
 - [x] `add`, `remove` (`--dev`)
 - [ ] `init` (incl. `--from project.vipc`), `info`, `update`
 - [ ] `--json`, documented exit codes, `--yes`, `--labview-bitness`
+- [ ] Dependency groups (`--group`)
 
 **M2 — build**
 - [ ] `lvpm check` / `tree`: linker scan without LabVIEW
