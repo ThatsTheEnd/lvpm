@@ -132,6 +132,7 @@ impl Renderer {
             Event::HeadlessInstallationChosen { .. } | Event::HeadlessImpliesLocked => {
                 headless::render(self, event)
             }
+            Event::ArchiveFetching { .. } => query::render(self, event),
         }
     }
 
@@ -191,6 +192,14 @@ impl Renderer {
             Stream::Err => self.err.flush(),
         };
     }
+}
+
+/// `text` with every control character but the line end shown as `?`, so
+/// text from a feed, a spec or an error cannot send escape sequences to the
+/// terminal.
+pub fn printable(text: String) -> String {
+    let shown = |c: char| if c.is_control() && c != '\n' { '?' } else { c };
+    text.chars().map(shown).collect()
 }
 
 /// The sink the CLI hands to core: a renderer on the process's own streams.

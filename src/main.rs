@@ -369,6 +369,14 @@ enum Cmd {
     },
     /// Show what lvpm has installed into the selected target.
     List,
+    /// Show a package's details: its description, requirements, files and
+    /// versions. Downloads the archive into the cache if it is not there yet.
+    Info {
+        /// The package, and optionally which version or constraint (`1.0`,
+        /// `>=1.0`, `*`): newest if not given.
+        #[arg(value_name = "PACKAGE[@VERSION]")]
+        package: String,
+    },
     /// Search the indexes, or with --all list the whole catalog.
     Search {
         /// Text to look for in package names and display names, ignoring case.
@@ -442,7 +450,19 @@ fn op_env<'a>(cli: &Cli, sink: &'a render::CliSink) -> Result<OpEnv<'a>> {
     Ok(env)
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    // As `main() -> Result` would print it, but a feed's text in an error
+    // cannot drive the terminal.
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {}", render::printable(format!("{error:?}")));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let sink = render::CliSink::stdio();
     let env = op_env(&cli, &sink)?;
@@ -578,8 +598,14 @@ fn main() -> Result<()> {
         }
         Cmd::Search { query, all: true } => {
             let catalog = ops::query::catalog(&env, query.as_deref())?;
-            eprint!("{}", render::query::unread_sources(&catalog));
+            eprint!("{}", render::query::unread_sources(&catalog.failed));
             print!("{}", render::query::catalog(query.as_deref(), &catalog));
+            Ok(())
+        }
+        Cmd::Info { package } => {
+            let info = ops::query::info(&env, package)?;
+            eprint!("{}", render::query::unread_sources(&info.failed));
+            print!("{}", render::query::info(&info));
             Ok(())
         }
         Cmd::Search { query, all: false } => {

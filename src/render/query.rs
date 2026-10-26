@@ -1,10 +1,13 @@
 //! The wording of query results: what `targets`, `search`, `search --all`,
-//! `list` and `cache add` print for the data core returns. Each function returns the whole
-//! text, line ends included, for the caller to write to stdout.
+//! `info`, `list` and `cache add` print for the data core returns. Each
+//! function returns the whole text, line ends included, for the caller to
+//! write to stdout.
 
+use super::{Renderer, Stream, printable};
+use lvpm_core::events::Event;
 use lvpm_core::index::{Entry, Import};
 use lvpm_core::install::Manifest;
-use lvpm_core::ops::query::Catalog;
+use lvpm_core::ops::query::{Catalog, PackageInfo};
 use lvpm_core::target::LvTarget;
 
 /// How many search hits are shown; the rest are counted.
@@ -12,6 +15,8 @@ const SEARCH_ROWS_SHOWN: usize = 40;
 /// The name and version columns of `search` and `search --all`.
 const NAME_WIDTH: usize = 52;
 const VERSION_WIDTH: usize = 14;
+/// The label column of `info`, wide enough for `release notes: `.
+const FIELD_WIDTH: usize = 15;
 
 pub fn targets(targets: &[LvTarget]) -> String {
     if targets.is_empty() {
@@ -63,11 +68,85 @@ pub fn catalog(query: Option<&str>, catalog: &Catalog) -> String {
     }
 }
 
-/// The sources the catalog could not read, for stderr.
-pub fn unread_sources(catalog: &Catalog) -> String {
+/// The sources a query could not read, for stderr.
+pub fn unread_sources(failed: &[(String, String)]) -> String {
     let line =
         |(source, why): &(String, String)| format!("warning: could not read {source}: {why}\n");
-    catalog.failed.iter().map(line).collect()
+    printable(failed.iter().map(line).collect())
+}
+
+/// What `lvpm info` prints: the version's own fields, what it needs, its
+/// files, then every version there is.
+pub fn info(info: &PackageInfo) -> String {
+    let (e, spec) = (&info.entry, &info.spec);
+    let d = &spec.description;
+    let mut text = format!("{} {}", e.name, e.version);
+    if let Some(display_name) = &spec.display_name {
+        text.push_str(&format!("  {display_name}"));
+    }
+    text.push('\n');
+    let fields = [
+        ("summary", &d.summary),
+        ("description", &d.description),
+        ("vendor", &d.vendor),
+        ("packager", &d.packager),
+        ("license", &d.license),
+        ("url", &d.url),
+        ("release notes", &d.release_notes),
+    ];
+    for (label, value) in fields {
+        if let Some(value) = value {
+            text.push_str(&format!("{:<FIELD_WIDTH$}{value}\n", format!("{label}:")));
+        }
+    }
+    if !e.requires.is_empty() {
+        text.push_str(&format!(
+            "{:<FIELD_WIDTH$}{}\n",
+            "requires:",
+            requirements(e)
+        ));
+    }
+    text.push_str("files:\n");
+    for group in &spec.file_groups {
+        text.push_str(&format!("  {}\n", group.target_dir));
+        for file in &group.files {
+            text.push_str(&format!("    {file}\n"));
+        }
+    }
+    text.push_str("versions:\n");
+    for v in &info.versions {
+        text.push_str(&format!(
+            "  {:<VERSION_WIDTH$} from {}\n",
+            v.version.to_string(),
+            v.source
+        ));
+    }
+    printable(text)
+}
+
+/// The wording of the query module's events.
+pub(super) fn render(r: &mut Renderer, event: &Event) {
+    match event {
+        Event::ArchiveFetching { name, version } => r.line(
+            Stream::Err,
+            &printable(format!("  fetching {name} {version}")),
+        ),
+        _ => unreachable!("routed here by Renderer::render: {event:?}"),
+    }
+}
+
+/// An entry's requirements, as `alpha>=1.0, gamma>2`.
+fn requirements(e: &Entry) -> String {
+    let needs: Vec<String> = e
+        .requires
+        .iter()
+        .map(|r| match &r.min {
+            Some(min) if r.min_exclusive => format!("{}>{min}", r.name),
+            Some(min) => format!("{}>={min}", r.name),
+            None => r.name.clone(),
+        })
+        .collect();
+    needs.join(", ")
 }
 
 fn catalog_row(e: &Entry) -> String {
@@ -78,29 +157,13 @@ fn catalog_row(e: &Entry) -> String {
         e.display_name.as_deref().unwrap_or("")
     );
     if !e.requires.is_empty() {
-        let needs: Vec<String> = e
-            .requires
-            .iter()
-            .map(|r| match &r.min {
-                Some(min) if r.min_exclusive => format!("{}>{min}", r.name),
-                Some(min) => format!("{}>={min}", r.name),
-                None => r.name.clone(),
-            })
-            .collect();
-        row.push_str(&format!("  needs {}", needs.join(", ")));
+        row.push_str(&format!("  needs {}", requirements(e)));
     }
     if let Some(lv) = e.lv_min {
         row.push_str(&format!("  LabVIEW>={lv}"));
     }
     row.push_str(&format!("  from {}\n", e.source));
     printable(row)
-}
-
-/// `row` with every control character but the line end shown as `?`, so a
-/// feed's names cannot send escape sequences to the terminal.
-fn printable(row: String) -> String {
-    let shown = |c: char| if c.is_control() && c != '\n' { '?' } else { c };
-    row.chars().map(shown).collect()
 }
 
 pub fn list(installed: &[Manifest]) -> String {
@@ -294,7 +357,7 @@ mod tests {
         let mut unread = empty_catalog(&[]);
         unread.failed = vec![("http://feed".into(), "refused".into())];
         assert_eq!(
-            unread_sources(&unread),
+            unread_sources(&unread.failed),
             "warning: could not read http://feed: refused\n"
         );
     }
@@ -318,6 +381,76 @@ mod tests {
             );
             assert!(text.contains("evil?[2K"), "{text:?}");
         }
+    }
+
+    fn package_info(description: lvpm_core::spec::Description) -> PackageInfo {
+        let mut shown = entry("alpha", Some("Alpha"));
+        shown.version = Version::parse("2.0");
+        shown.source = "http://feed/index.vipr".into();
+        let mut old = entry("alpha", Some("Alpha"));
+        old.source = "packages".into();
+        let spec = lvpm_core::spec::Spec {
+            name: "alpha".into(),
+            version: "2.0".into(),
+            display_name: Some("Alpha".into()),
+            file_groups: vec![lvpm_core::spec::FileGroup {
+                index: 0,
+                target_dir: "<application>".into(),
+                replace_mode: "Always".into(),
+                files: vec!["alpha/a.vi".into(), "alpha/b.vi".into()],
+            }],
+            script_vis: Vec::new(),
+            requires: None,
+            lv_gate: None,
+            description,
+        };
+        PackageInfo {
+            versions: vec![shown.clone(), old],
+            entry: shown,
+            spec,
+            failed: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn info_shows_the_fields_the_spec_has_then_files_then_versions() {
+        let description = lvpm_core::spec::Description {
+            summary: Some("Tools".into()),
+            release_notes: Some("First.".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            info(&package_info(description)),
+            "alpha 2.0  Alpha\n\
+             summary:       Tools\n\
+             release notes: First.\n\
+             files:\n  <application>\n    alpha/a.vi\n    alpha/b.vi\n\
+             versions:\n  2.0            from http://feed/index.vipr\n  1.0            from packages\n"
+        );
+    }
+
+    #[test]
+    fn info_with_no_description_shows_no_field_line() {
+        let text = info(&package_info(Default::default()));
+        assert!(text.starts_with("alpha 2.0  Alpha\nfiles:\n"), "{text}");
+    }
+
+    #[test]
+    fn info_with_no_display_name_ends_its_header_at_the_version() {
+        let mut shown = package_info(Default::default());
+        shown.spec.display_name = None;
+        assert!(info(&shown).starts_with("alpha 2.0\nfiles:\n"));
+    }
+
+    #[test]
+    fn control_characters_from_a_spec_or_a_source_never_reach_the_terminal() {
+        let description = lvpm_core::spec::Description {
+            summary: Some("evil\x1b[2K".into()),
+            ..Default::default()
+        };
+        assert!(info(&package_info(description)).contains("evil?[2K\n"));
+        let failed = vec![("feed\x1b[2K".to_string(), "why\x07".to_string())];
+        assert!(unread_sources(&failed).contains("feed?[2K: why?\n"));
     }
 
     #[test]

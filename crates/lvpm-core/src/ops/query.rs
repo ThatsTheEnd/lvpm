@@ -2,12 +2,18 @@
 //! how many rows to show and what to call them.
 
 use super::env::OpEnv;
+use super::session::Downloads;
+use crate::cache::Cache;
 use crate::config;
+use crate::events::Event;
+use crate::fetch;
 use crate::index::{self, Entry, Import};
 use crate::install::{self, Manifest};
 use crate::paths;
+use crate::project::{PackageArg, same_name};
+use crate::spec::Spec;
 use crate::target::LvTarget;
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 /// The LabVIEW installations detected on this machine, newest first.
@@ -65,6 +71,88 @@ pub struct Catalog {
     /// Every source asked: each local folder, then each feed's index URL.
     pub sources: Vec<String>,
     /// The sources that could not be read, with why.
+    pub failed: Vec<(String, String)>,
+}
+
+/// The details of one version of a package: `name` gives the newest version,
+/// `name@constraint` the newest the constraint admits, read as `install` reads
+/// it (`1.0`, `>=1.0`, `*`), and an error when none does. Its archive is read
+/// from the cache, or downloaded into it, so no destination and no LabVIEW is
+/// needed.
+pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
+    let arg = PackageArg::parse(package)?;
+    let constraint = arg.read_constraint()?;
+    let catalog = catalog(env, Some(&arg.name))?;
+    let versions: Vec<Entry> = catalog
+        .entries
+        .into_iter()
+        .filter(|e| same_name(&e.name, &arg.name))
+        .collect();
+    // A source that could not be read may hold what was asked for.
+    let unread: String = catalog
+        .failed
+        .iter()
+        .map(|(source, why)| format!("\ncould not read {source}: {why}"))
+        .collect();
+    if versions.is_empty() {
+        bail!(
+            "no package named {:?} in:\n  {}{unread}",
+            arg.name,
+            catalog.sources.join("\n  ")
+        );
+    }
+    // Newest first, so the first admitted is the newest.
+    let entry = versions
+        .iter()
+        .find(|e| constraint.admits(&e.version))
+        .with_context(|| {
+            let known: Vec<String> = versions.iter().map(|e| e.version.to_string()).collect();
+            let wanted = arg.constraint.as_deref().unwrap_or_default();
+            format!(
+                "{} has no version {wanted}; it has {}{unread}",
+                arg.name,
+                known.join(", ")
+            )
+        })?
+        .clone();
+    let what = format!("{} {}", entry.name, entry.version);
+    let bytes = archive_bytes(env, &entry)
+        .with_context(|| format!("could not fetch {what} from {}", entry.source))?;
+    let spec = install::open_archive(bytes)
+        .and_then(|mut zip| install::read_spec(&mut zip))
+        .with_context(|| format!("the archive of {what} could not be read"))?;
+    Ok(PackageInfo {
+        entry,
+        versions,
+        spec,
+        failed: catalog.failed,
+    })
+}
+
+/// The archive of `entry`, downloaded into the cache unless it is on hand;
+/// a download says so first.
+fn archive_bytes(env: &OpEnv, entry: &Entry) -> Result<Vec<u8>> {
+    // No HTTP client is built when the cache already has it.
+    if let Some(bytes) = fetch::on_hand(&Cache::open(&env.config.cache)?, entry)? {
+        return Ok(bytes);
+    }
+    env.sink.emit(Event::ArchiveFetching {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+    });
+    Downloads::open(env)?.fetch(entry)
+}
+
+/// The answer to [`info`].
+#[derive(Debug)]
+pub struct PackageInfo {
+    /// The version shown: its requirements, minimum LabVIEW and source.
+    pub entry: Entry,
+    /// Every version the sources list, newest first, each with its source.
+    pub versions: Vec<Entry>,
+    /// The shown version's spec: its description fields and file groups.
+    pub spec: Spec,
+    /// The sources that could not be read, with why, as in [`Catalog`].
     pub failed: Vec<(String, String)>,
 }
 
@@ -317,5 +405,69 @@ mod tests {
         assert_eq!(cache, [PathBuf::from("the-cache").to_string_lossy()]);
         let why = config_get(&env, "nothing").unwrap_err().to_string();
         assert!(why.starts_with("unknown config key \"nothing\""), "{why}");
+    }
+
+    #[test]
+    fn info_reads_the_newest_version_or_the_one_asked_for() {
+        let packages = [("alpha", "1.0", "Old Alpha"), ("ALPHA", "2.0", "New Alpha")];
+        let (cwd, env) = catalog_env("info-versions", &[&packages]);
+        let newest = info(&env, "alpha").unwrap();
+        assert_eq!(newest.spec.display_name.as_deref(), Some("New Alpha"));
+        let versions: Vec<String> = newest
+            .versions
+            .iter()
+            .map(|e| e.version.to_string())
+            .collect();
+        assert_eq!(versions, ["2.0", "1.0"]);
+        let chosen = info(&env, "alpha@1.0").unwrap();
+        assert_eq!(chosen.entry.version.to_string(), "1.0");
+        assert_eq!(chosen.spec.display_name.as_deref(), Some("Old Alpha"));
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_reads_the_version_as_install_does() {
+        let packages = [("alpha", "1.0", "Old Alpha"), ("alpha", "2.0", "New Alpha")];
+        let (cwd, env) = catalog_env("info-constraint", &[&packages]);
+        let version = |arg: &str| info(&env, arg).unwrap().entry.version.to_string();
+        assert_eq!(version("alpha@>=1.0"), "2.0");
+        assert_eq!(version("alpha@*"), "2.0");
+        let why = info(&env, "alpha@>=3.0").unwrap_err().to_string();
+        assert_eq!(why, "alpha has no version >=3.0; it has 2.0, 1.0");
+        // Refused before any source is read, as `install` refuses it.
+        for arg in ["alpha@<2.0", "nothing@<2.0"] {
+            let why = info(&env, arg).unwrap_err().to_string();
+            assert!(why.starts_with("unsupported version constraint"), "{why}");
+        }
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_names_the_sources_it_could_not_read() {
+        let (cwd, mut env) = catalog_env("info-unread", &[&[("alpha", "1.0", "Alpha")]]);
+        let missing = cwd.join("missing");
+        env.config.local_sources.push(missing.clone());
+        let unread = format!("\ncould not read {}: ", missing.to_string_lossy());
+        for arg in ["nothing", "alpha@9.9"] {
+            let why = info(&env, arg).unwrap_err().to_string();
+            assert!(why.contains(&unread), "{why}");
+        }
+        let found = info(&env, "alpha").unwrap();
+        assert_eq!(found.failed.len(), 1);
+        assert_eq!(found.failed[0].0, missing.to_string_lossy());
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_on_an_unknown_name_or_version_says_what_there_is() {
+        let (cwd, env) = catalog_env("info-unknown", &[&[("alpha", "1.0", "Alpha")]]);
+        let folder = cwd.join("folder-0").to_string_lossy().into_owned();
+        let why = info(&env, "alp").unwrap_err().to_string();
+        assert_eq!(why, format!("no package named \"alp\" in:\n  {folder}"));
+        let why = info(&env, "alpha@9.9").unwrap_err().to_string();
+        assert_eq!(why, "alpha has no version 9.9; it has 1.0");
+        let why = info(&env, "alpha@").unwrap_err().to_string();
+        assert_eq!(why, "a constraint is expected after \"@\" in \"alpha@\"");
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 }

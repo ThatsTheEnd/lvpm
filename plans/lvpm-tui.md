@@ -270,8 +270,8 @@ Feature: Every version of every package, uncapped
 ### Slice 2: Package details: `lvpm info`
 
 **Depends-on:** 1
-**Files:** `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `src/main.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/support/fixtures.rs`, `tests/golden/info-*/`
-**Feature files:** `tests/features/lvpm-tui/slice-2-package-details.feature`
+**Files:** `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `src/main.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/support/fixtures.rs`, `tests/golden/info-*/`; as built also `crates/lvpm-core/src/{events.rs,fetch.rs,index.rs,install.rs,ops/install.rs,relink.rs}` (the `ArchiveFetching` event, `fetch::on_hand`, and `read_spec` moved into `install` with a 1 MiB cap that `install` and local imports now share), `src/render/mod.rs` (`printable`), `tests/acceptance.rs`, `tests/support/feed.rs`, `README.md`, `Cargo.toml`, `Cargo.lock`
+**Feature files:** `tests/features/lvpm-tui/slice-2-package-details-lvpm-info.feature`
 
 **Behavior:**
 
@@ -291,10 +291,11 @@ Feature: Package details
     And it lists the file groups of 2.0 with their target directories and files
     And the output matches the "info-alpha" recording
 
+  # The binary would find this machine's LabVIEW; core is handed none.
+  @core
   Scenario: info needs no LabVIEW
-    Given no LabVIEW is installed
-    When "lvpm info alpha" runs
-    Then it shows the details of 2.0 and exits 0
+    When core reads the details of "alpha" with no LabVIEW installed
+    Then the details are those of 2.0
 
   Scenario: a chosen version
     When "lvpm info alpha@1.0" runs
@@ -359,7 +360,7 @@ Feature: Package details
 #### Step 2.2: `ops::query::info` through the cache
 
 **Complexity**: standard
-**IMPLEMENT**: `info(env, name, version) -> Result<PackageInfo>`: catalog versions of `name`, the chosen (or newest) entry, its archive through `Downloads::fetch` (no destination), the parsed spec. A `Fetching` event before a download. Unknown name: an error listing the sources; unknown version: an error listing the versions.
+**IMPLEMENT**: `info(env, package) -> Result<PackageInfo>`, `package` read by `PackageArg::parse`: catalog versions of the name, the chosen (or newest) entry, its archive through `Downloads::fetch` (no destination), the parsed spec. An `ArchiveFetching` event before a download. Unknown name: an error listing the sources; unknown version: an error listing the versions.
 **TEST**: Unit test with a local folder source; the loopback-feed scenarios for the cache rules; the fixture builder learns the description fields.
 **REFACTOR**: Reuse `install`'s name matching (`same_name`).
 **Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `tests/support/fixtures.rs`
@@ -1576,10 +1577,10 @@ None.
   - [x] Step 1.2: `lvpm search --all [QUERY]`
 
 ### Wave 2
-- [ ] Slice 2: Package details: `lvpm info`
-  - [ ] Step 2.1: Description fields in `spec::parse`
-  - [ ] Step 2.2: `ops::query::info` through the cache
-  - [ ] Step 2.3: `lvpm info <PACKAGE>[@VERSION]`
+- [x] Slice 2: Package details: `lvpm info`
+  - [x] Step 2.1: Description fields in `spec::parse`
+  - [x] Step 2.2: `ops::query::info` through the cache
+  - [x] Step 2.3: `lvpm info <PACKAGE>[@VERSION]`
 
 ### Wave 3
 - [ ] Slice 3: `--json` and the exit-code table

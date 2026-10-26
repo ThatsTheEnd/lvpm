@@ -49,6 +49,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-lockfile/slice-15-cancellation-before-files-are-written.feature",
     "tests/features/lvpm-lockfile/slice-16-documentation-and-help-text.feature",
     "tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature",
+    "tests/features/lvpm-tui/slice-2-package-details-lvpm-info.feature",
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";
@@ -72,6 +73,8 @@ pub struct CliWorld {
     pub row_outputs: Vec<Output>,
     /// What core reported to the recording sink of an `@core` scenario.
     pub core_events: Vec<lvpm_core::events::Event>,
+    /// What core returned to an `@core` package-details scenario.
+    pub info: Option<lvpm_core::ops::query::PackageInfo>,
     /// What an `@core` manifest-editing scenario has done and seen.
     pub manifest: steps::manifest::ManifestState,
     /// What an `@core` solver scenario has set up and seen.
@@ -106,6 +109,7 @@ impl CliWorld {
             recordings: Vec::new(),
             row_outputs: Vec::new(),
             core_events: Vec::new(),
+            info: None,
             manifest: Default::default(),
             solver: Default::default(),
             destination: Default::default(),

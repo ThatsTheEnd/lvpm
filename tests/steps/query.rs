@@ -1,13 +1,18 @@
 //! Steps of the catalog listing: feeds and folders holding the packages a
-//! scenario names, and what `lvpm search --all` printed.
+//! scenario names, and what `lvpm search --all` and `lvpm info` printed.
 
 use super::recording::{self, check_or_panic, golden_dir};
 use crate::CliWorld;
-use crate::support::feed::listing;
+use crate::support::events::RecordingSink;
+use crate::support::feed::{NOT_AN_ARCHIVE, archive_path, listing, md5_hex};
 use crate::support::fixtures::{FixturePackage, PACKAGES, Payload};
 use crate::support::golden::{Golden, Mode};
 use crate::support::sandbox::LOCAL_PACKAGES_DIR;
+use crate::support::venv::VENV_DIR;
 use cucumber::{given, then, when};
+use lvpm_core::config::Config;
+use lvpm_core::ops::{OpEnv, query};
+use std::path::PathBuf;
 
 /// Where the scenario's feed is served: a folder of its own, so it lists only
 /// what the scenario says.
@@ -254,4 +259,332 @@ async fn usage_error(world: &mut CliWorld) {
     let output = world.last_output.as_ref().expect("a command was run");
     assert_eq!(output.exit_code, 2, "{output:?}");
     assert!(output.stderr.contains("Usage:"), "{}", output.stderr);
+}
+
+// ---- lvpm info ----
+
+/// alpha 2.0 as the details scenarios serve it: requiring beta 0.1, with
+/// [`DESCRIPTION`] in its spec. The background's `"alpha" 2.0 requires
+/// "beta" 0.1` is matched by the solver's catalog step, which only notes it.
+const ALPHA_2_DESCRIBED: FixturePackage = FixturePackage {
+    name: "alpha",
+    version: "2.0",
+    display_name: "Alpha",
+    requires: &[("beta", "0.1")],
+    lv_min: "20.0",
+    payload: Payload::Text,
+    post_install_hook: None,
+};
+
+const BETA_PLAIN: FixturePackage = FixturePackage {
+    requires: &[],
+    ..BETA_0_1
+};
+
+const DESCRIPTION: &str = "\n[Description]\nDescription=\"Tools for alpha.\"\n\
+    Summary=\"Alpha tools\"\nVendor=\"Example Vendor\"\nPackager=\"Example Packager\"\n\
+    License=\"MIT\"\nURL=\"https://example.com/alpha\"\nRelease Notes=\"Second release.\"\n";
+
+/// Each field line `lvpm info` prints for [`DESCRIPTION`], in order.
+const DESCRIPTION_LINES: [&str; 7] = [
+    "summary:       Alpha tools",
+    "description:   Tools for alpha.",
+    "vendor:        Example Vendor",
+    "packager:      Example Packager",
+    "license:       MIT",
+    "url:           https://example.com/alpha",
+    "release notes: Second release.",
+];
+
+/// Serve alpha 1.0, `alpha_2` as alpha 2.0's archive, and beta 0.1, each
+/// listed with the MD5 of what is served.
+fn serve_details_feed(world: &mut CliWorld, alpha_2: Vec<u8>) {
+    let archives = [
+        (&PACKAGES[0], PACKAGES[0].build_vip()),
+        (&ALPHA_2_DESCRIBED, alpha_2),
+        (&BETA_PLAIN, BETA_PLAIN.build_vip()),
+    ];
+    let mut body = String::from("; lvpm acceptance fixture: package details\n");
+    for (package, bytes) in archives {
+        body.push_str(&format!(
+            "\n[Package {}]\nPackage.URL=packages/{}\nPackage.MD5={}\n\
+             Package.Display Name={}\n",
+            package.id(),
+            package.file_name(),
+            md5_hex(&bytes),
+            package.display_name
+        ));
+        if !package.requires.is_empty() {
+            body.push_str(&format!(
+                "Dependencies.Requires={}\n",
+                package.requires_clause()
+            ));
+        }
+        let feed = world.sandbox.feed();
+        feed.serve(&archive_path(LISTED_DIR, &package.file_name()), bytes);
+    }
+    publish_listing(world, &body);
+}
+
+fn stderr(world: &CliWorld) -> &str {
+    &world
+        .last_output
+        .as_ref()
+        .expect("a command was run")
+        .stderr
+}
+
+/// Requests for `package`'s archive since the feed started.
+fn archive_hits(world: &CliWorld, package: &FixturePackage) -> usize {
+    let path = archive_path(LISTED_DIR, &package.file_name());
+    world.sandbox.feed().hits(&path)
+}
+
+/// The first run of a cache scenario downloads alpha 2.0, once.
+const FIRST_RUN_FETCHES: usize = 1;
+
+/// The last command succeeded and downloaded nothing.
+fn succeeded_without_a_fetch(world: &CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert!(!stderr(world).contains("fetching"), "{}", stderr(world));
+}
+
+fn failed_with_exit_1(world: &CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 1, "{output:?}");
+    assert!(stdout(world).is_empty(), "{}", stdout(world));
+}
+
+#[given(
+    "the 2.0 spec has a description, summary, vendor, packager, license, URL and release notes"
+)]
+async fn alpha_2_described(world: &mut CliWorld) {
+    serve_details_feed(world, ALPHA_2_DESCRIBED.build_vip_with(DESCRIPTION));
+}
+
+#[given(r#""alpha" 1.0 has no [Description] section"#)]
+async fn alpha_1_undescribed(_world: &mut CliWorld) {
+    // Stored, not compressed: the spec's text is in the archive as it is.
+    let archive = String::from_utf8_lossy(&PACKAGES[0].build_vip()).into_owned();
+    assert!(!archive.contains("[Description]"));
+}
+
+#[given(expr = "{string} has run once")]
+async fn has_run_once(world: &mut CliWorld, command: String) {
+    world.run(&command, None);
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    let hits = archive_hits(world, &ALPHA_2_DESCRIBED);
+    assert_eq!(hits, FIRST_RUN_FETCHES, "archive requests on the first run");
+}
+
+#[given(r#"the archive request of "alpha" 2.0 fails"#)]
+async fn archive_request_fails(world: &mut CliWorld) {
+    // Every archive request fails, alpha 2.0's among them.
+    world.sandbox.feed().refuse_archives();
+}
+
+#[given(r#"the archive of "alpha" 2.0 is corrupt"#)]
+async fn archive_is_corrupt(world: &mut CliWorld) {
+    serve_details_feed(world, NOT_AN_ARCHIVE.to_vec());
+}
+
+#[when(expr = "{string} runs again")]
+async fn runs_again(world: &mut CliWorld, command: String) {
+    world.run(&command, None);
+}
+
+#[when(expr = "{string} runs with an empty cache")]
+async fn runs_with_empty_cache(world: &mut CliWorld, command: String) {
+    world.sandbox.empty_cache();
+    world.run(&command, None);
+}
+
+#[when(expr = "core reads the details of {string} with no LabVIEW installed")]
+async fn core_reads_details(world: &mut CliWorld, name: String) {
+    let sink = RecordingSink::default();
+    let config = Config {
+        cache: world.sandbox.cache_dir(),
+        local_sources: vec![world.sandbox.root().join(LOCAL_PACKAGES_DIR)],
+        venv_dir: PathBuf::from(VENV_DIR),
+    };
+    let env = OpEnv::new(&sink, config, Vec::new(), world.sandbox.work_dir());
+    world.info = Some(query::info(&env, &name).expect("core reads the details"));
+}
+
+#[then("the details are those of 2.0")]
+async fn details_of_2_0(world: &mut CliWorld) {
+    let info = world.info.as_ref().expect("core read the details");
+    assert_eq!(info.spec.version, "2.0");
+    assert_eq!(
+        info.spec.description.summary.as_deref(),
+        Some("Alpha tools")
+    );
+}
+
+#[then("it shows versions 2.0 and 1.0, each with its source")]
+async fn shows_versions(world: &mut CliWorld) {
+    let from = feed_index(world);
+    let versions =
+        format!("versions:\n  2.0            from {from}\n  1.0            from {from}\n");
+    assert!(stdout(world).ends_with(&versions), "{}", stdout(world));
+}
+
+#[then(
+    "it shows the description, summary, vendor, packager, license, URL and release notes of 2.0"
+)]
+async fn shows_description(world: &mut CliWorld) {
+    let out = stdout(world);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.first(), Some(&"alpha 2.0  Alpha"), "{out}");
+    let shown = lines.get(1..=DESCRIPTION_LINES.len());
+    assert_eq!(shown, Some(&DESCRIPTION_LINES[..]), "{out}");
+}
+
+#[then(r#"it shows that 2.0 requires "beta" >= 0.1"#)]
+async fn shows_requirement(world: &mut CliWorld) {
+    assert!(
+        stdout(world).contains("\nrequires:      beta>=0.1\n"),
+        "{}",
+        stdout(world)
+    );
+}
+
+#[then("it lists the file groups of 2.0 with their target directories and files")]
+async fn lists_file_groups(world: &mut CliWorld) {
+    let files = format!(
+        "\nfiles:\n  <application>\n    {}\n",
+        ALPHA_2_DESCRIBED.payload_path()
+    );
+    assert!(stdout(world).contains(&files), "{}", stdout(world));
+}
+
+#[then("the spec fields and files shown are those of 1.0")]
+async fn shows_1_0(world: &mut CliWorld) {
+    let files = format!(
+        "files:\n  <application>\n    {}\n",
+        PACKAGES[0].payload_path()
+    );
+    assert!(
+        stdout(world).starts_with(&format!("alpha 1.0  Alpha\n{files}")),
+        "{}",
+        stdout(world)
+    );
+}
+
+#[then("no description, summary, vendor, packager, license, URL or release-notes line is shown")]
+async fn no_field_lines(world: &mut CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert!(
+        stdout(world).starts_with("alpha 1.0  Alpha\nfiles:\n"),
+        "{}",
+        stdout(world)
+    );
+    for line in DESCRIPTION_LINES {
+        let label = &line[..line.find(':').unwrap() + 1];
+        assert!(
+            !stdout(world).lines().any(|l| l.starts_with(label)),
+            "{label} in {}",
+            stdout(world)
+        );
+    }
+}
+
+#[then(r#"stderr says it is fetching "alpha" 2.0"#)]
+async fn stderr_says_fetching(world: &mut CliWorld) {
+    assert!(
+        stderr(world).contains("  fetching alpha 2.0\n"),
+        "{}",
+        stderr(world)
+    );
+}
+
+#[then("stdout holds only the details")]
+async fn stdout_only_details(world: &mut CliWorld) {
+    assert!(
+        stdout(world).starts_with("alpha 2.0  Alpha\n"),
+        "{}",
+        stdout(world)
+    );
+    assert!(!stdout(world).contains("fetching"), "{}", stdout(world));
+}
+
+// Counts are since the feed started, so they include the first run's.
+#[then("the feed serves no archive request")]
+async fn no_archive_request(world: &mut CliWorld) {
+    succeeded_without_a_fetch(world);
+    assert!(
+        stdout(world).starts_with("alpha 2.0  Alpha\n"),
+        "{}",
+        stdout(world)
+    );
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
+    assert_eq!(archive_hits(world, &PACKAGES[0]), 0);
+}
+
+#[then("the feed serves one archive request, for 1.0")]
+async fn one_request_for_1_0(world: &mut CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
+    assert_eq!(archive_hits(world, &PACKAGES[0]), 1);
+}
+
+#[then(r#"the feed serves no archive request for "alpha" 2.0"#)]
+async fn no_request_for_2_0(world: &mut CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
+}
+
+#[then("it fails with exit code 1")]
+async fn fails_with_exit_code_1(world: &mut CliWorld) {
+    failed_with_exit_1(world);
+}
+
+#[then("the error names every configured feed and local folder")]
+async fn error_names_sources(world: &mut CliWorld) {
+    let folder = world.sandbox.root().join(LOCAL_PACKAGES_DIR);
+    let folder = world.sandbox.normalised_text(&folder.to_string_lossy());
+    assert!(
+        stderr(world).contains("no package named \"nothing\" in:"),
+        "{}",
+        stderr(world)
+    );
+    assert!(
+        stderr(world).contains(&format!("\n  {folder}")),
+        "{}",
+        stderr(world)
+    );
+    let feed = format!("\n  {}", feed_index(world));
+    assert!(stderr(world).contains(&feed), "{}", stderr(world));
+}
+
+#[then("it fails with exit code 1 and lists the versions 2.0 and 1.0")]
+async fn fails_listing_versions(world: &mut CliWorld) {
+    failed_with_exit_1(world);
+    assert!(
+        stderr(world).contains("alpha has no version 9.9; it has 2.0, 1.0"),
+        "{}",
+        stderr(world)
+    );
+}
+
+#[then(r#"it fails with exit code 1 and the error names "alpha" 2.0 and the feed"#)]
+async fn fails_naming_package_and_feed(world: &mut CliWorld) {
+    failed_with_exit_1(world);
+    let expected = format!("could not fetch alpha 2.0 from {}", feed_index(world));
+    assert!(stderr(world).contains(&expected), "{}", stderr(world));
+}
+
+#[then(r#"it fails with exit code 1 and the error names "alpha" 2.0"#)]
+async fn fails_naming_package(world: &mut CliWorld) {
+    failed_with_exit_1(world);
+    assert!(
+        stderr(world).contains("the archive of alpha 2.0 could not be read"),
+        "{}",
+        stderr(world)
+    );
 }
