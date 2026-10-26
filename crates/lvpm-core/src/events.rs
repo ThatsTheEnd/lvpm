@@ -317,6 +317,10 @@ pub enum Event {
     SyncPlanned { steps: Vec<SyncStep>, dry_run: bool },
     /// The destination already holds exactly what the lock lists.
     SyncNothingToDo,
+
+    // ---- ops::query ----
+    /// A package's archive is not cached and is about to be downloaded.
+    ArchiveFetching { name: String, version: String },
 }
 
 /// A package at a version, as a plan lists it.

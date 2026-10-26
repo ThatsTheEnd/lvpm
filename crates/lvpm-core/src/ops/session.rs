@@ -47,6 +47,11 @@ impl Downloads {
         fetch::package(&self.cache, &self.client, entry, &self.cancel)
     }
 
+    /// The archive's bytes if they can be had without a download.
+    pub(super) fn on_hand(&self, entry: &Entry) -> Result<Option<Vec<u8>>> {
+        fetch::on_hand(&self.cache, entry)
+    }
+
     /// What the cache holds under this SHA-256, without removing anything.
     pub(super) fn stored(&self, sha256: &str) -> Stored {
         self.cache.lookup(sha256)

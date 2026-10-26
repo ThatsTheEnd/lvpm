@@ -2,12 +2,18 @@
 //! how many rows to show and what to call them.
 
 use super::env::OpEnv;
+use super::install::read_spec;
+use super::session::Downloads;
 use crate::config;
+use crate::events::Event;
 use crate::index::{self, Entry, Import};
 use crate::install::{self, Manifest};
 use crate::paths;
+use crate::project::same_name;
+use crate::spec::{self, Spec};
 use crate::target::LvTarget;
-use anyhow::Result;
+use crate::version::Version;
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 /// The LabVIEW installations detected on this machine, newest first.
@@ -65,6 +71,78 @@ pub struct Catalog {
     /// Every source asked: each local folder, then each feed's index URL.
     pub sources: Vec<String>,
     /// The sources that could not be read, with why.
+    pub failed: Vec<(String, String)>,
+}
+
+/// The details of one version of the package `name`: `version`, or else the
+/// newest. Its archive is read from the cache, or downloaded into it, so no
+/// destination and no LabVIEW is needed.
+pub fn info(env: &OpEnv, name: &str, version: Option<&str>) -> Result<PackageInfo> {
+    let catalog = catalog(env, Some(name))?;
+    let versions: Vec<Entry> = catalog
+        .entries
+        .into_iter()
+        .filter(|e| same_name(&e.name, name))
+        .collect();
+    if versions.is_empty() {
+        bail!(
+            "no package named {name:?} in:\n  {}",
+            catalog.sources.join("\n  ")
+        );
+    }
+    let entry = match version {
+        None => versions[0].clone(),
+        Some(wanted) => {
+            let wanted_version = Version::parse(wanted);
+            let known: Vec<String> = versions.iter().map(|e| e.version.to_string()).collect();
+            versions
+                .iter()
+                .find(|e| e.version == wanted_version)
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "{name} has no version {wanted}; it has {}",
+                        known.join(", ")
+                    )
+                })?
+        }
+    };
+    let what = format!("{} {}", entry.name, entry.version);
+    let downloads = Downloads::open(env)?;
+    let bytes = match downloads.on_hand(&entry)? {
+        Some(bytes) => bytes,
+        None => {
+            env.sink.emit(Event::ArchiveFetching {
+                name: entry.name.clone(),
+                version: entry.version.to_string(),
+            });
+            downloads
+                .fetch(&entry)
+                .with_context(|| format!("could not fetch {what} from {}", entry.source))?
+        }
+    };
+    let spec = install::open_archive(bytes)
+        .and_then(|mut zip| read_spec(&mut zip))
+        .and_then(|text| spec::parse(&text))
+        .with_context(|| format!("the archive of {what} could not be read"))?;
+    Ok(PackageInfo {
+        entry,
+        versions,
+        spec,
+        failed: catalog.failed,
+    })
+}
+
+/// The answer to [`info`].
+#[derive(Debug)]
+pub struct PackageInfo {
+    /// The version shown: its requirements, minimum LabVIEW and source.
+    pub entry: Entry,
+    /// Every version the sources list, newest first, each with its source.
+    pub versions: Vec<Entry>,
+    /// The shown version's spec: its description fields and file groups.
+    pub spec: Spec,
+    /// The sources that could not be read, with why, as in [`Catalog`].
     pub failed: Vec<(String, String)>,
 }
 
@@ -317,5 +395,34 @@ mod tests {
         assert_eq!(cache, [PathBuf::from("the-cache").to_string_lossy()]);
         let why = config_get(&env, "nothing").unwrap_err().to_string();
         assert!(why.starts_with("unknown config key \"nothing\""), "{why}");
+    }
+
+    #[test]
+    fn info_reads_the_newest_version_or_the_one_asked_for() {
+        let packages = [("alpha", "1.0", "Old Alpha"), ("ALPHA", "2.0", "New Alpha")];
+        let (cwd, env) = catalog_env("info-versions", &[&packages]);
+        let newest = info(&env, "alpha", None).unwrap();
+        assert_eq!(newest.spec.display_name.as_deref(), Some("New Alpha"));
+        let versions: Vec<String> = newest
+            .versions
+            .iter()
+            .map(|e| e.version.to_string())
+            .collect();
+        assert_eq!(versions, ["2.0", "1.0"]);
+        let chosen = info(&env, "alpha", Some("1.0")).unwrap();
+        assert_eq!(chosen.entry.version.to_string(), "1.0");
+        assert_eq!(chosen.spec.display_name.as_deref(), Some("Old Alpha"));
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_on_an_unknown_name_or_version_says_what_there_is() {
+        let (cwd, env) = catalog_env("info-unknown", &[&[("alpha", "1.0", "Alpha")]]);
+        let folder = cwd.join("folder-0").to_string_lossy().into_owned();
+        let why = info(&env, "alp", None).unwrap_err().to_string();
+        assert_eq!(why, format!("no package named \"alp\" in:\n  {folder}"));
+        let why = info(&env, "alpha", Some("9.9")).unwrap_err().to_string();
+        assert_eq!(why, "alpha has no version 9.9; it has 1.0");
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 }

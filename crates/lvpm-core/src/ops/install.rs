@@ -131,7 +131,7 @@ impl std::fmt::Display for Req {
     }
 }
 
-fn read_spec(zip: &mut Zip) -> Result<String> {
+pub(super) fn read_spec(zip: &mut Zip) -> Result<String> {
     // Almost always literally "spec" at the archive root.
     let idx = (0..zip.len()).find(|i| {
         zip.by_index(*i)
