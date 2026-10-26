@@ -609,7 +609,7 @@ In scope:
 - The project allowlist is `hooks = "run"` on the dependency line ([ADR 4](../adr/0004-sources-first-wins-and-pinning.md)); global installs use one in the user config.
 - Uninstall hooks run only if the install hook ran.
 
-Out of scope: running hooks in a venv (never); hooks in lvpm-built packages (ADR 2).
+Out of scope: running hooks in a venv (never); hooks in lvpm-built packages (ADR 2); pinning each allowed hook VI's hash in `lvpm.lock` (ADR 3).
 
 Acceptance criteria:
 - [ ] A global install of a package with a `PostInstall` hook does not run it, warns, and exits 0.
@@ -625,8 +625,6 @@ Acceptance criteria:
 Demo: install pilot A globally; lvpm skips its `PostInstall` and says how to allow it.
 
 Decide in `/specs`: the user-config key; the warning's exact wording.
-
-Out of scope: pinning each allowed hook VI's hash in `lvpm.lock` (ADR 3).
 
 ### Slice S13: The first source wins
 
