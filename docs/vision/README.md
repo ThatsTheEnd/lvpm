@@ -14,7 +14,7 @@ This folder is this fork's direction. The upstream author's plan stays in
 | Step | Command | Where it is |
 |---|---|---|
 | 1. Start a library or app | `lvpm init` | planned (M1) |
-| 2. Add dependencies | `lvpm add @org/libA@^1.4` | **works** (VIPM names; `@org` scopes planned, M3) |
+| 2. Add dependencies | `lvpm add libA@">=1.4"` | **works** (`name@constraint`; `@org` scopes and `^` planned, M3) |
 | 3. Develop in an isolated env | `lvpm install` → `lvpm launch` | **works** (venv + overlay, `lvpm.lock`, exact `sync`) |
 | 4. Build packages | `lvpm build` → `.lvpkg` and/or `.vip` | proposed (M2) |
 | 5. Publish | tag → CI signs and publishes | proposed (M3) |
@@ -48,7 +48,8 @@ Each one is usable on its own. Ticks mean done.
 
 **M1 — reproducible projects**
 - [x] `lvpm.lock` with SHA-256, `lock --check`, `sync` (also removes extras)
-- [ ] `init` (incl. `--from project.vipc`), `add` ✓, `remove` ✓, `info`, `update`
+- [x] `add`, `remove` (`--dev`)
+- [ ] `init` (incl. `--from project.vipc`), `info`, `update`
 - [ ] `--json`, documented exit codes, `--yes`, `--labview-bitness`
 
 **M2 — build**

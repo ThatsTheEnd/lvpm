@@ -125,7 +125,8 @@ feed as a fallback transport.
 ### GitHub Releases, direct
 
 - Versions come from the release tags.
-- The release file is picked by naming convention: `*.lvpkg` first, `*.vip` as fallback.
+- The release file is picked by naming convention: `*.lvpkg` first, `*.vip` as fallback
+  (`.vip` only until `.lvpkg` ships; see [build-slices.md](build-slices.md#decisions-before-s1)).
 - Its SHA-256 is pinned in `lvpm.lock`.
 - If the release has a GitHub artifact attestation (Sigstore), lvpm verifies that the
   file was built by that repo's workflow. Otherwise it is trusted on first use and
