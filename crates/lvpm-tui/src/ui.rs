@@ -41,11 +41,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ]);
     frame.render_widget(Paragraph::new(title), header);
 
-    // What a key could not do, else why nothing can be installed.
-    let note = app
-        .note
-        .clone()
-        .or_else(|| app.destination.as_ref().err().cloned());
     let block = Block::bordered();
     let inner = block.inner(body);
     frame.render_widget(block, body);
@@ -57,10 +52,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         Listing::Loaded(browse) => draw_list(frame, browse, inner),
     }
-    // The hints come first so that a long note cannot push them off.
+    // What a key could not do lasts one key, so it comes first and whole.
+    // Why nothing can be installed lasts, so the hints go before it.
     let mut line = hints(keys::FOOTER);
-    if let Some(note) = note.as_deref().and_then(|n| n.lines().next()) {
-        line.spans.push(Span::raw(note.to_string()));
+    if let Some(note) = &app.note {
+        line.spans.insert(0, Span::raw(format!("{note}  ")));
+    } else if let Some(error) = app.destination.as_ref().err() {
+        line.spans.push(Span::raw(
+            error.lines().next().unwrap_or_default().to_string(),
+        ));
     }
     frame.render_widget(Paragraph::new(line), footer);
 }

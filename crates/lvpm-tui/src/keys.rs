@@ -38,7 +38,7 @@ pub const INTERRUPT: Binding = Binding {
     presses: &[(KeyCode::Char('c'), KeyModifiers::CONTROL)],
 };
 
-/// `/`, which some layouts (German) type with Shift.
+/// `/`, which some layouts (German) may report with Shift.
 pub const SEARCH: Binding = Binding {
     key: "/",
     action: "search",

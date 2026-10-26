@@ -177,22 +177,26 @@ fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
         && let Some(package) = browse.selected()
         && let Status::NeedsLabview(year) = package.status
     {
-        // shortcut: install of a compatible package does nothing until the
-        // plan preview exists (Slice 6).
         return Some(format!("{} needs LabVIEW {year}", package.name));
     }
+    // shortcut: install of a compatible package does nothing until a plan
+    // preview exists, upgrade when install opens one (Slice 7).
     None
 }
 
-/// The modifiers a typed character can come with. Windows reports AltGr,
-/// which types `@` or `\` on some layouts, as Ctrl+Alt.
-const TYPING: [KeyModifiers; 3] = [
+/// The modifiers a typed character can come with. On Windows, AltGr (which
+/// types `@` or `\` on some layouts) may come as Ctrl+Alt, with or without
+/// Shift.
+const TYPING: [KeyModifiers; 4] = [
     KeyModifiers::NONE,
     KeyModifiers::SHIFT,
     KeyModifiers::CONTROL.union(KeyModifiers::ALT),
+    KeyModifiers::CONTROL
+        .union(KeyModifiers::ALT)
+        .union(KeyModifiers::SHIFT),
 ];
 
-/// Draw, take the worker's result, then handle the next event if one came,
+/// Take the worker's result, draw, then handle the next event if one came,
 /// until the app stops running.
 pub fn run<B: Backend>(
     terminal: &mut Terminal<B>,
@@ -352,10 +356,22 @@ mod tests {
     #[test]
     fn reload_while_a_job_runs_starts_no_second_one() {
         let mut app = idle();
-        let (_send, receive) = std::sync::mpsc::channel();
+        let (send, receive) = std::sync::mpsc::channel();
         app.pending = Some(receive);
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
         assert_eq!(app.note.as_deref(), Some("the catalog is still loading"));
+        // The first job is still the one the app waits for.
+        send.send(Done::Loaded {
+            destination: Err("none".into()),
+            listing: Err("first job".into()),
+        })
+        .unwrap();
+        app.poll();
+        assert!(
+            matches!(&app.listing, Listing::Failed(e) if e == "first job"),
+            "{:?}",
+            app.listing
+        );
     }
 
     #[test]
@@ -403,5 +419,19 @@ mod tests {
         .unwrap();
         let screen = format!("{:?}", terminal.backend().buffer());
         assert!(screen.contains("no source could be read"), "{screen}");
+    }
+
+    #[test]
+    fn a_long_note_shows_whole_on_the_footer() {
+        let mut app = listing();
+        let note = "jki_lib_state_machine_extended needs LabVIEW 2099";
+        app.note = Some(note.into());
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let footer: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
+        assert!(footer.starts_with(note), "{footer}");
     }
 }

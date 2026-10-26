@@ -25,7 +25,7 @@ you can recognize.
 
 | # | Do this | Expect this |
 |---|---------|-------------|
-| 1 | Make the window at least 80 columns by 24 rows. Run `target\debug\lvpm-tui.exe`. | The `echo before` line is gone. The top row shows ` lvpm ` in reverse video and the destination. A bordered box fills the middle. The bottom row shows `q quit`. |
+| 1 | Make the window at least 80 columns by 24 rows. Run `target\debug\lvpm-tui.exe`. | The `echo before` line is gone. The top row shows ` lvpm ` in reverse video and the destination. A bordered box fills the middle. The bottom row shows `/ search`, `f filter`, `R reload feeds` and `q quit`. With no LabVIEW installed, it also says install needs a LabVIEW or --prefix. |
 | 2 | Make the window narrower than 80 columns. | Only the message "The terminal is WxH; lvpm-tui needs at least 80x24." shows, with the current size. No border, no header. |
 | 3 | Make the window wider again, back to at least 80x24. | The header, the box and the footer from check 1 come back. |
 | 4 | Do checks 2 and 3 again, but make the window shorter than 24 rows. | The same as checks 2 and 3. |
@@ -37,6 +37,7 @@ you can recognize.
 | 10 | Press `/`, then Esc. | The search is cleared and every package is listed again. |
 | 11 | Press `f` three times. | The filter goes `installed`, `updates`, `all`. |
 | 12 | Press `R`. | "Loading the catalog…" shows, then the list again. |
+| 13 | Select a package whose status is `needs LV …` and press `i`. | The bottom row starts with "<package> needs LabVIEW <year>". The next key clears it. |
 
 ## Result table
 
@@ -57,3 +58,4 @@ Copy this into the pull request, with one mark per cell: ✅ passed, ❌ failed
 | 10 clear search | | |
 | 11 filter | | |
 | 12 reload | | |
+| 13 gated install | | |

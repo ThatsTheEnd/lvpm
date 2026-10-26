@@ -126,8 +126,9 @@ Decisions already made with the stakeholder:
   targets stay selectable.
 - **Row status** in the browse list is relative to the destination:
   *installed*, *update available* (a newer version than the installed one is
-  in the catalog), *not installed*, or *incompatible* (the package's minimum
-  LabVIEW is newer than the destination's). Incompatible rows are shown and
+  in the catalog, and the destination's LabVIEW can take it), *not
+  installed*, or *incompatible* (the package's minimum LabVIEW is newer than
+  the destination's; the UI shows "needs LV 2099"). Incompatible rows are shown and
   marked, and their install action is disabled.
 - **Project mode** (destination is a venv with a manifest):
   - Install from the browse list means `add` (writes `>=<resolved>`).

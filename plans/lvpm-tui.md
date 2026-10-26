@@ -113,9 +113,11 @@ first install a package.
 ### TUI
 
 - **The TUI drives core on one worker thread.** The UI thread owns the
-  terminal and the state. A worker runs one job at a time with a
-  `ChannelSink` (events into an `mpsc` channel) and the job's `CancelToken`.
-  The UI polls the channel every tick. A batch is a list of jobs; the batch
+  terminal and the state. A worker runs one job at a time and sends its
+  result over an `mpsc` channel; the UI polls the channel every tick.
+  Slice 5 runs the job with `destination::Quiet` (no progress); a sink that
+  sends core's events to the UI comes with the first job that shows
+  progress. A batch is a list of jobs; the batch
   runner gives each job its own token, and a cancel ends the batch (spec).
 - **`OpEnv` comes from one builder.** `destination.rs` has `EnvBuilder::new
   (config, targets, cwd)`, and `builder.env(&sink, token)` yields a per-job
@@ -715,7 +717,7 @@ Feature: Browse the catalog
 #### Step 5.1: Destination at start, the worker and the loading state
 
 **Complexity**: complex
-**IMPLEMENT**: `EnvBuilder` builds each job's `OpEnv` as the CLI does; `worker.rs` runs one job on a thread with a `ChannelSink` and returns its result; the catalog and the installed list load as one job; the total and partial failure states.
+**IMPLEMENT**: `EnvBuilder` builds each job's `OpEnv` as the CLI does; `worker.rs` runs one job on a thread with `destination::Quiet` and returns its result; the catalog and the installed list load as one job; the total and partial failure states.
 **TEST**: The destination, loading and failure scenarios, with the feed's pause as the latch.
 **REFACTOR**: A `Job` enum names every job the worker can run.
 **Files**: `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/src/worker.rs`, `crates/lvpm-tui/src/destination.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/src/main.rs`, `crates/lvpm-tui/tests/steps.rs`, `crates/lvpm-tui/tests/acceptance.rs`, `crates/lvpm-tui/tests/browse_steps.rs`, `crates/lvpm-core/src/config.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-testkit/src/feed.rs`
@@ -724,10 +726,10 @@ Feature: Browse the catalog
 #### Step 5.2: Rows, statuses, navigation, search and filter
 
 **Complexity**: standard
-**IMPLEMENT**: `ops::query::needs_newer_labview` and `ops::query::resolvable` in core (built as one commit with Step 5.1); the mock's package table with the four statuses, Up/Down/PgUp/PgDn/Home/End, `/` search, `f` filter, the count line, the incompatible footer; the keys in `keys.rs`. Run the manual checklist with the list on screen.
+**IMPLEMENT**: `ops::query::needs_newer_labview` and `ops::query::resolvable` in core; the mock's package table with the four statuses, Up/Down/PgUp/PgDn/Home/End, `/` search, `f` filter, the count line, the incompatible footer; the keys in `keys.rs`. Run the manual checklist with the list on screen.
 **TEST**: The remaining scenarios; status unit tests.
 **REFACTOR**: The status rule is one pure function in `browse.rs` over core's `resolvable` and `needs_newer_labview`.
-**Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-tui/src/browse.rs`, `crates/lvpm-tui/src/keys.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/tests/steps.rs`, `docs/manual/tui-terminals.md`
+**Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-tui/src/browse.rs`, `crates/lvpm-tui/src/keys.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/tests/steps.rs`, `crates/lvpm-tui/tests/browse_steps.rs`, `docs/manual/tui-terminals.md`
 **Commit**: `feat(tui): browse, search and filter the catalog`
 
 ### Slice 6: Package details and reloading the feeds

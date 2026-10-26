@@ -77,8 +77,8 @@ impl TuiWorld {
         self.cwd = project;
     }
 
-    /// The table's rows as drawn: each one's cells, the selected one first
-    /// in its tuple.
+    /// The table's rows as drawn: for each, whether it is selected, and its
+    /// cells.
     fn listed(&mut self) -> Vec<(bool, Vec<String>)> {
         let screen = self.screen();
         let Some(header) = screen
