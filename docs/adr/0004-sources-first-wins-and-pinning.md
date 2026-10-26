@@ -56,8 +56,8 @@ second idea (route by prefix) next to pinning.
    source. It never falls back to another source. An unknown source name is an
    error when the manifest is read.
 3. **`[sources]` stays as it is.** No `[[feeds]]` table, no migration.
-   Later feed kinds (GitHub Releases, OCI, the community index) extend it
-   with subtables when a slice needs more than a URL.
+   Later index kinds (OCI, the community index) extend it with subtables
+   when a slice needs more than a URL.
 4. **No `scopes` for now.** Pinning covers the same risk with one idea.
    `@org/` package names stay as names (ADR 1, ADR 2); only routing by
    prefix is dropped. It can come back additively if per-package pins become
@@ -66,6 +66,11 @@ second idea (route by prefix) next to pinning.
    [ADR 3](0003-install-hooks-off-by-default.md), on the same line:
    `delacor_lib_qmh = { version = "*", hooks = "run" }`. The user-config
    allowlist for global installs stays as ADR 3 says.
+6. **A GitHub repo is a direct source, not an index**, as uv keeps `git =`
+   apart from `index =`. `libX = { github = "owner/repo", version = ">=1.2" }`
+   (S4) fetches that one package from the repo's releases and is never
+   looked up in `[sources]`, so decision 1 does not apply to it. `github`
+   and `index` on one line is an error when the manifest is read.
 
 ## Consequences
 
@@ -73,7 +78,7 @@ second idea (route by prefix) next to pinning.
   candidate to contribute upstream first. The order of `[sources]` starts to
   matter: `lock --check` compares it as a list, not a set.
 - The per-dependency table is shared: S12 adds it with `version` and `hooks`,
-  S7c adds `index`. Whichever lands first adds the parser.
+  S7c adds `index`, S4 adds `github`. Whichever lands first adds the parser.
 - A pin and `hooks = "run"` live on dependency lines. How to pin or allow a
   package that is only a transitive dependency is decided in S7c's and S12's
   `/specs`.

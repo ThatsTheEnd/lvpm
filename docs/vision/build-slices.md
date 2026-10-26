@@ -300,7 +300,8 @@ Decide in `/specs`: whether `--to` can default to a configured feed.
 Goal: the open-source loop without any registry of your own.
 
 In scope:
-- `libX = { github = "owner/repo", version = ">=1.2" }` in `lvpm.toml`.
+- `libX = { github = "owner/repo", version = ">=1.2" }` in `lvpm.toml`: a direct
+  source for that one package, never looked up in `[sources]` (ADR 4, decision 6).
 - Versions come from release tags; the release file is `*.vip` (`*.lvpkg` first once S7a ships).
 - The lock's `source` field names the GitHub feed; the file's SHA-256 is pinned on first lock.
 - A CI template that runs `lvpm build` on a tag and uploads with `gh release upload`.
@@ -310,6 +311,7 @@ Out of scope: attestations (S6), the community index (S8).
 Acceptance criteria:
 - [ ] A project installs pilot B from a GitHub release (scenario against a loopback fake of the releases API).
 - [ ] A re-uploaded release file with a different hash fails `sync` (with or without `--locked`), and nothing is installed.
+- [ ] A line with both `github` and `index` fails when the manifest is read, naming the package.
 - [ ] Private repos work with the token from `gh auth token`; no token is ever written to `lvpm.toml` or the lock.
 - [ ] *(manual)* The CI template publishes a release from a tag in a pilot B fork.
 
