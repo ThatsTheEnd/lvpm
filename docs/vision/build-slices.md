@@ -65,9 +65,9 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    identity, `labview = ">=2021"` as a constraint, packaging in
    `[distribution]`, and LabVIEW build specs stay in the `.lvproj`.
 2. **`.vip` first, `.lvpkg` later.** Decided in
-   [ADR 2](../adr/0002-vip-first-lvpkg-later.md). Still open there: whether
-   `.vip` stays a first-class format for good, and whether lvpm-built `.vip`
-   files may carry install hooks.
+   [ADR 2](../adr/0002-vip-first-lvpkg-later.md). `.vip` stays first-class
+   for good. Still open there: whether lvpm-built `.vip` files may carry
+   install hooks.
 3. **The upstream relationship.** Contribute back or keep a long-lived fork.
    It decides naming and how changes go upstream.
 4. **How feeds are configured.** Extend `[sources]`, or replace it with a

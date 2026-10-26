@@ -4,7 +4,7 @@ Date: 2026-10-26
 
 ## Status
 
-Accepted. Two follow-up questions are open; see the end.
+Accepted. One follow-up question is open; see the end.
 
 ## Context
 
@@ -50,6 +50,11 @@ VIPM's current `spec` format (`File Format = "vip"`, `Format Version =
    - The signature is a detached attestation (S6).
    - The SBOM is a separate file (S9).
    - The whole-file SHA-256 in `lvpm.lock` protects the download.
+5. **`.vip` stays a first-class format for good.** Every lvpm feature works
+   on a `.vip`-only package: locks, attestation policy, scopes through the name
+   map, every feed. The one exception is per-file `RECORD` checks, which only
+   `.lvpkg` has. A library author never has to pick `.lvpkg` for security
+   reasons.
 
 ## Consequences
 
@@ -61,9 +66,6 @@ VIPM's current `spec` format (`File Format = "vip"`, `Format Version =
 
 ## Open questions
 
-- **The long-term role of `.vip`.** Either a first-class output that every
-  lvpm feature supports for good (except per-file `RECORD` checks), or a
-  bridge that later features may leave behind.
 - **Install hooks in lvpm-built `.vip` files.** Pilot A's own release ships a
   `PostInstall.vi`. Look at what it does before deciding whether `lvpm build`
   may write `[Script VIs]`.
