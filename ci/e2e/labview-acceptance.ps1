@@ -32,17 +32,22 @@ function Fail([string] $message, [string] $log = '') {
 # the container is thrown away afterwards.
 $labview = "C:\Program Files\National Instruments\LabVIEW $Year"
 $ini = Join-Path $labview 'LabVIEW.ini'
-# NI's image sets no VI Server port, so LabVIEW would listen on its own
-# default while lvpm and the test harness fall back to 3363 (measured in CI,
-# 2026-10-26: nothing answered there). Pin the port in this throwaway
-# container's LabVIEW.ini so all three agree, as a developer's machine does.
+# NI's image may set no VI Server port, leaving LabVIEW on its own default
+# while lvpm and the test harness fall back to 3363. Pin the port in this
+# throwaway container's LabVIEW.ini so all three agree, as a developer's
+# machine does.
 $port = 3363
 if (-not (Test-Path (Join-Path $labview 'LabVIEW.exe'))) { Fail "infrastructure: no LabVIEW.exe under $labview" }
 $lines = if (Test-Path $ini) { @(Get-Content $ini | Where-Object { $_ -notmatch '^\s*server\.tcp\.(port|enabled)\s*=' }) } else { @() }
 if ($lines -notcontains '[LabVIEW]') { $lines = @('[LabVIEW]') + $lines }
 $pinned = foreach ($l in $lines) { $l; if ($l -eq '[LabVIEW]') { 'server.tcp.enabled=True'; "server.tcp.port=$port" } }
 Set-Content -Path $ini -Value $pinned -Encoding ascii
+# Without NI's headless switch a container's LabVIEW blocks on an activation
+# prompt nobody sees and never opens VI Server (CI, 2026-10-26: no port at
+# all). Only this LabVIEW gets it: the harness picks its children's per scenario.
+$env:LV_RTE_HEADLESS = '1'
 Start-Process (Join-Path $labview 'LabVIEW.exe')
+Remove-Item Env:LV_RTE_HEADLESS
 $deadline = (Get-Date).AddMinutes(5)
 while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -WarningAction SilentlyContinue)) {
     # By name, not by the started process, in case LabVIEW.exe hands off and
@@ -51,7 +56,8 @@ while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -W
     if ((Get-Date) -gt $deadline) {
         # Where LabVIEW does listen, if anywhere, says whether the port or the start is wrong.
         $listening = (Get-Process LabVIEW | ForEach-Object { Get-NetTCPConnection -OwningProcess $_.Id -State Listen -ErrorAction SilentlyContinue } | ForEach-Object LocalPort) -join ', '
-        Fail "infrastructure: LabVIEW did not answer VI Server on port $port within 5 minutes (LabVIEW listens on: $(if ($listening) { $listening } else { 'nothing' }))"
+        $dialogs = Get-ChildItem "$env:TEMP\LabVIEW_*_headless_*_cur.txt" -ErrorAction SilentlyContinue | Get-Content -Raw
+        Fail "infrastructure: LabVIEW did not answer VI Server on port $port within 5 minutes (LabVIEW listens on: $(if ($listening) { $listening } else { 'nothing' }))" "$dialogs"
     }
     Start-Sleep 5
 }
