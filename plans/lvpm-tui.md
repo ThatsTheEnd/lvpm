@@ -1569,9 +1569,9 @@ None.
 ## Build Progress
 
 ### Wave 1
-- [ ] Slice 1: Catalog listing, uncapped
-  - [ ] Step 1.1: `source` on every entry, `ops::query::catalog`
-  - [ ] Step 1.2: `lvpm search --all [QUERY]`
+- [x] Slice 1: Catalog listing, uncapped
+  - [x] Step 1.1: `source` on every entry, `ops::query::catalog`
+  - [x] Step 1.2: `lvpm search --all [QUERY]`
 
 ### Wave 2
 - [ ] Slice 2: Package details: `lvpm info`
