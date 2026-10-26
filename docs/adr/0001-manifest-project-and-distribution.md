@@ -41,7 +41,7 @@ lvpm has no users yet, so no names need a migration.
    spells that one identity the way VIPM needs it.
 3. **`labview` is a constraint**, written like uv's `requires-python`:
    `labview = ">=2021"`. It uses the `[dependencies]` constraint syntax. Venvs
-   bind to the newest installed LabVIEW that satisfies it, and source packages
+   bind to the installed LabVIEW of its lower bound, else the oldest newer one, and source packages
    are saved at its lower bound.
 4. **Packaging settings live in `[distribution]`**, with VIPM-only fields in
    `[distribution.vip]`. lvpm never uses a `[build]` table.

@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-`[sources]` in `lvpm.toml` lists hosted index folders, searched before the
+`[sources]` in `lvpm.toml` lists hosted index folders, loaded after the
 public NI and JKI indexes (`defaults = false` turns those off). Local folders
 come from the per-user `sources.local`. The table is upstream's
 ([Flydroid/lvpm](https://github.com/Flydroid/lvpm)), and upstream manifests

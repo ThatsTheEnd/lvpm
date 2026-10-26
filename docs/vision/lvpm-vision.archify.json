@@ -22,7 +22,7 @@
     { "id": "resolver", "type": "security", "label": "lvpm install (add · sync proposed)", "sublabel": "proposed: first source wins · verify SHA-256, signature, provenance · one version per name per LabVIEW", "pos": [250, 380], "size": [840, 64] },
 
     { "id": "nipm", "type": "external", "label": "NIPM drivers", "sublabel": "DAQmx · VISA · RT", "pos": [40, 540], "size": [170, 64] },
-    { "id": "lock", "type": "database", "label": "lvpm.lock", "sublabel": "sha256 · feed · signer · --check", "pos": [330, 540], "size": [190, 64], "tag": "proposed" },
+    { "id": "lock", "type": "database", "label": "lvpm.lock", "sublabel": "sha256 · source · signer · --check", "pos": [330, 540], "size": [190, 64], "tag": "proposed" },
     { "id": "venvA", "type": "database", "label": ".lv-venv (A)", "sublabel": "App: libA 1.4 · libX 1.2", "pos": [600, 540], "size": [200, 64] },
     { "id": "venvB", "type": "database", "label": ".lv-venv (B)", "sublabel": "Library B: libA >=1.4 · libX 2.0", "pos": [890, 540], "size": [200, 64] },
 
