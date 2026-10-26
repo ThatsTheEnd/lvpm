@@ -14,8 +14,11 @@ and [SHA256SUMS](../../fixtures/pilots/SHA256SUMS) holds each one's SHA-256. Eve
 scenario that reads them checks them against it first, so a changed archive fails the
 run instead of testing something else. They are committed rather than
 downloaded because the harness keeps `lvpm` off the network, and 2.4 MB is
-small. All four are BSD-licensed (HSE Logger: BSD; the LabVIEW Open Source
-Project packages: 0BSD), and each archive carries its own `license` file.
+small. Each archive carries its own `license` file. The LabVIEW Open Source
+Project packages are 0BSD. HSE Logger's spec says "BSD License", but its
+`license` file is a modified BSD that forbids redistribution "in source
+form". A `.vip` holds source VIs, so whether committing this archive is
+allowed is an open question for its vendor (see the S1 decisions log).
 
 | Archive | Why it is here |
 |---|---|
@@ -32,9 +35,20 @@ version, do the same, copy the archive here, regenerate `SHA256SUMS` with
 
 ## The pilot sources
 
-S1, S5 and S9 build and check the pilots' sources. They are pinned by commit,
-not committed here; the slice that first needs them decides how it fetches
-them.
+S1, S5 and S9 build and check the pilots' sources. They are pinned by commit
+and not committed here. Pilot A's LICENSE forbids redistributing it in source
+form, so the harness never fetches or copies it anywhere but a test sandbox.
+The `@pilot-source` scenarios read it from a checkout that you make:
+
+```console
+git clone https://code.hampel-soft.com/open-source/hse-logger
+git -C hse-logger checkout f7cc16a391faa1e982b54ae22d2f43c9df1ef581
+LVPM_TEST_PILOT_A=<path to hse-logger> cargo test --test acceptance
+```
+
+The scenario checks that the checkout's HEAD is the pinned commit. Without
+`LVPM_TEST_PILOT_A`, the harness does not run these scenarios and says how
+many it left out.
 
 | Pilot | Repository | Tag | Commit |
 |---|---|---|---|

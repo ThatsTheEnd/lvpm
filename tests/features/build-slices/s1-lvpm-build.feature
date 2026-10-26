@@ -110,3 +110,7 @@ Feature: lvpm build writes a .vip of a library's members
     And the manifest has no vendor
     When lvpm build runs
     Then it fails and that package is unchanged
+
+  Scenario: the docs name lvpm build
+    Then docs/usage.md has a command-table line for lvpm build and documents the [distribution] keys
+    And README.md shows lvpm build

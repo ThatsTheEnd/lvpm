@@ -455,9 +455,14 @@ impl Sandbox {
     /// Run the built `lvpm` with `args` in this sandbox; `input` is what its
     /// stdin carries, for commands that ask a question.
     pub fn run_lvpm(&self, args: &[&str], input: Option<&str>) -> Output {
+        self.run_lvpm_in(&self.work_dir(), args, input)
+    }
+
+    /// `run_lvpm` with `dir` as the working directory, for a second project.
+    pub fn run_lvpm_in(&self, dir: &Path, args: &[&str], input: Option<&str>) -> Output {
         self.refuse_a_real_installation(args, &MACHINE_TARGETS);
         let mut command = Command::new(env!("CARGO_BIN_EXE_lvpm"));
-        command.args(args).current_dir(self.work_dir());
+        command.args(args).current_dir(dir);
         self.apply_environment(&mut command);
         let output = process::run_within(command, input, RUN_TIMEOUT)
             .unwrap_or_else(|why| panic!("`lvpm {}` did not finish: {why}", args.join(" ")));

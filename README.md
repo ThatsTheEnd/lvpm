@@ -74,6 +74,13 @@ $ lvpm launch MyProject.lvproj              # a LabVIEW that sees the venv
 
 Commit `lvpm.toml` and `lvpm.lock` ([The lock file](docs/usage.md#the-lock-file)).
 
+To package your own library, add a `[distribution]` table to `lvpm.toml`
+([Building a package](docs/usage.md#building-a-package)), then:
+
+```console
+$ lvpm build                                # dist/<name>-<version>.vip, no LabVIEW needed
+```
+
 ## Why
 
 LabVIEW packaging was open before it was closed. The **OpenG Package Tools**
