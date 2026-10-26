@@ -68,8 +68,20 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    [ADR 2](../adr/0002-vip-first-lvpkg-later.md). `.vip` stays first-class
    for good. Still open there: whether lvpm-built `.vip` files may carry
    install hooks.
-3. **The upstream relationship.** Contribute back or keep a long-lived fork.
-   It decides naming and how changes go upstream.
+3. **The upstream relationship.** The goal is to contribute back to
+   [Flydroid/lvpm](https://github.com/Flydroid/lvpm), whose authors focus on
+   venvs and the core. This fork works on what they don't: build, publish,
+   trust. Until the alignment meeting on 2026-10-30 the name stays `lvpm`
+   and no ADR is written. These three points are not separate from upstream
+   work, so they are on the agenda:
+   - **`lvpm build`.** Upstream PR #15 proposes a `[build]` table in
+     `lvpm.toml` and a `Build.vi` runner. ADR 1 rules out `[build]`.
+   - **The manifest.** ADR 1 makes upstream's `labview = "2025"` an error,
+     and upstream has users.
+   - **The core/CLI split and hooks.** Upstream's `refactor-main.md` (PR #15)
+     plans its own split of `main.rs` and an event layer. This fork already
+     has `crates/lvpm-core` and `events.rs`. PR #15's `--hooks auto|always|never`
+     meets ADR 3. Item 5 waits for this.
 4. **How feeds are configured.** Extend `[sources]`, or replace it with a
    `[[feeds]]` table (with a migration). S7c's `scopes`, S7b's OCI feeds and
    S8's index all add to whatever this picks.
