@@ -269,17 +269,8 @@ fn entry_from_vip(path: &Path) -> Result<Entry> {
 }
 
 fn entry_from_bytes(path: &Path, bytes: &[u8]) -> Result<Entry> {
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-    let idx = (0..zip.len())
-        .find(|i| {
-            zip.by_index(*i)
-                .map(|f| f.name().eq_ignore_ascii_case("spec"))
-                .unwrap_or(false)
-        })
-        .context("no `spec` member")?;
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut zip.by_index(idx)?, &mut buf)?;
-    let spec = crate::spec::parse(&String::from_utf8_lossy(&buf))?;
+    let mut zip = crate::install::open_archive(bytes.to_vec())?;
+    let spec = crate::install::read_spec(&mut zip)?;
 
     Ok(Entry {
         name: spec.name,

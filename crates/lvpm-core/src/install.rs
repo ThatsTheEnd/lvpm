@@ -151,7 +151,7 @@ pub fn open_archive(vip_bytes: Vec<u8>) -> Result<Archive> {
 /// feed's archive must not inflate one until memory runs out.
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 
-/// The archive's `spec` member, read.
+/// The archive's `spec` member, read and parsed.
 pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
     // Almost always literally "spec" at the archive root.
     let idx = (0..zip.len()).find(|i| {
@@ -517,19 +517,43 @@ mod tests {
         open_archive(writer.finish().unwrap().into_inner()).unwrap()
     }
 
+    const SPEC: &[u8] = b"[Package]\nName=alpha\nVersion=1.0\n";
+
+    /// [`SPEC`] padded with spaces to `len` bytes: a few KiB deflated.
+    fn padded_spec(len: u64) -> Vec<u8> {
+        let mut text = SPEC.to_vec();
+        text.resize(len as usize, b' ');
+        text
+    }
+
     #[test]
-    fn a_spec_member_is_read_up_to_the_cap() {
-        let spec = b"[Package]
-Name=alpha
-Version=1.0
-";
-        let read = read_spec(&mut archive_with_spec(spec)).unwrap();
+    fn a_spec_member_is_read_and_parsed() {
+        let read = read_spec(&mut archive_with_spec(SPEC)).unwrap();
         assert_eq!(read.name, "alpha");
-        // A few KiB deflated, more than the cap inflated.
-        let mut huge = spec.to_vec();
-        huge.resize(MAX_SPEC_BYTES as usize + 1, b' ');
-        let why = read_spec(&mut archive_with_spec(&huge)).unwrap_err();
-        assert!(why.to_string().contains("larger than"), "{why}");
+    }
+
+    #[test]
+    fn a_spec_member_of_exactly_the_cap_is_read() {
+        let mut zip = archive_with_spec(&padded_spec(MAX_SPEC_BYTES));
+        assert_eq!(read_spec(&mut zip).unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn a_spec_member_over_the_cap_is_refused() {
+        let mut zip = archive_with_spec(&padded_spec(MAX_SPEC_BYTES + 1));
+        let why = read_spec(&mut zip).unwrap_err().to_string();
+        assert!(why.contains("larger than"), "{why}");
+    }
+
+    #[test]
+    fn an_archive_with_no_spec_member_is_refused() {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file("other", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let mut zip = open_archive(writer.finish().unwrap().into_inner()).unwrap();
+        let why = read_spec(&mut zip).unwrap_err().to_string();
+        assert_eq!(why, "no `spec` member in .vip archive");
     }
 
     /// A record for `files`, with the hook VIs it is given, installed nowhere.

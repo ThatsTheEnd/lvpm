@@ -471,6 +471,13 @@ async fn shows_1_0(world: &mut CliWorld) {
 
 #[then("no description, summary, vendor, packager, license, URL or release-notes line is shown")]
 async fn no_field_lines(world: &mut CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert!(
+        stdout(world).starts_with("alpha 1.0  Alpha\nfiles:\n"),
+        "{}",
+        stdout(world)
+    );
     for line in DESCRIPTION_LINES {
         let label = &line[..line.find(':').unwrap() + 1];
         assert!(
@@ -505,10 +512,7 @@ async fn stdout_only_details(world: &mut CliWorld) {
 async fn no_archive_request(world: &mut CliWorld) {
     succeeded_without_a_fetch(world);
     assert!(
-        stdout(world).starts_with(
-            "alpha 2.0  Alpha
-"
-        ),
+        stdout(world).starts_with("alpha 2.0  Alpha\n"),
         "{}",
         stdout(world)
     );

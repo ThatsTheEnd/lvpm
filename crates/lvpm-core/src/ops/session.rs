@@ -22,8 +22,8 @@ use reqwest::blocking::Client;
 use std::path::PathBuf;
 
 /// What fetching an archive needs, opened when the first archive is wanted:
-/// an uninstall never gets here. Locking has no destination and so no session;
-/// it fetches through the same thing.
+/// an uninstall never gets here. Locking and `info` have no destination and so
+/// no session; they fetch through the same thing.
 pub(super) struct Downloads {
     client: Client,
     cache: Cache,
@@ -45,11 +45,6 @@ impl Downloads {
     /// [`Cancelled`](crate::errors::Cancelled) when the environment's token is.
     pub(super) fn fetch(&self, entry: &Entry) -> Result<Vec<u8>> {
         fetch::package(&self.cache, &self.client, entry, &self.cancel)
-    }
-
-    /// The archive's bytes if they can be had without a download.
-    pub(super) fn on_hand(&self, entry: &Entry) -> Result<Option<Vec<u8>>> {
-        fetch::on_hand(&self.cache, entry)
     }
 
     /// What the cache holds under this SHA-256, without removing anything.

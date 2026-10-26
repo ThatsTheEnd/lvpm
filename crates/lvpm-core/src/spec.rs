@@ -33,6 +33,7 @@ pub struct Spec {
     /// `[Platform] Exclusive_LabVIEW_Version`, verbatim — e.g. `LabVIEW>=25.3`.
     /// Some packages write it bare, as `>=8.6`.
     pub lv_gate: Option<String>,
+    /// The `[Description]` section, for people to read.
     pub description: Description,
 }
 

@@ -455,7 +455,7 @@ fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {}", render::query::printable(format!("{error:?}")));
+            eprintln!("Error: {}", render::printable(format!("{error:?}")));
             std::process::ExitCode::FAILURE
         }
     }

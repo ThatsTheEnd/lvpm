@@ -270,7 +270,7 @@ Feature: Every version of every package, uncapped
 ### Slice 2: Package details: `lvpm info`
 
 **Depends-on:** 1
-**Files:** `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `src/main.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/support/fixtures.rs`, `tests/golden/info-*/`
+**Files:** `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `src/main.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/support/fixtures.rs`, `tests/golden/info-*/`; as built also `crates/lvpm-core/src/{events.rs,fetch.rs,index.rs,install.rs,ops/install.rs,relink.rs}` (the `ArchiveFetching` event, `fetch::on_hand`, and `read_spec` moved into `install` with a 1 MiB cap that `install` and local imports now share), `src/render/mod.rs` (`printable`), `tests/acceptance.rs`, `tests/support/feed.rs`, `README.md`, `Cargo.toml`, `Cargo.lock`
 **Feature files:** `tests/features/lvpm-tui/slice-2-package-details-lvpm-info.feature`
 
 **Behavior:**

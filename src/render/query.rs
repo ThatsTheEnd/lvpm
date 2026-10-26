@@ -3,7 +3,7 @@
 //! function returns the whole text, line ends included, for the caller to
 //! write to stdout.
 
-use super::{Renderer, Stream};
+use super::{Renderer, Stream, printable};
 use lvpm_core::events::Event;
 use lvpm_core::index::{Entry, Import};
 use lvpm_core::install::Manifest;
@@ -80,12 +80,11 @@ pub fn unread_sources(failed: &[(String, String)]) -> String {
 pub fn info(info: &PackageInfo) -> String {
     let (e, spec) = (&info.entry, &info.spec);
     let d = &spec.description;
-    let mut text = format!(
-        "{} {}  {}\n",
-        e.name,
-        e.version,
-        spec.display_name.as_deref().unwrap_or("")
-    );
+    let mut text = format!("{} {}", e.name, e.version);
+    if let Some(display_name) = &spec.display_name {
+        text.push_str(&format!("  {display_name}"));
+    }
+    text.push('\n');
     let fields = [
         ("summary", &d.summary),
         ("description", &d.description),
@@ -165,13 +164,6 @@ fn catalog_row(e: &Entry) -> String {
     }
     row.push_str(&format!("  from {}\n", e.source));
     printable(row)
-}
-
-/// `row` with every control character but the line end shown as `?`, so a
-/// feed's names cannot send escape sequences to the terminal.
-pub fn printable(row: String) -> String {
-    let shown = |c: char| if c.is_control() && c != '\n' { '?' } else { c };
-    row.chars().map(shown).collect()
 }
 
 pub fn list(installed: &[Manifest]) -> String {
@@ -441,6 +433,30 @@ mod tests {
     fn info_with_no_description_shows_no_field_line() {
         let text = info(&package_info(Default::default()));
         assert!(text.starts_with("alpha 2.0  Alpha\nfiles:\n"), "{text}");
+    }
+
+    #[test]
+    fn info_with_no_display_name_ends_its_header_at_the_version() {
+        let mut shown = package_info(Default::default());
+        shown.spec.display_name = None;
+        assert!(info(&shown).starts_with("alpha 2.0\nfiles:\n"));
+    }
+
+    #[test]
+    fn control_characters_from_a_spec_or_a_source_never_reach_the_terminal() {
+        let description = lvpm_core::spec::Description {
+            summary: Some("evil\x1b[2K".into()),
+            ..Default::default()
+        };
+        let failed = vec![("feed\x1b[2K".to_string(), "why\x07".to_string())];
+        let mut details = package_info(description);
+        details.failed = failed.clone();
+        for text in [info(&details), unread_sources(&failed)] {
+            assert!(
+                !text.chars().any(|c| c.is_control() && c != '\n'),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
