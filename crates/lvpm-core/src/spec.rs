@@ -33,6 +33,20 @@ pub struct Spec {
     /// `[Platform] Exclusive_LabVIEW_Version`, verbatim — e.g. `LabVIEW>=25.3`.
     /// Some packages write it bare, as `>=8.6`.
     pub lv_gate: Option<String>,
+    pub description: Description,
+}
+
+/// The `[Description]` section, for people to read. A field the spec leaves
+/// out or leaves empty is `None`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Description {
+    pub description: Option<String>,
+    pub summary: Option<String>,
+    pub vendor: Option<String>,
+    pub packager: Option<String>,
+    pub license: Option<String>,
+    pub url: Option<String>,
+    pub release_notes: Option<String>,
 }
 
 const HOOKS: &[&str] = &[
@@ -145,6 +159,16 @@ pub fn parse(text: &str) -> Result<Spec> {
     let lv_gate = sections
         .get("Platform")
         .and_then(|s| non_empty(s, "Exclusive_LabVIEW_Version"));
+    let field = |k: &str| sections.get("Description").and_then(|s| non_empty(s, k));
+    let description = Description {
+        description: field("Description"),
+        summary: field("Summary"),
+        vendor: field("Vendor"),
+        packager: field("Packager"),
+        license: field("License"),
+        url: field("URL"),
+        release_notes: field("Release Notes"),
+    };
 
     Ok(Spec {
         name,
@@ -154,6 +178,7 @@ pub fn parse(text: &str) -> Result<Spec> {
         script_vis,
         requires,
         lv_gate,
+        description,
     })
 }
 
@@ -230,6 +255,37 @@ File 0="JKI Toolkits.mnu"
         assert_eq!(s.version, "1.1-1");
         assert_eq!(s.file_groups.len(), 1);
         assert!(s.script_vis.is_empty());
+    }
+
+    #[test]
+    fn reads_every_description_field() {
+        let text = format!(
+            "{SAMPLE}\n[Description]\nDescription=\"Edits trees.\"\nSummary=\"Tree API\"\n\
+             Vendor=\"NFG\"\nPackager=\"Ann\"\nLicense=\"BSD\"\nURL=\"http://nfg.example\"\n\
+             Release Notes=\"First.\"\n"
+        );
+        let d = parse(&text).unwrap().description;
+        assert_eq!(
+            d,
+            Description {
+                description: Some("Edits trees.".into()),
+                summary: Some("Tree API".into()),
+                vendor: Some("NFG".into()),
+                packager: Some("Ann".into()),
+                license: Some("BSD".into()),
+                url: Some("http://nfg.example".into()),
+                release_notes: Some("First.".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_section_and_an_empty_value_are_both_absent() {
+        assert_eq!(parse(SAMPLE).unwrap().description, Description::default());
+        let text = format!("{SAMPLE}\n[Description]\nSummary=\"\"\nVendor=\"NFG\"\n");
+        let d = parse(&text).unwrap().description;
+        assert_eq!(d.summary, None);
+        assert_eq!(d.vendor.as_deref(), Some("NFG"));
     }
 
     #[test]
