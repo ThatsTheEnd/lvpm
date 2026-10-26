@@ -45,7 +45,12 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
         .cloned()
         .collect();
     // Names that differ only in case are one package, so they sort together.
-    entries.sort_by_cached_key(|e| (e.name.to_lowercase(), std::cmp::Reverse(e.version.clone())));
+    entries.sort_by_cached_key(|e| {
+        (
+            crate::project::name_key(&e.name),
+            std::cmp::Reverse(e.version.clone()),
+        )
+    });
     Ok(Catalog {
         entries,
         sources: loaded.sources,
@@ -237,12 +242,33 @@ mod tests {
     }
 
     #[test]
+    fn one_unread_source_beside_an_empty_one_is_not_an_error() {
+        let (cwd, mut env) = catalog_env("catalog-failed-empty", &[&[]]);
+        env.config.local_sources.insert(0, cwd.join("missing"));
+        let catalog = catalog(&env, None).unwrap();
+        assert!(catalog.entries.is_empty());
+        assert_eq!(catalog.failed.len(), 1);
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
     fn names_sort_ignoring_case() {
         let packages = [("Beta", "0.1", "Beta"), ("alpha", "1.0", "Alpha")];
         let (cwd, env) = catalog_env("catalog-case", &[&packages]);
         assert_eq!(
             rows(&catalog(&env, None).unwrap()),
             ["alpha 1.0", "Beta 0.1"]
+        );
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn names_differing_in_a_non_ascii_letters_case_are_two_packages() {
+        let packages = [("ärger", "2.0", "Ärger"), ("Ärger", "1.0", "Ärger")];
+        let (cwd, env) = catalog_env("catalog-non-ascii", &[&packages]);
+        assert_eq!(
+            rows(&catalog(&env, None).unwrap()),
+            ["Ärger 1.0", "ärger 2.0"]
         );
         let _ = std::fs::remove_dir_all(&cwd);
     }

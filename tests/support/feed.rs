@@ -193,7 +193,8 @@ impl Feed {
     }
 
     /// From now on the feed in `dir` lists what `listing` says, an
-    /// `index.vipr` body. It serves no archive for it.
+    /// `index.vipr` body. It serves no archive for it. The ETag stays the
+    /// same, so a client that cached the old listing keeps it.
     pub fn publish(&self, dir: &str, listing: &str) {
         let mut routes = self.routes.lock().expect("the routes");
         routes.insert(index_path(dir), listing.as_bytes().to_vec());

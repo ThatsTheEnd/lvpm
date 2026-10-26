@@ -54,8 +54,8 @@ first install a package.
   query)` returns every entry of every source, every version, sorted by name
   then version (newest first). The filter is the one `Index::search` uses: a
   case-insensitive substring of the name or the display name. When a source
-  cannot be read, core falls back to its cache as it does today; a source
-  with no cache is reported in `Catalog::failed` and the other sources are
+  cannot be read, core uses its cached copy unless a refresh was asked for;
+  a source with no usable copy is reported in `Catalog::failed` and the other sources are
   still listed. When every source fails and nothing is imported, `catalog`
   returns an error naming them.
 - **Package details go through the cache, without a destination.**
