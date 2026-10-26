@@ -81,7 +81,7 @@ pub struct Catalog {
 /// needed.
 pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
     let arg = PackageArg::parse(package)?;
-    let constraint = arg.constraint()?;
+    let constraint = arg.read_constraint()?;
     let catalog = catalog(env, Some(&arg.name))?;
     let versions: Vec<Entry> = catalog
         .entries

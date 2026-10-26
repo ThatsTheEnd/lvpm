@@ -106,25 +106,18 @@ pub fn parse(text: &str) -> Result<Spec> {
         let Some(g) = sections.get(&format!("File Group {i}")) else {
             break;
         };
-        let files = match g.get("Num Files").and_then(|n| n.parse::<usize>().ok()) {
-            Some(n) => (0..n)
-                .filter_map(|j| g.get(&format!("File {j}")).cloned())
-                .collect(),
-            // Fall back to scanning `File <n>=` keys when Num Files is absent.
-            None => {
-                let mut v: Vec<(usize, String)> = g
-                    .iter()
-                    .filter_map(|(k, val)| {
-                        k.strip_prefix("File ")?
-                            .parse::<usize>()
-                            .ok()
-                            .map(|n| (n, val.clone()))
-                    })
-                    .collect();
-                v.sort_by_key(|(n, _)| *n);
-                v.into_iter().map(|(_, val)| val).collect()
-            }
-        };
+        // The `File <n>=` keys there are, below Num Files when it is given.
+        // Counting up to Num Files instead would let a spec spin on a huge one.
+        let num_files = g.get("Num Files").and_then(|n| n.parse::<usize>().ok());
+        let mut numbered: Vec<(usize, String)> = g
+            .iter()
+            .filter_map(|(k, val)| {
+                let n = k.strip_prefix("File ")?.parse::<usize>().ok()?;
+                (num_files.is_none_or(|max| n < max)).then(|| (n, val.clone()))
+            })
+            .collect();
+        numbered.sort_by_key(|(n, _)| *n);
+        let files = numbered.into_iter().map(|(_, val)| val).collect();
         file_groups.push(FileGroup {
             index: i,
             target_dir: g.get("Target Dir").cloned().unwrap_or_default(),
@@ -226,6 +219,17 @@ File 0="functions_nfg.mnu"
         assert_eq!(s.file_groups[0].files.len(), 2);
         assert_eq!(s.file_groups[1].replace_mode, "If Newer");
         assert!(s.script_vis.is_empty(), "empty hooks must not be reported");
+    }
+
+    #[test]
+    fn num_files_bounds_the_files_read_and_a_huge_one_does_not_spin() {
+        let group = |num: &str| {
+            format!("[Package]\nName=a\nVersion=1.0\n[File Group 0]\n{num}File 0=x\nFile 1=y\n")
+        };
+        let files = |num: &str| parse(&group(num)).unwrap().file_groups[0].files.clone();
+        assert_eq!(files("Num Files=1\n"), ["x"]);
+        assert_eq!(files(""), ["x", "y"]);
+        assert_eq!(files(&format!("Num Files={}\n", usize::MAX)), ["x", "y"]);
     }
 
     // OpenG-era `.ogp`: different section name, unquoted values, and the

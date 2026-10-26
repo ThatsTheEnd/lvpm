@@ -185,7 +185,7 @@ pub(super) fn announce_target(env: &OpEnv, store: &Roots) {
 /// `name` or `name@version`, as a root of the resolution.
 fn named(package: &str) -> Result<(String, Constraint)> {
     let arg = PackageArg::parse(package)?;
-    let constraint = arg.constraint()?;
+    let constraint = arg.read_constraint()?;
     Ok((arg.name, constraint))
 }
 

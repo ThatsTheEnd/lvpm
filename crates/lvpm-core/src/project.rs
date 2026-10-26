@@ -79,7 +79,7 @@ pub struct PackageArg {
 
 impl PackageArg {
     /// The constraint, read: [`Constraint::Any`] when none was written.
-    pub fn constraint(&self) -> Result<Constraint> {
+    pub fn read_constraint(&self) -> Result<Constraint> {
         self.constraint
             .as_deref()
             .map_or(Ok(Constraint::Any), Constraint::parse)
@@ -390,6 +390,19 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         );
         assert_eq!(p.dependencies[3].1, Constraint::Any);
         assert_eq!(p.nipm, ["ni-daqmx-labview-support"]);
+    }
+
+    #[test]
+    fn a_constraint_admits_its_own_bound() {
+        let v = |s: &str| Version::parse(s);
+        assert!(Constraint::AtLeast(v("2.0")).admits(&v("2.0")));
+        assert!(!Constraint::AtLeast(v("2.0")).admits(&v("1.9")));
+        assert!(Constraint::Exact(v("1.0")).admits(&v("1.0")));
+        assert!(!Constraint::Exact(v("1.0")).admits(&v("1.1")));
+        assert!(Constraint::Any.admits(&v("0.1")));
+        let arg = |s: &str| PackageArg::parse(s).unwrap().read_constraint();
+        assert_eq!(arg("a").unwrap(), Constraint::Any);
+        assert!(arg("a@<2").is_err());
     }
 
     #[test]

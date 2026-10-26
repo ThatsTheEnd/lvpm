@@ -373,8 +373,10 @@ async fn alpha_1_undescribed(_world: &mut CliWorld) {
 #[given(expr = "{string} has run once")]
 async fn has_run_once(world: &mut CliWorld, command: String) {
     world.run(&command, None);
-    assert_eq!(world.last_output.as_ref().unwrap().exit_code, 0);
-    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    let hits = archive_hits(world, &ALPHA_2_DESCRIBED);
+    assert_eq!(hits, FIRST_RUN_FETCHES, "archive requests on the first run");
 }
 
 #[given(r#"the archive request of "alpha" 2.0 fails"#)]
@@ -433,9 +435,11 @@ async fn shows_versions(world: &mut CliWorld) {
     "it shows the description, summary, vendor, packager, license, URL and release notes of 2.0"
 )]
 async fn shows_description(world: &mut CliWorld) {
-    let lines: Vec<&str> = stdout(world).lines().collect();
-    assert_eq!(lines[0], "alpha 2.0  Alpha");
-    assert_eq!(lines[1..=DESCRIPTION_LINES.len()], DESCRIPTION_LINES);
+    let out = stdout(world);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines.first(), Some(&"alpha 2.0  Alpha"), "{out}");
+    let shown = lines.get(1..=DESCRIPTION_LINES.len());
+    assert_eq!(shown, Some(&DESCRIPTION_LINES[..]), "{out}");
 }
 
 #[then(r#"it shows that 2.0 requires "beta" >= 0.1"#)]

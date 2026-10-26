@@ -372,7 +372,8 @@ enum Cmd {
     /// Show a package's details: its description, requirements, files and
     /// versions. Downloads the archive into the cache if it is not there yet.
     Info {
-        /// The package, and optionally which version: newest if not given.
+        /// The package, and optionally which version or constraint (`1.0`,
+        /// `>=1.0`, `*`): newest if not given.
         #[arg(value_name = "PACKAGE[@VERSION]")]
         package: String,
     },
