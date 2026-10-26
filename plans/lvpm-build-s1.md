@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-26
 **Branch**: claude/s0-pilot-acceptance (S1 branches off it as `claude/s1-lvpm-build`)
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: custom: tests/features/build-slices/
 **Spec**: [docs/specs/lvpm-build-s1.md](../docs/specs/lvpm-build-s1.md)
 
@@ -506,24 +506,24 @@ None.
 
 ## Build Progress
 
-- [ ] Wave 1
-  - [ ] Slice 1: venv ports
-    - [ ] 1.1 pick the port at create, repair it before LabVIEW
-    - [ ] 1.2 the harness predicts the same port
-  - [ ] Slice 2: global LabVIEW
-    - [ ] 2.1 the claim
-    - [ ] 2.2 start and end our own global LabVIEW
-  - [ ] Slice 3: labview constraint
-    - [ ] 3.1 parse, write and report the constraint form
-- [ ] Wave 2
-  - [ ] Slice 4: lvpm build
-    - [ ] 4.1 membership reader
-    - [ ] 4.2 `[distribution]` and the spec writer
-    - [ ] 4.3 the build operation and the command
-- [ ] Wave 3
-  - [ ] Slice 5: pilot loop
-    - [ ] 5.1 snapshot and exact-membership scenario
-    - [ ] 5.2 complete the pending loop, and docs
+- [x] Wave 1
+  - [x] Slice 1: venv ports
+    - [x] 1.1 pick the port at create, repair it before LabVIEW
+    - [x] 1.2 the harness predicts the same port
+  - [x] Slice 2: global LabVIEW
+    - [x] 2.1 the claim
+    - [x] 2.2 start and end our own global LabVIEW
+  - [x] Slice 3: labview constraint
+    - [x] 3.1 parse, write and report the constraint form
+- [x] Wave 2
+  - [x] Slice 4: lvpm build
+    - [x] 4.1 membership reader
+    - [x] 4.2 `[distribution]` and the spec writer
+    - [x] 4.3 the build operation and the command
+- [x] Wave 3
+  - [x] Slice 5: pilot loop
+    - [x] 5.1 snapshot and exact-membership scenario
+    - [x] 5.2 complete the pending loop, and docs
 
 ## Plan Review Summary
 
@@ -549,3 +549,38 @@ Both returned `needs-revision`; this revision addresses every blocker:
 ## Approval
 
 Approved by the user in chat on 2026-10-26 ("I approve, build it").
+
+## Build decisions
+
+Decided during the unattended build on 2026-10-26, without a human in the
+loop. Each one can be reversed in a follow-up.
+
+| # | Where | Decision | Why |
+|---|---|---|---|
+| 1 | Slice 1 | The port probe binds loopback only, not wildcard plus loopback. | A reserved or used port fails the loopback bind too, and LabVIEW's VI Server listens on loopback. |
+| 2 | Slice 1 | `ensure_port` runs where a LabVIEW is started on the venv (`ensure_instance`, `launch`), not separately in install and relink. | Install and relink reach LabVIEW through `ensure_instance`, so they get the repair without a second call site. |
+| 3 | Slice 2 | Steps 2.1 and 2.2 landed as one commit. | The claim and starting and ending our own global LabVIEW are not testable apart. |
+| 4 | Slice 2 | When another run holds the global LabVIEW, the `@global-labview` scenarios are left out by selection and the run prints why. They do not fail. | Two worktrees testing at once is normal. A failure would be noise. |
+| 5 | Slice 2 | A claim whose PID was reused by another LabVIEW within the same start time is accepted as a race, with a `shortcut:` comment. | The claim stores PID plus start time. A collision on both is unlikely. |
+| 6 | Slice 3 | `labview` is checked when the manifest is parsed, but stored as the lower-bound year, as the plan's Risks section says. | Callers stay unchanged, and a bad value fails at once. |
+| 7 | Slice 4 | `.lvlib`/`.lvclass` are read with a small `<Item` tag scanner, not an XML crate. | Only `Item` tags with `Type`/`URL` matter. The scanner refuses an unclosed tag and has a `shortcut:` comment. |
+| 8 | Slice 4 | An auto-populating folder is a `Type="Folder"` item that has a `URL`. Its files on disk are all members. | That is how the pilot's `.lvlib` and LabVIEW's own files encode it. Virtual folders have no URL. |
+| 9 | Slice 4 | `[distribution]` errors are `anyhow` messages naming the full key, not a `BuildError` type. | Every caller only prints them. The scenarios match the key text exactly. |
+| 10 | Slice 4 | An exact dependency (`"1.0"`) is written to `Requires` as `name>=1.0`. | VIP `Requires` has no exact form that VIPM honours, and lvpm reads dependencies as floors (ADR 1). |
+| 11 | Slice 4 | No `BuildWrote` event. `ops::build` returns `Built { path, files }`, and the CLI renders it. | It is the op's only output, the way `launch` returns its result. An event would add a variant with one emitter and no listener. |
+| 12 | Slice 4 | Zip layout: `spec` first, then members sorted by entry name, Deflate level 6, 1980 timestamps, no extra fields. | Same sources give the same bytes, and the scenario checks it. |
+| 13 | Slice 5 | AC4's "98 files" is replaced by an exact check. The package equals the published package's `vi.lib` files, read from that archive, minus 6 files the feature names: 3 custom probes, 2 VI templates and `versioninfo.txt`. | Those 6 live outside the library's folder, and the library does not list them. The published package added them from its `.vipb`. "98, nothing from `_Probes`" contradicted itself. |
+| 14 | Slice 5 | **Pilot A's source is not committed** (the plan wanted `hse-logger-f7cc16a.zip` in `tests/fixtures`). `@pilot-source` scenarios read a checkout named by `LVPM_TEST_PILOT_A`, check its HEAD is `f7cc16a`, and are counted as not run without it. | Pilot A's LICENSE says "Redistribution of this library in source form to third parties is prohibited". The repository is public. |
+| 15 | Slice 5 | README.md has no milestone list, and `docs/roadmap.md` is the upstream author's. AC10's "README ticks S1" became "README shows `lvpm build`" in Quick start, and the docs scenario checks that. | The closest README place that exists. The roadmap is not edited. |
+
+**Open, for the user:**
+
+- The S0 PR (#49) commits `hse_lib_hse_logger-2.2.2.114.vip`. Its spec
+  says "BSD License", but its `license` file forbids redistribution "in source
+  form", and a `.vip` holds source VIs. Whether that archive may stay in a
+  public repository is a question for Hampel Software Engineering. The
+  build-slices README now says so instead of "BSD".
+- HSE Logger is installed in the global LabVIEW 2026 (`vi.lib/Hampel Software
+  Engineering/HSE Logger`). Both `@labview` pilot-loop scenarios fail on
+  purpose until it is uninstalled with VIPM. The S1 loop scenario has not run
+  end to end yet.
