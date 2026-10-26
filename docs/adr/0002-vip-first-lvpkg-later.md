@@ -4,7 +4,7 @@ Date: 2026-10-26
 
 ## Status
 
-Accepted. One follow-up question is open; see the end.
+Accepted
 
 ## Context
 
@@ -55,6 +55,12 @@ VIPM's current `spec` format (`File Format = "vip"`, `Format Version =
    map, every feed. The one exception is per-file `RECORD` checks, which only
    `.lvpkg` has. A library author never has to pick `.lvpkg` for security
    reasons.
+6. **`lvpm build` never writes install hooks** (`[Script VIs]`) for now.
+   Installing a package lvpm built runs no code, in VIPM or in lvpm. Pilot A's
+   own `PostInstall.vi` only opens HSE's documentation page (read from the
+   VI's strings, not run), so nothing is lost. An opt-in can be added later if
+   a real library needs one; that change is additive. How lvpm treats hooks in
+   packages it installs is [ADR 3](0003-install-hooks-off-by-default.md).
 
 ## Consequences
 
@@ -63,9 +69,3 @@ VIPM's current `spec` format (`File Format = "vip"`, `Format Version =
   existing releases keep working.
 - If VIPM rejects lvpm's `.vip` in S1b, `.vip` stays an lvpm-only format and
   S7a moves earlier. S2, S4 and S7a are re-planned before any of them merges.
-
-## Open questions
-
-- **Install hooks in lvpm-built `.vip` files.** Pilot A's own release ships a
-  `PostInstall.vi`. Look at what it does before deciding whether `lvpm build`
-  may write `[Script VIs]`.

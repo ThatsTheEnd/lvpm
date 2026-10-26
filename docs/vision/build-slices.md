@@ -75,6 +75,10 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    S8's index all add to whatever this picks.
 5. **Record the core/CLI split** that the lockfile work made, so slices cite
    the ADR instead of restating the rule.
+6. **Install hooks.** Decided in
+   [ADR 3](../adr/0003-install-hooks-off-by-default.md): off by default
+   everywhere, a warning with instructions when one is skipped, and an
+   allowlist by package name. `lvpm build` writes none (ADR 2).
 
 ## Pilot libraries
 
@@ -100,7 +104,7 @@ link. Checked 2026-10-26 from each repository's `.vipb`.
 
 | Wave | Slices | Can run in parallel |
 |---|---|---|
-| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands, S11 dependency groups | yes (S5, S10a–d and S11 touch `src/main.rs`; S5, S10a and S10b also touch `events.rs` and `src/render/mod.rs`; S10a and S11 touch `manifest_edit.rs`: merge one first, rebase the others) |
+| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands, S11 dependency groups, S12 hooks off by default | yes (S5, S10a–d, S11 and S12 touch `src/main.rs`; S5, S10a, S10b and S12 also touch `events.rs`; S5, S10a and S10b touch `src/render/mod.rs`; S10a and S11 touch `manifest_edit.rs`; S11 and S12 touch `ops/sync.rs`, `ops/uninstall.rs` and `project.rs`, so build them one after the other: merge one first, rebase the others) |
 | 2 | S1 `lvpm build` | — |
 | 3 | S1b VIPM round trip, S2 publish to folder, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S2, S5b and S9 touch `src/main.rs`; S1b, S5b and S9 touch `ops/build.rs`; S1b and S2 touch `tests/features/build-slices/`: merge one first, rebase the others) |
 | 4 | S6 attestations and policy, S7a `.lvpkg`, S7c `@org` scopes | yes (S6 and S7c touch `project.rs` and `lockfile.rs`; S7a and S7c touch `index.rs`) |
@@ -556,3 +560,34 @@ Acceptance criteria:
 Demo: a pilot project with a `ci` group; `lvpm sync` on a dev machine, `lvpm sync --group ci` in CI.
 
 Decide in `/specs`: the lockfile field's name and shape; whether `sync` installs `dev` by default (today it does).
+
+### Slice S12: Install hooks off by default
+
+**Depends-on:** none
+**Files:** `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/ops/hooks.rs`, `crates/lvpm-core/src/ops/uninstall.rs`, `crates/lvpm-core/src/config.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/events.rs`, `src/main.rs`, `src/render/hooks.rs`, `tests/features/hooks/`
+
+Goal: installing a package runs none of its code unless you allowed it, and
+you always learn when a hook was skipped. Rules as in
+[ADR 3](../adr/0003-install-hooks-off-by-default.md).
+
+In scope:
+- Hooks are skipped by default on developer machines too.
+- A warning after every install or sync that skipped a hook, naming the package and hook, with the `lvpm run-hooks` command and the allowlist line to add.
+- An allowlist by package name in `lvpm.toml`, and one in the user config for global installs.
+- Uninstall hooks run only if the install hook ran.
+
+Out of scope: running hooks in a venv (never); hooks in lvpm-built packages (ADR 2).
+
+Acceptance criteria:
+- [ ] A global install of a package with a `PostInstall` hook does not run it, warns, and exits 0.
+- [ ] The warning names the package and the hook, and shows both the `lvpm run-hooks` command and the allowlist line; following either runs the hook *(manual: needs LabVIEW)*.
+- [ ] With the package on the allowlist, the next install runs the hook without a warning.
+- [ ] `--hooks` runs every hook for that one command.
+- [ ] A package whose install hook was skipped runs no uninstall hook.
+- [ ] The README hooks line is updated to the new default.
+
+Demo: install pilot A globally; lvpm skips its `PostInstall` and says how to allow it.
+
+Decide in `/specs`: the allowlist's table and key names; the user-config key;
+the warning's exact wording; whether `lvpm.lock` pins each allowed hook VI's
+hash, so a new version's changed hook is skipped again.
