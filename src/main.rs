@@ -522,7 +522,7 @@ fn main() -> std::process::ExitCode {
             ExitCode::SUCCESS
         }
         (Ok(report), true) => {
-            println!("{}", render::json::result(&report.result));
+            render::json::print(&render::json::result(&report.result));
             ExitCode::SUCCESS
         }
         // As `main() -> Result` would print it, but a feed's text in an error
@@ -532,7 +532,7 @@ fn main() -> std::process::ExitCode {
             ExitCode::FAILURE
         }
         (Err(error), true) => {
-            println!("{}", render::json::error(&error));
+            render::json::print(&render::json::error(&error));
             ExitCode::FAILURE
         }
     }
@@ -662,18 +662,17 @@ fn run(cli: &Cli) -> Result<Report> {
             upgrade,
             upgrade_package,
         } => {
-            let locked = match (check, upgrade, upgrade_package.as_slice()) {
-                (true, ..) => ops::lock::check(&env).map(|()| json!({ "up_to_date": true })),
-                (_, true, _) => ops::lock::upgrade(&env, &Upgrade::Everything).map(|_| json!(null)),
-                (_, _, []) => ops::lock::lock(&env).map(|_| json!(null)),
-                (_, _, packages) => ops::lock::upgrade(&env, &Upgrade::Packages(packages.to_vec()))
-                    .map(|_| json!(null)),
+            let done = |_| Ok(Report::done("lock"));
+            match (check, upgrade, upgrade_package.as_slice()) {
+                (true, ..) => ops::lock::check(&env)
+                    .map(|()| Report::new(String::new(), json!({ "up_to_date": true }))),
+                (_, true, _) => ops::lock::upgrade(&env, &Upgrade::Everything).map(done),
+                (_, _, []) => ops::lock::lock(&env).map(done),
+                (_, _, packages) => {
+                    ops::lock::upgrade(&env, &Upgrade::Packages(packages.to_vec())).map(done)
+                }
             }
-            .map_err(|why| anyhow!(render::lock::error(&why)))?;
-            Ok(match locked.is_null() {
-                true => Report::done("lock"),
-                false => Report::new(String::new(), locked)?,
-            })
+            .map_err(|why| anyhow!(render::lock::error(&why)))?
         }
         Cmd::List => {
             let installed = ops::query::list(&env)?;
@@ -736,7 +735,7 @@ fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {
     })
 }
 
-fn cmd_venv(env: &OpEnv, sub: &VenvCmd, json: bool) -> Result<Report> {
+fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool) -> Result<Report> {
     match sub {
         VenvCmd::Create => {
             let created = ops::venv_cmd::create(env)?;
@@ -745,12 +744,15 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, json: bool) -> Result<Report> {
         VenvCmd::Status => {
             let status = ops::venv_cmd::status(env)?;
             let text = render::venv::status(status.as_ref(), &env.cwd);
-            Report::new(text, json!({ "exists": status.is_some(), "venv": status }))
+            Report::new(
+                text,
+                json!({ "exists": status.is_some(), "status": status }),
+            )
         }
         VenvCmd::Remove { yes } => {
             let venv = ops::venv_cmd::existing(env)?;
             // Under --json stdin is no place for an answer.
-            if json && !yes {
+            if under_json && !yes {
                 bail!("`venv remove` asks before it deletes; pass --yes to delete under --json");
             }
             ops::venv_cmd::remove(env, &venv, *yes || confirm_removal(&venv)?)?;

@@ -7,7 +7,7 @@ use crate::CliWorld;
 use crate::support::feed::{NI_FEED_DIR, NOT_AN_ARCHIVE, PROJECT_FEED_DIR, archive_path};
 use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::golden::{Golden, Mode, Output};
-use crate::support::sandbox::{DEST_DIR, Sandbox};
+use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR, Sandbox};
 use cucumber::{given, then, when};
 use lvpm_core::manifest_edit::DependencyTable;
 use serde_json::{Value, json};
@@ -192,6 +192,11 @@ async fn synced_project(world: &mut CliWorld) {
 
 // ---- Givens ----
 
+#[given("the project needs the detected LabVIEW and has no venv")]
+async fn project_needs_labview(world: &mut CliWorld) {
+    venv::labview_project(world).await;
+}
+
 #[given("the project has a venv on the detected LabVIEW")]
 async fn project_has_venv(world: &mut CliWorld) {
     venv::venv_for_labview(world).await;
@@ -294,7 +299,8 @@ async fn message_names_sources(world: &mut CliWorld) {
     let error = last_only(world, "error");
     let message = error.as_str().expect("the error is a message");
     // Outside a project: the local packages folder and the public feed.
-    for source in ["\"nothing\"", "<SANDBOX>/local-packages", NI_FEED_DIR] {
+    let local = format!("<SANDBOX>/{LOCAL_PACKAGES_DIR}");
+    for source in ["\"nothing\"", local.as_str(), NI_FEED_DIR] {
         assert!(message.contains(source), "names {source}: {message}");
     }
 }
@@ -358,7 +364,7 @@ async fn skipped_for_scratch(world: &mut CliWorld) {
     }
 }
 
-#[then(r#"it asked "[y/N]""#)]
+#[then(regex = r#"^it asked "\[y/N\]"$"#)]
 async fn it_asked(world: &mut CliWorld) {
     let stderr = &output(world).stderr;
     assert!(stderr.contains("[y/N]"), "{stderr}");
@@ -397,32 +403,32 @@ fn read(file: &str) -> String {
     std::fs::read_to_string(root.join(file)).unwrap_or_else(|why| panic!("read {file}: {why}"))
 }
 
-/// The Then reads both files itself; this only checks the table is there.
+/// The Then reads both files itself.
 #[when("the README's exit-code table is read")]
-async fn read_exit_code_table(_world: &mut CliWorld) {
-    assert!(
-        read(README).contains("| Code |"),
-        "the README has an exit-code table"
-    );
-}
+async fn read_exit_code_table(_world: &mut CliWorld) {}
 
-/// A code row is `| 0 | ...`, and its scenario ends in "the exit code is N"
-/// or names "exit code N".
+/// A code row is `| 0 | ...`, and some step line ends in "exit code N".
 #[then("it lists 0, 1 and 2, and each has a scenario in this feature")]
 async fn lists_each_code(_world: &mut CliWorld) {
     let (readme, feature) = (read(README), read(FEATURE));
+    assert!(
+        readme.contains("| Code |"),
+        "the README has an exit-code table"
+    );
     for code in ["0", "1", "2"] {
         let row = format!("| {code} |");
         assert!(
             readme.lines().any(|line| line.starts_with(&row)),
             "the README's table has {row}"
         );
-        let named = [
+        let ends = [
             format!("the exit code is {code}"),
             format!("exit code {code}"),
         ];
         assert!(
-            named.iter().any(|text| feature.contains(text.as_str())),
+            feature.lines().any(|line| ends
+                .iter()
+                .any(|end| line.trim_end().ends_with(end.as_str()))),
             "a scenario ends in exit code {code}"
         );
     }

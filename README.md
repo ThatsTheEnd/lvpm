@@ -96,11 +96,15 @@ is the reference and the term-by-term map from OGPT to lvpm.
 `--json` makes every command but the diagnostics (`app-probe`, `vi-probe`,
 `vi-save`, `vi-run`) write JSON Lines to stdout. Each event is one line,
 `{"event": "<name>", "data": {...}}`, for example
-`{"event": "phase_started", "data": {"phase": "download"}}`. The last line is
+`{"event": "phase_started", "data": {"phase": "download"}}`; an event with no
+fields has no `data`, for example `{"event": "indexes_loading"}`. The last line is
 `{"result": ...}` when the command succeeds or `{"error": "<message>"}` when
 it fails; no other line has either key. The query commands put their data in
 the result (`search`, `info`, `list`, `targets`, `config get`, `cache add`,
 `venv status`, `lock --check`); the others put `{"command": "<name>"}` there.
+`venv status` gives `{"exists": false, "status": null}` when there is no venv.
+A LabVIEW's `version` is its internal version (`26.3` for LabVIEW 2026), not
+a package version.
 Under `--json` a command never prompts: `venv remove` fails unless it gets
 `--yes`.
 

@@ -32,8 +32,15 @@ const ENUMERATED_FIELDS: &[&str] = &["event", "outcome"];
 pub fn fields_that_are_not_data(event: &Event) -> Vec<String> {
     let json = serde_json::to_value(event).expect("an event serialises");
     // `{"event": variant, "data": {fields}}`; a variant without fields has no data.
-    let variant = ("event".to_string(), json["event"].clone());
-    let fields = json["data"].as_object().cloned().unwrap_or_default();
+    let name = json["event"].as_str().expect("an event has a name");
+    let variant = ("event".to_string(), Value::from(name));
+    let fields = match json.get("data") {
+        None => Default::default(),
+        Some(data) => data
+            .as_object()
+            .cloned()
+            .expect("an event's data is an object"),
+    };
     std::iter::once(variant)
         .chain(fields)
         .filter_map(|(field, value)| match value {

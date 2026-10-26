@@ -428,12 +428,18 @@ Feature: Machine-readable output
 
     Examples:
       | command          | name   |
-      | venv create      | venv   |
       | launch           | launch |
       | start            | start  |
       | relink --all     | relink |
       | run-hooks --all  | run-hooks |
       | refresh          | refresh |
+
+  @labview
+  Scenario: venv create on a project with no venv
+    Given the project needs the detected LabVIEW and has no venv
+    When "lvpm --json venv create" runs in the project
+    Then the last line is the only one with a "result" key and it is {"command": "venv"}
+    And the exit code is 0
 
   Scenario: targets is a list, with no recording since it names this machine's LabVIEWs
     When "lvpm --json targets" runs in any folder
@@ -1589,9 +1595,9 @@ None.
 
 ### Wave 3
 - [x] Slice 3: `--json` and the exit-code table
-  - [ ] Step 3.1: `--json`, the JSON sink and the result line
-  - [ ] Step 3.2: `--json` on the remaining commands
-  - [ ] Step 3.3: The exit codes and the JSON format in the README
+  - [x] Step 3.1: `--json`, the JSON sink and the result line
+  - [x] Step 3.2: `--json` on the remaining commands
+  - [x] Step 3.3: The exit codes and the JSON format in the README
 
 ### Wave 4
 - [ ] Slice 4: The `lvpm-tui` crate starts and quits
