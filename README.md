@@ -91,6 +91,30 @@ with the LabVIEW-side work (fixing VI links, running hook VIs) done over VI
 Server, a documented TCP protocol. [docs/ogpm-model.md](docs/ogpm-model.md)
 is the reference and the term-by-term map from OGPT to lvpm.
 
+## JSON output and exit codes
+
+`--json` makes every command but the diagnostics (`app-probe`, `vi-probe`,
+`vi-save`, `vi-run`) write JSON Lines to stdout. Each event is one line,
+`{"event": "<name>", "data": {...}}`, for example
+`{"event": "phase_started", "data": {"phase": "download"}}`. The last line is
+`{"result": ...}` when the command succeeds or `{"error": "<message>"}` when
+it fails; no other line has either key. The query commands put their data in
+the result (`search`, `info`, `list`, `targets`, `config get`, `cache add`,
+`venv status`, `lock --check`); the others put `{"command": "<name>"}` there.
+Under `--json` a command never prompts: `venv remove` fails unless it gets
+`--yes`.
+
+The exit code is the same with or without `--json`:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The command succeeded |
+| 1 | The command failed; the message says why |
+| 2 | The arguments are wrong (a usage error); nothing ran |
+
+The event names, the result and error keys and these codes are stable: a
+change to them is a breaking change and gets a major version.
+
 ## Learn more
 
 | Document | What is in it |
