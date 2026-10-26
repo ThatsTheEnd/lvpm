@@ -106,6 +106,18 @@ pub fn port_is_listening(port: u16) -> bool {
     TcpStream::connect_timeout(&address, PORT_PROBE_TIMEOUT).is_ok()
 }
 
+/// Wait for something to listen on `port`, up to `deadline_after`.
+pub fn wait_until_port_is_listening(port: u16, deadline_after: Duration) -> bool {
+    let deadline = Instant::now() + deadline_after;
+    while !port_is_listening(port) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    true
+}
+
 /// Wait for nothing to listen on `port` any more, up to `deadline_after`.
 pub fn wait_until_port_is_quiet(port: u16, deadline_after: Duration) -> bool {
     let deadline = Instant::now() + deadline_after;

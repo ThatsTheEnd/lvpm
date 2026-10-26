@@ -148,6 +148,15 @@ fn has_labview_tag(scenario: &Scenario) -> bool {
     scenario.tags.iter().any(|tag| tag == LABVIEW_TAG)
 }
 
+/// Whether the scenario uses the LabVIEW installation's own LabVIEW, which
+/// one test run on the machine at a time may claim.
+fn uses_installation(scenario: &Scenario) -> bool {
+    scenario
+        .steps
+        .iter()
+        .any(|step| step.value == support::global::INSTALLATION_STEP)
+}
+
 /// How many scenarios of a feature the harness ran (`@labview` ones) and did
 /// not run, by reason.
 #[derive(Default)]
@@ -157,6 +166,7 @@ struct ScenarioCounts {
     unsafe_not_run: usize,
     pending_not_run: usize,
     interactive_not_run: usize,
+    installation_busy: usize,
 }
 
 /// Whatever a scenario started on its venv is stopped, whether it passed or not.
@@ -181,6 +191,7 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
     let pending_not_run = Arc::new(AtomicUsize::new(0));
     let labview_ran = Arc::new(AtomicUsize::new(0));
     let interactive_not_run = Arc::new(AtomicUsize::new(0));
+    let installation_busy = Arc::new(AtomicUsize::new(0));
     let (counted_labview, counted_unsafe, counted_pending, counted_labview_ran) = (
         labview_not_run.clone(),
         unsafe_not_run.clone(),
@@ -188,6 +199,7 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
         labview_ran.clone(),
     );
     let counted_interactive = interactive_not_run.clone();
+    let counted_busy = installation_busy.clone();
     let (test_labview, only_labview, headless_labview) = (
         env_flag(TEST_LABVIEW_ENV_VAR),
         env_flag(ONLY_LABVIEW_ENV_VAR),
@@ -211,6 +223,12 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
             .filter_run(path, move |_, _, scenario| {
                 let (counter, runs) =
                     match select(&scenario.tags, test_labview, only_labview, headless_labview) {
+                        Selection::Run
+                            if uses_installation(scenario)
+                                && !support::global::claim_installation() =>
+                        {
+                            (&counted_busy, false)
+                        }
                         Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
                         Selection::Run => return true,
                         Selection::NotLabview => return false,
@@ -238,6 +256,7 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
         unsafe_not_run: unsafe_not_run.load(Ordering::SeqCst),
         pending_not_run: pending_not_run.load(Ordering::SeqCst),
         interactive_not_run: interactive_not_run.load(Ordering::SeqCst),
+        installation_busy: installation_busy.load(Ordering::SeqCst),
     };
     (counts, outcome)
 }
@@ -268,7 +287,7 @@ fn run_features() {
     }
     let mut failures = Vec::new();
     let (mut labview_not_run, mut unsafe_not_run, mut pending_not_run) = (0, 0, 0);
-    let (mut labview_ran, mut interactive_not_run) = (0, 0);
+    let (mut labview_ran, mut interactive_not_run, mut installation_busy) = (0, 0, 0);
     for feature in FEATURE_FILES {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
         let (counts, outcome) = run_feature(path, mode);
@@ -277,6 +296,7 @@ fn run_features() {
         unsafe_not_run += counts.unsafe_not_run;
         pending_not_run += counts.pending_not_run;
         interactive_not_run += counts.interactive_not_run;
+        installation_busy += counts.installation_busy;
         if let Err(why) = outcome {
             failures.push(format!("{feature}: {why}"));
         }
@@ -300,6 +320,14 @@ fn run_features() {
     if interactive_not_run > 0 {
         println!(
             "{interactive_not_run} @{INTERACTIVE_TAG} scenarios left to their headless copies ({HEADLESS_LABVIEW_ENV_VAR}=1)"
+        );
+    }
+    if installation_busy > 0 {
+        println!(
+            "{installation_busy} @{LABVIEW_TAG} scenarios not run on the LabVIEW installation: \
+             another test run holds it, or a LabVIEW already listens on its port (set {}=1 to \
+             use that LabVIEW)",
+            support::global::USE_RUNNING_LABVIEW_ENV_VAR
         );
     }
     if pending_not_run > 0 {

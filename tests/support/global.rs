@@ -9,7 +9,10 @@
 //! wider, and refuses to run when any of them already exists.
 
 use super::fixtures::GLOBAL_PAYLOAD_DIR;
+use super::process;
+use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// The package name the fixture installs under.
 pub const FIXTURE_NAME: &str = "lvpm_test_fixture";
@@ -21,6 +24,40 @@ const HOOKS_DIR: &str = "hooks";
 const LABVIEW_EXE: &str = "LabVIEW.exe";
 /// What `lvpm` assumes when `LabVIEW.ini` does not name a VI Server port.
 const DEFAULT_VI_SERVER_PORT: u16 = 3363;
+/// The step a scenario that uses the installation's own LabVIEW starts with.
+pub const INSTALLATION_STEP: &str = "the LabVIEW installation is free of the lvpm test fixture";
+/// Set where the LabVIEW already on the installation's port is the run's to
+/// use and is not stopped after (CI's throwaway container starts one up front).
+pub const USE_RUNNING_LABVIEW_ENV_VAR: &str = "LVPM_TEST_USE_RUNNING_LABVIEW";
+/// Held by the test run, in any worktree, that uses the installation's LabVIEW.
+const CLAIM_FILE: &str = "lvpm-test-installation-labview.lock";
+
+/// Whether the LabVIEW on the installation's port is one the run did not start
+/// and may use as it is.
+pub fn use_running_labview() -> bool {
+    std::env::var(USE_RUNNING_LABVIEW_ENV_VAR).is_ok_and(|value| value == "1")
+}
+
+/// Whether this run may use the installation's own LabVIEW: no other test run
+/// on this machine holds it, and no LabVIEW listens on its default VI Server
+/// port (one somebody is using). The first answer holds for the whole run, and
+/// a yes keeps the claim until the run ends.
+pub fn claim_installation() -> bool {
+    static CLAIM: OnceLock<Option<File>> = OnceLock::new();
+    use_running_labview()
+        || CLAIM
+            .get_or_init(|| {
+                let file = File::create(std::env::temp_dir().join(CLAIM_FILE)).ok()?;
+                file.try_lock().ok()?;
+                (!process::port_is_listening(DEFAULT_VI_SERVER_PORT)).then_some(file)
+            })
+            .is_some()
+}
+
+/// The installation's `LabVIEW.exe`.
+pub fn labview_exe(labview_dir: &Path) -> PathBuf {
+    labview_dir.join(LABVIEW_EXE)
+}
 
 /// The marker the hook leaves. LabVIEW writes it to its own temp directory,
 /// which for the user's LabVIEW is the temp directory of the user running this.

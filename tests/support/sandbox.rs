@@ -22,7 +22,7 @@ use lvpm_core::target::{self, LvTarget};
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -49,6 +49,9 @@ const TEMP_DIR_PREFIX: &str = "lvpm-acceptance-";
 
 /// No lvpm command in the characterization set takes this long; a hang is a bug.
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the installation's LabVIEW may take to answer VI Server after it
+/// is started: a first start of the day can take a couple of minutes.
+const LABVIEW_START_DEADLINE: Duration = Duration::from_secs(300);
 /// The variable that makes lvpm treat the machine as headless. A child has it
 /// only when its sandbox was told so.
 const HEADLESS_ENV_VAR: &str = "LV_RTE_HEADLESS";
@@ -247,6 +250,8 @@ pub struct Sandbox {
     /// Whether the children run with `LV_RTE_HEADLESS` set: only the scenarios
     /// that ask for it, and only their own children.
     headless: AtomicBool,
+    /// The installation's LabVIEW, when this scenario started it.
+    installation_labview: Mutex<Option<Child>>,
 }
 
 impl Sandbox {
@@ -258,6 +263,7 @@ impl Sandbox {
             learned: Mutex::new(Learned::default()),
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
+            installation_labview: Mutex::new(None),
         };
         for name in [
             WORK_DIR,
@@ -596,11 +602,12 @@ impl Sandbox {
         })
     }
 
-    /// Make sure the LabVIEW installation is free of the fixture package and
-    /// that its VI Server is answering, then allow the scenario to install the
-    /// fixture into it. Refuses (panics) otherwise: nothing that was not put
-    /// there by this scenario may ever be removed, and a LabVIEW is never
-    /// started or restarted on the user's behalf.
+    /// Make sure the LabVIEW installation is free of the fixture package,
+    /// start its LabVIEW and wait for VI Server, then allow the scenario to
+    /// install the fixture into it. Refuses (panics) when the fixture is there
+    /// already or a LabVIEW already listens on the port: nothing this scenario
+    /// did not put there may be removed, and a LabVIEW someone else started is
+    /// never used (unless `global::USE_RUNNING_LABVIEW_ENV_VAR` says so).
     pub fn require_clean_labview_installation(&self) {
         let labview = self.detected_labview();
         let program_data = global::program_data();
@@ -614,14 +621,58 @@ impl Sandbox {
         });
         let port = global::vi_server_port(&ini);
         assert!(
-            global::vi_server_enabled(&ini) && process::port_is_listening(port),
-            "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}: start it yourself, \
-             this scenario never starts or restarts the user's LabVIEW"
+            global::vi_server_enabled(&ini),
+            "LabVIEW {LABVIEW_YEAR} has VI Server turned off in its LabVIEW.ini"
         );
+        if global::use_running_labview() {
+            assert!(
+                process::port_is_listening(port),
+                "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}"
+            );
+        } else {
+            self.start_installation_labview(&labview, port);
+        }
         let mut learned = self.learned();
         learned.labview_port = Some(port);
         learned.store_existed = global::store_dir(&program_data).exists();
         learned.global_fixture_armed = true;
+    }
+
+    /// Start the installation's LabVIEW and wait for its VI Server; it is this
+    /// scenario's own, stopped by `close_installation_labview`.
+    fn start_installation_labview(&self, labview: &LabviewInstall, port: u16) {
+        assert!(
+            !process::port_is_listening(port),
+            "a LabVIEW already listens on port {port}: this scenario only uses a LabVIEW it starts"
+        );
+        let exe = global::labview_exe(&labview.dir);
+        let child = Command::new(&exe)
+            .spawn()
+            .unwrap_or_else(|e| panic!("starting {}: {e}", exe.display()));
+        *self.started_labview() = Some(child);
+        assert!(
+            process::wait_until_port_is_listening(port, LABVIEW_START_DEADLINE),
+            "the LabVIEW {LABVIEW_YEAR} this scenario started did not answer VI Server on port \
+             {port} within {LABVIEW_START_DEADLINE:?}"
+        );
+    }
+
+    /// Stop the installation's LabVIEW if this scenario started it; whether
+    /// its VI Server port is quiet afterwards.
+    pub fn close_installation_labview(&self) -> bool {
+        let Some(mut child) = self.started_labview().take() else {
+            return true;
+        };
+        child.kill().ok();
+        child.wait().ok();
+        let port = self.learned().labview_port;
+        port.is_none_or(|port| process::wait_until_port_is_quiet(port, PORT_CLOSE_DEADLINE))
+    }
+
+    fn started_labview(&self) -> MutexGuard<'_, Option<Child>> {
+        self.installation_labview
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn detected_labview(&self) -> LabviewInstall {
@@ -703,6 +754,9 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         if let Err(why) = self.restore_labview_installation() {
             eprintln!("could not remove the fixture from the LabVIEW installation: {why}");
+        }
+        if !self.close_installation_labview() {
+            eprintln!("the LabVIEW installation's LabVIEW still listens on its VI Server port");
         }
         let venv_was_made = self.learned().venv_port.is_some();
         if venv_was_made {

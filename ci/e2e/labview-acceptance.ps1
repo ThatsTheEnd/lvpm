@@ -66,6 +66,9 @@ while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -W
 $binary = Get-ChildItem "$src\target\debug\deps\acceptance-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $binary) { Fail "no acceptance test binary under $src\target\debug\deps" }
 $env:LVPM_TEST_LABVIEW = '1'; $env:LVPM_TEST_ONLY_LABVIEW = '1'; $env:LVPM_TEST_LABVIEW_HEADLESS = '1'
+# The LabVIEW started above is the run's to use: the harness neither skips the
+# installation scenario for it nor starts a second one.
+$env:LVPM_TEST_USE_RUNNING_LABVIEW = '1'
 $ErrorActionPreference = 'Continue'
 $log = (& $binary.FullName 2>&1 | ForEach-Object { "$_" } | Out-String)
 $status = $LASTEXITCODE
