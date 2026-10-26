@@ -54,6 +54,16 @@ This is required for the default `x86_64-pc-windows-msvc` Rust target; the boots
 - Run the relevant tests before opening a pull request.
 - Document behavior changes when they affect users or packaging flows.
 
+### Pre-commit checks
+
+`.githooks/pre-commit` runs `cargo fmt --check` and `cargo clippy -D warnings` before each commit. Turn it on once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+To skip it for one commit, use `git commit --no-verify`. Tests are not part of the hook; run them before you open a pull request.
+
 ## Commit messages
 
 Use Conventional Commits for commit messages:
