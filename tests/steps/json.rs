@@ -299,8 +299,8 @@ async fn message_names_sources(world: &mut CliWorld) {
     let error = last_only(world, "error");
     let message = error.as_str().expect("the error is a message");
     // Outside a project: the local packages folder and the public feed.
-    let local = format!("<SANDBOX>/{LOCAL_PACKAGES_DIR}");
-    for source in ["\"nothing\"", local.as_str(), NI_FEED_DIR] {
+    let local_packages = format!("<SANDBOX>/{LOCAL_PACKAGES_DIR}");
+    for source in ["\"nothing\"", local_packages.as_str(), NI_FEED_DIR] {
         assert!(message.contains(source), "names {source}: {message}");
     }
 }
@@ -405,7 +405,7 @@ fn read(file: &str) -> String {
 
 /// The Then reads both files itself.
 #[when("the README's exit-code table is read")]
-async fn read_exit_code_table(_world: &mut CliWorld) {}
+async fn exit_code_table_in_scope(_world: &mut CliWorld) {}
 
 /// A code row is `| 0 | ...`, and some step line ends in "exit code N".
 #[then("it lists 0, 1 and 2, and each has a scenario in this feature")]
@@ -421,12 +421,12 @@ async fn lists_each_code(_world: &mut CliWorld) {
             readme.lines().any(|line| line.starts_with(&row)),
             "the README's table has {row}"
         );
-        let ends = [
+        let endings = [
             format!("the exit code is {code}"),
             format!("exit code {code}"),
         ];
         assert!(
-            feature.lines().any(|line| ends
+            feature.lines().any(|line| endings
                 .iter()
                 .any(|end| line.trim_end().ends_with(end.as_str()))),
             "a scenario ends in exit code {code}"

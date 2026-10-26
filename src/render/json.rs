@@ -11,31 +11,32 @@ pub struct JsonSink;
 
 impl EventSink for JsonSink {
     fn emit(&self, event: Event) {
-        print(&line(serde_json::json!(event)));
+        print(&to_line(serde_json::json!(event)));
     }
 }
 
 /// The line a command that succeeded ends with.
 pub fn result(result: &serde_json::Value) -> String {
-    line(serde_json::json!({ "result": result }))
+    to_line(serde_json::json!({ "result": result }))
 }
 
 /// The line a command that failed ends with: the error and its causes.
 pub fn error(error: &anyhow::Error) -> String {
-    line(serde_json::json!({ "error": format!("{error:#}") }))
+    to_line(serde_json::json!({ "error": format!("{error:#}") }))
 }
 
-/// One line on stdout, written under one lock so lines from a worker thread
-/// do not interleave. A reader that stopped listening is not worth a panic.
-pub fn print(line: &str) {
-    let _ = writeln!(std::io::stdout().lock(), "{line}");
+/// One line on stdout, written under one lock so no other write splits it. A
+/// write error, such as a closed pipe, is ignored and the exit code is kept:
+/// a reader that stopped listening is not worth a panic.
+pub fn print(text: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "{text}");
 }
 
 /// serde escapes only the ASCII controls; feed text can also hold C1
 /// controls (U+009B starts a terminal sequence) and the line separators, so
 /// those are escaped too. They can only stand inside a string, where `\uXXXX`
 /// is the same value.
-fn line(value: serde_json::Value) -> String {
+fn to_line(value: serde_json::Value) -> String {
     value
         .to_string()
         .chars()
@@ -96,7 +97,7 @@ mod tests {
     /// No recording pins these: `targets` names this machine's LabVIEWs and
     /// `venv status` is recorded only with no venv.
     #[test]
-    fn venv_status_and_targets_keep_their_field_names() {
+    fn venv_status_keeps_its_field_names() {
         let target = LvTarget {
             version: 26.3,
             bitness: 64,
