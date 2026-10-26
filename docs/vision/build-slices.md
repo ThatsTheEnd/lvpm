@@ -416,7 +416,7 @@ In scope:
 - A pinned package resolves only from that source, with no fallback.
 - `lvpm add <pkg> --index <name>` writes the table form.
 
-Out of scope: `scopes`; pinning a package that is only a transitive dependency (decide in `/specs`).
+Out of scope: `scopes`; a root table of pins for transitive dependencies (list one as a direct dependency instead, ADR 4).
 
 Acceptance criteria:
 - [ ] A pinned package is taken from its source although another source lists a higher version.
@@ -425,6 +425,7 @@ Acceptance criteria:
 - [ ] `lvpm add @org/name --index <name>` writes the table form; the short form still parses.
 - [ ] A pin naming a source that `[sources]` doesn't define fails when the manifest is read.
 - [ ] Adding, changing or removing a pin makes `lock --check` fail.
+- [ ] A transitive dependency listed as `name = { version = "*", index = "<name>" }` resolves from that source.
 
 Demo: pilot A pinned to a hosted index of its own, with a same-named, higher-versioned decoy on a second source.
 
@@ -619,10 +620,11 @@ Acceptance criteria:
 - [ ] The README hooks line is updated to the new default.
 - [ ] `lvpm add pkg@<newer>` on a line with `hooks = "run"` keeps `hooks = "run"`.
 - [ ] `hooks = "run"` in a dependency's own `lvpm.toml` allows nothing.
+- [ ] A transitive dependency listed as `name = { version = "*", hooks = "run" }` runs its hook.
 
 Demo: install pilot A globally; lvpm skips its `PostInstall` and says how to allow it.
 
-Decide in `/specs`: how to allow a package that is only a transitive dependency; the user-config key;
+Decide in `/specs`: the user-config key;
 the warning's exact wording; whether `lvpm.lock` pins each allowed hook VI's
 hash, so a new version's changed hook is skipped again.
 

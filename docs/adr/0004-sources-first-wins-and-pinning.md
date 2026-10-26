@@ -79,9 +79,12 @@ second idea (route by prefix) next to pinning.
   matter: `lock --check` compares it as a list, not a set.
 - The per-dependency table is shared: S12 adds it with `version` and `hooks`,
   S7c adds `index`, S4 adds `github`. Whichever lands first adds the parser.
-- A pin and `hooks = "run"` live on dependency lines. How to pin or allow a
-  package that is only a transitive dependency is decided in S7c's and S12's
-  `/specs`.
+- A pin and `hooks = "run"` live on dependency lines. To pin or allow a
+  package that is only a transitive dependency, the project lists it as a
+  direct one: `delacor_lib_qmh = { version = "*", hooks = "run" }`.
+  `version = "*"` adds no constraint; the cost is that `lvpm remove` treats
+  it as direct. A root table that applies by name anywhere in the tree (like
+  pnpm's `onlyBuiltDependencies`) can come later if this gets tedious.
 - Changing a pin makes the lock stale. The lock's inputs hold only
   constraints and source URLs today, so S7c adds each dependency's pin.
 - `lvpm add <pkg> --index <name>` writes the table form. `lvpm add` on a
