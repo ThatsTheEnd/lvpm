@@ -108,7 +108,7 @@ hexagon_ci_tools = "*"
 
 - S1 parses `[distribution]` and changes the `labview` parser from a plain
   version to a constraint. S1 accepts only `>=`, and `project.rs` hands the
-  lock and venv code the lower bound, so they don't change. A plain `labview = "2025"` (the current README form)
+  lock and venv code the lower bound, so they don't change. A plain `labview = "2025"` (the form in docs/usage.md)
   becomes an error that suggests `">=2025"`.
 - `package.toml` inside a `.lvpkg` (S7a) reuses these key names.
 - S11 changes the lockfile's per-package `dev = true` into a list of groups,

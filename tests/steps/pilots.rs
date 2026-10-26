@@ -1,17 +1,17 @@
-//! Steps for the pilot loop (`tests/features/build-slices/`): the pinned pilot
-//! archives, project B's venv, and a mass compile in a LabVIEW on that venv.
+//! Steps for the pilot loop (`tests/features/build-slices/`): the pilot
+//! archives and their checksums, project B's venv, and a mass compile in a LabVIEW on that venv.
 
 use crate::CliWorld;
 use crate::support::pilots::{
-    PINS_FILE, archives, bad_vi_lines, check_pins, find_files_named, labviewcli, library_names,
-    pilots_dir,
+    CHECKSUMS_FILE, archives, bad_vi_lines, check_checksums, find_files_named, labviewcli,
+    library_names, pilots_dir,
 };
 use crate::support::process::{self, port_is_listening};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
 use crate::support::sandbox::LABVIEW_YEAR;
 use crate::support::venv::{self, VENV_DIR};
 use cucumber::{given, then, when};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,7 @@ const PILOT_SOURCE_DIR: &str = "pilots";
 const COPIES_DIR: &str = "pilot-copies";
 const MASS_COMPILE_LOG: &str = "mass-compile.log";
 /// A LabVIEW loading a venv's addons takes a while to open VI Server.
-const VI_SERVER_WAIT: Duration = Duration::from_secs(300);
+const VI_SERVER_TIMEOUT: Duration = Duration::from_secs(300);
 const MASS_COMPILE_TIMEOUT: Duration = Duration::from_secs(1800);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -48,9 +48,9 @@ async fn pilot_archives(_: &mut CliWorld) {
     assert!(!archives(&pilots_dir()).is_empty(), "no pilot archives");
 }
 
-#[then("each pilot archive's SHA-256 matches its pin")]
-async fn pilots_match_pins(_: &mut CliWorld) {
-    if let Err(why) = check_pins(&pilots_dir()) {
+#[then("each pilot archive's SHA-256 matches its checksum in SHA256SUMS")]
+async fn pilots_match_checksums(_: &mut CliWorld) {
+    if let Err(why) = check_checksums(&pilots_dir()) {
         panic!("{why}");
     }
 }
@@ -67,10 +67,10 @@ async fn changed_copy(world: &mut CliWorld, name: String) {
     world.pilots.copies = Some(copies);
 }
 
-#[when("the copies are checked against their pins")]
+#[when("the copies are checked against their checksums")]
 async fn check_copies(world: &mut CliWorld) {
     let copies = world.pilots.copies.as_ref().expect("copies were made");
-    world.pilots.check = Some(check_pins(copies));
+    world.pilots.check = Some(check_checksums(copies));
 }
 
 #[then(expr = "the check fails naming {string}")]
@@ -85,7 +85,7 @@ async fn check_fails_naming(world: &mut CliWorld, name: String) {
             why.contains(&name),
             "the failure does not name {name}: {why}"
         ),
-        Ok(()) => panic!("a changed {name} passed its pin"),
+        Ok(()) => panic!("a changed {name} passed its checksum"),
     }
 }
 
@@ -93,13 +93,18 @@ async fn check_fails_naming(world: &mut CliWorld, name: String) {
 /// what the scenario tested.
 #[given("a LabVIEW 2026 installation without the pilots")]
 async fn installation_without_pilots(world: &mut CliWorld) {
+    if let Err(why) = check_checksums(&pilots_dir()) {
+        panic!("{why}");
+    }
     world.sandbox.detect_labview();
     let labview = world.sandbox.labview_dir();
+    // shortcut: the palette package ships no .lvlib, so only the libraries are
+    // detected here; it adds palette menus only, so a global copy changes nothing compiled.
     let libraries: Vec<String> = archives(&pilots_dir())
         .iter()
         .flat_map(|archive| library_names(archive))
         .collect();
-    let found: Vec<PathBuf> = ["vi.lib", "user.lib"]
+    let found: Vec<PathBuf> = ["vi.lib", "user.lib", "instr.lib"]
         .iter()
         .flat_map(|dir| find_files_named(&labview.join(dir), &libraries))
         .collect();
@@ -110,12 +115,14 @@ async fn installation_without_pilots(world: &mut CliWorld) {
     );
 }
 
-#[given("project B depending on both pilots, with the pinned pilot archives as its only source")]
+#[given(
+    "project B depending on both pilots, with a folder feed of the pilot archives as its only source"
+)]
 async fn project_b(world: &mut CliWorld) {
     let source = world.sandbox.add_local_source_folder(PILOT_SOURCE_DIR);
     copy_pilots_to(&source);
-    if let Err(why) = check_pins(&source) {
-        panic!("the pilot archives do not match their pins: {why}");
+    if let Err(why) = check_checksums(&source) {
+        panic!("the pilot archives do not match their checksums: {why}");
     }
     let mut manifest = ProjectManifest::new().labview(LABVIEW_YEAR).render();
     manifest.push_str("\n[dependencies]\n");
@@ -159,12 +166,12 @@ async fn mass_compile(world: &mut CliWorld) {
     let work = world.sandbox.work_dir();
     let port = venv::read_port(&work).expect("the venv has a VI Server port");
     world.sandbox.setup_lvpm(&["launch"]);
-    let deadline = Instant::now() + VI_SERVER_WAIT;
+    let deadline = Instant::now() + VI_SERVER_TIMEOUT;
     while !port_is_listening(port) {
         assert!(
             Instant::now() < deadline,
             "the LabVIEW on the venv never answered VI Server on port {port} within {}s",
-            VI_SERVER_WAIT.as_secs()
+            VI_SERVER_TIMEOUT.as_secs()
         );
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -184,7 +191,19 @@ async fn mass_compile(world: &mut CliWorld) {
         .arg(&exe);
     let output = process::run_within(command, None, MASS_COMPILE_TIMEOUT)
         .unwrap_or_else(|why| panic!("LabVIEWCLI did not finish: {why}"));
-    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    // An empty log would read as "no bad VIs", so a missing one fails.
+    let text = std::fs::read_to_string(&log)
+        .ok()
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "LabVIEWCLI wrote no mass-compile log at {} (exit {}):\n{}{}",
+                log.display(),
+                output.exit_code,
+                output.stdout,
+                output.stderr
+            )
+        });
     let bad = bad_vi_lines(&text);
     assert!(
         output.exit_code == 0 && bad.is_empty(),
@@ -195,11 +214,12 @@ async fn mass_compile(world: &mut CliWorld) {
     );
 }
 
-fn copy_pilots_to(dir: &PathBuf) {
+fn copy_pilots_to(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create the folder");
     for archive in archives(&pilots_dir()) {
         let name = archive.file_name().expect("a file name");
         std::fs::copy(&archive, dir.join(name)).expect("copy a pilot archive");
     }
-    std::fs::copy(pilots_dir().join(PINS_FILE), dir.join(PINS_FILE)).expect("copy the pins");
+    std::fs::copy(pilots_dir().join(CHECKSUMS_FILE), dir.join(CHECKSUMS_FILE))
+        .expect("copy the checksums");
 }

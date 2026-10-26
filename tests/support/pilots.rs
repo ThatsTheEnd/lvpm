@@ -1,11 +1,12 @@
-//! The pilot libraries of the build slices: their archives, pinned by SHA-256
+//! The pilot libraries of the build slices: their archives, each with a SHA-256 checksum
 //! in `tests/fixtures/pilots/SHA256SUMS`, and what a mass compile of them says.
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// The file in the pilot folder that pins each archive.
-pub const PINS_FILE: &str = "SHA256SUMS";
+/// The checksum file in the pilot folder: one SHA-256 per archive.
+pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
+const SHA256_HEX_LEN: usize = 64;
 
 /// Where the pilot archives are committed.
 pub fn pilots_dir() -> PathBuf {
@@ -23,34 +24,37 @@ pub fn archives(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The pins of `SHA256SUMS` text: `<sha256>  <file name>` per line.
-pub fn parse_pins(text: &str) -> Result<Vec<(String, String)>, String> {
+/// The checksums of `SHA256SUMS` text: `<sha256>  <file>` per line, or `<sha256> *<file>`.
+pub fn parse_checksums(text: &str) -> Result<Vec<(String, String)>, String> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| match line.split_once("  ") {
-            Some((sha, name)) if sha.len() == 64 => Ok((sha.to_lowercase(), name.to_string())),
+        .map(|line| match line.split_once(' ') {
+            Some((sha, rest)) if sha.len() == SHA256_HEX_LEN => {
+                let name = rest.strip_prefix([' ', '*']).unwrap_or(rest);
+                Ok((sha.to_lowercase(), name.to_string()))
+            }
             _ => Err(format!("not a `<sha256>  <file>` line: {line:?}")),
         })
         .collect()
 }
 
-/// Check every archive in `dir` against the pins in its `SHA256SUMS`: each
-/// pinned file exists with that SHA-256, and no archive goes unpinned.
-pub fn check_pins(dir: &Path) -> Result<(), String> {
-    let text = std::fs::read_to_string(dir.join(PINS_FILE))
-        .map_err(|e| format!("reading {PINS_FILE} in {}: {e}", dir.display()))?;
-    let pins = parse_pins(&text)?;
-    for (pinned, name) in &pins {
+/// Check every archive in `dir` against its `SHA256SUMS`: each listed file
+/// exists with that SHA-256, and no archive goes unlisted.
+pub fn check_checksums(dir: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(dir.join(CHECKSUMS_FILE))
+        .map_err(|e| format!("reading {CHECKSUMS_FILE} in {}: {e}", dir.display()))?;
+    let checksums = parse_checksums(&text)?;
+    for (expected, name) in &checksums {
         let bytes = std::fs::read(dir.join(name)).map_err(|e| format!("{name}: {e}"))?;
         let actual = hex(&Sha256::digest(&bytes));
-        if &actual != pinned {
-            return Err(format!("{name}: SHA-256 is {actual}, pinned {pinned}"));
+        if &actual != expected {
+            return Err(format!("{name}: SHA-256 is {actual}, expected {expected}"));
         }
     }
     for archive in archives(dir) {
         let name = archive.file_name().expect("a file name").to_string_lossy();
-        if !pins.iter().any(|(_, pinned)| *pinned == name) {
-            return Err(format!("{name} has no pin in {PINS_FILE}"));
+        if !checksums.iter().any(|(_, listed)| *listed == name) {
+            return Err(format!("{name} has no checksum in {CHECKSUMS_FILE}"));
         }
     }
     Ok(())
@@ -134,44 +138,52 @@ mod tests {
 
     const SHA_OF_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 
-    fn folder_with(content: &[u8], pins: &str) -> tempfile::TempDir {
+    fn folder_with(content: &[u8], checksums: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a-1.0.vip"), content).unwrap();
-        std::fs::write(dir.path().join(PINS_FILE), pins).unwrap();
+        std::fs::write(dir.path().join(CHECKSUMS_FILE), checksums).unwrap();
         dir
     }
 
     #[test]
-    fn the_committed_pilots_match_their_pins() {
-        assert_eq!(check_pins(&pilots_dir()), Ok(()));
+    fn the_committed_pilots_match_their_checksums() {
+        assert_eq!(check_checksums(&pilots_dir()), Ok(()));
     }
 
     #[test]
-    fn an_archive_matching_its_pin_passes() {
+    fn an_archive_matching_its_checksum_passes() {
         let dir = folder_with(b"abc", &format!("{SHA_OF_ABC}  a-1.0.vip\n"));
-        assert_eq!(check_pins(dir.path()), Ok(()));
+        assert_eq!(check_checksums(dir.path()), Ok(()));
     }
 
     #[test]
     fn a_changed_archive_fails_naming_it() {
         let dir = folder_with(b"abd", &format!("{SHA_OF_ABC}  a-1.0.vip\n"));
-        let why = check_pins(dir.path()).unwrap_err();
+        let why = check_checksums(dir.path()).unwrap_err();
         assert!(why.starts_with("a-1.0.vip: SHA-256 is "), "{why}");
     }
 
     #[test]
-    fn an_unpinned_archive_fails_naming_it() {
+    fn an_unlisted_archive_fails_naming_it() {
         let dir = folder_with(b"abc", &format!("{SHA_OF_ABC}  a-1.0.vip\n"));
         std::fs::write(dir.path().join("b-1.0.vip"), b"b").unwrap();
         assert_eq!(
-            check_pins(dir.path()),
-            Err(format!("b-1.0.vip has no pin in {PINS_FILE}"))
+            check_checksums(dir.path()),
+            Err(format!("b-1.0.vip has no checksum in {CHECKSUMS_FILE}"))
         );
     }
 
     #[test]
-    fn a_pin_line_without_a_sha256_is_refused() {
-        assert!(parse_pins("abc  a-1.0.vip\n").is_err());
+    fn a_checksum_line_without_a_sha256_is_refused() {
+        assert!(parse_checksums("abc  a-1.0.vip\n").is_err());
+    }
+
+    #[test]
+    fn a_binary_mode_checksum_line_is_read() {
+        assert_eq!(
+            parse_checksums(&format!("{SHA_OF_ABC} *a-1.0.vip\n")),
+            Ok(vec![(SHA_OF_ABC.to_string(), "a-1.0.vip".to_string())])
+        );
     }
 
     #[test]

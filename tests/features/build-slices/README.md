@@ -4,11 +4,14 @@
 (build → publish → install into project B's venv → mass compile) on the two
 pilot libraries named in [docs/vision/build-slices.md](../../../docs/vision/build-slices.md#pilot-libraries).
 
+Project B is the consumer project: it depends on both pilots and installs
+them from a folder feed of the archives.
+
 ## The pilot archives
 
 The `.vip` files are committed in [tests/fixtures/pilots](../../fixtures/pilots),
-and [SHA256SUMS](../../fixtures/pilots/SHA256SUMS) pins each one. Every
-scenario that uses them checks the pins first, so a changed archive fails the
+and [SHA256SUMS](../../fixtures/pilots/SHA256SUMS) holds each one's SHA-256. Every
+scenario that reads them checks them against it first, so a changed archive fails the
 run instead of testing something else. They are committed rather than
 downloaded because the harness keeps `lvpm` off the network, and 2.4 MB is
 small. All four are BSD-licensed (HSE Logger: BSD; the LabVIEW Open Source
@@ -44,9 +47,9 @@ them.
 LVPM_TEST_LABVIEW=1 cargo test --test acceptance
 ```
 
-The `@labview` scenario needs:
+The `@labview` scenario is also `@interactive-labview`, so headless CI skips it. It needs:
 
-- LabVIEW 2026, with none of the pilots installed in it. The real
+- LabVIEW 2026, with none of the pilots installed in it (`vi.lib`, `user.lib`, `instr.lib`). The real
   installation wins over a venv, so a pilot there would be tested in place of
   the venv's copy. The scenario fails naming the library it found.
 - LabVIEWCLI (`LabVIEWCLI.exe` on `PATH`, or in
