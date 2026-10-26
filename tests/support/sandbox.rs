@@ -20,6 +20,7 @@ use lvpm_core::config::Config;
 use lvpm_core::ops::{Destination, DestinationFlags, OpEnv};
 use lvpm_core::target::{self, LvTarget};
 use std::collections::HashSet;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -88,8 +89,9 @@ static FOREIGN_LISTENERS: LazyLock<HashSet<u16>> = LazyLock::new(|| {
         .map(|out| venv::listening_ports(&String::from_utf8_lossy(&out.stdout)))
         .unwrap_or_default()
 });
-/// A sandbox directory whose venv port is none of those: any one path has a
-/// small chance of colliding, so this is a handful of tries at most.
+/// A sandbox directory whose venv port is none of those and can be opened:
+/// with Windows' reserved ranges most of 3400–3999 may be out, so this can
+/// take dozens of tries, still far below the limit.
 const MAX_DIR_ATTEMPTS: usize = 1_000;
 
 fn create_dir_avoiding(taken: &HashSet<u16>) -> TempDir {
@@ -99,7 +101,9 @@ fn create_dir_avoiding(taken: &HashSet<u16>) -> TempDir {
             .tempdir()
             .expect("create the sandbox directory");
         let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
-        if !taken.contains(&port) {
+        // A port Windows has reserved has no listener but cannot be opened
+        // either; `venv create` would step past it, away from `predicted_port`.
+        if !taken.contains(&port) && TcpListener::bind(("127.0.0.1", port)).is_ok() {
             return dir;
         }
     }
