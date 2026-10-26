@@ -8,6 +8,7 @@ use clap::Parser;
 use lvpm_core::{config, target};
 use lvpm_tui::app::{self, App};
 use lvpm_tui::destination::EnvBuilder;
+use lvpm_tui::log;
 use ratatui::crossterm::event;
 use std::time::Duration;
 
@@ -22,11 +23,14 @@ fn main() -> anyhow::Result<()> {
     Cli::parse();
     // Read before the terminal is taken, so an error prints as usual.
     let builder = EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
+    let mut app = App::new(builder);
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    app.log_file = local_app_data.as_deref().map(log::path);
     // Made before the terminal is set up, so a set-up that fails half way is
     // undone too.
     let _restore = Restore(ratatui::restore);
     let mut terminal = ratatui::try_init()?;
-    app::run(&mut terminal, &mut App::new(builder), || {
+    app::run(&mut terminal, &mut app, || {
         event::poll(TICK)?.then(event::read).transpose()
     })?;
     Ok(())

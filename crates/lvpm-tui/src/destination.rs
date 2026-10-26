@@ -1,10 +1,12 @@
 //! Where the TUI's actions go, and the environment every job runs in.
 
+use crate::worker::Park;
 use lvpm_core::config::Config;
 use lvpm_core::events::EventSink;
 use lvpm_core::ops::{Destination, OpEnv};
 use lvpm_core::target::LvTarget;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// What each job's `OpEnv` is built from, as the CLI builds its own from its
 /// flags and the process.
@@ -16,6 +18,10 @@ pub struct EnvBuilder {
     pub cwd: PathBuf,
     /// See [`OpEnv::machine`]: only a test sets it.
     pub machine: Option<PathBuf>,
+    /// Install into this scratch tree, as `--prefix` does: only a test sets it.
+    pub prefix: Option<PathBuf>,
+    /// Holds an install at a phase: only a test sets it.
+    pub park: Option<Arc<Park>>,
 }
 
 impl EnvBuilder {
@@ -25,6 +31,8 @@ impl EnvBuilder {
             targets,
             cwd,
             machine: None,
+            prefix: None,
+            park: None,
         }
     }
 
@@ -37,7 +45,9 @@ impl EnvBuilder {
             self.targets.clone(),
             self.cwd.clone(),
         );
-        env.flags.labview_version = self.targets.first().map(|t| t.path.display().to_string());
+        let newest = self.targets.first().filter(|_| self.prefix.is_none());
+        env.flags.labview_version = newest.map(|t| t.path.display().to_string());
+        env.flags.prefix = self.prefix.clone();
         env.refresh = refresh;
         env.machine = self.machine.clone();
         env
@@ -57,10 +67,8 @@ impl EnvBuilder {
     }
 }
 
-/// Drops what core reports.
-/// shortcut: nothing shows core's progress yet; a sink that forwards it to the
-/// UI comes with the progress view.
-pub(crate) struct Quiet;
+/// Drops what core reports, for the jobs whose events nothing shows.
+pub struct Quiet;
 
 impl EventSink for Quiet {
     fn emit(&self, _: lvpm_core::events::Event) {}

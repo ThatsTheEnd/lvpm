@@ -2,10 +2,15 @@
 //! each result back over a channel the event loop polls.
 
 use crate::destination::{EnvBuilder, Quiet};
+use lvpm_core::cancel::CancelToken;
+use lvpm_core::errors::Cancelled;
+use lvpm_core::events::{Event, EventSink, Phase};
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
+use lvpm_core::ops::install::{self, InstallOptions};
 use lvpm_core::ops::query::{self, Catalog, PackageInfo};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Condvar, Mutex};
 
 /// Every job the worker can run.
 #[derive(Debug, Clone)]
@@ -16,11 +21,21 @@ pub enum Job {
     /// Read the details of one version of a package, as `lvpm info
     /// <name>@<version>` does.
     Info { name: String, version: String },
+    /// Install `package`, `name@version`, as `lvpm install` does; a dry run
+    /// only says what it would do. `cancel` stops it until files are written.
+    Install {
+        package: String,
+        dry_run: bool,
+        allow_downgrade: bool,
+        cancel: CancelToken,
+    },
 }
 
-/// What a job returns.
+/// What a job sends: an install's events as they come, then its result.
 #[derive(Debug)]
 pub enum Done {
+    /// One of core's events; the job runs on.
+    Event(Event),
     /// The destination as resolved for this read, and the catalog with what
     /// that destination has installed, or core's error, whole.
     Loaded {
@@ -33,6 +48,81 @@ pub enum Done {
         version: String,
         info: Result<PackageInfo, String>,
     },
+    /// An install, or its dry run, ended.
+    Installed { dry_run: bool, outcome: Outcome },
+}
+
+/// How an operation ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Done,
+    Cancelled,
+    /// Core's error, whole.
+    Failed(String),
+}
+
+/// Holds an install at the start of one phase until released, so a test sees
+/// what the TUI shows meanwhile. Only a test sets one; a dry run passes it by.
+#[derive(Debug)]
+pub struct Park {
+    at: Phase,
+    /// Whether the install got there, and whether it may go on.
+    state: Mutex<(bool, bool)>,
+    changed: Condvar,
+}
+
+impl Park {
+    pub fn new(at: Phase) -> Park {
+        Park {
+            at,
+            state: Mutex::new((false, false)),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// Block until the install is held.
+    pub fn wait_reached(&self) {
+        let state = self.state.lock().expect("the park's lock");
+        let held = self.changed.wait_while(state, |(reached, _)| !*reached);
+        drop(held.expect("the park's lock"));
+    }
+
+    /// Let the install go on; it is not held again.
+    pub fn release(&self) {
+        self.state.lock().expect("the park's lock").1 = true;
+        self.changed.notify_all();
+    }
+
+    fn hold(&self, phase: Phase) {
+        if phase != self.at {
+            return;
+        }
+        let mut state = self.state.lock().expect("the park's lock");
+        state.0 = true;
+        self.changed.notify_all();
+        let released = self.changed.wait_while(state, |(_, released)| !*released);
+        drop(released.expect("the park's lock"));
+    }
+}
+
+/// Hands core's events to the UI as they come.
+struct Forward<'a> {
+    send: Sender<Done>,
+    park: Option<&'a Park>,
+}
+
+impl EventSink for Forward<'_> {
+    fn emit(&self, event: Event) {
+        let phase = match &event {
+            Event::PhaseStarted { phase } => Some(*phase),
+            _ => None,
+        };
+        // Sent first, so the UI shows the phase the install is held at.
+        self.send.send(Done::Event(event)).ok();
+        if let (Some(phase), Some(park)) = (phase, self.park) {
+            park.hold(phase);
+        }
+    }
 }
 
 /// Start `job` on its own thread; its result arrives on the receiver.
@@ -41,12 +131,12 @@ pub fn spawn(builder: &EnvBuilder, job: Job) -> Receiver<Done> {
     let builder = builder.clone();
     std::thread::spawn(move || {
         // The TUI has gone when nobody receives; the result is not needed then.
-        send.send(run(&builder, job)).ok();
+        send.send(run(&builder, job, &send)).ok();
     });
     receive
 }
 
-fn run(builder: &EnvBuilder, job: Job) -> Done {
+fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
     match job {
         Job::Load { refresh } => {
             let env = builder.env(&Quiet, refresh);
@@ -71,6 +161,33 @@ fn run(builder: &EnvBuilder, job: Job) -> Done {
                 version,
                 info: info.map_err(|error| format!("{error:#}")),
             }
+        }
+        Job::Install {
+            package,
+            dry_run,
+            allow_downgrade,
+            cancel,
+        } => {
+            let park = builder.park.as_deref().filter(|_| !dry_run);
+            let sink = Forward {
+                send: send.clone(),
+                park,
+            };
+            let mut env = builder.env(&sink, false);
+            env.cancel = cancel;
+            let opts = InstallOptions {
+                dry_run,
+                allow_downgrade,
+                ..InstallOptions::default()
+            };
+            let outcome = match install::install(&env, Some(&package), &opts) {
+                Ok(()) => Outcome::Done,
+                Err(error) if error.chain().any(|cause| cause.is::<Cancelled>()) => {
+                    Outcome::Cancelled
+                }
+                Err(error) => Outcome::Failed(format!("{error:#}")),
+            };
+            Done::Installed { dry_run, outcome }
         }
     }
 }

@@ -89,6 +89,67 @@ pub const INSTALL: Binding = Binding {
     presses: &[(KeyCode::Char('i'), KeyModifiers::NONE)],
 };
 
+/// Runs the install the preview shows.
+pub const CONFIRM: Binding = Binding {
+    key: "Enter",
+    action: "confirm",
+    presses: &[(KeyCode::Enter, KeyModifiers::NONE)],
+};
+
+/// Drops a plan, computed or being computed.
+pub const ABORT: Binding = Binding {
+    key: "Esc",
+    action: "cancel",
+    presses: &[(KeyCode::Esc, KeyModifiers::NONE)],
+};
+
+/// Runs a downgrade, asked a second time.
+pub const YES: Binding = Binding {
+    key: "y",
+    action: "downgrade",
+    presses: &[(KeyCode::Char('y'), KeyModifiers::NONE)],
+};
+
+pub const NO: Binding = Binding {
+    key: "n",
+    action: "back",
+    presses: &[
+        (KeyCode::Char('n'), KeyModifiers::NONE),
+        (KeyCode::Esc, KeyModifiers::NONE),
+    ],
+};
+
+/// Stops a running install; Esc and Ctrl-C do too, as nothing else may.
+pub const CANCEL: Binding = Binding {
+    key: "c",
+    action: "cancel",
+    presses: &[
+        (KeyCode::Char('c'), KeyModifiers::NONE),
+        (KeyCode::Esc, KeyModifiers::NONE),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL),
+    ],
+};
+
+/// Closes an operation that ended.
+pub const CLOSE: Binding = Binding {
+    key: "Enter",
+    action: "back to list",
+    presses: &[
+        (KeyCode::Enter, KeyModifiers::NONE),
+        (KeyCode::Esc, KeyModifiers::NONE),
+    ],
+};
+
+/// Shift-l, as reload's Shift-r.
+pub const LOG: Binding = Binding {
+    key: "L",
+    action: "log",
+    presses: &[
+        (KeyCode::Char('L'), KeyModifiers::SHIFT),
+        (KeyCode::Char('L'), KeyModifiers::NONE),
+    ],
+};
+
 pub const UP: Binding = Binding {
     key: "↑",
     action: "up",
@@ -131,3 +192,11 @@ pub const FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &RELOAD, &QUIT];
 
 /// The keys the detail view's footer shows, in order.
 pub const DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &PAGE_DOWN, &BACK, &QUIT];
+
+pub const PLANNING_FOOTER: &[&Binding] = &[&ABORT, &QUIT];
+pub const PLAN_FAILED_FOOTER: &[&Binding] = &[&BACK, &QUIT];
+pub const PREVIEW_FOOTER: &[&Binding] = &[&CONFIRM, &ABORT];
+pub const DOWNGRADE_FOOTER: &[&Binding] = &[&YES, &NO];
+pub const RUNNING_FOOTER: &[&Binding] = &[&CANCEL, &LOG];
+pub const RESULT_FOOTER: &[&Binding] = &[&CLOSE, &LOG, &QUIT];
+pub const LOG_FOOTER: &[&Binding] = &[&BACK];

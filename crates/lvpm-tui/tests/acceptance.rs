@@ -12,6 +12,7 @@
 
 mod browse_steps;
 mod detail_steps;
+mod install_steps;
 mod steps;
 
 use cucumber::World;
@@ -23,10 +24,11 @@ use lvpm_testkit::feed::{Feed, JKI_FEED_INDEX, NI_FEED_DIR, PROJECT_FEED_DIR, li
 use lvpm_tui::app::App;
 use lvpm_tui::destination::EnvBuilder;
 use lvpm_tui::ui;
+use lvpm_tui::worker::Park;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use tempfile::TempDir;
 
 /// A scenario with a step that starts with this is one of the TUI's.
@@ -37,6 +39,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-tui/slice-4-the-lvpm-tui-crate-starts-and-quits.feature",
     "tests/features/lvpm-tui/slice-5-browse-the-catalog.feature",
     "tests/features/lvpm-tui/slice-6-package-details-and-reloading-the-feeds.feature",
+    "tests/features/lvpm-tui/slice-7-install-in-global-mode-preview-progress-cancel-log-ship-it.feature",
 ];
 
 /// The feed every scenario reads, and the proxy every request goes through.
@@ -55,6 +58,14 @@ pub struct TuiWorld {
     pub cwd: PathBuf,
     /// The default feed's index requests once the TUI had loaded.
     pub index_hits: usize,
+    /// Install into this scratch tree instead of a LabVIEW.
+    pub prefix: Option<PathBuf>,
+    /// Holds the TUI's installs at a phase.
+    pub park: Option<Arc<Park>>,
+    /// Where the TUI appends its log.
+    pub log_file: PathBuf,
+    /// The archive of `alpha` 2.0 is corrupt once its plan is shown.
+    pub corrupt: bool,
 }
 
 impl TuiWorld {
@@ -75,10 +86,14 @@ impl TuiWorld {
             app: None,
             terminal: Terminal::new(TestBackend::new(ui::MIN_WIDTH, ui::MIN_HEIGHT))
                 .expect("a test terminal"),
-            scratch,
             targets: Vec::new(),
             cwd,
             index_hits: 0,
+            prefix: None,
+            park: None,
+            log_file: scratch.path().join("logs").join("tui.log"),
+            corrupt: false,
+            scratch,
         }
     }
 
@@ -90,12 +105,16 @@ impl TuiWorld {
         };
         let mut builder = EnvBuilder::new(config, self.targets.clone(), self.cwd.clone());
         builder.machine = Some(self.scratch.path().join("machine"));
+        builder.prefix = self.prefix.clone();
+        builder.park = self.park.clone();
         builder
     }
 
     /// Start the TUI, its catalog still loading.
     pub fn start(&mut self) -> &mut App {
-        self.app.insert(App::new(self.builder()))
+        let mut app = App::new(self.builder());
+        app.log_file = Some(self.log_file.clone());
+        self.app.insert(app)
     }
 
     /// The TUI, started and loaded if no step has started it.
@@ -112,6 +131,9 @@ impl Drop for TuiWorld {
         // A job left running would read the next scenario's feed.
         FEED.release();
         FEED.come_up();
+        if let Some(park) = &self.park {
+            park.release();
+        }
         if let Some(app) = &mut self.app {
             app.wait_for_job();
         }

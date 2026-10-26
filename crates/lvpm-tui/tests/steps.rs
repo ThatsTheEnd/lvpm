@@ -33,12 +33,22 @@ impl TuiWorld {
     }
 
     pub fn key(&mut self, key: &str, kind: KeyEventKind) {
-        let mut chars = key.chars();
-        let (Some(c), None) = (chars.next(), chars.next()) else {
-            panic!("one character keys only: {key:?}");
+        let (code, modifiers) = match key {
+            "Esc" => (KeyCode::Esc, KeyModifiers::NONE),
+            "Ctrl-C" => (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            _ => (KeyCode::Char(one_char(key)), KeyModifiers::NONE),
         };
-        self.press(KeyCode::Char(c), kind);
+        let event = KeyEvent::new_with_kind(code, modifiers, kind);
+        self.app().handle(Event::Key(event));
     }
+}
+
+fn one_char(key: &str) -> char {
+    let mut chars = key.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        panic!("one character keys only: {key:?}");
+    };
+    c
 }
 
 fn size(text: &str) -> (u16, u16) {

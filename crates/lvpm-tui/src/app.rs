@@ -3,8 +3,11 @@
 use crate::browse::{Browse, Status};
 use crate::destination::EnvBuilder;
 use crate::detail::{Detail, Focus};
-use crate::worker::{self, Done, Job};
-use crate::{keys, ui};
+use crate::plan::Preview;
+use crate::progress::Progress;
+use crate::worker::{self, Done, Job, Outcome};
+use crate::{keys, log, ui};
+use lvpm_core::cancel::CancelToken;
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
 use lvpm_core::ops::query::{Catalog, PackageInfo};
@@ -14,7 +17,9 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The catalog as far as it has been read.
 #[derive(Debug)]
@@ -23,6 +28,31 @@ pub enum Listing {
     /// Core's error, whole: no source could be read.
     Failed(String),
     Loaded(Browse),
+}
+
+/// An install, from its plan to its result.
+#[derive(Debug)]
+pub struct Op {
+    /// What is installed, `name@version`.
+    pub package: String,
+    /// What the dry run said the install does.
+    pub preview: Preview,
+    pub stage: Stage,
+    /// Stops the dry run, then the install.
+    cancel: CancelToken,
+}
+
+#[derive(Debug)]
+pub enum Stage {
+    /// The dry run is computing the plan.
+    Planning,
+    /// Core's error, whole.
+    PlanFailed(String),
+    Preview,
+    /// A downgrade is asked about a second time.
+    ConfirmDowngrade,
+    /// The install runs, or has ended once `outcome` is set.
+    Running(Progress),
 }
 
 /// A package version's details, by name and version.
@@ -43,6 +73,14 @@ pub struct App {
     pub note: Option<String>,
     /// The running job and its result, when it comes. At most one job runs.
     pending: Option<(Job, Receiver<Done>)>,
+    /// The install on screen, over the list or the detail view.
+    pub op: Option<Op>,
+    /// Each install's log lines this session, oldest first.
+    pub log: Vec<Vec<String>>,
+    /// The log is on screen, over everything else.
+    pub showing_log: bool,
+    /// Where each install's log lines are appended; `None` writes nothing.
+    pub log_file: Option<PathBuf>,
 }
 
 impl App {
@@ -57,6 +95,10 @@ impl App {
             details: Details::new(),
             note: None,
             pending: None,
+            op: None,
+            log: Vec::new(),
+            showing_log: false,
+            log_file: None,
         };
         app.start(Job::Load { refresh: false });
         app
@@ -72,6 +114,12 @@ impl App {
         loading && matches!(self.listing, Listing::Loaded(_))
     }
 
+    /// An install runs and has not ended.
+    pub fn installing(&self) -> bool {
+        let stage = self.op.as_ref().map(|op| &op.stage);
+        matches!(stage, Some(Stage::Running(progress)) if progress.outcome.is_none())
+    }
+
     fn target(&self) -> Option<&LvTarget> {
         self.destination.as_ref().ok().and_then(Destination::target)
     }
@@ -80,10 +128,22 @@ impl App {
         self.pending = Some((job.clone(), worker::spawn(&self.builder, job)));
     }
 
+    /// Why a job cannot start now, if one is running.
+    fn busy(&self) -> Option<String> {
+        let why = match &self.pending.as_ref()?.0 {
+            Job::Load { .. } => "the catalog is still loading",
+            Job::Info { .. } => "the details are still loading",
+            Job::Install { .. } => "the last plan is still stopping",
+        };
+        Some(why.into())
+    }
+
     /// Read the details the detail view shows, unless they are read or a
-    /// job is running: that job's end asks again.
+    /// job is running: that job's end asks again. An install on screen
+    /// waits too, so its run does not have to.
     fn fetch_wanted(&mut self) {
-        let Some(detail) = self.detail.as_ref().filter(|_| self.running) else {
+        let shown = self.running && self.op.is_none();
+        let Some(detail) = self.detail.as_ref().filter(|_| shown) else {
             return;
         };
         let key = detail.key();
@@ -94,8 +154,13 @@ impl App {
     }
 
     fn finish(&mut self, done: Done) {
-        self.pending = None;
+        // An event comes while its job runs on.
+        if !matches!(done, Done::Event(_)) {
+            self.pending = None;
+        }
         match done {
+            Done::Event(event) => self.event(&event),
+            Done::Installed { dry_run, outcome } => self.installed(dry_run, outcome),
             Done::Loaded {
                 destination,
                 listing,
@@ -114,6 +179,177 @@ impl App {
             }
         }
         self.fetch_wanted();
+    }
+
+    /// Take in one of the install's events: the plan or the progress. Those
+    /// of a plan dropped with Esc have no op to go to.
+    fn event(&mut self, event: &lvpm_core::events::Event) {
+        let Some(op) = &mut self.op else {
+            return;
+        };
+        match &mut op.stage {
+            Stage::Planning => op.preview.add(event),
+            Stage::Running(progress) => {
+                progress.add(event);
+                let entry = self.log.last_mut();
+                if let (Some(entry), Some(line)) = (entry, log::line(event)) {
+                    entry.push(line);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn installed(&mut self, dry_run: bool, outcome: Outcome) {
+        let Some(op) = &mut self.op else {
+            return;
+        };
+        match (dry_run, outcome) {
+            (true, Outcome::Done) => op.stage = Stage::Preview,
+            (true, Outcome::Failed(error)) => op.stage = Stage::PlanFailed(error),
+            (true, Outcome::Cancelled) => self.op = None,
+            (false, outcome) => {
+                if let Some(entry) = self.log.last_mut() {
+                    entry.extend(log::outcome(&outcome));
+                }
+                if let Stage::Running(progress) = &mut op.stage {
+                    progress.outcome = Some(outcome);
+                }
+                self.write_log();
+            }
+        }
+    }
+
+    /// Append the last install's log lines to `tui.log`.
+    fn write_log(&mut self) {
+        let (Some(path), Some(entry)) = (&self.log_file, self.log.last()) else {
+            return;
+        };
+        if let Err(error) = log::append(path, entry) {
+            self.note = Some(format!("tui.log could not be written: {error}"));
+        }
+    }
+
+    /// Start the dry run of installing `name` `version`.
+    fn plan(&mut self, name: &str, version: &str) {
+        if let Err(error) = &self.destination {
+            self.note = Some(error.lines().next().unwrap_or_default().into());
+            return;
+        }
+        if let Some(why) = self.busy() {
+            self.note = Some(why);
+            return;
+        }
+        let package = format!("{name}@{version}");
+        let cancel = CancelToken::default();
+        // The plan shows a downgrade as it is; only a confirmed run may make
+        // one.
+        self.start(Job::Install {
+            package: package.clone(),
+            dry_run: true,
+            allow_downgrade: true,
+            cancel: cancel.clone(),
+        });
+        self.op = Some(Op {
+            package,
+            preview: Preview::default(),
+            stage: Stage::Planning,
+            cancel,
+        });
+    }
+
+    /// Run the install the preview showed.
+    fn run_install(&mut self, allow_downgrade: bool) {
+        let Some(op) = &mut self.op else {
+            return;
+        };
+        op.cancel = CancelToken::default();
+        op.stage = Stage::Running(Progress::default());
+        let job = Job::Install {
+            package: op.package.clone(),
+            dry_run: false,
+            allow_downgrade,
+            cancel: op.cancel.clone(),
+        };
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let header = log::header(seconds, &format!("install {}", op.package));
+        self.log.push(vec![header]);
+        self.start(job);
+    }
+
+    /// The list's `i`: plan the selected package's newest version.
+    fn install_selected(&mut self) {
+        let Listing::Loaded(browse) = &self.listing else {
+            return;
+        };
+        let Some(package) = browse.selected() else {
+            return;
+        };
+        let name = package.name.clone();
+        match (&package.status, &package.available) {
+            (Status::NeedsLabview(year), _) => {
+                self.note = Some(format!("{name} needs LabVIEW {year}"));
+            }
+            (_, None) => self.note = Some(format!("no source has {name}")),
+            (_, Some(version)) => {
+                let version = version.to_string();
+                self.plan(&name, &version);
+            }
+        }
+    }
+
+    /// A key while an install is on screen. Once the install runs, only
+    /// cancel and the log answer until it ends.
+    fn op_key(&mut self, key: KeyEvent) {
+        let Some(op) = &mut self.op else {
+            return;
+        };
+        let quit = keys::QUIT.matches(key);
+        match &mut op.stage {
+            Stage::Planning | Stage::PlanFailed(_) | Stage::Preview if keys::ABORT.matches(key) => {
+                op.cancel.cancel();
+                self.op = None;
+            }
+            Stage::Planning | Stage::PlanFailed(_) | Stage::Preview if quit => {
+                op.cancel.cancel();
+                self.running = false;
+            }
+            Stage::Preview if keys::CONFIRM.matches(key) => {
+                match op.preview.downgrade().is_some() {
+                    true => op.stage = Stage::ConfirmDowngrade,
+                    false => self.run_install(false),
+                }
+            }
+            Stage::ConfirmDowngrade if keys::YES.matches(key) => self.run_install(true),
+            Stage::ConfirmDowngrade if keys::NO.matches(key) => op.stage = Stage::Preview,
+            Stage::Running(progress) if progress.outcome.is_none() => {
+                if keys::CANCEL.matches(key) {
+                    // The token refuses once files are being written.
+                    match progress.cancellable() && op.cancel.cancel() {
+                        true => progress.cancelling = true,
+                        false => progress.refused = true,
+                    }
+                } else if keys::LOG.matches(key) {
+                    self.showing_log = true;
+                } else {
+                    let name = match key.code {
+                        KeyCode::Char(c) => c.to_string(),
+                        other => format!("{other:?}"),
+                    };
+                    self.note = Some(format!("{name} waits until the operation ends"));
+                }
+            }
+            Stage::Running(_) if keys::CLOSE.matches(key) => {
+                self.op = None;
+                // What the install changed shows in the list.
+                self.start(Job::Load { refresh: false });
+            }
+            Stage::Running(_) if keys::LOG.matches(key) => self.showing_log = true,
+            Stage::Running(_) if quit => self.running = false,
+            _ => {}
+        }
     }
 
     /// Show a catalog read. A reload that fails keeps the list it would
@@ -156,19 +392,24 @@ impl App {
                 let error = format!("reading the details of {name} {version} {why}");
                 self.details.insert((name, version), Err(error));
             }
+            Job::Install {
+                package, dry_run, ..
+            } => {
+                let error = format!("installing {package} {why}");
+                self.installed(dry_run, Outcome::Failed(error));
+            }
         }
         self.fetch_wanted();
     }
 
-    /// Take the running job's result if it has come.
+    /// Take what the running job has sent: its events and its result.
     pub fn poll(&mut self) {
-        let Some((_, pending)) = &self.pending else {
-            return;
-        };
-        match pending.try_recv() {
-            Ok(done) => self.finish(done),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => self.lost(),
+        while let Some((_, pending)) = &self.pending {
+            match pending.try_recv() {
+                Ok(done) => self.finish(done),
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => self.lost(),
+            }
         }
     }
 
@@ -193,6 +434,18 @@ impl App {
             return;
         }
         self.note = None;
+        if self.showing_log {
+            if keys::LOG.matches(key) || keys::BACK.matches(key) {
+                self.showing_log = false;
+            } else if keys::INTERRUPT.matches(key) && !self.installing() {
+                self.running = false;
+            }
+            return;
+        }
+        if self.op.is_some() {
+            self.op_key(key);
+            return;
+        }
         if let Listing::Loaded(browse) = &mut self.listing
             && browse.searching
         {
@@ -208,24 +461,26 @@ impl App {
         } else if let Some(detail) = &mut self.detail {
             if keys::BACK.matches(key) {
                 self.detail = None;
+            } else if keys::INSTALL.matches(key) {
+                let (name, version) = detail.key();
+                self.plan(&name, &version);
             } else {
                 detail_key(detail, key);
             }
+        } else if keys::LOG.matches(key) {
+            self.showing_log = true;
         } else if keys::RELOAD.matches(key) {
-            match &self.pending {
-                Some((Job::Load { .. }, _)) => {
-                    self.note = Some("the catalog is still loading".into())
-                }
-                Some((Job::Info { .. }, _)) => {
-                    self.note = Some("the details are still loading".into())
-                }
+            match self.busy() {
+                Some(why) => self.note = Some(why),
                 None => self.start(Job::Load { refresh: true }),
             }
         } else if let Listing::Loaded(browse) = &mut self.listing {
-            if keys::OPEN.matches(key) {
+            if keys::INSTALL.matches(key) {
+                self.install_selected();
+            } else if keys::OPEN.matches(key) {
                 self.detail = browse.selected().map(Detail::new);
             } else {
-                self.note = browse_key(browse, key);
+                browse_key(browse, key);
             }
         }
         self.fetch_wanted();
@@ -258,23 +513,15 @@ fn moves(key: KeyEvent, page: isize) -> Option<isize> {
     found.map(|&(_, by)| by)
 }
 
-/// A key on the list; what it could not do, if anything.
-fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
+/// A key that moves, searches or filters the list.
+fn browse_key(browse: &mut Browse, key: KeyEvent) {
     if let Some(by) = moves(key, browse.page_size()) {
         browse.step(by);
     } else if keys::SEARCH.matches(key) {
         browse.searching = true;
     } else if keys::FILTER.matches(key) {
         browse.next_filter();
-    } else if keys::INSTALL.matches(key)
-        && let Some(package) = browse.selected()
-        && let Status::NeedsLabview(year) = package.status
-    {
-        return Some(format!("{} needs LabVIEW {year}", package.name));
     }
-    // shortcut: install of a compatible package does nothing until a plan
-    // preview exists, upgrade when install opens one (Slice 7).
-    None
 }
 
 /// A key on the detail view: Tab swaps which pane Up and Down move; PgUp and
@@ -350,6 +597,10 @@ mod tests {
             details: Details::new(),
             note: None,
             pending: None,
+            op: None,
+            log: Vec::new(),
+            showing_log: false,
+            log_file: None,
         }
     }
 
@@ -455,10 +706,12 @@ mod tests {
     }
 
     #[test]
-    fn a_note_shows_only_for_a_gated_package_and_until_the_next_key() {
+    fn a_note_says_why_install_cannot_start_until_the_next_key() {
         let mut app = listing();
         press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
-        assert_eq!(app.note, None, "alpha fits");
+        let nowhere = "install needs a LabVIEW or --prefix";
+        assert_eq!(app.note.as_deref(), Some(nowhere), "alpha fits, but where");
+        assert!(app.op.is_none());
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         assert_eq!(app.note.as_deref(), Some("gamma needs LabVIEW 2099"));

@@ -841,17 +841,22 @@ Feature: Install with a preview, progress and a log
     Then the list shows "alpha" as "installed" and "alpha" is selected
 
   Scenario: the preview is computed with a cancel
-    Given the feed is paused
+    Given the feed holds archive downloads
     When "alpha" is selected and "i" is pressed
     Then the screen says the plan is being computed
     When Esc is pressed
     Then the list is shown with "alpha" selected and nothing is installed
 
   Scenario: a plan that cannot be made is shown
+    Given the archive of "alpha" 2.0 cannot be fetched
+    When "alpha" is selected and "i" is pressed
+    Then the screen shows core's error
+    And Esc returns to the list with "alpha" selected
+
+  Scenario: the preview names a dependency no source has
     Given "alpha" 2.0 instead requires "omega" 1.0, which no source has
     When "alpha" is selected and "i" is pressed
-    Then the screen shows core's error naming "omega"
-    And Esc returns to the list with "alpha" selected
+    Then the preview says no source has "omega"
 
   Scenario: Esc on the preview changes nothing
     When "alpha" is selected, "i" is pressed and Esc is pressed
@@ -946,11 +951,6 @@ Feature: Install with a preview, progress and a log
     When an install runs to the end
     Then the install succeeds
     And the footer says tui.log could not be written
-
-  Scenario: the release zip holds both binaries
-    When the Windows release zip is built
-    Then it contains lvpm.exe and lvpm-tui.exe with the same version string
-    And install.ps1 installs both and its output names lvpm-tui
 ```
 
 **Steps:**
@@ -986,7 +986,7 @@ Feature: Install with a preview, progress and a log
 
 **Complexity**: standard
 **IMPLEMENT**: `build.yml` builds the workspace and uploads both binaries; `package.sh` puts `lvpm-tui.exe` in the Windows zip; `install.ps1` installs it and names it in its output; the packaging job checks both versions; the README says how to start it. Run the manual checklist with an install on screen.
-**TEST**: `ci/package.test.sh` asserts both binaries and one version are in the zip; the zip scenario in the root harness.
+**TEST**: `ci/package.test.sh` asserts both binaries and one version are in the zip; a root-harness scenario: the Windows release zip holds `lvpm.exe` and `lvpm-tui.exe` with the same version string, and `install.ps1` installs both and its output names lvpm-tui. (It is not in the slice's feature: that feature's background starts the TUI.)
 **REFACTOR**: One list of shipped binaries in `package.sh`.
 **Files**: `.github/workflows/build.yml`, `.github/workflows/package.yml`, `ci/package.sh`, `ci/package.test.sh`, `scripts/install.ps1`, `README.md`, `tests/steps/workspace.rs`, `docs/manual/tui-terminals.md`
 **Commit**: `ci: ship lvpm-tui.exe in the release zip`
@@ -1619,10 +1619,10 @@ None.
 
 ### Wave 7
 - [ ] Slice 7: Install in global mode: preview, progress, cancel, log; ship it
-  - [ ] Step 7.1: Preview from a dry run, confirm, run
-  - [ ] Step 7.2: Busy mode, progress and cancel
-  - [ ] Step 7.3: In-session log and `tui.log`
-  - [ ] Step 7.4: Build and ship `lvpm-tui.exe`
+  - [x] Step 7.1: Preview from a dry run, confirm, run
+  - [x] Step 7.2: Busy mode, progress and cancel
+  - [x] Step 7.3: In-session log and `tui.log`
+  - [ ] Step 7.4: Build and ship `lvpm-tui.exe` (deferred: PR #45 changes the CI workflows)
 
 ### Wave 8
 - [ ] Slice 8: Uninstall, multi-select and upgrade all in global mode
