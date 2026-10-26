@@ -106,9 +106,9 @@ impl Renderer {
             | Event::UninstallFailed { .. }
             | Event::PostUninstallNotStaged { .. }
             | Event::UninstallHooksNotRun { .. } => uninstall::render(self, event),
-            Event::VenvManifestWritten { .. } | Event::VenvRemoved { .. } => {
-                venv::render(self, event)
-            }
+            Event::VenvManifestWritten { .. }
+            | Event::VenvRemoved { .. }
+            | Event::VenvPortMoved { .. } => venv::render(self, event),
             Event::LockHashing { .. }
             | Event::RequirementUnresolved { .. }
             | Event::LockChanged { .. }
