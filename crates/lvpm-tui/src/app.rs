@@ -67,7 +67,8 @@ impl App {
 
     /// The feeds are being read again; the list shown is the last one read.
     pub fn reloading(&self) -> bool {
-        matches!(self.pending, Some((Job::Load { .. }, _)))
+        let loading = matches!(self.pending, Some((Job::Load { .. }, _)));
+        loading && matches!(self.listing, Listing::Loaded(_))
     }
 
     fn target(&self) -> Option<&LvTarget> {
@@ -84,8 +85,9 @@ impl App {
         let Some(detail) = &self.detail else {
             return;
         };
-        let (name, version) = detail.key();
-        if self.pending.is_none() && !self.details.contains_key(&(name.clone(), version.clone())) {
+        let key = detail.key();
+        if self.pending.is_none() && !self.details.contains_key(&key) {
+            let (name, version) = key;
             self.start(Job::Info { name, version });
         }
     }
@@ -123,6 +125,12 @@ impl App {
                 if let Listing::Loaded(old) = old {
                     browse.narrow_as(old);
                 }
+                // An open view shows the package as listed now, or closes
+                // if the feeds no longer list it.
+                self.detail = self.detail.take().and_then(|detail| {
+                    let package = browse.packages.iter().find(|p| p.name == detail.name);
+                    package.map(|package| detail.reopened(package))
+                });
                 self.listing = Listing::Loaded(browse);
                 // The feeds may list other details now.
                 self.details.clear();
@@ -216,7 +224,9 @@ impl App {
                 self.note = browse_key(browse, key);
             }
         }
-        self.fetch_wanted();
+        if self.running {
+            self.fetch_wanted();
+        }
     }
 }
 
@@ -234,7 +244,7 @@ fn search_key(browse: &mut Browse, key: KeyEvent) {
 
 /// The moves Up, Down, PgUp, PgDn, Home and End make, `page` rows a page.
 fn moves(key: KeyEvent, page: isize) -> Option<isize> {
-    let moves: [(&keys::Binding, isize); 6] = [
+    let table: [(&keys::Binding, isize); 6] = [
         (&keys::UP, -1),
         (&keys::DOWN, 1),
         (&keys::PAGE_UP, -page),
@@ -242,7 +252,7 @@ fn moves(key: KeyEvent, page: isize) -> Option<isize> {
         (&keys::HOME, isize::MIN),
         (&keys::END, isize::MAX),
     ];
-    let found = moves.iter().find(|(binding, _)| binding.matches(key));
+    let found = table.iter().find(|(binding, _)| binding.matches(key));
     found.map(|&(_, by)| by)
 }
 
@@ -274,12 +284,11 @@ fn detail_key(detail: &mut Detail, key: KeyEvent) {
             Focus::Versions => Focus::Fields,
             Focus::Fields => Focus::Versions,
         };
-    } else if keys::PAGE_UP.matches(key) || keys::PAGE_DOWN.matches(key) {
-        detail.scroll_by(moves(key, page).unwrap_or_default());
     } else if let Some(by) = moves(key, page) {
-        match detail.focus {
-            Focus::Versions => detail.step(by),
-            Focus::Fields => detail.scroll_by(by),
+        let paged = keys::PAGE_UP.matches(key) || keys::PAGE_DOWN.matches(key);
+        match (detail.focus, paged) {
+            (Focus::Versions, false) => detail.step(by),
+            _ => detail.scroll_by(by),
         }
     }
 }
@@ -607,14 +616,11 @@ mod tests {
     #[test]
     fn a_details_job_that_ends_without_a_result_is_shown_as_failed() {
         let mut app = listing();
-        let (send, receive) = std::sync::mpsc::channel::<Done>();
-        app.pending = Some((Job::Load { refresh: false }, receive));
-        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.detail = browse(&app).selected().map(Detail::new);
         let info = Job::Info {
             name: "alpha".into(),
             version: "1.0".into(),
         };
-        drop(send);
         let (send, receive) = std::sync::mpsc::channel::<Done>();
         app.pending = Some((info, receive));
         drop(send);
@@ -623,5 +629,91 @@ mod tests {
         let error = app.details[&key].as_ref().unwrap_err();
         assert!(error.contains("stopped without a result"), "{error}");
         assert!(app.pending.is_none(), "a read detail is not read again");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_search_and_the_filter_and_drops_a_selection_no_longer_listed() {
+        let mut app = listing();
+        for c in ['/', 'a', 'l'] {
+            press(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let reload = Job::Load { refresh: true };
+        let fresh = catalog(&["alps", "beta", "gamma"]);
+        complete(&mut app, reload.clone(), reloaded(Ok((fresh, Vec::new()))));
+        let shown = browse(&app);
+        assert_eq!(shown.search, "al");
+        let rows: Vec<&str> = shown
+            .rows
+            .iter()
+            .map(|&i| shown.packages[i].name.as_str())
+            .collect();
+        assert_eq!(rows, ["alps"], "the search narrows the new list");
+        assert_eq!(shown.selected().unwrap().name, "alps", "alpha is gone");
+
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        let filter = browse(&app).filter;
+        complete(
+            &mut app,
+            reload,
+            reloaded(Ok((catalog(&["alps"]), Vec::new()))),
+        );
+        assert_eq!(browse(&app).filter, filter);
+    }
+
+    #[test]
+    fn a_reload_reopens_the_detail_view_on_the_new_listing_or_closes_it() {
+        let mut app = listing();
+        app.detail = browse(&app).selected().map(Detail::new);
+        let key = ("alpha".to_string(), "1.0".to_string());
+        app.details
+            .insert(key, Err("read before the reload".into()));
+        let mut fresh = catalog(&["alpha"]);
+        let mut newer = fresh.entries[0].clone();
+        newer.version = lvpm_core::version::Version::parse("2.0");
+        fresh.entries.insert(0, newer);
+        // The list itself, as the finished job's follow-up read would reach
+        // past this test's feeds.
+        app.listed(Ok((fresh, Vec::new())));
+        let detail = app.detail.as_ref().expect("alpha is still listed");
+        let versions: Vec<String> = detail
+            .versions
+            .iter()
+            .map(|e| e.version.to_string())
+            .collect();
+        assert_eq!(versions, ["2.0", "1.0"]);
+        assert_eq!(detail.entry().version.to_string(), "1.0", "the pick stays");
+        assert!(app.details.is_empty(), "the details are read again");
+
+        app.listed(Ok((catalog(&["beta"]), Vec::new())));
+        assert!(app.detail.is_none(), "alpha is no longer listed");
+    }
+
+    #[test]
+    fn the_header_says_reloading_only_while_a_list_is_shown() {
+        let mut app = idle();
+        let (_send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((Job::Load { refresh: false }, receive));
+        assert!(!app.reloading(), "the first load");
+        let (_send, receive) = std::sync::mpsc::channel();
+        let mut app = listing();
+        app.pending = Some((Job::Load { refresh: true }, receive));
+        assert!(app.reloading());
+        press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(app.note.as_deref(), Some("the catalog is still loading"));
+    }
+
+    #[test]
+    fn reload_while_details_are_read_waits_for_them() {
+        let mut app = listing();
+        let (_send, receive) = std::sync::mpsc::channel();
+        let info = Job::Info {
+            name: "alpha".into(),
+            version: "1.0".into(),
+        };
+        app.pending = Some((info, receive));
+        press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
+        assert_eq!(app.note.as_deref(), Some("the details are still loading"));
+        assert!(matches!(app.pending, Some((Job::Info { .. }, _))));
     }
 }

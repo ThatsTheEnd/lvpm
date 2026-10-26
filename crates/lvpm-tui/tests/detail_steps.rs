@@ -25,6 +25,12 @@ const ALPHA_1: FixturePackage = alpha("1.0", &[]);
 /// 2.0 requires beta, so the details have a requirement to show.
 const ALPHA_2: FixturePackage = alpha("2.0", &[("beta", "1.0")]);
 const ALPHA_3: FixturePackage = alpha("3.0", &[]);
+/// Listed before alpha, so a reload that loses the selection lands on it.
+const AARDVARK: FixturePackage = FixturePackage {
+    name: "aardvark",
+    display_name: "aardvark",
+    ..alpha("1.0", &[])
+};
 
 const DESCRIPTION: &str = "Tools for alpha.";
 const VENDOR: &str = "Alpha Works";
@@ -127,9 +133,14 @@ async fn archive_refused(_world: &mut TuiWorld) {
 #[given(r#""alpha" is selected and the feed gains "alpha" 3.0"#)]
 async fn gains_alpha_3(world: &mut TuiWorld) {
     assert_eq!(world.selected().as_deref(), Some("alpha"));
-    let body = listing(&[ALPHA_1, ALPHA_2, ALPHA_3], false);
+    let body = listing(&[AARDVARK, ALPHA_1, ALPHA_2, ALPHA_3], false);
     FEED.revise(NI_FEED_DIR, &body);
     FEED.revise(PROJECT_FEED_DIR, &body);
+}
+
+#[given("the feed holds archive downloads")]
+async fn archives_held(_world: &mut TuiWorld) {
+    FEED.pause_archives();
 }
 
 #[given("the feed stops answering")]
@@ -149,10 +160,6 @@ async fn select_and_open(world: &mut TuiWorld, name: String) {
 
 #[when(expr = "the detail view of {string} opens")]
 async fn opens_while_loading(world: &mut TuiWorld, _name: String) {
-    // The list is loaded; only the details' download is held.
-    FEED.release();
-    world.app().wait_for_job();
-    FEED.pause_archives();
     world.press(KeyCode::Enter, KeyEventKind::Press);
     FEED.wait_for_held_archive();
 }
@@ -206,6 +213,16 @@ async fn down_selects(world: &mut TuiWorld) {
     world.press(KeyCode::Down, KeyEventKind::Press);
     assert_eq!(world.picked().as_deref(), Some("1.0"));
     assert!(world.fields().contains("alpha 1.0"));
+    // The held read ends, and the one 1.0 needs follows it.
+    FEED.release();
+    world.app().wait_for_job();
+    let fields = world.fields();
+    assert!(!fields.contains("Reading"), "{fields}");
+    assert!(
+        fields.contains("files"),
+        "1.0 is not read:
+{fields}"
+    );
 }
 
 #[then("the fields shown are those of 1.0")]

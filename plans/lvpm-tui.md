@@ -753,7 +753,7 @@ Feature: Package details and reloading the feeds
     And once loaded, it shows the description, vendor and license of 2.0 and its requirements
 
   Scenario: the detail view accepts input while it loads
-    Given the feed is paused
+    Given the feed holds archive downloads
     When the detail view of "alpha" opens
     Then it shows a loading state
     And Down selects 1.0
@@ -801,7 +801,7 @@ Feature: Package details and reloading the feeds
 **Complexity**: standard
 **IMPLEMENT**: The mock's detail layout (versions left, fields right), a details job per selected version, the loading and error states, Tab focus and scrolling.
 **TEST**: The detail scenarios and the "qix" scenario.
-**REFACTOR**: Cache loaded details per name and version for the session.
+**REFACTOR**: Cache loaded details per name and version until a reload succeeds, as the feeds may list other details then.
 **Files**: `crates/lvpm-tui/src/detail.rs`, `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/src/keys.rs`, `crates/lvpm-tui/src/worker.rs`, `crates/lvpm-tui/tests/steps.rs`
 **Commit**: `feat(tui): package details`
 

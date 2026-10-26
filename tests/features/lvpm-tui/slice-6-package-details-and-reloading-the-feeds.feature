@@ -10,7 +10,7 @@ Feature: Package details and reloading the feeds
     And once loaded, it shows the description, vendor and license of 2.0 and its requirements
 
   Scenario: the detail view accepts input while it loads
-    Given the feed is paused
+    Given the feed holds archive downloads
     When the detail view of "alpha" opens
     Then it shows a loading state
     And Down selects 1.0

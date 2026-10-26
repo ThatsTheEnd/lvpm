@@ -2,8 +2,7 @@
 //! when the terminal is too small. Reverse video, not colour, marks the bars
 //! and the selected row, so they read the same in conhost and with `NO_COLOR`.
 
-use crate::app::Details;
-use crate::app::{App, Listing};
+use crate::app::{App, Details, Listing};
 use crate::browse::Browse;
 use crate::destination;
 use crate::detail::{self, Detail, Focus};
@@ -37,11 +36,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Ok(destination) => destination::label(destination),
         Err(_) => "no destination selected".to_string(),
     };
-    let title = Line::from(vec![
+    let mut title = Line::from(vec![
         Span::styled(" lvpm ", reversed().add_modifier(Modifier::BOLD)),
         Span::raw(format!(" {place}")),
     ]);
-    let mut title = title;
     if app.reloading() {
         title.spans.push(Span::raw("   reloading…"));
     }
@@ -193,12 +191,11 @@ fn draw_detail(frame: &mut Frame, detail: &mut Detail, details: &Details, area: 
     .highlight_symbol("> ");
     frame.render_stateful_widget(versions, left, &mut detail.table);
 
-    let entry = detail.entry();
-    let (name, version) = detail.key();
-    let text = detail::fields(detail, entry, details.get(&(name.clone(), version.clone())));
+    let key = detail.key();
+    let text = detail::fields(detail, details.get(&key));
     let block = Block::bordered()
         .title(title(
-            format!(" {name} {version} "),
+            format!(" {} {} ", key.0, key.1),
             detail.focus == Focus::Fields,
         ))
         .title_bottom(" PgUp/PgDn scroll ");

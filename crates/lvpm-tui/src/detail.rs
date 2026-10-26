@@ -46,6 +46,17 @@ impl Detail {
         }
     }
 
+    /// The view of `package` as a reload lists it, on the version picked
+    /// here if it is still listed.
+    pub fn reopened(&self, package: &Package) -> Detail {
+        let mut detail = Detail::new(package);
+        let picked = &self.entry().version;
+        let at = detail.versions.iter().position(|e| &e.version == picked);
+        detail.table.select(Some(at.unwrap_or(0)));
+        detail.focus = self.focus;
+        detail
+    }
+
     /// The version picked.
     pub fn entry(&self) -> &Entry {
         let at = self.table.selected().unwrap_or(0);
@@ -76,11 +87,8 @@ impl Detail {
 
 /// The fields pane's text for `entry`: what the listing says, then, once
 /// read, the details, else the loading line or core's error.
-pub fn fields(
-    detail: &Detail,
-    entry: &Entry,
-    info: Option<&Result<PackageInfo, String>>,
-) -> String {
+pub fn fields(detail: &Detail, info: Option<&Result<PackageInfo, String>>) -> String {
+    let entry = detail.entry();
     let mut text = String::new();
     if let Some(display_name) = &detail.display_name {
         text.push_str(&format!("{display_name}\n\n"));
@@ -205,14 +213,14 @@ mod tests {
     #[test]
     fn the_fields_say_what_is_loading_or_what_failed() {
         let detail = detail();
-        let loading = fields(&detail, detail.entry(), None);
+        let loading = fields(&detail, None);
         assert!(loading.starts_with("Alpha Tools\n"), "{loading}");
         assert!(loading.contains("LabVIEW       2020 or newer"), "{loading}");
         assert!(
             loading.ends_with("Reading the details of alpha 2.0…"),
             "{loading}"
         );
-        let failed = fields(&detail, detail.entry(), Some(&Err("no route".into())));
+        let failed = fields(&detail, Some(&Err("no route".into())));
         assert!(failed.ends_with("could not be read:\nno route"), "{failed}");
     }
 }
