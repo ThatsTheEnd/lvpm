@@ -38,6 +38,8 @@ jobs:
       - name: Install Rust stable
         run: rustup toolchain install stable --profile minimal && rustup default stable
         shell: bash
+      # Keyed on the runner image, not the os: C objects in a target/ built
+      # against a newer glibc do not link on an older one.
       - uses: actions/cache@v4
         with:
           path: |
@@ -45,8 +47,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: build-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: build-${{ matrix.os }}-
+          key: build-${{ matrix.runner }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: build-${{ matrix.runner }}-
       - name: cargo build --release
         run: cargo build --release --locked
         shell: bash
