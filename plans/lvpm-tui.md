@@ -419,20 +419,20 @@ Feature: Machine-readable output
       | remove alpha --prefix dest            | the project | {"command": "remove"}                  | remove        |
       | venv status                           | any folder | an object with "exists" false           | venv-status   |
 
+  # start, refresh and run-hooks have no row: they never use a venv, and the
+  # harness refuses to run them on the user's LabVIEW installation. They end
+  # in the same result line as the rows below.
   @labview
   Scenario Outline: the commands that need a LabVIEW
-    Given the project has a venv on the detected LabVIEW
+    Given <setup>
     When "lvpm --json <command>" runs in the project
     Then the last line is the only one with a "result" key and it is {"command": "<name>"}
     And the exit code is 0
 
     Examples:
-      | command          | name   |
-      | launch           | launch |
-      | start            | start  |
-      | relink --all     | relink |
-      | run-hooks --all  | run-hooks |
-      | refresh          | refresh |
+      | setup                                          | command                        | name    |
+      | the project has a venv on the detected LabVIEW | launch                         | launch  |
+      | a venv with beta installed                     | relink --all                   | relink  |
 
   @labview
   Scenario: venv create on a project with no venv
