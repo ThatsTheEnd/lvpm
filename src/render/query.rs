@@ -105,6 +105,7 @@ mod tests {
             display_name: display_name.map(str::to_owned),
             requires: Vec::new(),
             lv_min: None,
+            source: String::new(),
         }
     }
 

@@ -132,6 +132,7 @@ mod tests {
             display_name: None,
             requires: Vec::new(),
             lv_min: None,
+            source: String::new(),
         }
     }
 

@@ -905,6 +905,7 @@ mod tests {
                         display_name: None,
                         requires: Vec::new(),
                         lv_min: None,
+                        source: String::new(),
                     },
                     expected_sha256: expected_sha256.map(str::to_string),
                 }],
