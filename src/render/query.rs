@@ -1,6 +1,7 @@
 //! The wording of query results: what `targets`, `search`, `search --all`,
-//! `info`, `list` and `cache add` print for the data core returns. Each function returns the whole
-//! text, line ends included, for the caller to write to stdout.
+//! `info`, `list` and `cache add` print for the data core returns. Each
+//! function returns the whole text, line ends included, for the caller to
+//! write to stdout.
 
 use super::{Renderer, Stream};
 use lvpm_core::events::Event;
@@ -71,7 +72,7 @@ pub fn catalog(query: Option<&str>, catalog: &Catalog) -> String {
 pub fn unread_sources(failed: &[(String, String)]) -> String {
     let line =
         |(source, why): &(String, String)| format!("warning: could not read {source}: {why}\n");
-    failed.iter().map(line).collect()
+    printable(failed.iter().map(line).collect())
 }
 
 /// What `lvpm info` prints: the version's own fields, what it needs, its
@@ -168,7 +169,7 @@ fn catalog_row(e: &Entry) -> String {
 
 /// `row` with every control character but the line end shown as `?`, so a
 /// feed's names cannot send escape sequences to the terminal.
-fn printable(row: String) -> String {
+pub fn printable(row: String) -> String {
     let shown = |c: char| if c.is_control() && c != '\n' { '?' } else { c };
     row.chars().map(shown).collect()
 }

@@ -147,6 +147,32 @@ pub fn open_archive(vip_bytes: Vec<u8>) -> Result<Archive> {
     Ok(zip::ZipArchive::new(std::io::Cursor::new(vip_bytes))?)
 }
 
+/// The most of a `spec` member that is read: real ones are a few KiB, and a
+/// feed's archive must not inflate one until memory runs out.
+const MAX_SPEC_BYTES: u64 = 1024 * 1024;
+
+/// The archive's `spec` member, read.
+pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
+    // Almost always literally "spec" at the archive root.
+    let idx = (0..zip.len()).find(|i| {
+        zip.by_index(*i)
+            .map(|f| f.name().eq_ignore_ascii_case("spec"))
+            .unwrap_or(false)
+    });
+    let Some(idx) = idx else {
+        bail!("no `spec` member in .vip archive");
+    };
+    let mut buf = Vec::new();
+    zip.by_index(idx)?
+        .take(MAX_SPEC_BYTES + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_SPEC_BYTES {
+        bail!("the `spec` member is larger than {MAX_SPEC_BYTES} bytes");
+    }
+    // spec files are latin-1-ish; lossy is fine for the fields we read.
+    crate::spec::parse(&String::from_utf8_lossy(&buf))
+}
+
 /// Work out every file this package would write, without touching disk.
 pub fn plan(roots: &Roots, spec: &Spec, zip: &mut Archive) -> Result<Plan> {
     // Zip entry names are case-sensitive; index once, tolerate case drift
@@ -478,6 +504,32 @@ mod tests {
         assert!(safe_relative("/etc/passwd").is_err());
         assert!(safe_relative(r"C:\windows\system32\evil.dll").is_err());
         assert!(safe_relative("vi.lib/addons/ok.llb").is_ok());
+    }
+
+    /// An archive whose only member is `spec`, holding `text`, deflated.
+    fn archive_with_spec(text: &[u8]) -> Archive {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let deflated = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("spec", deflated).unwrap();
+        writer.write_all(text).unwrap();
+        open_archive(writer.finish().unwrap().into_inner()).unwrap()
+    }
+
+    #[test]
+    fn a_spec_member_is_read_up_to_the_cap() {
+        let spec = b"[Package]
+Name=alpha
+Version=1.0
+";
+        let read = read_spec(&mut archive_with_spec(spec)).unwrap();
+        assert_eq!(read.name, "alpha");
+        // A few KiB deflated, more than the cap inflated.
+        let mut huge = spec.to_vec();
+        huge.resize(MAX_SPEC_BYTES as usize + 1, b' ');
+        let why = read_spec(&mut archive_with_spec(&huge)).unwrap_err();
+        assert!(why.to_string().contains("larger than"), "{why}");
     }
 
     /// A record for `files`, with the hook VIs it is given, installed nowhere.

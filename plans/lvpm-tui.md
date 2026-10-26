@@ -360,7 +360,7 @@ Feature: Package details
 #### Step 2.2: `ops::query::info` through the cache
 
 **Complexity**: standard
-**IMPLEMENT**: `info(env, name, version) -> Result<PackageInfo>`: catalog versions of `name`, the chosen (or newest) entry, its archive through `Downloads::fetch` (no destination), the parsed spec. A `Fetching` event before a download. Unknown name: an error listing the sources; unknown version: an error listing the versions.
+**IMPLEMENT**: `info(env, package) -> Result<PackageInfo>`, `package` read by `PackageArg::parse`: catalog versions of the name, the chosen (or newest) entry, its archive through `Downloads::fetch` (no destination), the parsed spec. An `ArchiveFetching` event before a download. Unknown name: an error listing the sources; unknown version: an error listing the versions.
 **TEST**: Unit test with a local folder source; the loopback-feed scenarios for the cache rules; the fixture builder learns the description fields.
 **REFACTOR**: Reuse `install`'s name matching (`same_name`).
 **Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `tests/support/fixtures.rs`
@@ -1577,10 +1577,10 @@ None.
   - [x] Step 1.2: `lvpm search --all [QUERY]`
 
 ### Wave 2
-- [ ] Slice 2: Package details: `lvpm info`
-  - [ ] Step 2.1: Description fields in `spec::parse`
-  - [ ] Step 2.2: `ops::query::info` through the cache
-  - [ ] Step 2.3: `lvpm info <PACKAGE>[@VERSION]`
+- [x] Slice 2: Package details: `lvpm info`
+  - [x] Step 2.1: Description fields in `spec::parse`
+  - [x] Step 2.2: `ops::query::info` through the cache
+  - [x] Step 2.3: `lvpm info <PACKAGE>[@VERSION]`
 
 ### Wave 3
 - [ ] Slice 3: `--json` and the exit-code table

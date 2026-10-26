@@ -340,7 +340,17 @@ fn archive_hits(world: &CliWorld, package: &FixturePackage) -> usize {
     world.sandbox.feed().hits(&path)
 }
 
-fn fails_with_one(world: &CliWorld) {
+/// The first run of a cache scenario downloads alpha 2.0, once.
+const FIRST_RUN_FETCHES: usize = 1;
+
+/// The last command succeeded and downloaded nothing.
+fn succeeded_without_a_fetch(world: &CliWorld) {
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert!(!stderr(world).contains("fetching"), "{}", stderr(world));
+}
+
+fn failed_with_exit_1(world: &CliWorld) {
     let output = world.last_output.as_ref().expect("a command was run");
     assert_eq!(output.exit_code, 1, "{output:?}");
     assert!(stdout(world).is_empty(), "{}", stdout(world));
@@ -364,11 +374,12 @@ async fn alpha_1_undescribed(_world: &mut CliWorld) {
 async fn has_run_once(world: &mut CliWorld, command: String) {
     world.run(&command, None);
     assert_eq!(world.last_output.as_ref().unwrap().exit_code, 0);
-    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), 1);
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
 }
 
 #[given(r#"the archive request of "alpha" 2.0 fails"#)]
 async fn archive_request_fails(world: &mut CliWorld) {
+    // Every archive request fails, alpha 2.0's among them.
     world.sandbox.feed().refuse_archives();
 }
 
@@ -397,7 +408,7 @@ async fn core_reads_details(world: &mut CliWorld, name: String) {
         venv_dir: PathBuf::from(VENV_DIR),
     };
     let env = OpEnv::new(&sink, config, Vec::new(), world.sandbox.work_dir());
-    world.info = Some(query::info(&env, &name, None).expect("core reads the details"));
+    world.info = Some(query::info(&env, &name).expect("core reads the details"));
 }
 
 #[then("the details are those of 2.0")]
@@ -424,7 +435,7 @@ async fn shows_versions(world: &mut CliWorld) {
 async fn shows_description(world: &mut CliWorld) {
     let lines: Vec<&str> = stdout(world).lines().collect();
     assert_eq!(lines[0], "alpha 2.0  Alpha");
-    assert_eq!(lines[1..8], DESCRIPTION_LINES);
+    assert_eq!(lines[1..=DESCRIPTION_LINES.len()], DESCRIPTION_LINES);
 }
 
 #[then(r#"it shows that 2.0 requires "beta" >= 0.1"#)]
@@ -489,16 +500,27 @@ async fn stdout_only_details(world: &mut CliWorld) {
     assert!(!stdout(world).contains("fetching"), "{}", stdout(world));
 }
 
-// Counts are since the feed started: the first run fetched alpha 2.0 once.
+// Counts are since the feed started, so they include the first run's.
 #[then("the feed serves no archive request")]
 async fn no_archive_request(world: &mut CliWorld) {
-    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), 1);
+    succeeded_without_a_fetch(world);
+    assert!(
+        stdout(world).starts_with(
+            "alpha 2.0  Alpha
+"
+        ),
+        "{}",
+        stdout(world)
+    );
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
     assert_eq!(archive_hits(world, &PACKAGES[0]), 0);
 }
 
 #[then("the feed serves one archive request, for 1.0")]
 async fn one_request_for_1_0(world: &mut CliWorld) {
-    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), 1);
+    let output = world.last_output.as_ref().expect("a command was run");
+    assert_eq!(output.exit_code, 0, "{output:?}");
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
     assert_eq!(archive_hits(world, &PACKAGES[0]), 1);
 }
 
@@ -506,12 +528,12 @@ async fn one_request_for_1_0(world: &mut CliWorld) {
 async fn no_request_for_2_0(world: &mut CliWorld) {
     let output = world.last_output.as_ref().expect("a command was run");
     assert_eq!(output.exit_code, 0, "{output:?}");
-    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), 1);
+    assert_eq!(archive_hits(world, &ALPHA_2_DESCRIBED), FIRST_RUN_FETCHES);
 }
 
 #[then("it fails with exit code 1")]
 async fn fails_with_exit_code_1(world: &mut CliWorld) {
-    fails_with_one(world);
+    failed_with_exit_1(world);
 }
 
 #[then("the error names every configured feed and local folder")]
@@ -534,7 +556,7 @@ async fn error_names_sources(world: &mut CliWorld) {
 
 #[then("it fails with exit code 1 and lists the versions 2.0 and 1.0")]
 async fn fails_listing_versions(world: &mut CliWorld) {
-    fails_with_one(world);
+    failed_with_exit_1(world);
     assert!(
         stderr(world).contains("alpha has no version 9.9; it has 2.0, 1.0"),
         "{}",
@@ -544,14 +566,14 @@ async fn fails_listing_versions(world: &mut CliWorld) {
 
 #[then(r#"it fails with exit code 1 and the error names "alpha" 2.0 and the feed"#)]
 async fn fails_naming_package_and_feed(world: &mut CliWorld) {
-    fails_with_one(world);
+    failed_with_exit_1(world);
     let expected = format!("could not fetch alpha 2.0 from {}", feed_index(world));
     assert!(stderr(world).contains(&expected), "{}", stderr(world));
 }
 
 #[then(r#"it fails with exit code 1 and the error names "alpha" 2.0"#)]
 async fn fails_naming_package(world: &mut CliWorld) {
-    fails_with_one(world);
+    failed_with_exit_1(world);
     assert!(
         stderr(world).contains("the archive of alpha 2.0 could not be read"),
         "{}",

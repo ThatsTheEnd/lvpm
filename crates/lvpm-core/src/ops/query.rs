@@ -2,15 +2,14 @@
 //! how many rows to show and what to call them.
 
 use super::env::OpEnv;
-use super::install::read_spec;
 use super::session::Downloads;
 use crate::config;
 use crate::events::Event;
 use crate::index::{self, Entry, Import};
 use crate::install::{self, Manifest};
 use crate::paths;
-use crate::project::same_name;
-use crate::spec::{self, Spec};
+use crate::project::{PackageArg, same_name};
+use crate::spec::Spec;
 use crate::target::LvTarget;
 use crate::version::Version;
 use anyhow::{Context, Result, bail};
@@ -74,56 +73,46 @@ pub struct Catalog {
     pub failed: Vec<(String, String)>,
 }
 
-/// The details of one version of the package `name`: `version`, or else the
-/// newest. Its archive is read from the cache, or downloaded into it, so no
-/// destination and no LabVIEW is needed.
-pub fn info(env: &OpEnv, name: &str, version: Option<&str>) -> Result<PackageInfo> {
-    let catalog = catalog(env, Some(name))?;
+/// The details of one version of a package, named `name` or `name@version`:
+/// that version, or else the newest. Its archive is read from the cache, or
+/// downloaded into it, so no destination and no LabVIEW is needed.
+pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
+    let arg = PackageArg::parse(package)?;
+    let catalog = catalog(env, Some(&arg.name))?;
     let versions: Vec<Entry> = catalog
         .entries
         .into_iter()
-        .filter(|e| same_name(&e.name, name))
+        .filter(|e| same_name(&e.name, &arg.name))
+        .collect();
+    // A source that could not be read may hold what was asked for.
+    let unread: String = catalog
+        .failed
+        .iter()
+        .map(|(source, why)| format!("\ncould not read {source}: {why}"))
         .collect();
     if versions.is_empty() {
         bail!(
-            "no package named {name:?} in:\n  {}",
+            "no package named {:?} in:\n  {}{unread}",
+            arg.name,
             catalog.sources.join("\n  ")
         );
     }
-    let entry = match version {
-        None => versions[0].clone(),
-        Some(wanted) => {
-            let wanted_version = Version::parse(wanted);
+    let entry = pick_version(&versions, &arg)
+        .with_context(|| {
             let known: Vec<String> = versions.iter().map(|e| e.version.to_string()).collect();
-            versions
-                .iter()
-                .find(|e| e.version == wanted_version)
-                .cloned()
-                .with_context(|| {
-                    format!(
-                        "{name} has no version {wanted}; it has {}",
-                        known.join(", ")
-                    )
-                })?
-        }
-    };
+            let wanted = arg.constraint.as_deref().unwrap_or_default();
+            format!(
+                "{} has no version {wanted}; it has {}{unread}",
+                arg.name,
+                known.join(", ")
+            )
+        })?
+        .clone();
     let what = format!("{} {}", entry.name, entry.version);
-    let downloads = Downloads::open(env)?;
-    let bytes = match downloads.on_hand(&entry)? {
-        Some(bytes) => bytes,
-        None => {
-            env.sink.emit(Event::ArchiveFetching {
-                name: entry.name.clone(),
-                version: entry.version.to_string(),
-            });
-            downloads
-                .fetch(&entry)
-                .with_context(|| format!("could not fetch {what} from {}", entry.source))?
-        }
-    };
+    let bytes = archive_bytes(env, &entry)
+        .with_context(|| format!("could not fetch {what} from {}", entry.source))?;
     let spec = install::open_archive(bytes)
-        .and_then(|mut zip| read_spec(&mut zip))
-        .and_then(|text| spec::parse(&text))
+        .and_then(|mut zip| install::read_spec(&mut zip))
         .with_context(|| format!("the archive of {what} could not be read"))?;
     Ok(PackageInfo {
         entry,
@@ -131,6 +120,32 @@ pub fn info(env: &OpEnv, name: &str, version: Option<&str>) -> Result<PackageInf
         spec,
         failed: catalog.failed,
     })
+}
+
+/// The version `arg` names exactly, or the newest when it names none.
+/// `versions` is newest first.
+fn pick_version<'v>(versions: &'v [Entry], arg: &PackageArg) -> Option<&'v Entry> {
+    match &arg.constraint {
+        None => versions.first(),
+        Some(wanted) => {
+            let wanted = Version::parse(wanted);
+            versions.iter().find(|e| e.version == wanted)
+        }
+    }
+}
+
+/// The archive of `entry`, downloaded into the cache unless it is on hand;
+/// a download says so first.
+fn archive_bytes(env: &OpEnv, entry: &Entry) -> Result<Vec<u8>> {
+    let downloads = Downloads::open(env)?;
+    if let Some(bytes) = downloads.on_hand(entry)? {
+        return Ok(bytes);
+    }
+    env.sink.emit(Event::ArchiveFetching {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+    });
+    downloads.fetch(entry)
 }
 
 /// The answer to [`info`].
@@ -401,7 +416,7 @@ mod tests {
     fn info_reads_the_newest_version_or_the_one_asked_for() {
         let packages = [("alpha", "1.0", "Old Alpha"), ("ALPHA", "2.0", "New Alpha")];
         let (cwd, env) = catalog_env("info-versions", &[&packages]);
-        let newest = info(&env, "alpha", None).unwrap();
+        let newest = info(&env, "alpha").unwrap();
         assert_eq!(newest.spec.display_name.as_deref(), Some("New Alpha"));
         let versions: Vec<String> = newest
             .versions
@@ -409,7 +424,7 @@ mod tests {
             .map(|e| e.version.to_string())
             .collect();
         assert_eq!(versions, ["2.0", "1.0"]);
-        let chosen = info(&env, "alpha", Some("1.0")).unwrap();
+        let chosen = info(&env, "alpha@1.0").unwrap();
         assert_eq!(chosen.entry.version.to_string(), "1.0");
         assert_eq!(chosen.spec.display_name.as_deref(), Some("Old Alpha"));
         let _ = std::fs::remove_dir_all(&cwd);
@@ -419,10 +434,12 @@ mod tests {
     fn info_on_an_unknown_name_or_version_says_what_there_is() {
         let (cwd, env) = catalog_env("info-unknown", &[&[("alpha", "1.0", "Alpha")]]);
         let folder = cwd.join("folder-0").to_string_lossy().into_owned();
-        let why = info(&env, "alp", None).unwrap_err().to_string();
+        let why = info(&env, "alp").unwrap_err().to_string();
         assert_eq!(why, format!("no package named \"alp\" in:\n  {folder}"));
-        let why = info(&env, "alpha", Some("9.9")).unwrap_err().to_string();
+        let why = info(&env, "alpha@9.9").unwrap_err().to_string();
         assert_eq!(why, "alpha has no version 9.9; it has 1.0");
+        let why = info(&env, "alpha@").unwrap_err().to_string();
+        assert_eq!(why, "a constraint is expected after \"@\" in \"alpha@\"");
         let _ = std::fs::remove_dir_all(&cwd);
     }
 }

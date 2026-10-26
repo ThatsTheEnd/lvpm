@@ -19,7 +19,7 @@ use crate::project::{self, Constraint, PackageArg};
 use crate::spec::Spec;
 use crate::target::Roots;
 use crate::version::Version;
-use crate::{install, relink, spec};
+use crate::{install, relink};
 use anyhow::{Result, bail, ensure};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -129,23 +129,6 @@ impl std::fmt::Display for Req {
             Req::Floor(None) => Ok(()),
         }
     }
-}
-
-pub(super) fn read_spec(zip: &mut Zip) -> Result<String> {
-    // Almost always literally "spec" at the archive root.
-    let idx = (0..zip.len()).find(|i| {
-        zip.by_index(*i)
-            .map(|f| f.name().eq_ignore_ascii_case("spec"))
-            .unwrap_or(false)
-    });
-    let Some(idx) = idx else {
-        bail!("no `spec` member in .vip archive");
-    };
-    let mut f = zip.by_index(idx)?;
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut f, &mut buf)?;
-    // spec files are latin-1-ish; lossy is fine for the fields we read.
-    Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Install a package by name, or name@version, where the destination flags say,
@@ -437,7 +420,7 @@ fn install_one(
         }
         Err(why) => return Err(why),
     };
-    let spec = spec::parse(&read_spec(&mut zip)?)?;
+    let spec = install::read_spec(&mut zip)?;
     let plan = install::plan(&roots, &spec, &mut zip)?;
     let mut pkg = Unpacking {
         entry,

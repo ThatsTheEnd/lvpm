@@ -449,7 +449,19 @@ fn op_env<'a>(cli: &Cli, sink: &'a render::CliSink) -> Result<OpEnv<'a>> {
     Ok(env)
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    // As `main() -> Result` would print it, but a feed's text in an error
+    // cannot drive the terminal.
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {}", render::query::printable(format!("{error:?}")));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let sink = render::CliSink::stdio();
     let env = op_env(&cli, &sink)?;
@@ -590,11 +602,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Info { package } => {
-            let (name, version) = match package.split_once('@') {
-                Some((name, version)) => (name, Some(version)),
-                None => (package.as_str(), None),
-            };
-            let info = ops::query::info(&env, name, version)?;
+            let info = ops::query::info(&env, package)?;
             eprint!("{}", render::query::unread_sources(&info.failed));
             print!("{}", render::query::info(&info));
             Ok(())
