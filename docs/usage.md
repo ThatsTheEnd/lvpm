@@ -20,6 +20,7 @@
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
+| `lvpm build`                                         | Package the project's library as `dist/<name>-<version>.vip`, from `[distribution]` ([Building a package](#building-a-package))              |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -223,6 +224,48 @@ Two things follow from LabVIEW reading an addon's contents at launch:
 - The real installation always wins over the overlay: a package installed
   both globally and in the venv loads from the global copy, whatever its
   version. Keep the target installation clean of what the venv provides.
+
+## Building a package
+
+`lvpm build` packages one LabVIEW library as a `.vip` that VIPM and
+`lvpm install` both install. It needs no LabVIEW. Describe the package in
+`lvpm.toml`:
+
+```toml
+[project]
+name    = "hse_lib_hse_logger"   # the package name, unless [distribution.vip] name is set
+version = "2.2.2.114"            # 3 or 4 numeric parts; 2.2.2 is written as 2.2.2.0
+labview = ">=2016"               # becomes the package's LabVIEW gate
+
+[distribution]
+top-level-library = "Source/HSE-Logger/hse-logger.lvlib"  # required; relative to lvpm.toml
+kinds   = ["source"]             # optional; only ["source"] for now
+formats = ["vip"]                # optional; only ["vip"] for now
+
+[distribution.vip]
+name         = "hse_lib_hse_logger"          # optional; required when [project] name is scoped
+vendor       = "Hampel Software Engineering" # required
+display-name = "HSE Logger"                  # required
+install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; this is the default
+
+[distribution.vip.dependency-names]          # required for each scoped dependency
+"@hexagon/lib-a" = "hexagon_lib_a"
+```
+
+- The package holds the library's members as the `.lvlib` lists them: its
+  VIs and controls, its classes and their members, and every file in an
+  auto-populating folder. A file in the library's folder that the library
+  does not list is left out. Every member must be on disk and inside the
+  library's folder.
+- Members install below `install-dir` with the layout they have below the
+  library's folder.
+- `[dependencies]` become the package's `Requires`: `"1.0"` and `">=1.0"`
+  both as `name>=1.0`, `"*"` as the bare name.
+- The package is written to `dist/<name>-<version>.vip`. The same sources
+  give the same bytes. A failed build names the key or file at fault and
+  leaves an earlier package in `dist/` as it was.
+- Any other key under `[distribution]` or `[distribution.vip]` is an error
+  that names the key.
 
 ## Package sources
 

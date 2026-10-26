@@ -331,6 +331,12 @@ enum Cmd {
     /// Import package archives into the shared cache.
     #[command(subcommand)]
     Cache(CacheCmd),
+    /// Package the project's library as dist/<name>-<version>.vip.
+    ///
+    /// Reads lvpm.toml's [distribution] and the library's member list, and
+    /// zips the members; LabVIEW is not needed. Building the same files twice
+    /// gives the same bytes.
+    Build,
     /// Start LabVIEW on the project's venv, optionally opening a project file.
     ///
     /// LabVIEW reads the venv's contents when it starts, so a LabVIEW that
@@ -546,6 +552,10 @@ fn main() -> Result<()> {
             for value in ops::query::config_get(&env, key)? {
                 println!("{value}");
             }
+            Ok(())
+        }
+        Cmd::Build => {
+            print!("{}", render::build::built(&ops::build::build(&env)?));
             Ok(())
         }
         Cmd::Launch { lvproj } => {

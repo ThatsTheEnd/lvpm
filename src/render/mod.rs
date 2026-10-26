@@ -7,6 +7,7 @@
 //! owns the two streams. `query` words what a query returns instead, and the
 //! `launch`, `venv` and `viserver` files also word what their commands return.
 
+pub mod build;
 pub mod edit;
 mod env;
 mod headless;
