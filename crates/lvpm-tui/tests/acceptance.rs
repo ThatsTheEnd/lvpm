@@ -63,17 +63,15 @@ fn main() {
                         is_tui_scenario(scenario)
                     }),
             );
-            // A filter or prefix that drifted would otherwise pass by running nothing.
-            if writer.passed_steps() == 0 {
-                return Some(format!("{feature}: no TUI scenario ran"));
-            }
-            writer.execution_has_failed().then(|| {
-                format!(
+            if writer.execution_has_failed() {
+                return Some(format!(
                     "{feature}: {} step(s) failed, {} parsing error(s)",
                     writer.failed_steps(),
                     writer.parsing_errors()
-                )
-            })
+                ));
+            }
+            // A filter or prefix that drifted would otherwise pass by running nothing.
+            (writer.passed_steps() == 0).then(|| format!("{feature}: no TUI scenario ran"))
         })
         .collect();
     if !failures.is_empty() {
