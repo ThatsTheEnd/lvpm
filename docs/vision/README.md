@@ -14,7 +14,7 @@ This folder is this fork's direction. The upstream author's plan stays in
 | Step | Command | Where it is |
 |---|---|---|
 | 1. Start a library or app | `lvpm init` | planned (M1) |
-| 2. Add dependencies | `lvpm add libA@">=1.4"` | **works** (`name@constraint`; `@org` scopes and `^` planned, M3) |
+| 2. Add dependencies | `lvpm add libA@">=1.4"` | **works** (`name@constraint`; `@org` scopes planned, M3; `^` not yet) |
 | 3. Develop in an isolated env | `lvpm install` → `lvpm launch` | **works** (venv + overlay, `lvpm.lock`, exact `sync`) |
 | 4. Build packages | `lvpm build` → `.lvpkg` and/or `.vip` | proposed (M2) |
 | 5. Publish | tag → CI signs and publishes | proposed (M3) |

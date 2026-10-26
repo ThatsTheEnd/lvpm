@@ -77,7 +77,7 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
 
 ## Pilot libraries
 
-Every slice's demo uses the same two libraries. Both are on vipm.io, so
+Every demo that needs a library uses the same two libraries. Both are on vipm.io, so
 lvpm installs them today, and both keep their source in public git.
 
 | | Pilot A: HSE Logger | Pilot B: OpenSerializer |
@@ -99,11 +99,15 @@ link. Checked 2026-10-26 from each repository's `.vipb`.
 
 | Wave | Slices | Can run in parallel |
 |---|---|---|
-| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands | yes (S5 and S10a–d all touch `src/main.rs`, `events.rs` and `src/render/mod.rs`: merge one first, rebase the others) |
+| 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands | yes (S5 and S10a–d touch `src/main.rs`; S5, S10a and S10b also touch `events.rs` and `src/render/mod.rs`: merge one first, rebase the others) |
 | 2 | S1 `lvpm build` | — |
-| 3 | S1b VIPM round trip, S2 publish to folder, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S2, S5b and S9 touch `src/main.rs`; S1b, S5b and S9 touch `ops/build.rs`: merge one first, rebase the others) |
+| 3 | S1b VIPM round trip, S2 publish to folder, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S2, S5b and S9 touch `src/main.rs`; S1b, S5b and S9 touch `ops/build.rs`; S1b and S2 touch `tests/features/build-slices/`: merge one first, rebase the others) |
 | 4 | S6 attestations and policy, S7a `.lvpkg`, S7c `@org` scopes | yes (S6 and S7c touch `project.rs` and `lockfile.rs`; S7a and S7c touch `index.rs`) |
 | 5 | S7b OCI feeds, S8 community index | yes (both touch `project.rs`) |
+
+Almost every slice also appends a line to `tests/acceptance.rs` (`FEATURE_FILES`)
+and to the README command table; those are one-line conflicts, not
+collisions, and the notes above leave them out.
 
 S1b is the merge gate for the risky unknown: if VIPM rejects an lvpm-built
 `.vip`, re-plan S2, S4 and S7a here before any of them merges.
@@ -169,7 +173,7 @@ committed as a trimmed fixture copy.
 ### Slice S1: `lvpm build` writes a `.vip`
 
 **Depends-on:** S0
-**Files:** `src/main.rs`, `src/render/build.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/ops/build.rs`
+**Files:** `src/main.rs`, `src/render/build.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/ops/build.rs`, `tests/features/build-slices/`
 
 S1 adds `lvlib.rs` if S5 has not merged yet; whichever lands second reuses it.
 
@@ -228,7 +232,7 @@ Decide in `/specs`: what lvpm does if VIPM rejects the file (fallback:
 ### Slice S2: `lvpm publish --to <folder>`
 
 **Depends-on:** S1
-**Files:** `src/main.rs`, `src/render/publish.rs`, `crates/lvpm-core/src/ops/publish.rs`
+**Files:** `src/main.rs`, `src/render/publish.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/ops/publish.rs`, `tests/features/build-slices/`
 
 Goal: a colleague installs your package from a shared folder.
 
@@ -276,7 +280,7 @@ Decide in `/specs`: rate limits without a token; how the release file is named.
 ### Slice S5: `lvpm check`
 
 **Depends-on:** none
-**Files:** `crates/lvpm-core/src/linker.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/viserver.rs`, `crates/lvpm-core/src/ops/check.rs`, `src/main.rs`, `src/render/check.rs`
+**Files:** `crates/lvpm-core/src/linker.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/viserver.rs`, `crates/lvpm-core/src/ops/check.rs`, `src/main.rs`, `src/render/check.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`
 
 Goal: find broken or undeclared links without LabVIEW.
 
@@ -338,7 +342,7 @@ Decide in `/specs`: verify with the `gh` CLI or a Rust Sigstore library.
 
 ### Slice S7a: `.lvpkg` format
 
-**Depends-on:** S1b, S4
+**Depends-on:** S1b, S4, S9
 **Files:** `crates/lvpm-core/src/ops/build.rs`, `crates/lvpm-core/src/lvpkg.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/install.rs`, `crates/lvpm-core/src/sbom.rs`
 
 Goal: lvpm's own format, with per-file hashes and an SBOM inside.
@@ -402,7 +406,7 @@ Decide in `/specs`: OCI media types; Rust OCI client or `oras`.
 ### Slice S8: Federated community index
 
 **Depends-on:** S6
-**Files:** `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/project.rs`, a separate index repository
+**Files:** `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/project.rs`
 
 Goal: open-source discovery and name ownership with no single owner.
 
@@ -448,7 +452,7 @@ comes from.
 ### Slice S10a: `lvpm init` and `init --from`
 
 **Depends-on:** none
-**Files:** `src/main.rs`, `src/render/edit.rs`, `crates/lvpm-core/src/ops/init.rs`, `crates/lvpm-core/src/manifest_edit.rs`
+**Files:** `src/main.rs`, `src/render/edit.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/ops/init.rs`, `crates/lvpm-core/src/manifest_edit.rs`
 
 Goal: start a project, or move a VIPM project over, in one command.
 
@@ -463,7 +467,7 @@ Decide in `/specs`: `.dragon` as well; pinned (exact) or floor (`>=`) constraint
 ### Slice S10b: `lvpm info`
 
 **Depends-on:** none
-**Files:** `src/main.rs`, `src/render/query.rs`, `crates/lvpm-core/src/ops/query.rs`
+**Files:** `src/main.rs`, `src/render/query.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/ops/query.rs`
 
 Goal: see what a package offers before you add it.
 
