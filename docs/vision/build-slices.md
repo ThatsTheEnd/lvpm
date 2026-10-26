@@ -64,9 +64,10 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    [ADR 1](../adr/0001-manifest-project-and-distribution.md): one `[project]`
    identity, `labview = ">=2021"` as a constraint, packaging in
    `[distribution]`, and LabVIEW build specs stay in the `.lvproj`.
-2. **`.vip` first, `.lvpkg` later.** Every consumer already reads `.vip`;
-   `.lvpkg` is needed for OCI referrers and its `RECORD`/SBOM layout (S7a).
-   Until then a `.vip` gets a detached attestation (S6).
+2. **`.vip` first, `.lvpkg` later.** Decided in
+   [ADR 2](../adr/0002-vip-first-lvpkg-later.md). Still open there: whether
+   `.vip` stays a first-class format for good, and whether lvpm-built `.vip`
+   files may carry install hooks.
 3. **The upstream relationship.** Contribute back or keep a long-lived fork.
    It decides naming and how changes go upstream.
 4. **How feeds are configured.** Extend `[sources]`, or replace it with a
@@ -215,22 +216,35 @@ Decide in `/specs`: nothing about key names; ADR 1 fixes them.
 Goal: VIPM users can consume what lvpm builds.
 
 In scope:
-- A manual round trip: build both pilots, install each in VIPM, mass compile.
+- A round trip: build both pilots, install each in VIPM, mass compile.
+- Black-box probing, as [PROVENANCE.md](../../PROVENANCE.md) allows: VIPM is
+  observed, never decompiled or disassembled.
+  1. Write down which `spec` keys VIPM writes, from published specs (the local
+     VIPM cache has about 1,800).
+  2. Build pilot A with VIPM from its own `.vipb` and diff the archive against
+     lvpm's, entry by entry.
+  3. Install `.vip` variants, each with one key missing or one value changed
+     (`ID` content-derived, random or empty; `Format Version`; no `icon.bmp`;
+     no `license`), and record which VIPM accepts.
+  4. For accepted variants, diff the installed LabVIEW tree against VIPM's
+     own install of the same package.
 - Whatever spec or zip changes VIPM needs, each with a scenario or unit test
   named after the VIPM requirement it covers.
 
-Out of scope: automating VIPM (it has no headless install we may script
-against without its code).
+Out of scope: any tool that decompiles or disassembles VIPM.
 
 Acceptance criteria:
 - [ ] *(manual)* Both pilots built by lvpm install in VIPM and mass compile; the steps and the VIPM version are recorded next to S0's feature file.
+- [ ] A table of the probed variants (what changed, accepted or not, VIPM version) is in `docs/`, and PROVENANCE.md cites it for `.vip` writing.
 - [ ] *(manual)* B's `.vip` makes VIPM install its dependency.
 - [ ] README milestone "`.vip` output, verified by a round-trip install in VIPM" is ticked.
 
 Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 
 Decide in `/specs`: what lvpm does if VIPM rejects the file (fallback:
-`.vip` for lvpm only and `.lvpkg` sooner).
+`.vip` for lvpm only and `.lvpkg` sooner); whether the probing is scripted
+through VIPM's own CLI or run by hand. Scripting it needs VIPM's license
+terms (Community or Pro) to allow this use; check them first.
 
 ### Slice S2: `lvpm publish --to <folder>`
 
