@@ -233,7 +233,7 @@ is the reference and the term-by-term map from OGPT to lvpm.
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
 | `lvpm uninstall <name>` / `--all`                    | Remove exactly the files that were installed and prune empty folders                                                                         |
 | `lvpm list`                                          | What lvpm has installed into the selected target, and which hooks it did not run                                                             |
-| `lvpm search <query>`                                | Search the package indexes                                                                                                                   |
+| `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Rerun a package's PostInstall hook, for one that failed during install                                                                       |

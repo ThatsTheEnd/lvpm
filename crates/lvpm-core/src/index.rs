@@ -87,9 +87,13 @@ pub struct Entry {
     /// Minimum LabVIEW version, parsed out of e.g. `LabVIEW>=20.0`.
     pub lv_min: Option<f64>,
     /// Where the entry was listed: a feed's index URL, a local folder, or
-    /// `cache` for an imported archive.
+    /// [`CACHE_SOURCE`] for an imported archive, which is not in
+    /// [`Loaded::sources`].
     pub source: String,
 }
+
+/// The [`Entry::source`] of an archive imported with `lvpm cache add`.
+pub const CACHE_SOURCE: &str = "cache";
 
 impl Entry {
     /// Whether the name or display name contains `query`, which is lowercase.
@@ -436,7 +440,8 @@ pub struct Loaded {
 }
 
 /// [`load`], handing a source that cannot be read to `on_fail` with its name:
-/// an `Err` back ends the load, an `Ok` skips that source.
+/// an `Err` back ends the load, an `Ok` skips that source. A cache error while
+/// reading a source counts as that source failing.
 #[allow(clippy::too_many_arguments)]
 pub fn load_each(
     cache_dir: &Path,
@@ -453,7 +458,7 @@ pub fn load_each(
     let cache = Cache::open(cache_dir)?;
     for package in cache.imported_packages()? {
         entries.push(Entry {
-            source: "cache".to_string(),
+            source: CACHE_SOURCE.to_string(),
             ..local_entry(
                 package.entry,
                 format!("cache:{}", package.sha256),

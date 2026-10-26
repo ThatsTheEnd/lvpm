@@ -31,12 +31,12 @@ pub fn search(query: &str, hits: &[Entry]) -> String {
         .iter()
         .take(SEARCH_ROWS_SHOWN)
         .map(|e| {
-            format!(
+            printable(format!(
                 "{:<NAME_WIDTH$} {:<VERSION_WIDTH$} {}\n",
                 e.name,
                 e.version.to_string(),
                 e.display_name.as_deref().unwrap_or("")
-            )
+            ))
         })
         .collect();
     if hits.len() > SEARCH_ROWS_SHOWN {
@@ -93,7 +93,14 @@ fn catalog_row(e: &Entry) -> String {
         row.push_str(&format!("  LabVIEW>={lv}"));
     }
     row.push_str(&format!("  from {}\n", e.source));
-    row
+    printable(row)
+}
+
+/// `row` with every control character but the line end shown as `?`, so a
+/// feed's names cannot send escape sequences to the terminal.
+fn printable(row: String) -> String {
+    let shown = |c: char| if c.is_control() && c != '\n' { '?' } else { c };
+    row.chars().map(shown).collect()
 }
 
 pub fn list(installed: &[Manifest]) -> String {
@@ -210,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn a_catalog_row_shows_requirements_minimum_labview_and_source_after_searchs_columns() {
+    fn a_catalog_row_shows_requirements_minimum_labview_and_source_after_search_columns() {
         use lvpm_core::index::Requirement;
 
         let mut beta = entry("beta", Some("Beta"));
@@ -240,40 +247,77 @@ mod tests {
         assert_eq!(
             lines[0],
             format!(
-                "{:<52} {:<14} Beta  needs alpha>=1.0, gamma>2  LabVIEW>=20  from http://feed/index.vipr",
+                "{:<NAME_WIDTH$} {:<VERSION_WIDTH$} Beta  needs alpha>=1.0, gamma>2  LabVIEW>=20  from http://feed/index.vipr",
                 "beta", "1.0"
             )
         );
         assert_eq!(
             lines[1],
-            format!("{:<52} {:<14}   from packages", "plain", "1.0")
+            format!(
+                "{:<NAME_WIDTH$} {:<VERSION_WIDTH$}   from packages",
+                "plain", "1.0"
+            )
         );
         assert_eq!(lines.len(), 2);
     }
 
-    #[test]
-    fn an_empty_catalog_names_its_sources_or_the_query_and_failures_are_warnings() {
-        let empty = |sources: &[&str]| Catalog {
+    fn empty_catalog(sources: &[&str]) -> Catalog {
+        Catalog {
             entries: Vec::new(),
             sources: sources.iter().map(|s| s.to_string()).collect(),
-            failed: vec![("http://feed".into(), "refused".into())],
-        };
+            failed: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_empty_catalog_names_the_sources_it_asked_or_says_there_are_none() {
         assert_eq!(
-            catalog(None, &empty(&["packages", "http://feed"])),
+            catalog(None, &empty_catalog(&["packages", "http://feed"])),
             "no packages found in:\n  packages\n  http://feed\n"
         );
         assert_eq!(
-            catalog(Some("zzz"), &empty(&["packages"])),
-            "no packages matching \"zzz\"\n"
-        );
-        assert_eq!(
-            catalog(None, &empty(&[])),
+            catalog(None, &empty_catalog(&[])),
             "no package sources are configured\n"
         );
+    }
+
+    #[test]
+    fn an_empty_catalog_for_a_query_names_the_query() {
         assert_eq!(
-            unread_sources(&empty(&[])),
+            catalog(Some("zzz"), &empty_catalog(&["packages"])),
+            "no packages matching \"zzz\"\n"
+        );
+    }
+
+    #[test]
+    fn each_unread_source_is_a_warning() {
+        let mut unread = empty_catalog(&[]);
+        unread.failed = vec![("http://feed".into(), "refused".into())];
+        assert_eq!(
+            unread_sources(&unread),
             "warning: could not read http://feed: refused\n"
         );
+    }
+
+    #[test]
+    fn control_characters_from_a_feed_never_reach_the_terminal() {
+        let mut hostile = entry("evil\x1b[2K", Some("Evil\x07\u{9b}"));
+        hostile.source = "packages".into();
+        let catalog = Catalog {
+            entries: vec![hostile.clone()],
+            sources: Vec::new(),
+            failed: Vec::new(),
+        };
+        for text in [
+            super::catalog(None, &catalog),
+            search("evil", std::slice::from_ref(&hostile)),
+        ] {
+            assert!(
+                !text.chars().any(|c| c.is_control() && c != '\n'),
+                "{text:?}"
+            );
+            assert!(text.contains("evil?[2K"), "{text:?}");
+        }
     }
 
     #[test]

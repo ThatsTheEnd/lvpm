@@ -45,12 +45,7 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
         .cloned()
         .collect();
     // Names that differ only in case are one package, so they sort together.
-    entries.sort_by(|a, b| {
-        (a.name
-            .to_ascii_lowercase()
-            .cmp(&b.name.to_ascii_lowercase()))
-        .then(b.version.cmp(&a.version))
-    });
+    entries.sort_by_cached_key(|e| (e.name.to_lowercase(), std::cmp::Reverse(e.version.clone())));
     Ok(Catalog {
         entries,
         sources: loaded.sources,
@@ -259,7 +254,7 @@ mod tests {
         env.config.local_sources = vec![cwd.join("missing")];
         let catalog = catalog(&env, None).unwrap();
         assert_eq!(rows(&catalog), ["alpha 1.0"]);
-        assert_eq!(catalog.entries[0].source, "cache");
+        assert_eq!(catalog.entries[0].source, crate::index::CACHE_SOURCE);
         assert_eq!(catalog.failed.len(), 1);
         let _ = std::fs::remove_dir_all(&cwd);
     }
@@ -279,7 +274,7 @@ mod tests {
         let (cwd, env) = catalog_env("catalog-empty", &[&[]]);
         let catalog = catalog(&env, None).unwrap();
         assert!(catalog.entries.is_empty());
-        assert_eq!(catalog.sources.len(), 1);
+        assert_eq!(catalog.sources, [cwd.join("folder-0").to_string_lossy()]);
         assert!(catalog.failed.is_empty());
         let _ = std::fs::remove_dir_all(&cwd);
     }

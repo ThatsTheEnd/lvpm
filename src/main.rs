@@ -369,9 +369,10 @@ enum Cmd {
     },
     /// Show what lvpm has installed into the selected target.
     List,
-    /// Search the indexes.
+    /// Search the indexes, or with --all list the whole catalog.
     Search {
         /// Text to look for in package names and display names, ignoring case.
+        /// Required unless --all is given.
         #[arg(required_unless_present = "all")]
         query: Option<String>,
         /// List every version of every package, with no cap on the rows, and

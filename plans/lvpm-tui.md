@@ -49,14 +49,15 @@ first install a package.
 ### Core and CLI
 
 - **Catalog entries carry their source.** `index::Entry` gains `source`: the
-  feed URL, or the local folder, it came from. `ops::query::catalog(env,
+  feed URL, or the local folder, it came from, or `cache` for a package
+  imported with `lvpm cache add`. `ops::query::catalog(env,
   query)` returns every entry of every source, every version, sorted by name
   then version (newest first). The filter is the one `Index::search` uses: a
   case-insensitive substring of the name or the display name. When a source
   cannot be read, core falls back to its cache as it does today; a source
   with no cache is reported in `Catalog::failed` and the other sources are
-  still listed. When every source fails, `catalog` returns an error naming
-  them.
+  still listed. When every source fails and nothing is imported, `catalog`
+  returns an error naming them.
 - **Package details go through the cache, without a destination.**
   `ops::query::info(env, name, version)` fetches the archive through
   `ops::session::Downloads` (cache hit, else download into the cache), which
@@ -179,7 +180,7 @@ in the traceability matrix.
 ### Slice 1: Catalog listing, uncapped
 
 **Depends-on:** none
-**Files:** `src/main.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-core/src/ops/query.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/steps/recording.rs`, `tests/steps/sync.rs`, `tests/support/feed.rs`, `tests/steps/mod.rs`, `tests/acceptance.rs`, `tests/golden/search-all/`
+**Files:** `src/main.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-core/src/ops/query.rs`, `src/render/query.rs`, `tests/steps/query.rs`, `tests/steps/recording.rs`, `tests/steps/sync.rs`, `tests/support/feed.rs`, `tests/steps/mod.rs`, `tests/acceptance.rs`, `tests/golden/search-all/`, `README.md`; and the `source` field added to each `Entry` built in `crates/lvpm-core/src/{fetch.rs,solve.rs,ops/install.rs,ops/lock.rs,ops/sync.rs}`, `tests/steps/install.rs`, `tests/steps/solver.rs`
 **Feature files:** `tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature`
 
 **Behavior:**

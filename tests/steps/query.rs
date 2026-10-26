@@ -37,7 +37,7 @@ fn plain_listing(entries: &[(String, &str, &str)]) -> String {
 }
 
 /// The project's one feed lists `body`.
-fn feed_listing(world: &mut CliWorld, body: &str) {
+fn publish_listing(world: &mut CliWorld, body: &str) {
     world.sandbox.feed().publish(LISTED_DIR, body);
     world.sandbox.use_project_source(LISTED_DIR);
 }
@@ -72,7 +72,7 @@ async fn feed_with_two_alphas(world: &mut CliWorld) {
     let alphas = &PACKAGES[..2];
     let ids: Vec<String> = alphas.iter().map(FixturePackage::id).collect();
     assert_eq!(ids, ["alpha-1.0", "alpha-2.0"]);
-    feed_listing(world, &listing(alphas, true));
+    publish_listing(world, &listing(alphas, true));
 }
 
 #[given(r#"a local folder with "beta" 0.1"#)]
@@ -85,7 +85,7 @@ async fn feed_with_sixty_packages(world: &mut CliWorld) {
     let entries: Vec<(String, &str, &str)> = (1..=60)
         .flat_map(|n| ["1.0", "2.0"].map(|v| (format!("bulk_{n:02}"), v, "Bulk")))
         .collect();
-    feed_listing(world, &plain_listing(&entries));
+    publish_listing(world, &plain_listing(&entries));
 }
 
 #[given(r#"a feed with "alpha" 1.0, shown as "Alpha Tools", and "beta" 0.1"#)]
@@ -94,12 +94,12 @@ async fn feed_with_alpha_tools_and_beta(world: &mut CliWorld) {
         ("alpha".to_string(), "1.0", "Alpha Tools"),
         ("beta".to_string(), "0.1", "Beta"),
     ];
-    feed_listing(world, &plain_listing(&entries));
+    publish_listing(world, &plain_listing(&entries));
 }
 
 #[given(r#"a feed with "alpha" 1.0"#)]
 async fn feed_with_alpha(world: &mut CliWorld) {
-    feed_listing(
+    publish_listing(
         world,
         &plain_listing(&[("alpha".to_string(), "1.0", "Alpha")]),
     );
@@ -107,7 +107,7 @@ async fn feed_with_alpha(world: &mut CliWorld) {
 
 #[given("a feed and a local folder with no package")]
 async fn empty_feed_and_folder(world: &mut CliWorld) {
-    feed_listing(world, &plain_listing(&[]));
+    publish_listing(world, &plain_listing(&[]));
 }
 
 #[given(r#"a feed with "alpha" 1.0 that does not answer and has never been cached"#)]
@@ -236,6 +236,12 @@ async fn stderr_names_unread_feed(world: &mut CliWorld) {
 async fn fails_naming_the_feed(world: &mut CliWorld) {
     let output = world.last_output.as_ref().expect("a command was run");
     assert_eq!(output.exit_code, 1, "{output:?}");
+    assert!(stdout(world).is_empty(), "{}", stdout(world));
+    assert!(
+        output.stderr.contains("no package source could be read"),
+        "{}",
+        output.stderr
+    );
     assert!(
         output.stderr.contains(&feed_index(world)),
         "{}",
