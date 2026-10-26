@@ -8,6 +8,7 @@ use crate::{keys, ui};
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
 use lvpm_core::ops::query::{Catalog, PackageInfo};
+use lvpm_core::project::same_name;
 use lvpm_core::target::LvTarget;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -82,7 +83,7 @@ impl App {
     /// Read the details the detail view shows, unless they are read or a
     /// job is running: that job's end asks again.
     fn fetch_wanted(&mut self) {
-        let Some(detail) = &self.detail else {
+        let Some(detail) = self.detail.as_ref().filter(|_| self.running) else {
             return;
         };
         let key = detail.key();
@@ -128,7 +129,10 @@ impl App {
                 // An open view shows the package as listed now, or closes
                 // if the feeds no longer list it.
                 self.detail = self.detail.take().and_then(|detail| {
-                    let package = browse.packages.iter().find(|p| p.name == detail.name);
+                    let package = browse
+                        .packages
+                        .iter()
+                        .find(|p| same_name(&p.name, &detail.name));
                     package.map(|package| detail.reopened(package))
                 });
                 self.listing = Listing::Loaded(browse);
@@ -224,9 +228,7 @@ impl App {
                 self.note = browse_key(browse, key);
             }
         }
-        if self.running {
-            self.fetch_wanted();
-        }
+        self.fetch_wanted();
     }
 }
 
