@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use support::golden::{Mode, Output};
 use support::sandbox::Sandbox;
-use support::selection::{LABVIEW_TAG, PENDING_TAG_PREFIX, Selection, UNSAFE_TAG, select};
+use support::selection::{
+    INTERACTIVE_TAG, LABVIEW_TAG, PENDING_TAG_PREFIX, Selection, UNSAFE_TAG, select,
+};
 
 /// The features the harness runs, relative to the package root. Later slices
 /// add theirs here.
@@ -49,6 +51,9 @@ const FEATURE_FILES: &[&str] = &[
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";
+/// The LabVIEW here is headless (a container): its `@interactive-labview`
+/// scenarios cannot run, and their headless copies stand in for them.
+const HEADLESS_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW_HEADLESS";
 /// The program name every recorded command starts with; the binary under test
 /// is run in its place.
 const PROGRAM: &str = "lvpm";
@@ -145,6 +150,7 @@ struct ScenarioCounts {
     labview_not_run: usize,
     unsafe_not_run: usize,
     pending_not_run: usize,
+    interactive_not_run: usize,
 }
 
 /// Whatever a scenario started on its venv is stopped, whether it passed or not.
@@ -168,15 +174,18 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
     let unsafe_not_run = Arc::new(AtomicUsize::new(0));
     let pending_not_run = Arc::new(AtomicUsize::new(0));
     let labview_ran = Arc::new(AtomicUsize::new(0));
+    let interactive_not_run = Arc::new(AtomicUsize::new(0));
     let (counted_labview, counted_unsafe, counted_pending, counted_labview_ran) = (
         labview_not_run.clone(),
         unsafe_not_run.clone(),
         pending_not_run.clone(),
         labview_ran.clone(),
     );
-    let (test_labview, only_labview) = (
+    let counted_interactive = interactive_not_run.clone();
+    let (test_labview, only_labview, headless_labview) = (
         env_flag(TEST_LABVIEW_ENV_VAR),
         env_flag(ONLY_LABVIEW_ENV_VAR),
+        env_flag(HEADLESS_LABVIEW_ENV_VAR),
     );
     let writer = futures::executor::block_on(
         CliWorld::cucumber()
@@ -194,14 +203,16 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
             .after(after_scenario)
             .fail_on_skipped()
             .filter_run(path, move |_, _, scenario| {
-                let (counter, runs) = match select(&scenario.tags, test_labview, only_labview) {
-                    Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
-                    Selection::Run => return true,
-                    Selection::NotLabview => return false,
-                    Selection::Unsafe => (&counted_unsafe, false),
-                    Selection::Pending => (&counted_pending, false),
-                    Selection::NeedsLabview => (&counted_labview, false),
-                };
+                let (counter, runs) =
+                    match select(&scenario.tags, test_labview, only_labview, headless_labview) {
+                        Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
+                        Selection::Run => return true,
+                        Selection::NotLabview => return false,
+                        Selection::Unsafe => (&counted_unsafe, false),
+                        Selection::Pending => (&counted_pending, false),
+                        Selection::NeedsLabview => (&counted_labview, false),
+                        Selection::Interactive => (&counted_interactive, false),
+                    };
                 counter.fetch_add(1, Ordering::SeqCst);
                 runs
             }),
@@ -220,6 +231,7 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
         labview_not_run: labview_not_run.load(Ordering::SeqCst),
         unsafe_not_run: unsafe_not_run.load(Ordering::SeqCst),
         pending_not_run: pending_not_run.load(Ordering::SeqCst),
+        interactive_not_run: interactive_not_run.load(Ordering::SeqCst),
     };
     (counts, outcome)
 }
@@ -250,7 +262,7 @@ fn run_features() {
     }
     let mut failures = Vec::new();
     let (mut labview_not_run, mut unsafe_not_run, mut pending_not_run) = (0, 0, 0);
-    let mut labview_ran = 0;
+    let (mut labview_ran, mut interactive_not_run) = (0, 0);
     for feature in FEATURE_FILES {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
         let (counts, outcome) = run_feature(path, mode);
@@ -258,6 +270,7 @@ fn run_features() {
         labview_not_run += counts.labview_not_run;
         unsafe_not_run += counts.unsafe_not_run;
         pending_not_run += counts.pending_not_run;
+        interactive_not_run += counts.interactive_not_run;
         if let Err(why) = outcome {
             failures.push(format!("{feature}: {why}"));
         }
@@ -276,6 +289,11 @@ fn run_features() {
         println!(
             "{unsafe_not_run} @{UNSAFE_TAG} scenarios never run: each would change a real \
              LabVIEW installation"
+        );
+    }
+    if interactive_not_run > 0 {
+        println!(
+            "{interactive_not_run} @{INTERACTIVE_TAG} scenarios left to their headless copies              ({HEADLESS_LABVIEW_ENV_VAR}=1)"
         );
     }
     if pending_not_run > 0 {

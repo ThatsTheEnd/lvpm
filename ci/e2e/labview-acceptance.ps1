@@ -6,7 +6,8 @@
 param([string] $Image, [Parameter(Mandatory)] [int] $Year, [switch] $InContainer)
 $ErrorActionPreference = 'Stop'
 # Measured on a LabVIEW 2026 machine with LVPM_TEST_LABVIEW=1 and
-# LVPM_TEST_ONLY_LABVIEW=1 (2026-10-25): 29 run, 4 @unsafe never run.
+# LVPM_TEST_ONLY_LABVIEW=1 (2026-10-25): 29 run, 4 @unsafe never run. Here the
+# 2 @interactive-labview ones give way to their 2 headless copies: 29 again.
 $expected = 29
 $src = 'C:\src\lvpm'
 
@@ -64,11 +65,24 @@ while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -W
 
 $binary = Get-ChildItem "$src\target\debug\deps\acceptance-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $binary) { Fail "no acceptance test binary under $src\target\debug\deps" }
-$env:LVPM_TEST_LABVIEW = '1'; $env:LVPM_TEST_ONLY_LABVIEW = '1'
+$env:LVPM_TEST_LABVIEW = '1'; $env:LVPM_TEST_ONLY_LABVIEW = '1'; $env:LVPM_TEST_LABVIEW_HEADLESS = '1'
 $ErrorActionPreference = 'Continue'
 $log = (& $binary.FullName 2>&1 | ForEach-Object { "$_" } | Out-String)
 $status = $LASTEXITCODE
 Write-Host $log
+
+# A scenario only a headless LabVIEW runs is recorded where one is: here. Record
+# the missing ones (existing ones are kept) and hand them out to be committed.
+if ($log -match 'no recording `') {
+    $golden = "$src\tests\golden"
+    $before = @(Get-ChildItem $golden -Directory | ForEach-Object Name)
+    $env:LVPM_RECORD = '1'; & $binary.FullName *> $null; Remove-Item Env:LVPM_RECORD
+    $new = @(Get-ChildItem $golden -Directory | Where-Object { $before -notcontains $_.Name })
+    New-Item -ItemType Directory -Force C:\out\golden | Out-Null
+    foreach ($d in $new) { Copy-Item $d.FullName -Destination C:\out\golden\$($d.Name) -Recurse -Force }
+    $shown = foreach ($d in $new) { foreach ($f in Get-ChildItem $d.FullName -File) { "==> $($d.Name)/$($f.Name)"; Get-Content $f.FullName -Raw } }
+    Fail "missing recordings, recorded here: $($new.Name -join ', ') (the golden artifact holds them, to commit)" ($shown -join "`n")
+}
 
 if ($status -ne 0) { Fail "the @labview scenarios failed (exit $status)" $log }
 if ($log -match '@labview scenarios not run') { Fail 'some @labview scenarios were not run' $log }

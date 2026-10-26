@@ -155,8 +155,16 @@ jobs:
       - name: The @labview acceptance scenarios
         if: matrix.acceptance
         shell: pwsh
-        timeout-minutes: 30
+        # A run that records missing recordings runs the scenarios twice.
+        timeout-minutes: 45
         run: ci/e2e/labview-acceptance.ps1 -Image $env:IMAGE -Year $env:YEAR
+      - uses: actions/upload-artifact@v4
+        if: failure() && matrix.acceptance
+        with:
+          name: golden-${{ matrix.os }}-${{ matrix.year }}
+          path: out/golden
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Copy the e2e summary
         if: always()
         shell: bash
