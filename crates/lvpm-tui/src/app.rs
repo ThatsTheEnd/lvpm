@@ -10,7 +10,7 @@ use crate::{keys, log, ui};
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
-use lvpm_core::ops::query::{Catalog, PackageInfo};
+use lvpm_core::ops::query::{Catalog, PackageInfo, resolvable};
 use lvpm_core::project::same_name;
 use lvpm_core::target::LvTarget;
 use ratatui::Terminal;
@@ -125,6 +125,7 @@ impl App {
     }
 
     fn start(&mut self, job: Job) {
+        debug_assert!(self.pending.is_none(), "one job at a time");
         self.pending = Some((job.clone(), worker::spawn(&self.builder, job)));
     }
 
@@ -293,6 +294,9 @@ impl App {
                 self.note = Some(format!("{name} needs LabVIEW {year}"));
             }
             (_, None) => self.note = Some(format!("no source has {name}")),
+            _ if resolvable(&package.versions, self.target()).is_none() => {
+                self.note = Some(format!("no version of {name} fits this LabVIEW"));
+            }
             (_, Some(version)) => {
                 let version = version.to_string();
                 self.plan(&name, &version);
@@ -312,7 +316,9 @@ impl App {
                 op.cancel.cancel();
                 self.op = None;
             }
-            Stage::Planning | Stage::PlanFailed(_) | Stage::Preview if quit => {
+            Stage::Planning | Stage::PlanFailed(_) | Stage::Preview | Stage::ConfirmDowngrade
+                if quit =>
+            {
                 op.cancel.cancel();
                 self.running = false;
             }
@@ -324,6 +330,7 @@ impl App {
             }
             Stage::ConfirmDowngrade if keys::YES.matches(key) => self.run_install(true),
             Stage::ConfirmDowngrade if keys::NO.matches(key) => op.stage = Stage::Preview,
+            Stage::Running(_) if keys::LOG.matches(key) => self.showing_log = true,
             Stage::Running(progress) if progress.outcome.is_none() => {
                 if keys::CANCEL.matches(key) {
                     // The token refuses once files are being written.
@@ -331,8 +338,6 @@ impl App {
                         true => progress.cancelling = true,
                         false => progress.refused = true,
                     }
-                } else if keys::LOG.matches(key) {
-                    self.showing_log = true;
                 } else {
                     let name = match key.code {
                         KeyCode::Char(c) => c.to_string(),
@@ -346,7 +351,6 @@ impl App {
                 // What the install changed shows in the list.
                 self.start(Job::Load { refresh: false });
             }
-            Stage::Running(_) if keys::LOG.matches(key) => self.showing_log = true,
             Stage::Running(_) if quit => self.running = false,
             _ => {}
         }
@@ -437,6 +441,9 @@ impl App {
         if self.showing_log {
             if keys::LOG.matches(key) || keys::BACK.matches(key) {
                 self.showing_log = false;
+            } else if self.installing() && keys::CANCEL.matches(key) {
+                self.showing_log = false;
+                self.op_key(key);
             } else if keys::INTERRUPT.matches(key) && !self.installing() {
                 self.running = false;
             }

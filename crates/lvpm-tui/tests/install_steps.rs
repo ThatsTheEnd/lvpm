@@ -7,8 +7,11 @@ use lvpm_core::install::{self, Manifest};
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_testkit::feed::{NI_FEED_DIR, NOT_AN_ARCHIVE, PROJECT_FEED_DIR, archive_path, listing};
 use lvpm_testkit::fixtures::{FixturePackage, Payload};
+use lvpm_tui::app::Stage;
 use lvpm_tui::destination::Quiet;
 use lvpm_tui::log;
+use lvpm_tui::progress::Progress;
+use lvpm_tui::worker::Outcome;
 use lvpm_tui::worker::Park;
 use ratatui::crossterm::event::{KeyCode, KeyEventKind};
 use std::path::Path;
@@ -134,6 +137,31 @@ impl TuiWorld {
         park.wait_reached();
     }
 
+    fn stage(&mut self) -> &Stage {
+        &self.app().op.as_ref().expect("an install on screen").stage
+    }
+
+    fn progress(&mut self) -> &Progress {
+        match self.stage() {
+            Stage::Running(progress) => progress,
+            other => panic!("not running: {other:?}"),
+        }
+    }
+
+    /// Core's error is on screen, at least its start, and names `words`.
+    fn shows_error(&mut self, error: String, words: &[&str]) {
+        assert!(words.iter().all(|w| error.contains(w)), "{error:?}");
+        let start: String = error
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(30)
+            .collect();
+        assert!(!start.is_empty(), "an empty error");
+        self.shows(&start);
+    }
+
     fn release_park(&mut self) {
         if let Some(park) = &self.park {
             park.release();
@@ -205,15 +233,17 @@ async fn alpha_corrupt(world: &mut TuiWorld) {
     world.corrupt = true;
 }
 
+const TEN_MIB: u64 = 10 * 1024 * 1024;
+
 #[given("tui.log is 10 MiB and tui.log.1 holds an older backup")]
 async fn log_at_limit(world: &mut TuiWorld) {
-    sized(&world.log_file, log::ROTATE_AT);
+    sized(&world.log_file, TEN_MIB);
     std::fs::write(log::backup(&world.log_file), "older\n").expect("an older backup");
 }
 
 #[given("tui.log is 1 byte under 10 MiB")]
 async fn log_under_limit(world: &mut TuiWorld) {
-    sized(&world.log_file, log::ROTATE_AT - 1);
+    sized(&world.log_file, TEN_MIB - 1);
 }
 
 #[given("the log folder cannot be written")]
@@ -234,6 +264,7 @@ async fn enter(world: &mut TuiWorld) {
 async fn plan_and_esc(world: &mut TuiWorld) {
     world.plan("alpha");
     world.press(KeyCode::Esc, KeyEventKind::Press);
+    assert!(world.app().op.is_none(), "the preview is still shown");
 }
 
 #[when(r#"version 1.0 of "alpha" is picked in the details and "i" is pressed"#)]
@@ -245,7 +276,9 @@ async fn pick_1_0(world: &mut TuiWorld) {
 async fn pick_1_0_and_back(world: &mut TuiWorld) {
     world.picked_1_0();
     world.press(KeyCode::Enter, KeyEventKind::Press);
+    assert!(matches!(world.stage(), Stage::ConfirmDowngrade));
     world.press(KeyCode::Esc, KeyEventKind::Press);
+    assert!(matches!(world.stage(), Stage::Preview));
 }
 
 #[when(regex = r#"^an install(?: of "alpha")? is confirmed and paused at (\w+)$"#)]
@@ -316,6 +349,27 @@ async fn phases_in_order(world: &mut TuiWorld) {
         })
         .collect();
     assert!(rows.is_sorted(), "{rows:?}:\n{}", screen.join("\n"));
+    for phase in ["resolve", "download", "unpack"] {
+        world.row_with(&[&format!("√ {phase}"), "done"]);
+    }
+    // The order core ran them in, not only the layout's.
+    let entry = world
+        .app()
+        .log
+        .last()
+        .cloned()
+        .expect("an operation logged");
+    let started: Vec<usize> = entry
+        .iter()
+        .filter_map(|line| line.strip_suffix('…'))
+        .filter_map(|phase| phases.iter().position(|p| *p == phase))
+        .collect();
+    // Download and unpack start again for each further package.
+    assert_eq!(started.get(..3), Some(&[0, 1, 2][..]), "{entry:?}");
+    assert!(
+        started[3..].iter().all(|&at| (1..=2).contains(&at)),
+        "{entry:?}"
+    );
 }
 
 #[then("relink, hooks and refresh are shown as skipped for a scratch destination")]
@@ -356,7 +410,11 @@ async fn plan_error(world: &mut TuiWorld) {
     // The list's `i` does not wait for the plan.
     world.app().wait_for_job();
     world.shows("The plan could not be made:");
-    world.shows("alpha");
+    let Stage::PlanFailed(error) = world.stage() else {
+        panic!("no plan error");
+    };
+    let error = error.clone();
+    world.shows_error(error, &[]);
 }
 
 #[then(r#"the preview says no source has "omega""#)]
@@ -414,6 +472,7 @@ async fn no_files(world: &mut TuiWorld) {
 
 #[then("the progress view says cancel is no longer possible")]
 async fn cancel_refused(world: &mut TuiWorld) {
+    assert!(world.progress().refused, "c was not refused");
     world.shows("Cancel is no longer possible: package files are being written.");
 }
 
@@ -425,6 +484,7 @@ async fn finishes(world: &mut TuiWorld) {
 #[then("the progress view stays")]
 async fn progress_stays(world: &mut TuiWorld) {
     assert!(world.app().installing());
+    assert!(world.app().is_running(), "the key quit");
     world.row_with(&["download", "running"]);
 }
 
@@ -442,7 +502,13 @@ async fn resolve_done(world: &mut TuiWorld) {
 #[then(r#"the result shows core's error naming "alpha" 2.0"#)]
 async fn failed(world: &mut TuiWorld) {
     world.shows("× Failed:");
-    world.row_with(&["alpha", "2.0"]);
+    let Some(Outcome::Failed(error)) = world.progress().outcome.clone() else {
+        panic!("not failed");
+    };
+    // shortcut: core's archive error names no package, so "alpha 2.0" is
+    // only the title's; show the failing package once core says it.
+    world.shows_error(error, &[]);
+    world.shows("Install alpha@2.0");
     assert_eq!(world.version_installed("alpha"), None);
 }
 
@@ -479,6 +545,7 @@ async fn log_header(world: &mut TuiWorld) {
         .map(|c| if c.is_ascii_digit() { '0' } else { c })
         .collect();
     assert_eq!(shape, "0000-00-00T00:00:00Z", "{stamp}");
+    assert!(stamp >= "2026", "a clock read as {stamp}");
     assert_eq!(what, "install alpha@2.0");
 }
 
@@ -502,7 +569,7 @@ async fn log_outcome(world: &mut TuiWorld, outcome: String) {
 #[then("tui.log.1 holds the 10 MiB file")]
 async fn backup_holds(world: &mut TuiWorld) {
     let backup = std::fs::metadata(log::backup(&world.log_file)).expect("tui.log.1");
-    assert_eq!(backup.len(), log::ROTATE_AT);
+    assert_eq!(backup.len(), TEN_MIB);
 }
 
 #[then("tui.log holds only the new entry")]
@@ -521,7 +588,7 @@ async fn appended(world: &mut TuiWorld) {
     assert!(!log::backup(&world.log_file).exists());
     log_equals(world).await;
     let size = std::fs::metadata(&world.log_file).expect("tui.log").len();
-    assert!(size > log::ROTATE_AT - 1, "{size}");
+    assert!(size > TEN_MIB - 1, "{size}");
 }
 
 #[then("the install succeeds")]

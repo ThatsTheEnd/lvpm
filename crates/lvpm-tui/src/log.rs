@@ -39,7 +39,11 @@ pub fn line(event: &Event) -> Option<String> {
     Some(match event {
         Event::PhaseStarted { phase } => format!("{}…", progress::name(*phase)),
         Event::PhaseSkipped { phase, reason, .. } => {
-            format!("{} skipped: {reason:?}", progress::name(*phase))
+            format!(
+                "{} skipped: {}",
+                progress::name(*phase),
+                progress::reason(*reason)
+            )
         }
         Event::InstallTarget { path, .. } => format!("into {}", path.display()),
         Event::PackageStart { name, version, .. } => format!("{name} {version}"),
@@ -68,6 +72,7 @@ pub fn append(path: &Path, lines: &[String]) -> io::Result<()> {
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }
+    // shortcut: two TUIs rotating at once can lose an entry, lock the file if that matters.
     if fs::metadata(path).is_ok_and(|file| file.len() >= ROTATE_AT) {
         fs::rename(path, backup(path))?;
     }

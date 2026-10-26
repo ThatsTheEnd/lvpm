@@ -11,6 +11,7 @@ use lvpm_core::ops::install::{self, InstallOptions};
 use lvpm_core::ops::query::{self, Catalog, PackageInfo};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Condvar, Mutex};
+use std::time::Duration;
 
 /// Every job the worker can run.
 #[derive(Debug, Clone)]
@@ -66,30 +67,45 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct Park {
     at: Phase,
-    /// Whether the install got there, and whether it may go on.
-    state: Mutex<(bool, bool)>,
+    state: Mutex<Gate>,
     changed: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct Gate {
+    /// The install got to the phase.
+    reached: bool,
+    /// The install may go on.
+    released: bool,
 }
 
 impl Park {
     pub fn new(at: Phase) -> Park {
         Park {
             at,
-            state: Mutex::new((false, false)),
+            state: Mutex::new(Gate::default()),
             changed: Condvar::new(),
         }
     }
 
-    /// Block until the install is held.
+    /// Block until the install is held; an install that never gets there
+    /// fails the test instead of hanging it.
     pub fn wait_reached(&self) {
         let state = self.state.lock().expect("the park's lock");
-        let held = self.changed.wait_while(state, |(reached, _)| !*reached);
-        drop(held.expect("the park's lock"));
+        let limit = Duration::from_secs(30);
+        let (_held, waited) = (self.changed)
+            .wait_timeout_while(state, limit, |gate| !gate.reached)
+            .expect("the park's lock");
+        assert!(
+            !waited.timed_out(),
+            "the install never reached {:?}",
+            self.at
+        );
     }
 
     /// Let the install go on; it is not held again.
     pub fn release(&self) {
-        self.state.lock().expect("the park's lock").1 = true;
+        self.state.lock().expect("the park's lock").released = true;
         self.changed.notify_all();
     }
 
@@ -98,9 +114,9 @@ impl Park {
             return;
         }
         let mut state = self.state.lock().expect("the park's lock");
-        state.0 = true;
+        state.reached = true;
         self.changed.notify_all();
-        let released = self.changed.wait_while(state, |(_, released)| !*released);
+        let released = self.changed.wait_while(state, |gate| !gate.released);
         drop(released.expect("the park's lock"));
     }
 }

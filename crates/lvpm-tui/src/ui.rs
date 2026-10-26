@@ -144,17 +144,14 @@ fn preview_lines(preview: &Preview) -> Vec<Line<'static>> {
             item.name
         )));
     }
-    let count = |label: &str| {
-        let items = preview.items.iter();
-        items.filter(|item| item.action.label() == label).count()
-    };
+    let count = |is: fn(&Action) -> bool| preview.items.iter().filter(|i| is(&i.action)).count();
     lines.push(Line::raw(""));
     lines.push(Line::raw(format!(
         "{} new, {} upgrade, {} downgrade, {} already installed",
-        count("new"),
-        count("upgrade"),
-        count("downgrade"),
-        count("already installed")
+        count(|a| matches!(a, Action::New)),
+        count(|a| matches!(a, Action::Upgrade { .. })),
+        count(|a| matches!(a, Action::Downgrade { .. })),
+        count(|a| matches!(a, Action::Already))
     )));
     for name in &preview.missing {
         lines.push(Line::raw(format!(

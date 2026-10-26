@@ -84,6 +84,8 @@ impl Progress {
             Event::PhaseSkipped { phase, reason, .. } => {
                 self.skipped[index(*phase)] = Some(*reason)
             }
+            // Taking out the old version is a replacement's first file write.
+            Event::PackageReplacing { dry_run: false, .. } => self.unpacked = true,
             _ => {}
         }
     }
@@ -177,6 +179,24 @@ mod tests {
         progress.outcome = Some(Outcome::Done);
         use State::*;
         assert_eq!(states(&progress), [Done, Done, Done, Done, Skipped, Done]);
+    }
+
+    #[test]
+    fn removing_the_old_version_ends_the_clean_cancel() {
+        let mut progress = Progress::default();
+        let replacing = |dry_run| Event::PackageReplacing {
+            name: "alpha".into(),
+            installed: "2.0".into(),
+            wanted: "1.0".into(),
+            upgrade: false,
+            old_files: 1,
+            dry_run,
+        };
+        progress.add(&started(Phase::Resolve));
+        progress.add(&replacing(true));
+        assert!(progress.cancellable(), "a dry run writes nothing");
+        progress.add(&replacing(false));
+        assert!(!progress.cancellable());
     }
 
     #[test]
