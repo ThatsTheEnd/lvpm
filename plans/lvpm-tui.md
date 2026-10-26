@@ -750,7 +750,7 @@ Feature: Package details and reloading the feeds
   Scenario: details show the versions, requirements and spec fields
     When "alpha" is selected and Enter is pressed
     Then the detail view lists 2.0 and 1.0
-    And, once loaded, it shows the description, vendor and license of 2.0 and its requirements
+    And once loaded, it shows the description, vendor and license of 2.0 and its requirements
 
   Scenario: the detail view accepts input while it loads
     Given the feed is paused
@@ -1614,8 +1614,8 @@ None.
 
 ### Wave 6
 - [ ] Slice 6: Package details and reloading the feeds
-  - [ ] Step 6.1: The detail view on `ops::query::info`
-  - [ ] Step 6.2: Reload feeds
+  - [x] Step 6.1: The detail view on `ops::query::info` (manual checklist not run yet)
+  - [x] Step 6.2: Reload feeds (manual checklist not run yet)
 
 ### Wave 7
 - [ ] Slice 7: Install in global mode: preview, progress, cancel, log; ship it

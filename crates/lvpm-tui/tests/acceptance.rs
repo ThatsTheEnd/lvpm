@@ -11,6 +11,7 @@
 //! Scenarios run one at a time, as they share it.
 
 mod browse_steps;
+mod detail_steps;
 mod steps;
 
 use cucumber::World;
@@ -35,6 +36,7 @@ const TUI_STEP_PREFIX: &str = "the TUI ";
 const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-tui/slice-4-the-lvpm-tui-crate-starts-and-quits.feature",
     "tests/features/lvpm-tui/slice-5-browse-the-catalog.feature",
+    "tests/features/lvpm-tui/slice-6-package-details-and-reloading-the-feeds.feature",
 ];
 
 /// The feed every scenario reads, and the proxy every request goes through.
@@ -51,6 +53,8 @@ pub struct TuiWorld {
     pub targets: Vec<LvTarget>,
     /// Where the TUI starts.
     pub cwd: PathBuf,
+    /// The default feed's index requests once the TUI had loaded.
+    pub index_hits: usize,
 }
 
 impl TuiWorld {
@@ -58,6 +62,7 @@ impl TuiWorld {
         // A scenario before this one may have left the feed down or paused.
         FEED.come_up();
         FEED.release();
+        FEED.accept_archives();
         // The default feeds list nothing until a step publishes a source.
         let empty = listing(&[], false);
         FEED.publish(NI_FEED_DIR, &empty);
@@ -73,6 +78,7 @@ impl TuiWorld {
             scratch,
             targets: Vec::new(),
             cwd,
+            index_hits: 0,
         }
     }
 

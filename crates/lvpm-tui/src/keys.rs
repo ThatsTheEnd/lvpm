@@ -64,6 +64,25 @@ pub const RELOAD: Binding = Binding {
     ],
 };
 
+pub const OPEN: Binding = Binding {
+    key: "Enter",
+    action: "details",
+    presses: &[(KeyCode::Enter, KeyModifiers::NONE)],
+};
+
+pub const BACK: Binding = Binding {
+    key: "Esc",
+    action: "back",
+    presses: &[(KeyCode::Esc, KeyModifiers::NONE)],
+};
+
+/// Which of the detail view's panes Up and Down move.
+pub const FOCUS: Binding = Binding {
+    key: "Tab",
+    action: "versions/fields",
+    presses: &[(KeyCode::Tab, KeyModifiers::NONE)],
+};
+
 pub const INSTALL: Binding = Binding {
     key: "i",
     action: "install",
@@ -106,5 +125,9 @@ pub const END: Binding = Binding {
     presses: &[(KeyCode::End, KeyModifiers::NONE)],
 };
 
-/// The keys the footer shows, in order.
+/// The keys the list's footer shows, in order. Enter is left out: with it,
+/// why nothing can be installed no longer fits 80 columns.
 pub const FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &RELOAD, &QUIT];
+
+/// The keys the detail view's footer shows, in order.
+pub const DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &PAGE_DOWN, &BACK, &QUIT];

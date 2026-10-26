@@ -12,7 +12,8 @@ autotests = false
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 lvpm-core = { path = "../lvpm-core" }
-ratatui = "0.30.2"
+# For `Paragraph::line_count`, which stops the detail view's scroll at the end.
+ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 
 [dev-dependencies]
 cucumber = "0.23.0"

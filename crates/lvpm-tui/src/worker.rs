@@ -4,15 +4,18 @@
 use crate::destination::{EnvBuilder, Quiet};
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
-use lvpm_core::ops::query::{self, Catalog};
+use lvpm_core::ops::query::{self, Catalog, PackageInfo};
 use std::sync::mpsc::{self, Receiver};
 
 /// Every job the worker can run.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Job {
     /// Read the catalog and what the destination has installed; `refresh`
     /// revalidates the feeds as `--refresh` does.
     Load { refresh: bool },
+    /// Read the details of one version of a package, as `lvpm info
+    /// <name>@<version>` does.
+    Info { name: String, version: String },
 }
 
 /// What a job returns.
@@ -23,6 +26,12 @@ pub enum Done {
     Loaded {
         destination: Result<Destination, String>,
         listing: Result<(Catalog, Vec<Manifest>), String>,
+    },
+    /// The details of `name` `version`, or core's error, whole.
+    Info {
+        name: String,
+        version: String,
+        info: Result<PackageInfo, String>,
     },
 }
 
@@ -52,6 +61,15 @@ fn run(builder: &EnvBuilder, job: Job) -> Done {
             Done::Loaded {
                 destination,
                 listing: listing.map_err(|error| format!("{error:#}")),
+            }
+        }
+        Job::Info { name, version } => {
+            let env = builder.env(&Quiet, false);
+            let info = query::info(&env, &format!("{name}@{version}"));
+            Done::Info {
+                name,
+                version,
+                info: info.map_err(|error| format!("{error:#}")),
             }
         }
     }

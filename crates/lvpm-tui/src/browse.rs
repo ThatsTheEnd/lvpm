@@ -123,6 +123,8 @@ pub struct Browse {
     pub table: TableState,
     /// How many rows the last draw showed: what PgUp and PgDn move by.
     pub page: usize,
+    /// Why the last reload failed, while this older list is still shown.
+    pub stale: Option<String>,
 }
 
 impl Browse {
@@ -215,6 +217,23 @@ impl Browse {
     pub fn backspace(&mut self) {
         self.search.pop();
         self.refilter();
+    }
+
+    /// Narrow this freshly read list as `old` was, and keep its selected
+    /// package selected while it is still listed.
+    pub fn narrow_as(&mut self, old: &Browse) {
+        self.search.clone_from(&old.search);
+        self.searching = old.searching;
+        self.filter = old.filter;
+        self.page = old.page;
+        self.refilter();
+        let keep = old.selected().and_then(|package| {
+            let mut rows = self.rows.iter();
+            rows.position(|&i| same_name(&self.packages[i].name, &package.name))
+        });
+        if let Some(at) = keep {
+            self.table.select(Some(at));
+        }
     }
 
     /// Esc: the search is cleared and every package is listed again.

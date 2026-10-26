@@ -2,13 +2,17 @@
 
 use crate::browse::{Browse, Status};
 use crate::destination::EnvBuilder;
+use crate::detail::{Detail, Focus};
 use crate::worker::{self, Done, Job};
 use crate::{keys, ui};
+use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
+use lvpm_core::ops::query::{Catalog, PackageInfo};
 use lvpm_core::target::LvTarget;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 /// The catalog as far as it has been read.
@@ -20,6 +24,9 @@ pub enum Listing {
     Loaded(Browse),
 }
 
+/// A package version's details, by name and version.
+pub type Details = HashMap<(String, String), Result<PackageInfo, String>>;
+
 #[derive(Debug)]
 pub struct App {
     running: bool,
@@ -27,10 +34,14 @@ pub struct App {
     /// Where installs go, or why there is nowhere.
     pub destination: Result<Destination, String>,
     pub listing: Listing,
+    /// The detail view, open over the list.
+    pub detail: Option<Detail>,
+    /// Every version's details read since the catalog was, or why not.
+    pub details: Details,
     /// What the last key could not do, shown until the next key.
     pub note: Option<String>,
-    /// The running job's result, when it comes. At most one job runs.
-    pending: Option<Receiver<Done>>,
+    /// The running job and its result, when it comes. At most one job runs.
+    pending: Option<(Job, Receiver<Done>)>,
 }
 
 impl App {
@@ -41,10 +52,12 @@ impl App {
             destination: builder.destination(),
             builder,
             listing: Listing::Loading,
+            detail: None,
+            details: Details::new(),
             note: None,
             pending: None,
         };
-        app.load(false);
+        app.start(Job::Load { refresh: false });
         app
     }
 
@@ -52,13 +65,29 @@ impl App {
         self.running
     }
 
+    /// The feeds are being read again; the list shown is the last one read.
+    pub fn reloading(&self) -> bool {
+        matches!(self.pending, Some((Job::Load { .. }, _)))
+    }
+
     fn target(&self) -> Option<&LvTarget> {
         self.destination.as_ref().ok().and_then(Destination::target)
     }
 
-    fn load(&mut self, refresh: bool) {
-        self.listing = Listing::Loading;
-        self.pending = Some(worker::spawn(&self.builder, Job::Load { refresh }));
+    fn start(&mut self, job: Job) {
+        self.pending = Some((job.clone(), worker::spawn(&self.builder, job)));
+    }
+
+    /// Read the details the detail view shows, unless they are read or a
+    /// job is running: that job's end asks again.
+    fn fetch_wanted(&mut self) {
+        let Some(detail) = &self.detail else {
+            return;
+        };
+        let (name, version) = detail.key();
+        if self.pending.is_none() && !self.details.contains_key(&(name.clone(), version.clone())) {
+            self.start(Job::Info { name, version });
+        }
     }
 
     fn finish(&mut self, done: Done) {
@@ -71,25 +100,57 @@ impl App {
                 // The installed list was read from this destination, so the
                 // header and the LabVIEW gate follow it.
                 self.destination = destination;
-                self.listing = match listing {
-                    Ok((catalog, installed)) => {
-                        Listing::Loaded(Browse::new(catalog, &installed, self.target()))
-                    }
-                    Err(error) => Listing::Failed(error),
-                }
+                self.listed(listing);
             }
+            Done::Info {
+                name,
+                version,
+                info,
+            } => {
+                self.details.insert((name, version), info);
+            }
+        }
+        self.fetch_wanted();
+    }
+
+    /// Show a catalog read. A reload that fails keeps the list it would
+    /// have replaced, marked with why.
+    fn listed(&mut self, listing: Result<(Catalog, Vec<Manifest>), String>) {
+        let target = self.target().cloned();
+        match (listing, &mut self.listing) {
+            (Ok((catalog, installed)), old) => {
+                let mut browse = Browse::new(catalog, &installed, target.as_ref());
+                if let Listing::Loaded(old) = old {
+                    browse.narrow_as(old);
+                }
+                self.listing = Listing::Loaded(browse);
+                // The feeds may list other details now.
+                self.details.clear();
+            }
+            (Err(error), Listing::Loaded(old)) => old.stale = Some(error),
+            (Err(error), _) => self.listing = Listing::Failed(error),
         }
     }
 
     /// The worker ended without a result: it panicked.
     fn lost(&mut self) {
-        self.pending = None;
-        self.listing = Listing::Failed("reading the catalog stopped without a result".into());
+        let Some((job, _)) = self.pending.take() else {
+            return;
+        };
+        let why = "stopped without a result";
+        match job {
+            Job::Load { .. } => self.listed(Err(format!("reading the catalog {why}"))),
+            Job::Info { name, version } => {
+                let error = format!("reading the details of {name} {version} {why}");
+                self.details.insert((name, version), Err(error));
+            }
+        }
+        self.fetch_wanted();
     }
 
     /// Take the running job's result if it has come.
     pub fn poll(&mut self) {
-        let Some(pending) = &self.pending else {
+        let Some((_, pending)) = &self.pending else {
             return;
         };
         match pending.try_recv() {
@@ -99,14 +160,13 @@ impl App {
         }
     }
 
-    /// Block until the running job's result has come, if one is running.
+    /// Block until no job runs: the one running, and any its result starts.
     pub fn wait_for_job(&mut self) {
-        let Some(pending) = &self.pending else {
-            return;
-        };
-        match pending.recv() {
-            Ok(done) => self.finish(done),
-            Err(_) => self.lost(),
+        while let Some((_, pending)) = &self.pending {
+            match pending.recv() {
+                Ok(done) => self.finish(done),
+                Err(_) => self.lost(),
+            }
         }
     }
 
@@ -133,14 +193,30 @@ impl App {
         }
         if keys::QUIT.matches(key) {
             self.running = false;
+        } else if let Some(detail) = &mut self.detail {
+            if keys::BACK.matches(key) {
+                self.detail = None;
+            } else {
+                detail_key(detail, key);
+            }
         } else if keys::RELOAD.matches(key) {
-            match self.pending {
-                Some(_) => self.note = Some("the catalog is still loading".into()),
-                None => self.load(true),
+            match &self.pending {
+                Some((Job::Load { .. }, _)) => {
+                    self.note = Some("the catalog is still loading".into())
+                }
+                Some((Job::Info { .. }, _)) => {
+                    self.note = Some("the details are still loading".into())
+                }
+                None => self.start(Job::Load { refresh: true }),
             }
         } else if let Listing::Loaded(browse) = &mut self.listing {
-            self.note = browse_key(browse, key);
+            if keys::OPEN.matches(key) {
+                self.detail = browse.selected().map(Detail::new);
+            } else {
+                self.note = browse_key(browse, key);
+            }
         }
+        self.fetch_wanted();
     }
 }
 
@@ -156,9 +232,8 @@ fn search_key(browse: &mut Browse, key: KeyEvent) {
     }
 }
 
-/// A key on the list; what it could not do, if anything.
-fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
-    let page = browse.page_size();
+/// The moves Up, Down, PgUp, PgDn, Home and End make, `page` rows a page.
+fn moves(key: KeyEvent, page: isize) -> Option<isize> {
     let moves: [(&keys::Binding, isize); 6] = [
         (&keys::UP, -1),
         (&keys::DOWN, 1),
@@ -167,7 +242,13 @@ fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
         (&keys::HOME, isize::MIN),
         (&keys::END, isize::MAX),
     ];
-    if let Some(&(_, by)) = moves.iter().find(|(binding, _)| binding.matches(key)) {
+    let found = moves.iter().find(|(binding, _)| binding.matches(key));
+    found.map(|&(_, by)| by)
+}
+
+/// A key on the list; what it could not do, if anything.
+fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
+    if let Some(by) = moves(key, browse.page_size()) {
         browse.step(by);
     } else if keys::SEARCH.matches(key) {
         browse.searching = true;
@@ -182,6 +263,25 @@ fn browse_key(browse: &mut Browse, key: KeyEvent) -> Option<String> {
     // shortcut: install of a compatible package does nothing until a plan
     // preview exists, upgrade when install opens one (Slice 7).
     None
+}
+
+/// A key on the detail view: Tab swaps which pane Up and Down move; PgUp and
+/// PgDn always scroll the fields.
+fn detail_key(detail: &mut Detail, key: KeyEvent) {
+    let page = detail.page.max(1) as isize;
+    if keys::FOCUS.matches(key) {
+        detail.focus = match detail.focus {
+            Focus::Versions => Focus::Fields,
+            Focus::Fields => Focus::Versions,
+        };
+    } else if keys::PAGE_UP.matches(key) || keys::PAGE_DOWN.matches(key) {
+        detail.scroll_by(moves(key, page).unwrap_or_default());
+    } else if let Some(by) = moves(key, page) {
+        match detail.focus {
+            Focus::Versions => detail.step(by),
+            Focus::Fields => detail.scroll_by(by),
+        }
+    }
 }
 
 /// The modifiers a typed character can come with. On Windows, AltGr (which
@@ -235,6 +335,8 @@ mod tests {
             destination: builder.destination(),
             builder,
             listing: Listing::Loading,
+            detail: None,
+            details: Details::new(),
             note: None,
             pending: None,
         }
@@ -357,7 +459,7 @@ mod tests {
     fn reload_while_a_job_runs_starts_no_second_one() {
         let mut app = idle();
         let (send, receive) = std::sync::mpsc::channel();
-        app.pending = Some(receive);
+        app.pending = Some((Job::Load { refresh: false }, receive));
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
         assert_eq!(app.note.as_deref(), Some("the catalog is still loading"));
         // The first job is still the one the app waits for.
@@ -378,7 +480,7 @@ mod tests {
     fn a_worker_that_ends_without_a_result_fails_the_listing() {
         let mut app = idle();
         let (send, receive) = std::sync::mpsc::channel::<Done>();
-        app.pending = Some(receive);
+        app.pending = Some((Job::Load { refresh: false }, receive));
         app.poll();
         assert!(matches!(app.listing, Listing::Loading));
         drop(send);
@@ -395,7 +497,7 @@ mod tests {
     fn the_loop_shows_the_result_that_arrives_between_keys() {
         let mut app = idle();
         let (send, receive) = std::sync::mpsc::channel();
-        app.pending = Some(receive);
+        app.pending = Some((Job::Load { refresh: false }, receive));
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
         let mut ticks = 0;
         run(&mut terminal, &mut app, || {
@@ -433,5 +535,93 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let footer: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
         assert!(footer.starts_with(note), "{footer}");
+    }
+
+    fn catalog(names: &[&str]) -> Catalog {
+        let entry = |name: &str| lvpm_core::index::Entry {
+            name: name.into(),
+            version: lvpm_core::version::Version::parse("1.0"),
+            url: String::new(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: Some(20.0),
+            source: String::new(),
+        };
+        Catalog {
+            entries: names.iter().map(|n| entry(n)).collect(),
+            sources: Vec::new(),
+            failed: Vec::new(),
+        }
+    }
+
+    /// Hand `done` to `app` as the result of `job`.
+    fn complete(app: &mut App, job: Job, done: Done) {
+        let (send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((job, receive));
+        send.send(done).unwrap();
+        app.poll();
+    }
+
+    fn reloaded(listing: Result<(Catalog, Vec<Manifest>), String>) -> Done {
+        Done::Loaded {
+            destination: Err("none".into()),
+            listing,
+        }
+    }
+
+    #[test]
+    fn a_reload_keeps_the_search_and_the_selected_package_and_a_failed_one_the_list() {
+        let mut app = listing();
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let reload = Job::Load { refresh: true };
+        let fresh = catalog(&["alpha", "beta", "gamma"]);
+        complete(&mut app, reload.clone(), reloaded(Ok((fresh, Vec::new()))));
+        let shown = browse(&app).selected().map(|p| p.name.as_str());
+        assert_eq!(shown, Some("gamma"), "the selection follows the name");
+        assert_eq!(browse(&app).packages.len(), 3);
+
+        complete(&mut app, reload, reloaded(Err("feed down".into())));
+        assert_eq!(browse(&app).stale.as_deref(), Some("feed down"));
+        assert_eq!(browse(&app).packages.len(), 3, "the old list stays");
+    }
+
+    #[test]
+    fn the_detail_view_moves_the_focused_pane_and_esc_returns_to_the_list() {
+        let mut app = listing();
+        // A job that never ends, so opening the view reads nothing.
+        let (_send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((Job::Load { refresh: false }, receive));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let detail = app.detail.as_ref().expect("Enter opens the details");
+        assert_eq!(detail.name, "alpha");
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let detail = app.detail.as_ref().unwrap();
+        assert_eq!((detail.focus, detail.scroll), (Focus::Fields, 1));
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.detail.is_none());
+        assert_eq!(browse(&app).selected().unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn a_details_job_that_ends_without_a_result_is_shown_as_failed() {
+        let mut app = listing();
+        let (send, receive) = std::sync::mpsc::channel::<Done>();
+        app.pending = Some((Job::Load { refresh: false }, receive));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let info = Job::Info {
+            name: "alpha".into(),
+            version: "1.0".into(),
+        };
+        drop(send);
+        let (send, receive) = std::sync::mpsc::channel::<Done>();
+        app.pending = Some((info, receive));
+        drop(send);
+        app.poll();
+        let key = ("alpha".to_string(), "1.0".to_string());
+        let error = app.details[&key].as_ref().unwrap_err();
+        assert!(error.contains("stopped without a result"), "{error}");
+        assert!(app.pending.is_none(), "a read detail is not read again");
     }
 }

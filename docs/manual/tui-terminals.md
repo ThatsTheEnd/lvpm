@@ -36,8 +36,12 @@ you can recognize.
 | 9 | Press `/`, type part of a package name, then press Enter. | The `Search:` line shows the text and a `_` cursor while typing. The list shrinks to the matching packages. |
 | 10 | Press `/`, then Esc. | The search is cleared and every package is listed again. |
 | 11 | Press `f` three times. | The filter goes `installed`, `updates`, `all`. |
-| 12 | Press `R`. | "Loading the catalog…" shows, then the list again. |
+| 12 | Select a package and press `R`. | The header says `reloading…` while the list stays usable, then the list again with the same package selected. |
 | 13 | Select a package whose status is `needs LV …` and press `i`. | The bottom row starts with "<package> needs LabVIEW <year>". The next key clears it. |
+| 14 | Select a package and press Enter. | A `Versions` pane on the left, newest first, with `>` on the newest. On the right, the package's fields, then "Reading the details of …", then its description, vendor, license and files. The bottom row shows `Tab versions/fields`, `PgDn page down`, `Esc back` and `q quit`. |
+| 15 | Press Down, then Tab, then PgDn and PgUp. | Down picks the next version and its fields show. After Tab the fields pane's title is bold; PgDn and PgUp scroll the fields, and the picked version stays. |
+| 16 | Press Esc. | The list is back with the same package selected. |
+| 17 | Disconnect the network and press `R`. | The list stays. A reverse-video banner says reloading failed and the list shown is from the cache, and names each feed. |
 
 ## Result table
 
@@ -59,3 +63,7 @@ Copy this into the pull request, with one mark per cell: ✅ passed, ❌ failed
 | 11 filter | | |
 | 12 reload | | |
 | 13 gated install | | |
+| 14 details | | |
+| 15 versions and scrolling | | |
+| 16 back to the list | | |
+| 17 reload offline | | |

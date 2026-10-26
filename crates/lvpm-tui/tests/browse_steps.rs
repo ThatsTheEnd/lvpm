@@ -104,21 +104,21 @@ impl TuiWorld {
             .collect()
     }
 
-    fn names(&mut self) -> Vec<String> {
+    pub(crate) fn names(&mut self) -> Vec<String> {
         self.listed()
             .into_iter()
             .map(|(_, cells)| cells[0].clone())
             .collect()
     }
 
-    fn selected(&mut self) -> Option<String> {
+    pub(crate) fn selected(&mut self) -> Option<String> {
         self.listed()
             .into_iter()
             .find(|(selected, _)| *selected)
             .map(|(_, cells)| cells[0].clone())
     }
 
-    fn row(&mut self, name: &str) -> Vec<String> {
+    pub(crate) fn row(&mut self, name: &str) -> Vec<String> {
         let rows = self.listed();
         rows.into_iter()
             .map(|(_, cells)| cells)

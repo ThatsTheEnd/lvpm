@@ -2,9 +2,11 @@
 //! when the terminal is too small. Reverse video, not colour, marks the bars
 //! and the selected row, so they read the same in conhost and with `NO_COLOR`.
 
+use crate::app::Details;
 use crate::app::{App, Listing};
 use crate::browse::Browse;
 use crate::destination;
+use crate::detail::{self, Detail, Focus};
 use crate::keys::{self, Binding};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -39,8 +41,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Span::styled(" lvpm ", reversed().add_modifier(Modifier::BOLD)),
         Span::raw(format!(" {place}")),
     ]);
+    let mut title = title;
+    if app.reloading() {
+        title.spans.push(Span::raw("   reloading…"));
+    }
     frame.render_widget(Paragraph::new(title), header);
 
+    if let Some(detail) = &mut app.detail {
+        draw_detail(frame, detail, &app.details, body);
+        let mut line = hints(keys::DETAIL_FOOTER);
+        if let Some(note) = &app.note {
+            line.spans.insert(0, Span::raw(format!("{note}  ")));
+        }
+        frame.render_widget(Paragraph::new(line), footer);
+        return;
+    }
     let block = Block::bordered();
     let inner = block.inner(body);
     frame.render_widget(block, body);
@@ -65,12 +80,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Paragraph::new(line), footer);
 }
 
-/// The search and filter line, a banner per source not read, and the table.
+/// The search and filter line, the banners, and the table.
 fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
-    let banners = browse.failed.len() as u16;
+    // A failed reload's banner, then one per source not read.
+    let mut banners: Vec<Line> = Vec::new();
+    if let Some(error) = &browse.stale {
+        let why = "Reloading failed; the list shown is from the cache:";
+        banners.push(Line::styled(why, reversed()));
+        banners.extend(
+            error
+                .lines()
+                .map(|l| Line::styled(l.to_string(), reversed())),
+        );
+    }
+    let not_read = browse.failed.iter();
+    banners.extend(
+        not_read.map(|(source, _)| Line::styled(format!("not read: {source}"), reversed())),
+    );
     let [status, banner, list] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(banners),
+        Constraint::Length(banners.len() as u16),
         Constraint::Min(0),
     ])
     .areas(area);
@@ -83,12 +112,7 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
         browse.packages.len()
     );
     frame.render_widget(Paragraph::new(line), status);
-    let not_read: Vec<Line> = browse
-        .failed
-        .iter()
-        .map(|(source, _)| Line::styled(format!("not read: {source}"), reversed()))
-        .collect();
-    frame.render_widget(Paragraph::new(not_read), banner);
+    frame.render_widget(Paragraph::new(banners), banner);
 
     if browse.rows.is_empty() {
         let message = if browse.packages.is_empty() {
@@ -136,6 +160,55 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
     .row_highlight_style(reversed())
     .highlight_symbol("> ");
     frame.render_stateful_widget(table, list, &mut browse.table);
+}
+
+/// The versions on the left, the picked version's fields on the right; the
+/// pane Up and Down move has the bold title.
+fn draw_detail(frame: &mut Frame, detail: &mut Detail, details: &Details, area: Rect) {
+    let [left, right] =
+        Layout::horizontal([Constraint::Length(32), Constraint::Min(0)]).areas(area);
+    let title = |text: String, focused: bool| match focused {
+        true => Line::styled(text, Style::new().add_modifier(Modifier::BOLD)),
+        false => Line::raw(text),
+    };
+    let rows = detail.versions.iter().map(|entry| {
+        let installed = detail.installed.as_ref() == Some(&entry.version);
+        let year = entry.lv_min.map(detail::labview_year);
+        Row::new([
+            if installed { "*" } else { "" }.to_string(),
+            entry.version.to_string(),
+            year.map(|y| format!("LV {y}+")).unwrap_or_default(),
+        ])
+    });
+    let versions = Table::new(
+        rows,
+        [
+            Constraint::Length(1),
+            Constraint::Fill(1),
+            Constraint::Length(8),
+        ],
+    )
+    .block(Block::bordered().title(title(" Versions ".into(), detail.focus == Focus::Versions)))
+    .row_highlight_style(reversed())
+    .highlight_symbol("> ");
+    frame.render_stateful_widget(versions, left, &mut detail.table);
+
+    let entry = detail.entry();
+    let (name, version) = detail.key();
+    let text = detail::fields(detail, entry, details.get(&(name.clone(), version.clone())));
+    let block = Block::bordered()
+        .title(title(
+            format!(" {name} {version} "),
+            detail.focus == Focus::Fields,
+        ))
+        .title_bottom(" PgUp/PgDn scroll ");
+    let inner = block.inner(right);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    // Stop the scroll where the last line reaches the bottom.
+    let lines = paragraph.line_count(inner.width) as u16;
+    detail.page = inner.height;
+    detail.scroll = detail.scroll.min(lines.saturating_sub(inner.height));
+    frame.render_widget(paragraph.scroll((detail.scroll, 0)).block(block), right);
 }
 
 fn reversed() -> Style {
