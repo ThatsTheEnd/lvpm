@@ -12,6 +12,7 @@ pub mod fetch;
 pub mod index;
 pub mod install;
 pub mod launch;
+pub mod lvlib;
 mod paths;
 pub mod project;
 pub mod refresh;
