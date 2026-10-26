@@ -93,9 +93,11 @@ impl Park {
     pub fn wait_reached(&self) {
         let state = self.state.lock().expect("the park's lock");
         let limit = Duration::from_secs(30);
-        let (_held, waited) = (self.changed)
+        let (held, waited) = (self.changed)
             .wait_timeout_while(state, limit, |gate| !gate.reached)
             .expect("the park's lock");
+        // Unlocked first: a panic holding it would poison the park for teardown.
+        drop(held);
         assert!(
             !waited.timed_out(),
             "the install never reached {:?}",
