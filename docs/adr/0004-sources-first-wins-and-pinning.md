@@ -1,0 +1,80 @@
+# 4. Sources: the first one wins, a dependency can pin one
+
+Date: 2026-10-26
+
+## Status
+
+Accepted
+
+## Context
+
+`[sources]` in `lvpm.toml` lists hosted index folders, searched before the
+public NI and JKI indexes (`defaults = false` turns those off). Local folders
+come from the per-user `sources.local`. The table is upstream's
+([Flydroid/lvpm](https://github.com/Flydroid/lvpm)), and upstream manifests
+use it.
+
+lvpm loads every source into one list and picks the newest version of a name
+across all of them (`Index::best` in `index.rs`). A stranger who publishes a
+higher version of an internal package's name on a public index gets that copy
+installed. This is dependency confusion.
+
+uv's default, `index-strategy = "first-index"`, takes a name only from the
+first index that lists it. uv calls the merging mode lvpm has today
+`unsafe-best-match`. uv also pins a package to one index (`[tool.uv.sources]`
+with `explicit` indexes). Cargo pins with `registry = "..."` on the
+dependency. Upstream's roadmap plans per-dependency tables of the form
+`{ version = "...", hooks = "run", source = "..." }`.
+
+The vision sketched a new `[[feeds]]` table with `scopes = ["@org"]`, routing
+every `@org/*` name to one feed. That replaces upstream's table and adds a
+second idea (route by prefix) next to pinning.
+
+## Decision
+
+1. **The first source that lists a name wins.** Sources are searched in
+   `[sources]` file order, then the public defaults. Versions of one name are
+   never merged across sources. Where `sources.local` and imported cache
+   packages sit in that order is decided in S13's `/specs`.
+2. **A dependency can pin a source by name**, on its own line:
+
+   ```toml
+   [sources]
+   internal = "https://packages.hexagon.local/lv"
+
+   [dependencies]
+   hexagon_lib_motion = { version = ">=2.0", source = "internal" }
+   oglib_error = ">=6.0.1"                    # the short form stays
+   ```
+
+   A pinned package resolves only from that source. If the source does not
+   list it, or cannot be reached, resolution fails naming the package and the
+   source. It never falls back to another source. An unknown source name is an
+   error when the manifest is read.
+3. **`[sources]` stays as it is.** No `[[feeds]]` table, no migration.
+   Later feed kinds (GitHub Releases, OCI, the community index) extend it
+   with subtables when a slice needs more than a URL.
+4. **No `scopes` for now.** Pinning covers the same risk with one idea.
+   `@org/` package names stay as names (ADR 1, ADR 2); only routing by
+   prefix is dropped. It can come back additively if per-package pins become
+   tedious.
+5. **`hooks = "run"` is the project's hook allowlist** from
+   [ADR 3](0003-install-hooks-off-by-default.md), on the same line:
+   `delacor_lib_qmh = { version = "*", hooks = "run" }`. The user-config
+   allowlist for global installs stays as ADR 3 says.
+
+## Consequences
+
+- Fix 1 changes resolution for everyone, so it is its own slice (S13) and a
+  candidate to contribute upstream first. The order of `[sources]` starts to
+  matter: `lock --check` compares it as a list, not a set.
+- The per-dependency table is shared: S12 adds it with `version` and `hooks`,
+  S7c adds `source`. Whichever lands first adds the parser.
+- A pin and `hooks = "run"` live on dependency lines. How to pin or allow a
+  package that is only a transitive dependency is decided in S7c's and S12's
+  `/specs`.
+- Changing a pin makes the lock stale; the lock already records each
+  package's source.
+- `lvpm add <pkg> --source <name>` writes the table form.
+- Upstream is asked on 2026-10-30 to confirm the spellings `source` and
+  `hooks = "run"`, which come from its own roadmap.

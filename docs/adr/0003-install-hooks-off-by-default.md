@@ -53,9 +53,9 @@ lvpm today:
 - This changes shipped behaviour: a global install that ran `PostInstall`
   before now skips it and warns. Packages that need their hook (template
   installers, menu entries) need one allowlist line.
-- Slice S12 builds it. The exact table and key names (for example
-  `[hooks] allow = [...]`), the user-config key, and the warning's wording are
-  decided in S12's `/specs`, following ADR 1's naming rule.
+- Slice S12 builds it. The project allowlist is `hooks = "run"` on the
+  dependency line ([ADR 4](0004-sources-first-wins-and-pinning.md)). The
+  user-config key and the warning's wording are decided in S12's `/specs`.
 - An allowlist by name trusts every future version of that package. Pinning a
   hook VI's hash in `lvpm.lock` would close that gap; S12's `/specs` decides
   whether it is in scope.

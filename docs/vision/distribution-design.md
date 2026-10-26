@@ -149,17 +149,15 @@ feed as a fallback transport.
 - An organisation runs its own index the same way, or puts a caching proxy in
   front of all of it.
 
-## 4. Consuming: scopes, lock, policy
+## 4. Consuming: sources, pins, lock, policy
 
 ```toml
-[[feeds]]
-name   = "internal"
-url    = "oci://hexagon.azurecr.io/lv"
-scopes = ["@hexagon"]             # @hexagon/* resolves only here
+[sources]                         # searched in this order, then the public defaults
+internal  = "oci://hexagon.azurecr.io/lv"
+community = "git+https://github.com/<org>/lvpm-index"   # placeholder
 
-[[feeds]]
-name = "community"
-url  = "git+https://github.com/<org>/lvpm-index"   # placeholder
+[dependencies]
+"@hexagon/motion-lib" = { version = ">=2.1", source = "internal" }  # only from internal
 
 [policy]
 require-signature  = true
@@ -167,8 +165,11 @@ trusted-publishers = ["https://github.com/hexagon/*"]
 min-release-age    = "3d"         # cf. uv --exclude-newer
 ```
 
-- Each package resolves from **exactly one** feed. Versions from different feeds
-  are never merged, so dependency confusion has nowhere to start.
+- Each package resolves from **exactly one** feed: the first source that lists
+  it, or the one it pins with `source`. Versions from different feeds are never
+  merged, so dependency confusion has nowhere to start
+  ([ADR 4](../adr/0004-sources-first-wins-and-pinning.md)).
+  The `oci://` and `git+` URLs are the forms S7b and S8 add.
 - **One version per name per LabVIEW instance**, because LabVIEW has one global namespace.
 - `lvpm.lock` records name, version, feed, SHA-256, signer and provenance subject.
   This supersedes the roadmap's MD5-based lock; MD5 is kept only to check

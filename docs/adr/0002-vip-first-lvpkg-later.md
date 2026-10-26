@@ -51,7 +51,7 @@ VIPM's current `spec` format (`File Format = "vip"`, `Format Version =
    - The SBOM is a separate file (S9).
    - The whole-file SHA-256 in `lvpm.lock` protects the download.
 5. **`.vip` stays a first-class format for good.** Every lvpm feature works
-   on a `.vip`-only package: locks, attestation policy, scopes through the name
+   on a `.vip`-only package: locks, attestation policy, scoped names through the name
    map, every feed. The one exception is per-file `RECORD` checks, which only
    `.lvpkg` has. A library author never has to pick `.lvpkg` for security
    reasons.
