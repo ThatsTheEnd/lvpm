@@ -60,10 +60,10 @@ split, and S10 is split into S10a–d with only what is left.
 
 These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
 
-1. **The `[package]` keys in `lvpm.toml`.** Users commit them. Check them
-   against `vipm.toml` so nobody confuses the two files. A package's
-   dependencies stay in `[dependencies]`, as the design says; `[package]`
-   does not get a second list.
+1. **The package keys in `lvpm.toml`.** Decided in
+   [ADR 1](../adr/0001-manifest-project-and-distribution.md): one `[project]`
+   identity, `labview = ">=2021"` as a constraint, packaging in
+   `[distribution]`, and LabVIEW build specs stay in the `.lvproj`.
 2. **`.vip` first, `.lvpkg` later.** Every consumer already reads `.vip`;
    `.lvpkg` is needed for OCI referrers and its `RECORD`/SBOM layout (S7a).
    Until then a `.vip` gets a detached attestation (S6).
@@ -182,10 +182,13 @@ Prerequisite: the ADRs under "Decisions before S1".
 Goal: one command turns a library into a `.vip` that lvpm installs.
 
 In scope:
-- A `[package]` table in `lvpm.toml`: name, version, minimum LabVIEW and
-  library path, plus the `[package.vip]` fields
+- A `[distribution]` table in `lvpm.toml` with `top-level-library`, plus the
+  `[distribution.vip]` fields
   [distribution-design.md](distribution-design.md#2-build-lvpm-build) lists.
-  Dependencies come from `[dependencies]`.
+  Name and version come from `[project]`, dependencies from `[dependencies]`.
+- `[project] labview` becomes a constraint (`">=2021"`), per ADR 1. S1 accepts
+  only `>=`; `project.rs` hands callers the lower bound, so the lock and venv
+  code don't change.
 - Collect files by `.lvlib` membership, not by folder glob.
 - Write the `spec` file (the inverse of `spec::parse`) and a
   deterministic zip (sorted entries, fixed timestamps) into `dist/`.
@@ -197,12 +200,12 @@ Acceptance criteria:
 - [ ] `lvpm build` writes `dist/<name>-<version>.vip`; building twice gives byte-identical files.
 - [ ] `spec::parse` reads the written spec back to the same name, version, file groups and `Requires`.
 - [ ] A VI on disk that is not a member of the library is not in the package (pilot A's test libraries).
-- [ ] A missing or invalid `[package]` table fails with a message naming the key.
+- [ ] A missing or invalid `[distribution]` key fails with a message naming the key.
 - [ ] The built `.vip` installs with `lvpm install` from a folder feed; S0's `@pending-s1` build scenario is completed, untagged and passes.
 
 Demo: `lvpm build` in pilot A, then `lvpm install` the result in project B.
 
-Decide in `/specs`: the `[package]` keys are fixed by the ADR, not here.
+Decide in `/specs`: nothing about key names; ADR 1 fixes them.
 
 ### Slice S1b: VIPM installs an lvpm-built `.vip`
 
@@ -302,7 +305,7 @@ Acceptance criteria:
 Demo: break a link in pilot A; `lvpm check` names the VI and the link.
 
 Decide in `/specs`: where the fixture VIs come from, given PROVENANCE rules;
-the minimum LabVIEW comes from a flag until S1's `[package]` exists.
+the minimum LabVIEW comes from `[project] labview`.
 
 ### Slice S5b: `lvpm build` runs the check
 
@@ -359,7 +362,7 @@ Acceptance criteria:
 
 Demo: build pilot B as `.lvpkg`, publish to a folder, install in project A.
 
-Decide in `/specs`: `package.toml` keys (reuse the `[package]` ADR).
+Decide in `/specs`: `package.toml` keys (reuse ADR 1's names).
 
 ### Slice S7c: `@org` scopes
 

@@ -18,7 +18,7 @@ The workflow it serves:
 | **kind** | what a package contains: `source` or `ppl` |
 | **format** | the container: `.lvpkg` or `.vip` |
 | **feed** | any place packages are resolved from (folder, index, OCI registry, GitHub repo); the existing `[sources]` table and `sources.local` setting configure feeds |
-| `lvpm.toml` | the project manifest a developer edits; its `[package]` table describes what to build |
+| `lvpm.toml` | the project manifest a developer edits; its `[project]` table names the package and its `[distribution]` table says what to ship |
 | `package.toml` | the metadata file `lvpm build` writes inside each `.lvpkg`, generated from `lvpm.toml` |
 
 ## 1. Package: two axes, not one
@@ -53,24 +53,24 @@ Rules for every package:
 ## 2. Build: `lvpm build`
 
 ```toml
-[package]
+[project]
 name    = "@hexagon/motion-lib"
 version = "2.1.0"                 # SemVer
-labview = "2021"                  # minimum; source packages are saved at this version
-library = "src/Motion.lvlib"      # membership defines the payload, not a folder glob
+labview = ">=2021"                # minimum; source packages are saved at its lower bound
 
-[package.build]
-kinds   = ["source"]              # add "ppl" for a binary build (needs LabVIEW, e.g. the NI container)
+[distribution]
+top-level-library = "src/Motion.lvlib"  # membership defines the payload, not a folder glob
+kinds   = ["source"]              # "ppl" names an existing .lvproj build spec (needs LabVIEW)
 formats = ["lvpkg", "vip"]
 
-[package.vip]                     # only what VIPM needs and lvpm cannot derive
+[distribution.vip]                 # only what VIPM needs and lvpm cannot derive
 name         = "hexagon_lib_motion"            # VIPM has no @scope
 vendor       = "Hexagon"
 display-name = "Motion Library"
 icon         = "assets/icon.png"
 version-map  = "{major}.{minor}.{patch}.{build}"
 
-[package.vip.dependency-names]    # scoped name -> VIPM name, for Requires
+[distribution.vip.dependency-names]  # scoped name -> VIPM name, for Requires
 "@hexagon/libA" = "hexagon_lib_a"
 ```
 
@@ -81,7 +81,7 @@ What `build` does, in order:
    [`lvpm check`](../roadmap.md#dependency-analysis-lvpm-check--lvpm-tree)
    is planned to bring (a Rust port of `tools/deptree.py`, which is not in
    this repository):
-   - every VI is saved at or below `labview`, with compiled code separated;
+   - every VI is saved at or below the lower bound of `labview`, with compiled code separated;
    - there are no broken links;
    - every external link resolves to `vi.lib`, the package itself, or a declared dependency.
 3. Infer dependencies from the links and fail if they disagree with `[dependencies]`.
@@ -92,7 +92,7 @@ What `build` does, in order:
 `spec.rs` already parses the `spec` file inside a `.vip`: name, version, file
 groups, `Target Dir`, `Requires`, `Exclusive_LabVIEW_Version`. Writing one is the
 inverse. The payload carries over unchanged, because the overlay already gives
-`<vilib>`-relative linkage. What lvpm cannot derive is in `[package.vip]`.
+`<vilib>`-relative linkage. What lvpm cannot derive is in `[distribution.vip]`.
 
 Limits:
 
@@ -228,5 +228,3 @@ External facts this design relies on, as of 2026-10:
 - Who hosts the first community index, and under which organisation.
 - Whether VIPM installs lvpm-written `.vip` files correctly (needs a round-trip test).
 - Which CI OIDC issuers Sigstore's public instance accepts for Azure Pipelines.
-- The `lvpm.toml` names for `[package]` keys, chosen so they don't collide with
-  `vipm.toml` and confuse users of both.
