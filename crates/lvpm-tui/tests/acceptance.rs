@@ -12,6 +12,7 @@ use cucumber::World;
 use cucumber::gherkin::Scenario;
 use cucumber::writer::Stats;
 use lvpm_tui::app::App;
+use lvpm_tui::ui;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::path::PathBuf;
@@ -34,7 +35,8 @@ impl TuiWorld {
     fn new() -> TuiWorld {
         TuiWorld {
             app: App::new(),
-            terminal: Terminal::new(TestBackend::new(80, 24)).expect("a test terminal"),
+            terminal: Terminal::new(TestBackend::new(ui::MIN_WIDTH, ui::MIN_HEIGHT))
+                .expect("a test terminal"),
         }
     }
 }
@@ -61,6 +63,10 @@ fn main() {
                         is_tui_scenario(scenario)
                     }),
             );
+            // A filter or prefix that drifted would otherwise pass by running nothing.
+            if writer.passed_steps() == 0 {
+                return Some(format!("{feature}: no TUI scenario ran"));
+            }
             writer.execution_has_failed().then(|| {
                 format!(
                     "{feature}: {} step(s) failed, {} parsing error(s)",

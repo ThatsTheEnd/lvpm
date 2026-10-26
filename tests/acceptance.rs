@@ -24,6 +24,7 @@ use futures::future::LocalBoxFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use support::global::env_flag;
 use support::golden::{Mode, Output};
 use support::sandbox::Sandbox;
 use support::selection::{
@@ -138,10 +139,6 @@ impl CliWorld {
         let output = self.sandbox.run_lvpm(&args, input);
         self.last_output = Some(self.sandbox.normalised(&output));
     }
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|value| value == "1")
 }
 
 fn has_labview_tag(scenario: &Scenario) -> bool {

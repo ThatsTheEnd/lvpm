@@ -52,3 +52,43 @@ pub fn run<B: Backend>(
         app.handle(next_event()?);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn after(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> bool {
+        let mut app = App::new();
+        app.handle(Event::Key(KeyEvent::new_with_kind(code, modifiers, kind)));
+        app.is_running()
+    }
+
+    #[test]
+    fn ctrl_c_quits() {
+        assert!(!after(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press
+        ));
+    }
+
+    #[test]
+    fn q_with_a_modifier_and_a_repeated_q_do_not_quit() {
+        assert!(after(
+            KeyCode::Char('q'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press
+        ));
+        assert!(after(
+            KeyCode::Char('Q'),
+            KeyModifiers::SHIFT,
+            KeyEventKind::Press
+        ));
+        assert!(after(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat
+        ));
+    }
+}

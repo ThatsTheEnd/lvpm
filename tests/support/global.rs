@@ -35,7 +35,12 @@ const CLAIM_FILE: &str = "lvpm-test-installation-labview.lock";
 /// Whether the LabVIEW on the installation's port is one the run did not start
 /// and may use as it is.
 pub fn use_running_labview() -> bool {
-    std::env::var(USE_RUNNING_LABVIEW_ENV_VAR).is_ok_and(|value| value == "1")
+    env_flag(USE_RUNNING_LABVIEW_ENV_VAR)
+}
+
+/// Whether the environment variable `name` is set to `1`.
+pub fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| value == "1")
 }
 
 /// Whether this run may use the installation's own LabVIEW: no other test run
@@ -47,8 +52,22 @@ pub fn claim_installation() -> bool {
     use_running_labview()
         || CLAIM
             .get_or_init(|| {
-                let file = File::create(std::env::temp_dir().join(CLAIM_FILE)).ok()?;
-                file.try_lock().ok()?;
+                let path = std::env::temp_dir().join(CLAIM_FILE);
+                // No truncate: another run may hold this file locked.
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(&path)
+                    .unwrap_or_else(|e| panic!("creating {}: {e}", path.display()));
+                // Only a claim held elsewhere means busy; any other error must not pass as a skip.
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => return None,
+                    Err(std::fs::TryLockError::Error(e)) => {
+                        panic!("locking {}: {e}", path.display())
+                    }
+                }
                 (!process::port_is_listening(DEFAULT_VI_SERVER_PORT)).then_some(file)
             })
             .is_some()

@@ -1600,10 +1600,10 @@ None.
   - [x] Step 3.3: The exit codes and the JSON format in the README
 
 ### Wave 4
-- [x] Slice 4: The `lvpm-tui` crate starts and quits
+- [ ] Slice 4: The `lvpm-tui` crate starts and quits
   - [x] Step 4.1: The dev-only test kit
   - [x] Step 4.2: Crate, terminal setup and the empty frame
-  - [x] Step 4.3: The manual terminal checklist
+  - [ ] Step 4.3: The manual terminal checklist
 
 ### Wave 5
 - [ ] Slice 5: Browse the catalog

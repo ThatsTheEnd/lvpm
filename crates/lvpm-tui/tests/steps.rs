@@ -100,7 +100,7 @@ async fn loop_ends(world: &mut TuiWorld) {
     let ended = app::run(&mut world.terminal, &mut world.app, || {
         panic!("the loop asked for another event after the TUI quit")
     });
-    assert!(ended.is_ok());
+    ended.expect("the loop ends");
     assert!(!world.app.is_running());
 }
 

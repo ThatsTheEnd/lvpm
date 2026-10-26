@@ -22,7 +22,7 @@ use lvpm_core::target::{self, LvTarget};
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -624,6 +624,8 @@ impl Sandbox {
             global::vi_server_enabled(&ini),
             "LabVIEW {LABVIEW_YEAR} has VI Server turned off in its LabVIEW.ini"
         );
+        // Recorded first, so a start that times out still waits for the port to close.
+        self.learned().labview_port = Some(port);
         if global::use_running_labview() {
             assert!(
                 process::port_is_listening(port),
@@ -633,7 +635,6 @@ impl Sandbox {
             self.start_installation_labview(&labview, port);
         }
         let mut learned = self.learned();
-        learned.labview_port = Some(port);
         learned.store_existed = global::store_dir(&program_data).exists();
         learned.global_fixture_armed = true;
     }
@@ -646,7 +647,11 @@ impl Sandbox {
             "a LabVIEW already listens on port {port}: this scenario only uses a LabVIEW it starts"
         );
         let exe = global::labview_exe(&labview.dir);
+        // Null stdio: a LabVIEW that outlives the run must not hold the runner's pipes open.
         let child = Command::new(&exe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap_or_else(|e| panic!("starting {}: {e}", exe.display()));
         *self.started_labview() = Some(child);
@@ -752,8 +757,16 @@ impl Drop for Sandbox {
     /// A scenario that failed half way must not leave a LabVIEW or the
     /// fixture package behind.
     fn drop(&mut self) {
-        if let Err(why) = self.restore_labview_installation() {
-            eprintln!("could not remove the fixture from the LabVIEW installation: {why}");
+        // A panicking restore (lvpm timing out) must not skip stopping LabVIEW below.
+        let restore = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.restore_labview_installation()
+        }));
+        match restore {
+            Ok(Ok(())) => {}
+            Ok(Err(why)) => {
+                eprintln!("could not remove the fixture from the LabVIEW installation: {why}")
+            }
+            Err(_) => eprintln!("removing the fixture from the LabVIEW installation panicked"),
         }
         if !self.close_installation_labview() {
             eprintln!("the LabVIEW installation's LabVIEW still listens on its VI Server port");
