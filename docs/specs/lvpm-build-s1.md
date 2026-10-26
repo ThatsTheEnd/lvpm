@@ -30,8 +30,9 @@ Whether VIPM accepts the file is S1b's question, not this slice's.
 | Operation `build` | `crates/lvpm-core/src/ops/build.rs` |
 | `.lvlib` / `.lvclass` membership reader | `crates/lvpm-core/src/lvlib.rs` (new; S5 reuses it) |
 | `spec` writer, the inverse of `spec::parse` | `crates/lvpm-core/src/spec.rs` |
-| `[distribution]` parsing, `labview` as a constraint | `crates/lvpm-core/src/project.rs` |
-| Events (`BuildWrote { path }` and the like) | `crates/lvpm-core/src/events.rs` |
+| `[distribution]` parsing | `crates/lvpm-core/src/distribution.rs` |
+| `labview` as a constraint | `crates/lvpm-core/src/project.rs` |
+| Result | `ops::build` returns `Built { path, files }`; no event (plan decision 11) |
 | `lvpm build` arguments, output | `src/main.rs`, `src/render/build.rs`, `src/render/mod.rs` |
 | Scenarios | `tests/features/build-slices/` |
 
@@ -60,7 +61,7 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; defa
 
 Any other key under `[distribution]` or `[distribution.vip]` (for example
 `icon` or `version-map`, which ADR 1 lists) fails with a message that names
-the key and says a later slice adds it.
+the key and says a later version adds it.
 
 **`labview` becomes a constraint.** `[project] labview` takes `">=<year>"`.
 A plain `"2025"` is an error that suggests `">=2025"`. `project.rs` hands the
@@ -104,10 +105,11 @@ lock, venv and install code the lower bound, so those callers do not change.
 **Does not need LabVIEW.** Build of a `source` package reads and zips files
 only. The scenarios that install and mass compile the result need LabVIEW.
 
-**Test fixture: pilot A's source.** A zip of the pilot A repository tree at
-commit `f7cc16a` goes in `tests/fixtures/pilots/`, with a checksum in
-`SHA256SUMS` like the archives (pilot A is BSD-licensed). The scenario
-unpacks it into the sandbox and writes an `lvpm.toml` for it.
+**Test fixture: pilot A's source.** Not committed: pilot A's license forbids
+redistributing its source. The scenarios that need it read a checkout named
+by `LVPM_TEST_PILOT_A`, check that its HEAD is `f7cc16a`, copy it into the
+sandbox and write an `lvpm.toml` for it. Without the variable they are not
+run (plan decision 14).
 
 **Constraints.** PROVENANCE: the format comes from the OpenG spec file
 design and the observed pilot archives only. No new dependency beyond what
@@ -118,8 +120,8 @@ no existing dependency parses XML.
 saved-version validation (S5), PPLs, signing, SBOM, `icon`, `version-map`,
 extra file groups (pilot A's own `.vip` also ships probes into
 `<vi.lib>/addons/HSE`), install hooks, `description`/`license`/`repository`
-in the spec. Not part of S1 and handled apart: the Windows-reserved VI
-Server port bug and the cross-worktree LabVIEW guard.
+in the spec. Shipped with S1 as harness work (plan H1, H2): the
+Windows-reserved VI Server port fix and the cross-worktree LabVIEW guard.
 
 ## Acceptance Criteria
 
@@ -134,8 +136,10 @@ Server port bug and the cross-worktree LabVIEW guard.
 4. **Membership, not folders.** A VI on disk next to the library that is
    not a member is not in the package. Members of a nested class are. For
    pilot A, the package holds exactly the `vi.lib` files of File Group 0 of
-   the published `hse_lib_hse_logger-2.2.2.114.vip` (98 files), so nothing
-   from its `Tests`, `_Examples` or `_Probes` folders.
+   the published `hse_lib_hse_logger-2.2.2.114.vip`, minus the 6 files that
+   package added from outside the library (3 probes, 2 templates,
+   `versioninfo.txt`; plan decision 13), so nothing from its `Tests`,
+   `_Examples` or `_Probes` folders.
 5. **Install path.** Without `install-dir` the members land below
    `vi.lib/<vendor>/<display-name>/`. With it, below the given path.
 6. **Key errors.** Each of these fails with exit code ≠ 0, writes nothing
@@ -157,7 +161,7 @@ Server port bug and the cross-worktree LabVIEW guard.
    `@pending-s1` scenario is completed, untagged and passes (`@labview`).
 10. **Documented.** `lvpm build` has a line in the command table in
     docs/usage.md, the `[distribution]` keys are documented there, and the
-    README milestone for S1 is ticked.
+    README's Quick start shows `lvpm build` (plan decision 15).
 
 ## Glossary
 

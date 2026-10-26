@@ -78,6 +78,9 @@ ni-daqmx-labview-support = "26.0"
 one. Dependencies a package carries are always floors, so what a project pins
 exactly stays exact and the rest resolves to the newest version that fits.
 
+Before 0.6, `labview` was a bare year. lvpm now refuses `labview = "2025"`
+and asks for `labview = ">=2025"`; change the line and nothing else.
+
 ## The lock file
 
 `lvpm.toml` is what you ask for, with loose constraints. `lvpm.lock`, beside
@@ -227,8 +230,9 @@ Two things follow from LabVIEW reading an addon's contents at launch:
 
 ## Building a package
 
-`lvpm build` packages one LabVIEW library as a `.vip` that VIPM and
-`lvpm install` both install. It needs no LabVIEW. Describe the package in
+`lvpm build` packages one LabVIEW library as a `.vip` that `lvpm install`
+installs. It follows the published packages' layout; installing it with
+VIPM itself is not tested yet. It needs no LabVIEW. Describe the package in
 `lvpm.toml`:
 
 ```toml
@@ -266,6 +270,13 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; this
   leaves an earlier package in `dist/` as it was.
 - Any other key under `[distribution]` or `[distribution.vip]` is an error
   that names the key.
+- Paths in `[distribution]` use forward slashes and stay inside their
+  folder: `top-level-library` inside the project, `install-dir` below the
+  LabVIEW folder. A member that is a link to a file outside the library's
+  folder is refused.
+- The package name takes letters, digits, `_`, `-` and `.`. A quote or line
+  break in `vendor`, `display-name` or a dependency name is refused, since
+  it would end up in the package's spec.
 
 ## Package sources
 

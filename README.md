@@ -130,6 +130,10 @@ is the reference and the term-by-term map from OGPT to lvpm.
   manifest and shown by `lvpm list`. No warning yet when a global copy of a
   venv package shadows it.
 
+- `lvpm build` packages one library's members as a `.vip`: no build hooks,
+  no probes or templates from outside the library, no `.lvpkg`, and
+  installing the result with VIPM itself is not tested yet.
+
 [docs/roadmap.md](docs/roadmap.md) has what is planned.
 
 ## License
