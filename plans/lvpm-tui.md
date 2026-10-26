@@ -407,7 +407,6 @@ Feature: Machine-readable output
       | search --all                          | any folder | an object whose "entries" are "alpha" 1.0 and "beta" 0.1 | search-all |
       | info alpha                            | any folder | an object whose "entry" is "alpha" 1.0  | info          |
       | list --prefix dest                    | any folder | a list with one manifest, "beta" 0.1    | list          |
-      | targets                               | any folder | a list                                  | targets       |
       | config get venv.dir                   | any folder | {"key": "venv.dir", "values": [".lv-venv"]} | config-get |
       | config set venv.dir venvs             | any folder | {"command": "config"}                   | config-set    |
       | cache add pkgs                        | any folder | a list                                  | cache-add     |
@@ -435,6 +434,12 @@ Feature: Machine-readable output
       | relink --all     | relink |
       | run-hooks --all  | run-hooks |
       | refresh          | refresh |
+
+  Scenario: targets is a list, with no recording since it names this machine's LabVIEWs
+    When "lvpm --json targets" runs in any folder
+    Then every stdout line is a JSON object
+    And the JSON result is a list
+    And the exit code is 0
 
   Scenario: a failure ends in one error object and exit code 1
     When "lvpm --json info nothing" runs in any folder
@@ -499,7 +504,7 @@ Feature: Machine-readable output
 
 **Complexity**: complex
 **IMPLEMENT**: A global `--json` flag. `render::json::JsonSink` writes events; `render::json::finish(report)` writes the result or error line and sets the exit code. The query commands return `Serialize` data (`Entry`, `PackageInfo`, `Manifest`, `LvTarget`, config values). `serde_json` moves from dev-dependency to dependency.
-**TEST**: The outline rows search, search-none, search-all, info, list, targets, config-get and lock-check; the failure, stale-lock and malformed-argument scenarios; their `json-*` recordings.
+**TEST**: The outline rows search, search-none, search-all, info, list, config-get and lock-check; the targets scenario; the failure, stale-lock and malformed-argument scenarios; their `json-*` recordings.
 **REFACTOR**: Each `main` arm returns a `Report`; text and JSON printing happen in one place.
 **Files**: `Cargo.toml`, `Cargo.lock`, `src/main.rs`, `src/render/mod.rs`, `src/render/json.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/install.rs`, `crates/lvpm-core/src/target.rs`, `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/ops/query.rs`, `tests/steps/json.rs`, `tests/steps/mod.rs`, `tests/acceptance.rs`, `tests/golden/json-*/`
 **Commit**: `feat(cli): --json for the query commands`

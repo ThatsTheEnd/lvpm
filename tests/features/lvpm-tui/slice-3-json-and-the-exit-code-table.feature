@@ -21,7 +21,6 @@ Feature: Machine-readable output
       | search --all                          | any folder | an object whose "entries" are "alpha" 1.0 and "beta" 0.1 | search-all |
       | info alpha                            | any folder | an object whose "entry" is "alpha" 1.0  | info          |
       | list --prefix dest                    | any folder | a list with one manifest, "beta" 0.1    | list          |
-      | targets                               | any folder | a list                                  | targets       |
       | config get venv.dir                   | any folder | {"key": "venv.dir", "values": [".lv-venv"]} | config-get |
       | config set venv.dir venvs             | any folder | {"command": "config"}                   | config-set    |
       | cache add pkgs                        | any folder | a list                                  | cache-add     |
@@ -49,6 +48,12 @@ Feature: Machine-readable output
       | relink --all     | relink |
       | run-hooks --all  | run-hooks |
       | refresh          | refresh |
+
+  Scenario: targets is a list, with no recording since it names this machine's LabVIEWs
+    When "lvpm --json targets" runs in any folder
+    Then every stdout line is a JSON object
+    And the JSON result is a list
+    And the exit code is 0
 
   Scenario: a failure ends in one error object and exit code 1
     When "lvpm --json info nothing" runs in any folder
