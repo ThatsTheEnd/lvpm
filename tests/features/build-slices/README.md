@@ -18,7 +18,8 @@ small. Each archive carries its own `license` file. The LabVIEW Open Source
 Project packages are 0BSD. HSE Logger's spec says "BSD License", but its
 `license` file is a modified BSD that forbids redistribution "in source
 form". A `.vip` holds source VIs, so whether committing this archive is
-allowed is an open question for its vendor (see the S1 decisions log).
+allowed is an open question for its vendor (see the S1 decisions log). The license
+file was read on 2026-10-26.
 
 | Archive | Why it is here |
 |---|---|
@@ -61,7 +62,7 @@ many it left out.
 LVPM_TEST_LABVIEW=1 cargo test --test acceptance
 ```
 
-The `@labview` scenario is also `@interactive-labview`, so headless CI skips it. It needs:
+The `@labview` scenarios are also `@interactive-labview`, so headless CI skips them. They need:
 
 - LabVIEW 2026, with none of the pilots installed in it (`vi.lib`, `user.lib`, `instr.lib`). The real
   installation wins over a venv, so a pilot there would be tested in place of
@@ -73,5 +74,11 @@ It installs without relinking, starts a LabVIEW on the venv, waits for its VI
 Server port, and only then runs `LabVIEWCLI -OperationName MassCompile` on
 the venv's packages, so LabVIEWCLI never starts a LabVIEW of its own. The
 venv is a scratch copy, so the compile works in place. A failed compile names
-the VIs the log calls bad. The build and publish scenarios are tagged
-`@pending-s1` and `@pending-s2` until those slices land.
+the VIs the log calls bad. The publish scenario is tagged `@pending-s2` until
+that slice lands.
+
+Scenarios that use the installation's own LabVIEW first claim it with a file
+in `%TEMP%`, so two test runs never share one. If another run holds the
+claim, or something already answers VI Server on the installation's port
+(your own LabVIEW, say), they are not run and the harness says why. The
+LabVIEW the run started is ended when the run ends, even after a panic.

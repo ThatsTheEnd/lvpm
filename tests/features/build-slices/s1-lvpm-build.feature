@@ -102,7 +102,7 @@ Feature: lvpm build writes a .vip of a library's members
       | problem                                                  | name          |
       | the library lists "Gone.vi", which is not on disk        | Gone.vi       |
       | class "C/C.lvclass" lists "C/Lost.vi", not on disk       | Lost.vi       |
-      | the library lists "../Outside.vi"                        | Outside.vi    |
+      | the library lists "../../Outside.vi", above its folder   | Outside.vi    |
       | "Lib.lvlib" is not a readable library                    | Lib.lvlib     |
 
   Scenario: a failed build leaves the previous package

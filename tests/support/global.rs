@@ -198,6 +198,13 @@ pub fn claim(path: &Path, me: (u32, &str), start_of: StartOf) -> Result<(), Stri
                     {
                         return Err(format!("another test run (PID {pid}) holds it"));
                     }
+                    // Mid-write by another run, or left by a crash: held either way.
+                    None => {
+                        return Err(format!(
+                            "{} is unreadable; delete it if no test run is active",
+                            path.display()
+                        ));
+                    }
                     _ => std::fs::remove_file(path).ok(),
                 };
             }
@@ -258,7 +265,12 @@ impl GlobalRun {
         };
         let ini = std::fs::read_to_string(labview.path.join("LabVIEW.ini")).unwrap_or_default();
         let me = std::process::id();
-        let my_start = process_start(me).unwrap_or_default();
+        let Some(my_start) = process_start(me) else {
+            return GlobalRun {
+                claim: None,
+                busy: Some("this run's own start time cannot be read".into()),
+            };
+        };
         let path = claim_path();
         match decide(
             &path,
@@ -361,6 +373,16 @@ mod tests {
             assert_eq!(claim(&path, (7, "70"), start_of), Ok(()));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "7 70");
         }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn an_unreadable_claim_is_held_not_taken_over() {
+        let path = claim_file("unreadable");
+        std::fs::write(&path, "").unwrap();
+        let why = claim(&path, (7, "70"), &|_| None).unwrap_err();
+        assert!(why.contains("unreadable"), "{why}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
         std::fs::remove_file(&path).ok();
     }
 

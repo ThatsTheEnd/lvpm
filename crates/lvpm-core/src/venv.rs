@@ -294,13 +294,11 @@ pub fn remove(v: &Venv, confirmed: bool, sink: &dyn EventSink) -> Result<()> {
     Ok(())
 }
 
-/// Where a venv's port search starts. The port itself is [`free_port`]'s pick:
-/// Windows reserves blocks of ports anew at each boot, and a LabVIEW told to
-/// listen on one never starts VI Server.
-///
-/// A VI Server port of the venv's own, stable across runs so that a launched
-/// instance and a later `lvpm install` agree on where to meet: a hash of the
-/// venv's path into 3400–3999, clear of the 33xx LabVIEW's own defaults use.
+/// Where a venv's VI Server port search starts: a hash of the venv's path into
+/// 3400–3999, clear of the 33xx LabVIEW's own defaults use. The port the venv
+/// stores is [`free_port`]'s pick from here, since Windows reserves blocks of
+/// ports anew at each boot and a LabVIEW told to listen on one never starts
+/// VI Server.
 pub(crate) fn port_for(dir: &Path) -> u16 {
     let key = dir.to_string_lossy().to_lowercase().replace('\\', "/");
     // FNV-1a, 64-bit — small, dependency-free, and good enough to spread a
@@ -364,7 +362,13 @@ fn repair_port(
     let mut b: Binding = serde_json::from_str(&std::fs::read_to_string(&bp)?)
         .with_context(|| format!("reading {}", bp.display()))?;
     b.port = to;
-    std::fs::write(&bp, serde_json::to_string_pretty(&b)?)
+    // Staged and renamed: a reader racing the repair sees the old or new binding, never half.
+    let staged = bp.with_extension(format!("json.{}.tmp", std::process::id()));
+    std::fs::write(&staged, serde_json::to_string_pretty(&b)?)
+        .and_then(|()| std::fs::rename(&staged, &bp))
+        .inspect_err(|_| {
+            std::fs::remove_file(&staged).ok();
+        })
         .with_context(|| format!("writing {}", bp.display()))?;
     sink.emit(Event::VenvPortMoved { from: v.port, to });
     Ok(Venv {

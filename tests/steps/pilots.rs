@@ -268,6 +268,9 @@ async fn pilot_a_built(world: &mut CliWorld) {
 )]
 async fn pilot_a_files(world: &mut CliWorld, published: String, step: &cucumber::gherkin::Step) {
     let built = world.pilots.pilot_a.as_ref().expect("pilot A was built");
+    if let Err(why) = check_checksums(&pilots_dir()) {
+        panic!("{why}");
+    }
     let left_out: Vec<String> = step
         .table
         .as_ref()
@@ -297,6 +300,9 @@ async fn pilot_a_files(world: &mut CliWorld, published: String, step: &cucumber:
 )]
 async fn project_b_with_built_pilot_a(world: &mut CliWorld) {
     let built = world.pilots.pilot_a.clone().expect("pilot A was built");
+    if let Err(why) = check_checksums(&pilots_dir()) {
+        panic!("{why}");
+    }
     let source = world.sandbox.add_local_source_folder(PILOT_SOURCE_DIR);
     for archive in archives(&pilots_dir()) {
         let name = archive.file_name().expect("a file name");

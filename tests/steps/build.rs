@@ -145,12 +145,12 @@ impl CliWorld {
         spec.file_groups[0].files.clone()
     }
 
+    /// No package, and no staged file left behind either.
     fn no_vip_in_dist(&self) {
         let vips: Vec<_> = std::fs::read_dir(self.work(DIST))
             .into_iter()
             .flatten()
             .flatten()
-            .filter(|e| e.path().extension().is_some_and(|x| x == "vip"))
             .map(|e| e.path())
             .collect();
         assert!(vips.is_empty(), "dist holds {vips:?}");
@@ -297,7 +297,7 @@ async fn class_lists_lost(world: &mut CliWorld) {
     );
 }
 
-#[given(regex = r#"^the library lists "\.\./Outside\.vi"$"#)]
+#[given(regex = r#"^the library lists "\.\./\.\./Outside\.vi", above its folder$"#)]
 async fn lists_outside(world: &mut CliWorld) {
     world.add_item(
         LIBRARY,

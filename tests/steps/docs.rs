@@ -244,9 +244,15 @@ async fn usage_documents_build(_: &mut CliWorld) {
         guide.contains("| `lvpm build` |"),
         "no command-table line for lvpm build"
     );
+    let section = guide
+        .split_once("## Building a package")
+        .map(|(_, rest)| rest.split(" ## ").next().unwrap_or(rest))
+        .expect("usage.md has a Building a package section");
     let missing: Vec<_> = DISTRIBUTION_KEYS
         .iter()
-        .filter(|key| !guide.contains(&format!("{key} =")) && !guide.contains(&format!(".{key}]")))
+        .filter(|key| {
+            !section.contains(&format!(" {key} =")) && !section.contains(&format!(".{key}]"))
+        })
         .collect();
     assert!(
         missing.is_empty(),

@@ -84,8 +84,14 @@ fn folder_files(
         .collect::<std::io::Result<_>>()?;
     entries.sort();
     for path in entries {
+        // A link could lead out of the library or round in a loop.
+        if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+            continue;
+        }
         if path.is_dir() {
             folder_files(&path, owner, found, seen)?;
+        } else if matches!(ext(&path).as_str(), "lvlib" | "lvclass") {
+            collect(&path, found, seen)?;
         } else if seen.insert(path.clone()) {
             found.push(path);
         }
@@ -101,7 +107,7 @@ fn ext(p: &Path) -> String {
 
 /// `url` against the library file `base`, taken as a folder.
 fn resolve(base: &Path, url: &str) -> Result<PathBuf> {
-    if url.starts_with('/') {
+    if url.starts_with('/') || url.contains(':') || url.contains('\\') {
         bail!("an absolute or symbolic path is not a member lvpm can package");
     }
     let mut path = base.to_path_buf();

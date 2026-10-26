@@ -18,6 +18,13 @@ pub struct FileGroup {
     pub files: Vec<String>,
 }
 
+impl FileGroup {
+    /// The zip entry that holds `file` of this group.
+    pub fn entry(&self, file: &str) -> String {
+        format!("File Group {}/{}", self.index, file.replace('\\', "/"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Spec {
     pub name: String,

@@ -35,7 +35,7 @@ pub struct Distribution {
     /// Where the members go, below the LabVIEW folder, with forward slashes.
     pub install_dir: String,
     /// `[project] labview`'s year.
-    pub labview: String,
+    pub labview: u32,
     /// `[dependencies]` as `Requires` entries, in file order.
     pub requires: Vec<String>,
 }
@@ -73,9 +73,18 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     let vendor = required(vip, "distribution.vip", "vendor")?;
     let display_name = required(vip, "distribution.vip", "display-name")?;
     let install_dir = match string(vip, "distribution.vip", "install-dir")? {
-        Some(d) => d.trim_matches('/').replace('\\', "/"),
+        Some(d) => d.replace('\\', "/").trim_matches('/').to_string(),
         None => format!("vi.lib/{vendor}/{display_name}"),
     };
+    if install_dir.is_empty()
+        || install_dir.contains(':')
+        || install_dir.split('/').any(|s| s == "..")
+    {
+        bail!(
+            "distribution.vip.install-dir = {install_dir:?}: must be a relative path below the LabVIEW folder, \
+             like \"vi.lib/Vendor/Lib\""
+        );
+    }
 
     let name = match string(vip, "distribution.vip", "name")? {
         Some(n) => n,
@@ -88,13 +97,24 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
             None => bail!("project.name: lvpm build needs the package name"),
         },
     };
+    // The name becomes the file name in dist/: nothing that leaves the folder.
+    if name.contains("..")
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
+    {
+        bail!(
+            "distribution.vip.name = {name:?}: a package name takes letters, digits, '_', '-' and '.',              like \"vendor_lib_name\""
+        );
+    }
     let Some(version) = &p.version else {
         bail!("project.version: lvpm build needs the package version");
     };
     let version = four_parts(version)?;
-    let Some(labview) = p.labview.clone() else {
+    let Some(labview) = &p.labview else {
         bail!("project.labview: lvpm build needs the oldest LabVIEW, like labview = \">=2016\"");
     };
+    let labview = crate::project::labview_year(labview)?;
 
     let names = match vip.get("dependency-names") {
         None => &empty,
@@ -104,7 +124,7 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
             v.type_str()
         ),
     };
-    let requires = p
+    let requires: Vec<String> = p
         .dependencies
         .iter()
         .map(|(dep, c)| {
@@ -127,6 +147,19 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
             })
         })
         .collect::<Result<_>>()?;
+    for (key, value) in [
+        ("distribution.vip.vendor", &vendor),
+        ("distribution.vip.display-name", &display_name),
+        ("distribution.vip.install-dir", &install_dir),
+    ] {
+        spec_safe(key, value)?;
+    }
+    for r in &requires {
+        spec_safe("dependencies", r)?;
+        if r.contains(',') {
+            bail!("dependencies: {r:?} holds a ',', which would split the package's Requires list");
+        }
+    }
 
     Ok(Distribution {
         library,
@@ -148,7 +181,6 @@ impl Distribution {
 
     /// The spec for a package holding `files`, each below the LabVIEW folder.
     pub fn spec(&self, files: Vec<String>) -> Spec {
-        let year: u32 = self.labview.parse().unwrap_or(2000);
         Spec {
             name: self.name.clone(),
             version: self.version.clone(),
@@ -161,15 +193,24 @@ impl Distribution {
             }],
             script_vis: Vec::new(),
             requires: (!self.requires.is_empty()).then(|| self.requires.join(",")),
-            lv_gate: Some(format!("LabVIEW>={}.0", year.saturating_sub(2000))),
+            lv_gate: Some(format!("LabVIEW>={}.0", self.labview - 2000)),
         }
     }
+}
+
+/// A value written between quotes in the spec: no quote, line break or other
+/// control character, which would end the value and start new spec keys.
+pub fn spec_safe(key: &str, value: &str) -> Result<()> {
+    if value.chars().any(|c| c == '"' || c.is_control()) {
+        bail!("{key} = {value:?}: a quote or control character cannot go into the package's spec");
+    }
+    Ok(())
 }
 
 fn unknown_keys(table: &str, t: &toml::Table, known: &[&str]) -> Result<()> {
     match t.keys().find(|k| !known.contains(&k.as_str())) {
         Some(k) => bail!(
-            "{table}.{k}: lvpm build does not support this key yet; it reads {}",
+            "{table}.{k}: lvpm build does not support this key yet, a later version adds it; it reads {}",
             known.join(", ")
         ),
         None => Ok(()),
@@ -212,9 +253,12 @@ fn top_level_library(dist: &toml::Table, root: &Path) -> Result<PathBuf> {
         || path
             .components()
             .any(|c| matches!(c, Component::Prefix(_) | Component::ParentDir))
-        || rel.contains(':');
+        || rel.contains(':')
+        || rel.contains('\\');
     if leaves {
-        bail!("{KEY} = {rel:?}: must be a path inside the project folder, relative to lvpm.toml");
+        bail!(
+            "{KEY} = {rel:?}: must be a path inside the project folder, relative to lvpm.toml, with forward slashes"
+        );
     }
     if !root.join(path).is_file() {
         bail!(
@@ -345,10 +389,36 @@ display-name = "Demo Lib"
                 "distribution.vip.dependency-names",
             ),
         ];
-        for (text, key) in cases {
+        let bad_dir = |d: &str| GOOD.replace("vendor =", &format!("install-dir = {d:?}\nvendor ="));
+        let more = [
+            (
+                GOOD.replace("\"Lib.lvlib\"", r#""Sub\\Lib.lvlib""#),
+                "distribution.top-level-library",
+            ),
+            (bad_dir("../x"), "distribution.vip.install-dir"),
+            (bad_dir("/"), "distribution.vip.install-dir"),
+            (bad_dir("C:/x"), "distribution.vip.install-dir"),
+            (
+                GOOD.replace(
+                    "vendor =",
+                    "name = \"x/../../pkg\"
+vendor =",
+                ),
+                "distribution.vip.name",
+            ),
+            (
+                GOOD.replace("\"Demo Lib\"", r#""Demo\"\n[Script VIs]""#),
+                "distribution.vip.display-name",
+            ),
+            (GOOD.replace("\"hexagon_lib_a\"", "\"a,b\""), "dependencies"),
+        ];
+        for (i, (text, key)) in cases.into_iter().chain(more).enumerate() {
             let e = format!("{:#}", check(&text).unwrap_err());
-            assert!(e.contains(key), "{key}: {e}");
+            assert!(e.contains(key), "case {i}, {key}: {e}");
         }
+        let unknown = GOOD.replace("vendor =", "icon = \"i.bmp\"\nvendor =");
+        let e = format!("{:#}", check(&unknown).unwrap_err());
+        assert!(e.contains("a later version adds it"), "{e}");
         let e = format!("{:#}", check("[project]\nname = \"x\"").unwrap_err());
         assert!(e.contains("[distribution]"), "{e}");
     }
@@ -366,5 +436,12 @@ display-name = "Demo Lib"
         .unwrap();
         assert_eq!(d.install_dir, "vi.lib/Other/Place");
         assert_eq!(d.version, "2.1.0.5");
+        let d = check(&GOOD.replace(
+            "vendor =",
+            r#"install-dir = 'vi.lib\Other\Place\'
+vendor ="#,
+        ))
+        .unwrap();
+        assert_eq!(d.install_dir, "vi.lib/Other/Place");
     }
 }
