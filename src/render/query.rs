@@ -448,15 +448,9 @@ mod tests {
             summary: Some("evil\x1b[2K".into()),
             ..Default::default()
         };
+        assert!(info(&package_info(description)).contains("evil?[2K\n"));
         let failed = vec![("feed\x1b[2K".to_string(), "why\x07".to_string())];
-        let mut details = package_info(description);
-        details.failed = failed.clone();
-        for text in [info(&details), unread_sources(&failed)] {
-            assert!(
-                !text.chars().any(|c| c.is_control() && c != '\n'),
-                "{text:?}"
-            );
-        }
+        assert!(unread_sources(&failed).contains("feed?[2K: why?\n"));
     }
 
     #[test]

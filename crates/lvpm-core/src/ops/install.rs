@@ -184,12 +184,9 @@ pub(super) fn announce_target(env: &OpEnv, store: &Roots) {
 
 /// `name` or `name@version`, as a root of the resolution.
 fn named(package: &str) -> Result<(String, Constraint)> {
-    let PackageArg { name, constraint } = PackageArg::parse(package)?;
-    let constraint = match constraint {
-        Some(written) => Constraint::parse(&written)?,
-        None => Constraint::Any,
-    };
-    Ok((name, constraint))
+    let arg = PackageArg::parse(package)?;
+    let constraint = arg.constraint()?;
+    Ok((arg.name, constraint))
 }
 
 /// Depth-first over the dependency graph, from every root at once. No

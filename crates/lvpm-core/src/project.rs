@@ -58,6 +58,15 @@ impl Constraint {
             _ => Constraint::Exact(Version::parse(s)),
         })
     }
+
+    /// Whether `version` meets this constraint.
+    pub fn admits(&self, version: &Version) -> bool {
+        match self {
+            Constraint::Exact(v) => version == v,
+            Constraint::AtLeast(v) => version >= v,
+            Constraint::Any => true,
+        }
+    }
 }
 
 /// A package as a command names it: `name`, or `name@constraint`. The
@@ -66,6 +75,15 @@ impl Constraint {
 pub struct PackageArg {
     pub name: String,
     pub constraint: Option<String>,
+}
+
+impl PackageArg {
+    /// The constraint, read: [`Constraint::Any`] when none was written.
+    pub fn constraint(&self) -> Result<Constraint> {
+        self.constraint
+            .as_deref()
+            .map_or(Ok(Constraint::Any), Constraint::parse)
+    }
 }
 
 /// What is wrong with a [`PackageArg`].

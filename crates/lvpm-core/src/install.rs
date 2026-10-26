@@ -148,7 +148,8 @@ pub fn open_archive(vip_bytes: Vec<u8>) -> Result<Archive> {
 }
 
 /// The most of a `spec` member that is read: real ones are a few KiB, and a
-/// feed's archive must not inflate one until memory runs out.
+/// feed's or a local folder's archive must not inflate one until memory runs
+/// out.
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 
 /// The archive's `spec` member, read and parsed.

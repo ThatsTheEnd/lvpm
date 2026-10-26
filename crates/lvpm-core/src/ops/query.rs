@@ -10,7 +10,7 @@ use crate::fetch;
 use crate::index::{self, Entry, Import};
 use crate::install::{self, Manifest};
 use crate::paths;
-use crate::project::{Constraint, PackageArg, same_name};
+use crate::project::{PackageArg, same_name};
 use crate::spec::Spec;
 use crate::target::LvTarget;
 use anyhow::{Context, Result, bail};
@@ -74,12 +74,14 @@ pub struct Catalog {
     pub failed: Vec<(String, String)>,
 }
 
-/// The details of one version of a package, named `name` or
-/// `name@constraint`: the newest version the constraint admits, read as
-/// `install` reads it (`1.0`, `>=1.0`, `*`), or else the newest. Its archive is read from the cache, or
-/// downloaded into it, so no destination and no LabVIEW is needed.
+/// The details of one version of a package: `name` gives the newest version,
+/// `name@constraint` the newest the constraint admits, read as `install` reads
+/// it (`1.0`, `>=1.0`, `*`), and an error when none does. Its archive is read
+/// from the cache, or downloaded into it, so no destination and no LabVIEW is
+/// needed.
 pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
     let arg = PackageArg::parse(package)?;
+    let constraint = arg.constraint()?;
     let catalog = catalog(env, Some(&arg.name))?;
     let versions: Vec<Entry> = catalog
         .entries
@@ -99,7 +101,10 @@ pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
             catalog.sources.join("\n  ")
         );
     }
-    let entry = pick_version(&versions, &arg)?
+    // Newest first, so the first admitted is the newest.
+    let entry = versions
+        .iter()
+        .find(|e| constraint.admits(&e.version))
         .with_context(|| {
             let known: Vec<String> = versions.iter().map(|e| e.version.to_string()).collect();
             let wanted = arg.constraint.as_deref().unwrap_or_default();
@@ -122,19 +127,6 @@ pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
         spec,
         failed: catalog.failed,
     })
-}
-
-/// The newest of `versions` (newest first) that `arg`'s constraint admits.
-fn pick_version<'v>(versions: &'v [Entry], arg: &PackageArg) -> Result<Option<&'v Entry>> {
-    let constraint = match &arg.constraint {
-        None => Constraint::Any,
-        Some(text) => Constraint::parse(text)?,
-    };
-    Ok(versions.iter().find(|e| match &constraint {
-        Constraint::Exact(v) => e.version == *v,
-        Constraint::AtLeast(v) => index::Floor::at_least(v.clone()).admits(&e.version),
-        Constraint::Any => true,
-    }))
 }
 
 /// The archive of `entry`, downloaded into the cache unless it is on hand;
@@ -442,6 +434,11 @@ mod tests {
         assert_eq!(version("alpha@*"), "2.0");
         let why = info(&env, "alpha@>=3.0").unwrap_err().to_string();
         assert_eq!(why, "alpha has no version >=3.0; it has 2.0, 1.0");
+        // Refused before any source is read, as `install` refuses it.
+        for arg in ["alpha@<2.0", "nothing@<2.0"] {
+            let why = info(&env, arg).unwrap_err().to_string();
+            assert!(why.starts_with("unsupported version constraint"), "{why}");
+        }
         let _ = std::fs::remove_dir_all(&cwd);
     }
 
@@ -450,11 +447,7 @@ mod tests {
         let (cwd, mut env) = catalog_env("info-unread", &[&[("alpha", "1.0", "Alpha")]]);
         let missing = cwd.join("missing");
         env.config.local_sources.push(missing.clone());
-        let unread = format!(
-            "
-could not read {}: ",
-            missing.to_string_lossy()
-        );
+        let unread = format!("\ncould not read {}: ", missing.to_string_lossy());
         for arg in ["nothing", "alpha@9.9"] {
             let why = info(&env, arg).unwrap_err().to_string();
             assert!(why.contains(&unread), "{why}");
