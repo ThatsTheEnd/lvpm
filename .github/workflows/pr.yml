@@ -112,6 +112,13 @@ jobs:
           $free = [int]((Get-PSDrive C).Free / 1GB)
           "C: has $free GB free"
           if ($free -lt 25) { "::error::infrastructure: $free GB free, need 25"; exit 1 }
+      # The windows-2022 image ships Docker with its service stopped.
+      - name: Start the Docker engine
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Start-Service docker
+          docker version
       - name: Pull ${{ matrix.image }}
         shell: bash
         timeout-minutes: 50
