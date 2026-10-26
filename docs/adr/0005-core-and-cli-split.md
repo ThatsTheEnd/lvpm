@@ -31,8 +31,8 @@ This records the split as built.
    reads input. It reads the environment and the working directory only in
    `config` and `target`. `lib.rs` denies the print macros, `clippy.toml`
    disallows the std stream handles, `env::var`, `current_dir`,
-   `path::absolute` and `Stdio::inherit`, and `tests/core_io.rs` runs clippy
-   in `cargo test`.
+   `path::absolute` and `Stdio::inherit`, and an acceptance scenario
+   (`tests/steps/core_io.rs`) runs clippy on `lvpm-core` in `cargo test`.
 3. **Core reports through events and stops through a token.** An operation
    gets an `OpEnv` and sends typed `Event`s (names, versions, paths, numbers,
    never prose) to an `EventSink`. A `CancelToken` stops it.

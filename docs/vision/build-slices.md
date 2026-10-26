@@ -45,10 +45,10 @@ split, and S10 is split into S10a–d with only what is left.
     marked *(manual)* needs a real service, VIPM or CI; its evidence goes in
     the PR, not in `cargo test`.
 - Every new command or flag has a scenario and a line in the README command table.
-- Core operations live in `crates/lvpm-core/src/` (under `ops/`), report
-  through `events.rs` and do no terminal I/O. The CLI front end is
-  `src/main.rs` (arguments, exit codes) and `src/render/` (output). A slice
-  that adds an operation also touches `events.rs` and `src/render/mod.rs`.
+- Follow [ADR 5](../adr/0005-core-and-cli-split.md): operations in
+  `crates/lvpm-core/src/ops/`, reporting through `events.rs`, with no terminal
+  I/O; arguments in `src/main.rs`, output in `src/render/`. A slice that adds
+  an operation also touches `events.rs` and `src/render/mod.rs`.
 - Format knowledge comes only from published specifications and observed
   files ([PROVENANCE.md](../../PROVENANCE.md)). No VIPM or JKI code.
 - [../roadmap.md](../roadmap.md) belongs to the upstream author: don't edit
@@ -82,15 +82,15 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
      keeps `[dev-dependencies]` as the group `dev`, and S11 plans `--group`.
    - **The core/CLI split and hooks.** Upstream's `refactor-main.md` (PR #15)
      plans its own split of `main.rs` and an event layer. This fork already
-     has `crates/lvpm-core` and `events.rs`. PR #15's `--hooks auto|always|never`
-     meets ADR 3. Item 5 waits for this.
+     has `crates/lvpm-core` and `events.rs` ([ADR 5](../adr/0005-core-and-cli-split.md)).
+     PR #15's `--hooks auto|always|never` meets ADR 3.
 4. **How feeds are configured.** Decided in
    [ADR 4](../adr/0004-sources-first-wins-and-pinning.md): `[sources]` stays,
    the first source that lists a name wins (S13), a dependency pins a source
    with `source = "<name>"` (S7c), no `scopes` for now, and `hooks = "run"`
    on the same line is the project's hook allowlist.
-5. **Record the core/CLI split** that the lockfile work made, so slices cite
-   the ADR instead of restating the rule.
+5. **The core/CLI split.** Recorded as built in
+   [ADR 5](../adr/0005-core-and-cli-split.md).
 6. **Install hooks.** Decided in
    [ADR 3](../adr/0003-install-hooks-off-by-default.md): off by default
    everywhere, a warning with instructions when one is skipped, and an
