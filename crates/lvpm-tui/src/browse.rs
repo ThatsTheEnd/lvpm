@@ -34,14 +34,13 @@ impl Status {
 }
 
 /// The status rule. `versions` is one package's, newest first; the available
-/// version is the newest that fits `target`, as install would resolve it.
+/// version is the one install would resolve for `target`.
 pub fn status(
     versions: &[Entry],
     installed: Option<&Version>,
     target: Option<&LvTarget>,
 ) -> Status {
-    let fits = |e: &&Entry| target.is_none_or(|t| query::needs_newer_labview(e, t).is_none());
-    let available = versions.iter().find(fits).map(|e| &e.version);
+    let available = query::resolvable(versions, target).map(|e| &e.version);
     match (installed, available) {
         (Some(have), Some(newer)) if newer > have => Status::Update {
             available: newer.clone(),
@@ -66,17 +65,10 @@ pub struct Package {
     /// Newest first.
     pub versions: Vec<Entry>,
     pub installed: Option<Version>,
+    /// The version the row offers: the one install would resolve, else the
+    /// newest, which needs a newer LabVIEW.
+    pub available: Option<Version>,
     pub status: Status,
-}
-
-impl Package {
-    /// The version the row offers: the one core would resolve, else the newest.
-    pub fn available(&self) -> Option<&Version> {
-        match &self.status {
-            Status::Update { available } => Some(available),
-            _ => self.versions.first().map(|e| &e.version),
-        }
-    }
 }
 
 /// Which rows the filter keeps.
@@ -147,6 +139,7 @@ impl Browse {
                     display_name: entry.display_name.clone(),
                     versions: vec![entry],
                     installed: None,
+                    available: None,
                     status: Status::NotInstalled,
                 }),
             }
@@ -157,6 +150,9 @@ impl Browse {
                 .find(|m| same_name(&m.name, &package.name))
                 .map(|m| Version::parse(&m.version));
             package.status = status(&package.versions, package.installed.as_ref(), target);
+            package.available = query::resolvable(&package.versions, target)
+                .or(package.versions.first())
+                .map(|e| e.version.clone());
         }
         let mut browse = Browse {
             packages,
@@ -180,11 +176,10 @@ impl Browse {
             .table
             .selected()
             .and_then(|row| self.rows.get(row).copied());
-        let query = self.search.to_lowercase();
         self.rows = (0..self.packages.len())
             .filter(|&i| {
                 let p = &self.packages[i];
-                p.versions[0].matches(&query) && self.filter.keeps(&p.status)
+                p.versions.iter().any(|e| e.matches(&self.search)) && self.filter.keeps(&p.status)
             })
             .collect();
         let at = keep
@@ -201,14 +196,6 @@ impl Browse {
         let at = self.table.selected().unwrap_or(0);
         self.table
             .select(Some(at.saturating_add_signed(by).min(last)));
-    }
-
-    pub fn first(&mut self) {
-        self.step(isize::MIN);
-    }
-
-    pub fn last(&mut self) {
-        self.step(isize::MAX);
     }
 
     pub fn page_size(&self) -> isize {
@@ -304,5 +291,145 @@ mod tests {
     #[test]
     fn an_installed_version_newer_than_any_listed_is_installed() {
         assert_eq!(of(&[entry("1.0", 20.0)], Some("3.0")), Status::Installed);
+    }
+
+    #[test]
+    fn an_installed_package_no_listed_version_fits_is_still_installed() {
+        assert_eq!(of(&[entry("1.0", 99.0)], Some("1.0")), Status::Installed);
+    }
+
+    #[test]
+    fn a_gated_package_names_the_year_its_newest_version_needs() {
+        let versions = [entry("2.0", 99.0), entry("1.0", 30.0)];
+        assert_eq!(of(&versions, None), Status::NeedsLabview(2099));
+    }
+
+    #[test]
+    fn each_status_reads_as_the_list_shows_it() {
+        let texts = [
+            Status::Installed,
+            Status::Update {
+                available: Version::parse("2.0"),
+            },
+            Status::NotInstalled,
+            Status::NeedsLabview(2026),
+        ]
+        .map(|s| s.text());
+        assert_eq!(
+            texts,
+            ["installed", "update", "not installed", "needs LV 2026"]
+        );
+    }
+
+    /// One version each of `names`, the first with display name "Bravo Tools".
+    fn browse(names: &[&str]) -> Browse {
+        let entries = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Entry {
+                name: name.to_string(),
+                display_name: (i == 0).then(|| "Bravo Tools".to_string()),
+                ..entry("1.0", 20.0)
+            })
+            .collect();
+        let catalog = Catalog {
+            entries,
+            sources: Vec::new(),
+            failed: Vec::new(),
+        };
+        Browse::new(catalog, &[], Some(&LABVIEW_2025))
+    }
+
+    fn shown(browse: &Browse) -> Vec<&str> {
+        browse
+            .rows
+            .iter()
+            .map(|&i| browse.packages[i].name.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_row_offers_the_resolved_version_else_the_newest() {
+        let offered = |entries: Vec<Entry>| {
+            let catalog = Catalog {
+                entries,
+                sources: Vec::new(),
+                failed: Vec::new(),
+            };
+            Browse::new(catalog, &[], Some(&LABVIEW_2025)).packages[0]
+                .available
+                .clone()
+        };
+        let newer_gated = vec![entry("2.0", 99.0), entry("1.0", 20.0)];
+        assert_eq!(offered(newer_gated), Some(Version::parse("1.0")));
+        assert_eq!(
+            offered(vec![entry("2.0", 99.0)]),
+            Some(Version::parse("2.0"))
+        );
+    }
+
+    #[test]
+    fn the_filter_cycles_all_installed_updates_and_back() {
+        let mut list = browse(&["alpha", "beta", "gamma"]);
+        list.packages[0].status = Status::Update {
+            available: Version::parse("2.0"),
+        };
+        list.packages[1].status = Status::Installed;
+        list.refilter();
+        let mut seen = vec![shown(&list).join(",")];
+        for _ in 0..3 {
+            list.next_filter();
+            seen.push(shown(&list).join(","));
+        }
+        assert_eq!(
+            seen,
+            [
+                "alpha,beta,gamma",
+                "alpha,beta",
+                "alpha",
+                "alpha,beta,gamma"
+            ]
+        );
+    }
+
+    #[test]
+    fn steps_stop_at_either_end_and_pages_move_by_the_page() {
+        let mut list = browse(&["a", "b", "c", "d", "e", "f", "g"]);
+        list.step(-1);
+        assert_eq!(list.table.selected(), Some(0));
+        list.page = 5;
+        list.step(list.page_size());
+        assert_eq!(list.table.selected(), Some(5));
+        list.step(list.page_size());
+        assert_eq!(list.table.selected(), Some(6), "stops at the last row");
+        list.step(-list.page_size());
+        assert_eq!(list.table.selected(), Some(1));
+
+        let mut empty = browse(&[]);
+        empty.step(1);
+        assert_eq!(empty.selected().map(|p| p.name.as_str()), None);
+    }
+
+    #[test]
+    fn a_search_keeps_the_selected_package_while_it_still_matches() {
+        let mut list = browse(&["alpha", "alps", "beta"]);
+        list.step(1);
+        list.type_char('a');
+        list.type_char('l');
+        assert_eq!(list.selected().map(|p| p.name.as_str()), Some("alps"));
+        list.type_char('p');
+        list.type_char('h');
+        assert_eq!(list.selected().map(|p| p.name.as_str()), Some("alpha"));
+        list.type_char('z');
+        assert!(list.selected().is_none());
+    }
+
+    #[test]
+    fn a_search_matches_a_display_name_in_any_case() {
+        let mut list = browse(&["first", "second"]);
+        for c in "BRAVO".chars() {
+            list.type_char(c);
+        }
+        assert_eq!(shown(&list), ["first"]);
     }
 }

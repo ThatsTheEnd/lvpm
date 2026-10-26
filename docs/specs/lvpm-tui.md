@@ -350,7 +350,7 @@ Decisions already made with the stakeholder:
 | Manifest dependency | A package listed in the manifest's `[dependencies]` | `unverified` | README |
 | Transitive dependency | A package installed in a venv because another package requires it, not listed in the manifest | `verified` | Stakeholder |
 | Catalog | Union of all package entries (every version) from every configured source | `unverified` | `crates/lvpm-core/src/index.rs` |
-| Update available | A version newer than the installed one exists in the catalog | `unverified` | Inferred |
+| Update available | A version newer than the installed one exists in the catalog, and the destination's LabVIEW can take it | `unverified` | Inferred |
 | Incompatible | Package's minimum LabVIEW is newer than the destination's LabVIEW version | `verified` | Stakeholder |
 | Plan preview | Confirmation screen built from a dry run | `verified` | Stakeholder |
 | Lock (`lvpm.lock`) | The full resolved dependency set of a project (exact versions, sources, hashes), resolved for the manifest's `labview` minimum | `verified` | Stakeholder (uv model) |

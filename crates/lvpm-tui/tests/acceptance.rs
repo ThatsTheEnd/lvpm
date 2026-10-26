@@ -123,7 +123,8 @@ fn is_tui_scenario(feature: &Feature, scenario: &Scenario) -> bool {
 fn main() {
     let proxy = FEED.proxy_url();
     for name in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
-        // SAFETY: no other thread runs yet; cucumber starts after this.
+        // SAFETY: cucumber has not started; the only other thread is the
+        // feed's server, which never reads the environment.
         unsafe { std::env::set_var(name, &proxy) };
     }
     for name in ["NO_PROXY", "no_proxy"] {

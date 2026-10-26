@@ -29,6 +29,14 @@ pub fn needs_newer_labview(entry: &Entry, target: &LvTarget) -> Option<u32> {
     solve::gated(entry, target.version).map(|gated| gated.needs_year)
 }
 
+/// The version of one package that install would resolve with no floor:
+/// the newest of `versions` (newest first) that `target` can take.
+pub fn resolvable<'e>(versions: &'e [Entry], target: Option<&LvTarget>) -> Option<&'e Entry> {
+    versions
+        .iter()
+        .find(|e| target.is_none_or(|t| e.fits_labview(t.version)))
+}
+
 /// Every package whose name or display name contains `query`, newest version
 /// of each, by name. All of them: a front end that shows fewer says so itself.
 pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
@@ -247,6 +255,19 @@ mod tests {
             None
         );
         assert_eq!(needs_newer_labview(&needing(None), &labview_2025), None);
+
+        let newest_first = [needing(Some(99.0)), needing(Some(20.0))];
+        assert_eq!(
+            resolvable(&newest_first, Some(&labview_2025)).and_then(|e| e.lv_min),
+            Some(20.0),
+            "the newest version the LabVIEW can take"
+        );
+        assert_eq!(
+            resolvable(&newest_first, None).and_then(|e| e.lv_min),
+            Some(99.0),
+            "no LabVIEW gates nothing"
+        );
+        assert!(resolvable(&newest_first[..1], Some(&labview_2025)).is_none());
     }
 
     #[test]

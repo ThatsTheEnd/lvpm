@@ -12,6 +12,8 @@ impl TuiWorld {
         let (Some(app), terminal) = (&mut self.app, &mut self.terminal) else {
             unreachable!("the TUI started");
         };
+        // As the event loop does before each draw.
+        app.poll();
         terminal
             .draw(|frame| ui::draw(frame, app))
             .expect("drawing on a test terminal");

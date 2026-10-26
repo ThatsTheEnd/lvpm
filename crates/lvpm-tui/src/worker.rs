@@ -3,6 +3,7 @@
 
 use crate::destination::{EnvBuilder, Quiet};
 use lvpm_core::install::Manifest;
+use lvpm_core::ops::Destination;
 use lvpm_core::ops::query::{self, Catalog};
 use std::sync::mpsc::{self, Receiver};
 
@@ -17,8 +18,12 @@ pub enum Job {
 /// What a job returns.
 #[derive(Debug)]
 pub enum Done {
-    /// The catalog and the installed packages, or core's error, whole.
-    Loaded(Result<(Catalog, Vec<Manifest>), String>),
+    /// The destination as resolved for this read, and the catalog with what
+    /// that destination has installed, or core's error, whole.
+    Loaded {
+        destination: Result<Destination, String>,
+        listing: Result<(Catalog, Vec<Manifest>), String>,
+    },
 }
 
 /// Start `job` on its own thread; its result arrives on the receiver.
@@ -36,15 +41,18 @@ fn run(builder: &EnvBuilder, job: Job) -> Done {
     match job {
         Job::Load { refresh } => {
             let env = builder.env(&Quiet, refresh);
-            let has_destination = builder.destination().is_ok();
-            let loaded = query::catalog(&env, None).and_then(|catalog| {
-                let installed = match has_destination {
+            let destination = builder.destination();
+            let listing = query::catalog(&env, None).and_then(|catalog| {
+                let installed = match destination.is_ok() {
                     true => query::list(&env)?,
                     false => Vec::new(),
                 };
                 Ok((catalog, installed))
             });
-            Done::Loaded(loaded.map_err(|error| format!("{error:#}")))
+            Done::Loaded {
+                destination,
+                listing: listing.map_err(|error| format!("{error:#}")),
+            }
         }
     }
 }

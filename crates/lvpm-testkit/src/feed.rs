@@ -91,6 +91,13 @@ struct Pause {
     changed: Condvar,
 }
 
+/// What the feed holds: archive and listing requests, each on its own.
+#[derive(Debug, Default)]
+struct Pauses {
+    archive: Pause,
+    listing: Pause,
+}
+
 #[derive(Debug, Default)]
 struct PauseState {
     /// Requests are held.
@@ -145,9 +152,7 @@ pub struct Feed {
     archives_refused: Arc<AtomicBool>,
     /// Once set, nothing is answered: each connection is closed unread.
     down: Arc<AtomicBool>,
-    pause: Arc<Pause>,
-    /// Holds listing requests as `pause` holds archive requests.
-    listing_pause: Arc<Pause>,
+    pauses: Arc<Pauses>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -161,12 +166,11 @@ impl Feed {
         let stop = Arc::new(AtomicBool::new(false));
         let archives_refused = Arc::new(AtomicBool::new(false));
         let down = Arc::new(AtomicBool::new(false));
-        let pause = Arc::new(Pause::default());
-        let listing_pause = Arc::new(Pause::default());
+        let pauses = Arc::new(Pauses::default());
         let thread = {
             let (hits, stop) = (hits.clone(), stop.clone());
             let (refused, down) = (archives_refused.clone(), down.clone());
-            let (routes, pauses) = (routes.clone(), [pause.clone(), listing_pause.clone()]);
+            let (routes, pauses) = (routes.clone(), pauses.clone());
             std::thread::spawn(move || {
                 serve(listener, &routes, &hits, &stop, &refused, &down, &pauses)
             })
@@ -178,8 +182,7 @@ impl Feed {
             stop,
             archives_refused,
             down,
-            pause,
-            listing_pause,
+            pauses,
             thread: Some(thread),
         }
     }
@@ -239,24 +242,24 @@ impl Feed {
     /// From now on the feed takes a listing request and holds its answer until
     /// [`Feed::release`], as a feed that is slow to answer does.
     pub fn pause_listings(&self) {
-        self.listing_pause.arm();
+        self.pauses.listing.arm();
     }
 
     /// From now on the feed takes an archive request and holds its answer, as
     /// a slow download does, until [`Feed::release`]. Listings are not held.
     pub fn pause_archives(&self) {
-        self.pause.arm();
+        self.pauses.archive.arm();
     }
 
     /// Block until an archive request is being held.
     pub fn wait_for_held_archive(&self) {
-        self.pause.wait_until_held();
+        self.pauses.archive.wait_until_held();
     }
 
     /// Answer what is held, and every request after it.
     pub fn release(&self) {
-        self.pause.release();
-        self.listing_pause.release();
+        self.pauses.archive.release();
+        self.pauses.listing.release();
     }
 
     /// How many requests this path has received, including `304`s.
@@ -401,7 +404,7 @@ fn serve(
     stop: &AtomicBool,
     archives_refused: &AtomicBool,
     down: &AtomicBool,
-    pauses: &[Arc<Pause>; 2],
+    pauses: &Pauses,
 ) {
     for stream in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
@@ -428,7 +431,7 @@ fn handle(
     routes: &Mutex<Routes>,
     hits: &Hits,
     archives_refused: &AtomicBool,
-    [archive_pause, listing_pause]: &[Arc<Pause>; 2],
+    pauses: &Pauses,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
     stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
@@ -442,8 +445,8 @@ fn handle(
         return Ok(());
     }
     match request.path.ends_with(".vip") {
-        true => archive_pause.hold(),
-        false => listing_pause.hold(),
+        true => pauses.archive.hold(),
+        false => pauses.listing.hold(),
     }
     let refused = archives_refused.load(Ordering::SeqCst) && request.path.ends_with(".vip");
     let response = match refused {

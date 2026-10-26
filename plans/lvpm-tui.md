@@ -718,16 +718,16 @@ Feature: Browse the catalog
 **IMPLEMENT**: `EnvBuilder` builds each job's `OpEnv` as the CLI does; `worker.rs` runs one job on a thread with a `ChannelSink` and returns its result; the catalog and the installed list load as one job; the total and partial failure states.
 **TEST**: The destination, loading and failure scenarios, with the feed's pause as the latch.
 **REFACTOR**: A `Job` enum names every job the worker can run.
-**Files**: `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/src/worker.rs`, `crates/lvpm-tui/src/destination.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/tests/steps.rs`
+**Files**: `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/src/worker.rs`, `crates/lvpm-tui/src/destination.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/src/main.rs`, `crates/lvpm-tui/tests/steps.rs`, `crates/lvpm-tui/tests/acceptance.rs`, `crates/lvpm-tui/tests/browse_steps.rs`, `crates/lvpm-core/src/config.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-testkit/src/feed.rs`
 **Commit**: `feat(tui): resolve the destination and load the catalog off the UI thread`
 
 #### Step 5.2: Rows, statuses, navigation, search and filter
 
 **Complexity**: standard
-**IMPLEMENT**: `ops::query::compatible` in core; the mock's package table with the four statuses, Up/Down/PgUp/PgDn/Home/End, `/` search, `f` filter, the count line, the incompatible footer; the keys in `keys.rs`. Run the manual checklist with the list on screen.
+**IMPLEMENT**: `ops::query::needs_newer_labview` and `ops::query::resolvable` in core (built as one commit with Step 5.1); the mock's package table with the four statuses, Up/Down/PgUp/PgDn/Home/End, `/` search, `f` filter, the count line, the incompatible footer; the keys in `keys.rs`. Run the manual checklist with the list on screen.
 **TEST**: The remaining scenarios; status unit tests.
-**REFACTOR**: The status rule is one pure function in `browse.rs` over core's `compatible`.
-**Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/solve.rs`, `crates/lvpm-tui/src/browse.rs`, `crates/lvpm-tui/src/keys.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/tests/steps.rs`, `docs/manual/tui-terminals.md`
+**REFACTOR**: The status rule is one pure function in `browse.rs` over core's `resolvable` and `needs_newer_labview`.
+**Files**: `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-tui/src/browse.rs`, `crates/lvpm-tui/src/keys.rs`, `crates/lvpm-tui/src/ui.rs`, `crates/lvpm-tui/tests/steps.rs`, `docs/manual/tui-terminals.md`
 **Commit**: `feat(tui): browse, search and filter the catalog`
 
 ### Slice 6: Package details and reloading the feeds
@@ -1607,8 +1607,8 @@ None.
 
 ### Wave 5
 - [ ] Slice 5: Browse the catalog
-  - [ ] Step 5.1: Destination at start, the worker and the loading state
-  - [ ] Step 5.2: Rows, statuses, navigation, search and filter
+  - [x] Step 5.1: Destination at start, the worker and the loading state
+  - [x] Step 5.2: Rows, statuses, navigation, search and filter (manual checklist not run yet)
 
 ### Wave 6
 - [ ] Slice 6: Package details and reloading the feeds

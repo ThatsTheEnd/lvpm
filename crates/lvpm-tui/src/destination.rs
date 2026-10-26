@@ -45,12 +45,15 @@ impl EnvBuilder {
 
     /// The destination at start, or why there is none.
     pub fn destination(&self) -> Result<Destination, String> {
-        self.env(&Quiet, false)
-            .destination()
-            .map_err(|error| match self.targets.is_empty() {
+        self.env(&Quiet, false).destination().map_err(|error| {
+            let error = format!("{error:#}");
+            // shortcut: core's "pick a destination" error names CLI flags the
+            // TUI has none of; matched by its text until core types it.
+            match self.targets.is_empty() && error.starts_with("pick a destination") {
                 true => "install needs a LabVIEW or --prefix".to_string(),
-                false => format!("{error:#}"),
-            })
+                false => error,
+            }
+        })
     }
 }
 
@@ -61,14 +64,6 @@ pub(crate) struct Quiet;
 
 impl EventSink for Quiet {
     fn emit(&self, _: lvpm_core::events::Event) {}
-}
-
-/// The LabVIEW a destination is for, if any: a scratch prefix has none.
-pub fn target(destination: &Destination) -> Option<&LvTarget> {
-    match destination {
-        Destination::Venv(venv) => Some(&venv.target),
-        Destination::Global(roots) | Destination::Scratch(roots) => roots.target.as_ref(),
-    }
 }
 
 /// How the header names a destination. A venv is named by its project's

@@ -46,10 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .note
         .clone()
         .or_else(|| app.destination.as_ref().err().cloned());
-    let mut block = Block::bordered();
-    if let Some(note) = note {
-        block = block.title_bottom(note);
-    }
+    let block = Block::bordered();
     let inner = block.inner(body);
     frame.render_widget(block, body);
     match &mut app.listing {
@@ -60,7 +57,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         Listing::Loaded(browse) => draw_list(frame, browse, inner),
     }
-    frame.render_widget(Paragraph::new(hints(keys::FOOTER)), footer);
+    // The hints come first so that a long note cannot push them off.
+    let mut line = hints(keys::FOOTER);
+    if let Some(note) = note.as_deref().and_then(|n| n.lines().next()) {
+        line.spans.push(Span::raw(note.to_string()));
+    }
+    frame.render_widget(Paragraph::new(line), footer);
 }
 
 /// The search and filter line, a banner per source not read, and the table.
@@ -114,7 +116,8 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
                 .map(ToString::to_string)
                 .unwrap_or_default(),
             package
-                .available()
+                .available
+                .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default(),
             package.status.text(),

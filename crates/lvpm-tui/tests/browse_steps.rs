@@ -127,8 +127,7 @@ impl TuiWorld {
     }
 
     fn footer(&mut self) -> String {
-        let screen = self.screen();
-        screen[screen.len() - 2..].join("\n")
+        self.screen().pop().unwrap_or_default()
     }
 }
 
@@ -311,6 +310,10 @@ async fn header_reads(world: &mut TuiWorld, text: String) {
     let text = text.replace("<project>", "project");
     let header = world.screen()[0].clone();
     assert!(header.contains(&text), "header: {header:?}");
+    assert!(
+        text.starts_with("venv:") || !header.contains("venv:"),
+        "header: {header:?}"
+    );
 }
 
 #[then("the header says no destination is selected")]
