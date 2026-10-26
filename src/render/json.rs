@@ -26,8 +26,8 @@ pub fn error(error: &anyhow::Error) -> String {
 }
 
 /// One line on stdout, written under one lock so no other write splits it. A
-/// write error, such as a closed pipe, is ignored and the exit code is kept:
-/// a reader that stopped listening is not worth a panic.
+/// write error, such as a closed pipe, loses the line and is ignored; the exit
+/// code is kept. A reader that stopped listening is not worth a panic.
 pub fn print(text: &str) {
     let _ = writeln!(std::io::stdout().lock(), "{text}");
 }
@@ -94,8 +94,8 @@ mod tests {
         assert_eq!(back["result"], "Evil\u{9b}31m\u{2028}");
     }
 
-    /// No recording pins these: `targets` names this machine's LabVIEWs and
-    /// `venv status` is recorded only with no venv.
+    /// No recording pins these: `venv status` is recorded only with no venv,
+    /// so its `target` holds the `LvTarget` fields pinned here.
     #[test]
     fn venv_status_keeps_its_field_names() {
         let target = LvTarget {
