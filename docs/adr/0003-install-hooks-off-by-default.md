@@ -57,6 +57,9 @@ lvpm today:
 - Slice S12 builds it. The project allowlist is `hooks = "run"` on the
   dependency line ([ADR 4](0004-sources-first-wins-and-pinning.md)). The
   user-config key and the warning's wording are decided in S12's `/specs`.
-- An allowlist by name trusts every future version of that package. Pinning a
-  hook VI's hash in `lvpm.lock` would close that gap; S12's `/specs` decides
-  whether it is in scope.
+- An allowlist by name trusts every future version of that package, as pnpm's
+  and Bun's do. This is a choice: the package file's SHA-256 in `lvpm.lock`
+  already stops a swapped file under a locked version, and the upgrade shows
+  in the lock diff. Pinning each hook VI's hash would ask again on almost
+  every upgrade, since VIs change bytes on any resave. It can be added later
+  without breaking anything.

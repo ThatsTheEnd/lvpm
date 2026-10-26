@@ -624,9 +624,9 @@ Acceptance criteria:
 
 Demo: install pilot A globally; lvpm skips its `PostInstall` and says how to allow it.
 
-Decide in `/specs`: the user-config key;
-the warning's exact wording; whether `lvpm.lock` pins each allowed hook VI's
-hash, so a new version's changed hook is skipped again.
+Decide in `/specs`: the user-config key; the warning's exact wording.
+
+Out of scope: pinning each allowed hook VI's hash in `lvpm.lock` (ADR 3).
 
 ### Slice S13: The first source wins
 
