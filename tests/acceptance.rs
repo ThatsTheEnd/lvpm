@@ -50,6 +50,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-lockfile/slice-16-documentation-and-help-text.feature",
     "tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature",
     "tests/features/lvpm-tui/slice-2-package-details-lvpm-info.feature",
+    "tests/features/lvpm-tui/slice-3-json-and-the-exit-code-table.feature",
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";

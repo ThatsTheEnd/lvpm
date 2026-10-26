@@ -1,0 +1,1 @@
+{"result":[{"bitness":64,"path":"C:\\Program Files\\National Instruments\\LabVIEW 2026","version":26.3}]}

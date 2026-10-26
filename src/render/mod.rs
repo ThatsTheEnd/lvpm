@@ -13,6 +13,7 @@ mod headless;
 mod hooks;
 mod index;
 mod install;
+pub mod json;
 pub mod launch;
 pub mod lock;
 pub mod query;

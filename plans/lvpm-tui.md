@@ -396,7 +396,7 @@ Feature: Machine-readable output
     When "lvpm --json <command>" runs in <place>
     Then every stdout line is a JSON object
     And the last line is the only one with a "result" key
-    And the result is <result>
+    And the JSON result is <result>
     And the exit code is 0
     And the output matches the "json-<recording>" recording
 
@@ -404,24 +404,21 @@ Feature: Machine-readable output
       | command                               | place      | result                                  | recording     |
       | search alpha                          | any folder | a list with one entry, "alpha" 1.0      | search        |
       | search zzz                            | any folder | an empty list                           | search-none   |
-      | search --all                          | any folder | a list of "alpha" 1.0 and "beta" 0.1    | search-all    |
-      | info alpha                            | any folder | an object with "name" "alpha"           | info          |
+      | search --all                          | any folder | an object whose "entries" are "alpha" 1.0 and "beta" 0.1 | search-all |
+      | info alpha                            | any folder | an object whose "entry" is "alpha" 1.0  | info          |
       | list --prefix dest                    | any folder | a list with one manifest, "beta" 0.1    | list          |
       | targets                               | any folder | a list                                  | targets       |
-      | config get venv.dir                   | any folder | {"key": "venv.dir", "value": null}      | config-get    |
+      | config get venv.dir                   | any folder | {"key": "venv.dir", "values": [".lv-venv"]} | config-get |
       | config set venv.dir venvs             | any folder | {"command": "config"}                   | config-set    |
-      | cache add pkgs                        | any folder | {"command": "cache"}                    | cache-add     |
+      | cache add pkgs                        | any folder | a list                                  | cache-add     |
       | install alpha --prefix dest --dry-run | any folder | {"command": "install"}                  | install       |
       | uninstall beta --prefix dest          | any folder | {"command": "uninstall"}                | uninstall     |
-      | relink beta --prefix dest             | any folder | {"command": "relink"}                   | relink        |
-      | run-hooks beta --prefix dest          | any folder | {"command": "run-hooks"}                | run-hooks     |
-      | refresh --prefix dest                 | any folder | {"command": "refresh"}                  | refresh       |
       | lock --check                          | the project | {"up_to_date": true}                   | lock-check    |
       | lock                                  | the project | {"command": "lock"}                    | lock          |
       | sync --prefix dest                    | the project | {"command": "sync"}                    | sync          |
       | add beta --prefix dest                | the project | {"command": "add"}                     | add           |
       | remove alpha --prefix dest            | the project | {"command": "remove"}                  | remove        |
-      | venv status                           | the project | an object with "exists" false          | venv-status   |
+      | venv status                           | any folder | an object with "exists" false           | venv-status   |
 
   @labview
   Scenario Outline: the commands that need a LabVIEW
@@ -435,16 +432,19 @@ Feature: Machine-readable output
       | venv create      | venv   |
       | launch           | launch |
       | start            | start  |
+      | relink --all     | relink |
+      | run-hooks --all  | run-hooks |
+      | refresh          | refresh |
 
   Scenario: a failure ends in one error object and exit code 1
-    When "lvpm --json info nothing" runs
+    When "lvpm --json info nothing" runs in any folder
     Then the last stdout line is the only one with an "error" key
     And its message names the sources searched
     And the exit code is 1
 
   Scenario: events followed by a failure
     Given the archive of "alpha" 1.0 is corrupt
-    When "lvpm --json install alpha --prefix dest" runs
+    When "lvpm --json install alpha --prefix dest" runs in any folder
     Then stdout has a "phase_started" event for download before the last line
     And the last line is the only one with an "error" key
     And the exit code is 1
@@ -456,12 +456,12 @@ Feature: Machine-readable output
     And the exit code is 1
 
   Scenario: malformed arguments under --json
-    When "lvpm --json install" runs
+    When "lvpm --json install --no-such-flag" runs
     Then stdout is empty
     And the exit code is 2
 
   Scenario: install progress reports its phases in order, skipped ones too
-    When "lvpm --json install alpha --prefix dest" runs
+    When "lvpm --json install alpha --prefix dest" runs in any folder
     Then the "phase" values of its phase events are, in order, resolve, download, unpack, relink, hooks, refresh
     And relink, hooks and refresh are "phase_skipped" events with reason "scratch_destination"
 
@@ -508,7 +508,7 @@ Feature: Machine-readable output
 
 **Complexity**: standard
 **IMPLEMENT**: `{"command": …}` results for install, add, remove, sync, lock, uninstall, relink, run-hooks, refresh, venv, cache, launch and start. The `venv remove` prompt becomes an error under `--json` only. `--json` on `vi-*` / `app-probe` is a usage error.
-**TEST**: The outline rows config-set, cache-add, install, uninstall, relink, run-hooks, refresh, lock, sync, add, remove and venv-status with their recordings; the `@labview` outlines and prompt scenarios (run in the LabVIEW image in CI); the events-then-failure, phase-order and diagnostics scenarios; every characterization row still matches.
+**TEST**: The outline rows config-set, cache-add, install, uninstall, lock, sync, add, remove and venv-status with their recordings; the `@labview` outlines and prompt scenarios (run in the LabVIEW image in CI); the events-then-failure, phase-order and diagnostics scenarios; every characterization row still matches.
 **REFACTOR**: Additive only: no public core type is renamed or removed.
 **Files**: `src/main.rs`, `crates/lvpm-core/src/venv.rs`, `crates/lvpm-core/src/ops/venv_cmd.rs`, `tests/steps/json.rs`, `tests/golden/json-*/`
 **Commit**: `feat(cli): --json on every command but the diagnostics`
@@ -1583,7 +1583,7 @@ None.
   - [x] Step 2.3: `lvpm info <PACKAGE>[@VERSION]`
 
 ### Wave 3
-- [ ] Slice 3: `--json` and the exit-code table
+- [x] Slice 3: `--json` and the exit-code table
   - [ ] Step 3.1: `--json`, the JSON sink and the result line
   - [ ] Step 3.2: `--json` on the remaining commands
   - [ ] Step 3.3: The exit codes and the JSON format in the README

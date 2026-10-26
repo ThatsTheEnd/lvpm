@@ -19,7 +19,7 @@ pub trait EventSink: Send + Sync {
 
 /// One thing core reports. Variants are grouped by the module that emits them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+#[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
     // ---- index ----
     /// A feed is about to be asked for its index. `first_run`: nothing of it is

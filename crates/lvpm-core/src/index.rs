@@ -18,6 +18,7 @@ use md5::{Digest, Md5};
 use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +34,7 @@ pub(crate) const SOURCES: &[(&str, &str)] = &[
     ),
 ];
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Requirement {
     pub name: String,
     pub min: Option<Version>,
@@ -76,7 +77,7 @@ impl Floor {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Entry {
     pub name: String,
     pub version: Version,
@@ -289,6 +290,7 @@ fn entry_from_bytes(path: &Path, bytes: &[u8]) -> Result<Entry> {
 }
 
 /// One file processed by cache add, including its content address and reuse status.
+#[derive(Serialize)]
 pub struct Import {
     pub path: PathBuf,
     pub sha256: String,

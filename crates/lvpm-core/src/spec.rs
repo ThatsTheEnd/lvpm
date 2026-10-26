@@ -8,9 +8,10 @@
 //! `[File Group N]` and `[Script VIs]`.
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FileGroup {
     pub index: usize,
     pub target_dir: String,
@@ -18,7 +19,7 @@ pub struct FileGroup {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Spec {
     pub name: String,
     pub version: String,
@@ -39,7 +40,7 @@ pub struct Spec {
 
 /// The `[Description]` section, for people to read. A field the spec leaves
 /// out or leaves empty is `None`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Description {
     pub description: Option<String>,
     pub summary: Option<String>,

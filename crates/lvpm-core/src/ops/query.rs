@@ -14,6 +14,7 @@ use crate::project::{PackageArg, same_name};
 use crate::spec::Spec;
 use crate::target::LvTarget;
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use std::path::Path;
 
 /// The LabVIEW installations detected on this machine, newest first.
@@ -65,7 +66,7 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
 }
 
 /// The answer to [`catalog`].
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Catalog {
     pub entries: Vec<Entry>,
     /// Every source asked: each local folder, then each feed's index URL.
@@ -144,7 +145,7 @@ fn archive_bytes(env: &OpEnv, entry: &Entry) -> Result<Vec<u8>> {
 }
 
 /// The answer to [`info`].
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct PackageInfo {
     /// The version shown: its requirements, minimum LabVIEW and source.
     pub entry: Entry,

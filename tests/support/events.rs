@@ -31,13 +31,13 @@ const ENUMERATED_FIELDS: &[&str] = &["event", "outcome"];
 /// URL, path or enumerated value, as `field = "text"`.
 pub fn fields_that_are_not_data(event: &Event) -> Vec<String> {
     let json = serde_json::to_value(event).expect("an event serialises");
-    let Value::Object(fields) = json else {
-        panic!("an event is a JSON object");
-    };
-    fields
-        .iter()
+    // `{"event": variant, "data": {fields}}`; a variant without fields has no data.
+    let variant = ("event".to_string(), json["event"].clone());
+    let fields = json["data"].as_object().cloned().unwrap_or_default();
+    std::iter::once(variant)
+        .chain(fields)
         .filter_map(|(field, value)| match value {
-            Value::String(text) if !is_data(field, text) => Some(format!("{field} = {text:?}")),
+            Value::String(text) if !is_data(&field, &text) => Some(format!("{field} = {text:?}")),
             _ => None,
         })
         .collect()
