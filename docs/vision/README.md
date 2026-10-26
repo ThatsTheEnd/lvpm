@@ -51,7 +51,7 @@ Each one is usable on its own. Ticks mean done.
 - [x] `add`, `remove` (`--dev`)
 - [ ] `init` (incl. `--from project.vipc`), `info`, `update`
 - [ ] The first source that lists a name wins (no merging across sources)
-- [ ] Pinning a dependency to one source (`source = "<name>"`)
+- [ ] Pinning a dependency to one source (`index = "<name>"`)
 - [ ] `--json`, documented exit codes, `--yes`, `--labview-bitness`
 - [ ] Dependency groups (`--group`)
 - [ ] Install hooks off by default, with a warning and an allowlist

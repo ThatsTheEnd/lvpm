@@ -45,11 +45,13 @@ second idea (route by prefix) next to pinning.
    internal = "https://packages.hexagon.local/lv"
 
    [dependencies]
-   hexagon_lib_motion = { version = ">=2.0", source = "internal" }
+   hexagon_lib_motion = { version = ">=2.0", index = "internal" }
    oglib_error = ">=6.0.1"                    # the short form stays
    ```
 
-   A pinned package resolves only from that source. If the source does not
+   The key is `index`, as in uv's `[tool.uv.sources]`. Upstream's roadmap
+   spells it `source`, but that word already names the `source` package kind
+   (ADR 1). A pinned package resolves only from that source. If the source does not
    list it, or cannot be reached, resolution fails naming the package and the
    source. It never falls back to another source. An unknown source name is an
    error when the manifest is read.
@@ -71,14 +73,14 @@ second idea (route by prefix) next to pinning.
   candidate to contribute upstream first. The order of `[sources]` starts to
   matter: `lock --check` compares it as a list, not a set.
 - The per-dependency table is shared: S12 adds it with `version` and `hooks`,
-  S7c adds `source`. Whichever lands first adds the parser.
+  S7c adds `index`. Whichever lands first adds the parser.
 - A pin and `hooks = "run"` live on dependency lines. How to pin or allow a
   package that is only a transitive dependency is decided in S7c's and S12's
   `/specs`.
 - Changing a pin makes the lock stale. The lock's inputs hold only
   constraints and source URLs today, so S7c adds each dependency's pin.
-- `lvpm add <pkg> --source <name>` writes the table form. `lvpm add` on a
+- `lvpm add <pkg> --index <name>` writes the table form. `lvpm add` on a
   table-form line changes only `version`; whichever slice adds the table
   makes `manifest_edit` keep the other keys.
-- Upstream is asked on 2026-10-30 to confirm the spellings `source` and
-  `hooks = "run"`, which come from its own roadmap.
+- Upstream is asked on 2026-10-30 to take `index` in place of its
+  roadmap's `source`, and to confirm `hooks = "run"`.

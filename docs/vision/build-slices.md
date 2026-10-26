@@ -83,12 +83,12 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
      plans its own split of `main.rs` and an event layer. This fork already
      has `crates/lvpm-core` and `events.rs` ([ADR 5](../adr/0005-core-and-cli-split.md)).
      PR #15's `--hooks auto|always|never` meets ADR 3.
-   - **Spellings.** Confirm `source = "<name>"` and `hooks = "run"` on the
-     dependency line (ADR 4), which come from upstream's roadmap.
+   - **Spellings.** Propose `index = "<name>"` in place of the roadmap's
+     `source`, and confirm `hooks = "run"` on the dependency line (ADR 4).
 4. **How feeds are configured.** Decided in
    [ADR 4](../adr/0004-sources-first-wins-and-pinning.md): `[sources]` stays,
    the first source that lists a name wins (S13), a dependency pins a source
-   with `source = "<name>"` (S7c), no `scopes` for now, and `hooks = "run"`
+   with `index = "<name>"` (S7c), no `scopes` for now, and `hooks = "run"`
    on the same line is the project's hook allowlist.
 5. **The core/CLI split.** Recorded as built in
    [ADR 5](../adr/0005-core-and-cli-split.md).
@@ -410,9 +410,9 @@ Goal: an internal package comes from the internal source or not at all.
 Rules as in [ADR 4](../adr/0004-sources-first-wins-and-pinning.md).
 
 In scope:
-- `name = { version = "...", source = "<name>" }` in `[dependencies]` and every group.
+- `name = { version = "...", index = "<name>" }` in `[dependencies]` and every group.
 - A pinned package resolves only from that source, with no fallback.
-- `lvpm add <pkg> --source <name>` writes the table form.
+- `lvpm add <pkg> --index <name>` writes the table form.
 
 Out of scope: `scopes`; pinning a package that is only a transitive dependency (decide in `/specs`).
 
@@ -420,7 +420,7 @@ Acceptance criteria:
 - [ ] A pinned package is taken from its source although another source lists a higher version.
 - [ ] A pinned package its source doesn't list fails naming the package and the source.
 - [ ] A pinned package whose source can't be reached fails naming the source.
-- [ ] `lvpm add @org/name --source <name>` writes the table form; the short form still parses.
+- [ ] `lvpm add @org/name --index <name>` writes the table form; the short form still parses.
 - [ ] A pin naming a source that `[sources]` doesn't define fails when the manifest is read.
 - [ ] Adding, changing or removing a pin makes `lock --check` fail.
 

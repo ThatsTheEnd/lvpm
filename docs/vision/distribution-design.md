@@ -157,7 +157,7 @@ internal  = "oci://<org>.azurecr.io/lv"
 community = "git+https://github.com/<org>/lvpm-index"   # placeholder
 
 [dependencies]
-"@hexagon/motion-lib" = { version = ">=2.1", source = "internal" }  # only from internal
+"@hexagon/motion-lib" = { version = ">=2.1", index = "internal" }  # only from internal
 
 [policy]
 require-signature  = true
@@ -166,7 +166,7 @@ min-release-age    = "3d"         # cf. uv --exclude-newer
 ```
 
 - Each package resolves from **exactly one** feed: the first source that lists
-  it, or the one it pins with `source`. Versions from different feeds are never
+  it, or the one it pins with `index`. Versions from different feeds are never
   merged, so dependency confusion has nowhere to start
   ([ADR 4](../adr/0004-sources-first-wins-and-pinning.md)).
   The `oci://` and `git+` URLs are the forms S7b and S8 add.
