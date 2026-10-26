@@ -153,7 +153,7 @@ feed as a fallback transport.
 
 ```toml
 [sources]                         # searched in this order, then the public defaults
-internal  = "oci://hexagon.azurecr.io/lv"
+internal  = "oci://<org>.azurecr.io/lv"
 community = "git+https://github.com/<org>/lvpm-index"   # placeholder
 
 [dependencies]
@@ -171,7 +171,7 @@ min-release-age    = "3d"         # cf. uv --exclude-newer
   ([ADR 4](../adr/0004-sources-first-wins-and-pinning.md)).
   The `oci://` and `git+` URLs are the forms S7b and S8 add.
 - **One version per name per LabVIEW instance**, because LabVIEW has one global namespace.
-- `lvpm.lock` records name, version, feed, SHA-256, signer and provenance subject.
+- `lvpm.lock` records name, version, source, SHA-256, signer and provenance subject.
   This supersedes the roadmap's MD5-based lock; MD5 is kept only to check
   legacy packages against their index.
   `lvpm install --locked` and `lvpm lock --check` make CI refuse drift.

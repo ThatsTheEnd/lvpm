@@ -34,7 +34,9 @@ second idea (route by prefix) next to pinning.
 
 1. **The first source that lists a name wins.** Sources are searched in
    `[sources]` file order, then the public defaults. Versions of one name are
-   never merged across sources. Where `sources.local` and imported cache
+   never merged across sources. If the first source lists a name but no
+   version fits, or a source can't be reached, resolution fails naming the
+   source; it never falls through to a later one. Where `sources.local` and imported cache
    packages sit in that order is decided in S13's `/specs`.
 2. **A dependency can pin a source by name**, on its own line:
 
@@ -65,7 +67,7 @@ second idea (route by prefix) next to pinning.
 
 ## Consequences
 
-- Fix 1 changes resolution for everyone, so it is its own slice (S13) and a
+- Decision 1 changes resolution for everyone, so it is its own slice (S13) and a
   candidate to contribute upstream first. The order of `[sources]` starts to
   matter: `lock --check` compares it as a list, not a set.
 - The per-dependency table is shared: S12 adds it with `version` and `hooks`,
@@ -73,8 +75,10 @@ second idea (route by prefix) next to pinning.
 - A pin and `hooks = "run"` live on dependency lines. How to pin or allow a
   package that is only a transitive dependency is decided in S7c's and S12's
   `/specs`.
-- Changing a pin makes the lock stale; the lock already records each
-  package's source.
-- `lvpm add <pkg> --source <name>` writes the table form.
+- Changing a pin makes the lock stale. The lock's inputs hold only
+  constraints and source URLs today, so S7c adds each dependency's pin.
+- `lvpm add <pkg> --source <name>` writes the table form. `lvpm add` on a
+  table-form line changes only `version`; whichever slice adds the table
+  makes `manifest_edit` keep the other keys.
 - Upstream is asked on 2026-10-30 to confirm the spellings `source` and
   `hooks = "run"`, which come from its own roadmap.

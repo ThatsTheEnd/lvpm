@@ -14,7 +14,7 @@ This folder is this fork's direction. The upstream author's plan stays in
 | Step | Command | Where it is |
 |---|---|---|
 | 1. Start a library or app | `lvpm init` | planned (M1) |
-| 2. Add dependencies | `lvpm add libA@">=1.4"` | **works** (`name@constraint`; pinning a source planned, M3; `^` not yet) |
+| 2. Add dependencies | `lvpm add libA@">=1.4"` | **works** (`name@constraint`; pinning a source planned (S7c); `^` not yet) |
 | 3. Develop in an isolated env | `lvpm install` → `lvpm launch` | **works** (venv + overlay, `lvpm.lock`, exact `sync`) |
 | 4. Build packages | `lvpm build` → `.lvpkg` and/or `.vip` | proposed (M2) |
 | 5. Publish | tag → CI signs and publishes | proposed (M3) |
@@ -51,6 +51,7 @@ Each one is usable on its own. Ticks mean done.
 - [x] `add`, `remove` (`--dev`)
 - [ ] `init` (incl. `--from project.vipc`), `info`, `update`
 - [ ] The first source that lists a name wins (no merging across sources)
+- [ ] Pinning a dependency to one source (`source = "<name>"`)
 - [ ] `--json`, documented exit codes, `--yes`, `--labview-bitness`
 - [ ] Dependency groups (`--group`)
 - [ ] Install hooks off by default, with a warning and an allowlist
@@ -63,7 +64,7 @@ Each one is usable on its own. Ticks mean done.
 
 **M3 — publish and trust**
 - [ ] GitHub Releases as a direct source, with attestation checks
-- [ ] OCI feeds, and pinning a dependency to one source
+- [ ] OCI feeds
 - [ ] CI publishing: OIDC, Sigstore signatures, SLSA provenance, consumer policy
 
 **M4 — community**

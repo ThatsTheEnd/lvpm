@@ -37,7 +37,8 @@ lvpm has no users yet, so no names need a migration.
    the way `[build-system]` names a backend, and `lvpm build` runs it.
 2. **One identity: `[project]`.** `name` and `version` live there and nowhere
    else. A package is a project that has a `[distribution]` table. There is no
-   `[package]` table.
+   `[package]` table. `[distribution.vip]`'s `name` only
+   spells that one identity the way VIPM needs it.
 3. **`labview` is a constraint**, written like uv's `requires-python`:
    `labview = ">=2021"`. It uses the `[dependencies]` constraint syntax. Venvs
    bind to the newest installed LabVIEW that satisfies it, and source packages

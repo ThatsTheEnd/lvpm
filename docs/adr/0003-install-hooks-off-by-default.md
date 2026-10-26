@@ -42,7 +42,8 @@ lvpm today:
    succeeds and the exit code stays 0.
 3. **Hooks are allowed per package, by name.**
    - In a project, the allowlist lives in `lvpm.toml` and is committed, so
-     everyone on the team gets the same behaviour.
+     everyone on the team gets the same behaviour. Only the root project's
+     manifest counts; a dependency's own manifest can't allow hooks.
    - For a global install without a project, it lives in lvpm's user config.
    - `--hooks` still allows every hook for that one command.
 4. **Uninstall hooks follow the install hook.** A package whose install hook
