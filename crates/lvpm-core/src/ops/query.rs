@@ -44,7 +44,7 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
         .matching(query.unwrap_or(""))
         .cloned()
         .collect();
-    // Names that differ only in case are one package, so they sort together.
+    // Names equal under `name_key` (ASCII case) are one package, so they sort together.
     entries.sort_by_cached_key(|e| {
         (
             crate::project::name_key(&e.name),

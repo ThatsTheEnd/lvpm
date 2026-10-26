@@ -53,10 +53,11 @@ first install a package.
   imported with `lvpm cache add`. `ops::query::catalog(env,
   query)` returns every entry of every source, every version, sorted by name
   then version (newest first). The filter is the one `Index::search` uses: a
-  case-insensitive substring of the name or the display name. When a source
-  cannot be read, core uses its cached copy unless a refresh was asked for;
-  a source with no usable copy is reported in `Catalog::failed` and the other sources are
-  still listed. When every source fails and nothing is imported, `catalog`
+  case-insensitive substring of the name or the display name. A cached feed
+  is read from the cache, with no request, unless a refresh is asked for. A
+  feed that cannot be fetched, or a folder that cannot be read, is reported
+  in `Catalog::failed`, and the other sources are still listed. A failed
+  feed is not replaced by its cache. When every source fails and nothing is imported, `catalog`
   returns an error naming them.
 - **Package details go through the cache, without a destination.**
   `ops::query::info(env, name, version)` fetches the archive through
