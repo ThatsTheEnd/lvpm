@@ -9,6 +9,7 @@ repository.workspace = true
 autotests = false
 
 [dependencies]
+anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive"] }
 lvpm-core = { path = "../lvpm-core" }
 ratatui = "0.30.2"
@@ -16,6 +17,8 @@ ratatui = "0.30.2"
 [dev-dependencies]
 cucumber = "0.23.0"
 futures = "0.3.34"
+lvpm-testkit = { path = "../lvpm-testkit" }
+tempfile = "3.27.0"
 
 [[test]]
 name = "acceptance"

@@ -11,6 +11,7 @@ use crate::index::{self, Entry, Import};
 use crate::install::{self, Manifest};
 use crate::paths;
 use crate::project::{PackageArg, same_name};
+use crate::solve;
 use crate::spec::Spec;
 use crate::target::LvTarget;
 use anyhow::{Context, Result, bail};
@@ -20,6 +21,12 @@ use std::path::Path;
 /// The LabVIEW installations detected on this machine, newest first.
 pub fn targets<'e>(env: &'e OpEnv) -> &'e [LvTarget] {
     &env.targets
+}
+
+/// The LabVIEW year `entry` needs when `target` is older than that, so that
+/// install and lock would refuse it there; `None` when it fits.
+pub fn needs_newer_labview(entry: &Entry, target: &LvTarget) -> Option<u32> {
+    solve::gated(entry, target.version).map(|gated| gated.needs_year)
 }
 
 /// Every package whose name or display name contains `query`, newest version
@@ -212,6 +219,34 @@ mod tests {
         assert_eq!(targets(&env).len(), 1);
         assert_eq!(targets(&env)[0].path, labview.path);
         assert!(targets(&env_with("cache", ".lv-venv", Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn a_package_needs_a_newer_labview_only_when_its_minimum_is_above_the_targets() {
+        let labview_2025 = LvTarget {
+            version: 25.0,
+            bitness: 64,
+            path: PathBuf::from("LabVIEW 2025"),
+        };
+        let needing = |lv_min: Option<f64>| Entry {
+            name: "alpha".into(),
+            version: crate::version::Version::parse("1.0"),
+            url: String::new(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min,
+            source: String::new(),
+        };
+        assert_eq!(
+            needs_newer_labview(&needing(Some(99.0)), &labview_2025),
+            Some(2099)
+        );
+        assert_eq!(
+            needs_newer_labview(&needing(Some(25.0)), &labview_2025),
+            None
+        );
+        assert_eq!(needs_newer_labview(&needing(None), &labview_2025), None);
     }
 
     #[test]

@@ -25,12 +25,18 @@ you can recognize.
 
 | # | Do this | Expect this |
 |---|---------|-------------|
-| 1 | Make the window at least 80 columns by 24 rows. Run `target\debug\lvpm-tui.exe`. | The `echo before` line is gone. The top row shows ` lvpm ` in reverse video and the version. A bordered box fills the middle. The bottom row shows `q quit`. |
+| 1 | Make the window at least 80 columns by 24 rows. Run `target\debug\lvpm-tui.exe`. | The `echo before` line is gone. The top row shows ` lvpm ` in reverse video and the destination. A bordered box fills the middle. The bottom row shows `q quit`. |
 | 2 | Make the window narrower than 80 columns. | Only the message "The terminal is WxH; lvpm-tui needs at least 80x24." shows, with the current size. No border, no header. |
 | 3 | Make the window wider again, back to at least 80x24. | The header, the box and the footer from check 1 come back. |
 | 4 | Do checks 2 and 3 again, but make the window shorter than 24 rows. | The same as checks 2 and 3. |
 | 5 | Press `q`. | lvpm-tui exits. The `echo before` line is back. The cursor shows. Type `abc`: the letters echo, and Enter runs the line. |
 | 6 | Start lvpm-tui again and press Ctrl-C. | The same as check 5. |
+| 7 | Start lvpm-tui again and wait for the catalog. | "Loading the catalog…" shows first, then a table with the columns Package, Installed, Available and Status. The selected row is in reverse video with `>` before it. |
+| 8 | Press Down, Up, PgDn, PgUp, End and Home. | The selection moves; the list scrolls so that the selected row stays visible. |
+| 9 | Press `/`, type part of a package name, then press Enter. | The `Search:` line shows the text and a `_` cursor while typing. The list shrinks to the matching packages. |
+| 10 | Press `/`, then Esc. | The search is cleared and every package is listed again. |
+| 11 | Press `f` three times. | The filter goes `installed`, `updates`, `all`. |
+| 12 | Press `R`. | "Loading the catalog…" shows, then the list again. |
 
 ## Result table
 
@@ -45,3 +51,9 @@ Copy this into the pull request, with one mark per cell: ✅ passed, ❌ failed
 | 4 too short and back | | |
 | 5 quit with q | | |
 | 6 quit with Ctrl-C | | |
+| 7 catalog loads | | |
+| 8 navigation | | |
+| 9 search | | |
+| 10 clear search | | |
+| 11 filter | | |
+| 12 reload | | |

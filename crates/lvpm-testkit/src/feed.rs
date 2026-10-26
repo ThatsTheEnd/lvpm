@@ -32,6 +32,9 @@ const BROKEN_ARCHIVE_ID: &str = "broken_zip-1.0";
 pub const CATALOG_FEED_DIR: &str = "/catalog/";
 /// How many packages the catalog feed lists: more than search's cap of 40.
 pub const CATALOG_SIZE: usize = 45;
+/// A feed under this directory takes each request and closes the connection
+/// unanswered, as one that has hung up does.
+pub const SILENT_FEED_DIR: &str = "/silent/";
 const _: () = assert!(
     CATALOG_SIZE > 40,
     "the catalog must exceed search's cap of 40"
@@ -80,7 +83,7 @@ type Hits = Arc<Mutex<BTreeMap<String, usize>>>;
 /// waits for a request to be held: a safety net, never what a test relies on.
 const HOLD_LIMIT: Duration = Duration::from_secs(10);
 
-/// Holds the answer to an archive request, once armed, until released. The
+/// Holds the answer to a request, once armed, until released. The
 /// feed answers one connection at a time, so one held request holds the feed.
 #[derive(Debug, Default)]
 struct Pause {
@@ -90,9 +93,9 @@ struct Pause {
 
 #[derive(Debug, Default)]
 struct PauseState {
-    /// Archive requests are held.
+    /// Requests are held.
     armed: bool,
-    /// An archive request is being held now.
+    /// A request is being held now.
     held: bool,
 }
 
@@ -143,6 +146,8 @@ pub struct Feed {
     /// Once set, nothing is answered: each connection is closed unread.
     down: Arc<AtomicBool>,
     pause: Arc<Pause>,
+    /// Holds listing requests as `pause` holds archive requests.
+    listing_pause: Arc<Pause>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -157,12 +162,13 @@ impl Feed {
         let archives_refused = Arc::new(AtomicBool::new(false));
         let down = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(Pause::default());
+        let listing_pause = Arc::new(Pause::default());
         let thread = {
             let (hits, stop) = (hits.clone(), stop.clone());
             let (refused, down) = (archives_refused.clone(), down.clone());
-            let (routes, pause) = (routes.clone(), pause.clone());
+            let (routes, pauses) = (routes.clone(), [pause.clone(), listing_pause.clone()]);
             std::thread::spawn(move || {
-                serve(listener, &routes, &hits, &stop, &refused, &down, &pause)
+                serve(listener, &routes, &hits, &stop, &refused, &down, &pauses)
             })
         };
         Feed {
@@ -173,6 +179,7 @@ impl Feed {
             archives_refused,
             down,
             pause,
+            listing_pause,
             thread: Some(thread),
         }
     }
@@ -224,6 +231,17 @@ impl Feed {
         self.down.store(true, Ordering::SeqCst);
     }
 
+    /// From now on the feed answers again, after [`Feed::go_down`].
+    pub fn come_up(&self) {
+        self.down.store(false, Ordering::SeqCst);
+    }
+
+    /// From now on the feed takes a listing request and holds its answer until
+    /// [`Feed::release`], as a feed that is slow to answer does.
+    pub fn pause_listings(&self) {
+        self.listing_pause.arm();
+    }
+
     /// From now on the feed takes an archive request and holds its answer, as
     /// a slow download does, until [`Feed::release`]. Listings are not held.
     pub fn pause_archives(&self) {
@@ -235,9 +253,10 @@ impl Feed {
         self.pause.wait_until_held();
     }
 
-    /// Answer what is held, and every archive request after it.
+    /// Answer what is held, and every request after it.
     pub fn release(&self) {
         self.pause.release();
+        self.listing_pause.release();
     }
 
     /// How many requests this path has received, including `304`s.
@@ -254,7 +273,7 @@ impl Feed {
 impl Drop for Feed {
     fn drop(&mut self) {
         // A request still held would keep the thread from seeing `stop`.
-        self.pause.release();
+        self.release();
         self.stop.store(true, Ordering::SeqCst);
         // `accept` is blocking; a connection wakes it so it can see the flag.
         TcpStream::connect(self.addr).ok();
@@ -382,7 +401,7 @@ fn serve(
     stop: &AtomicBool,
     archives_refused: &AtomicBool,
     down: &AtomicBool,
-    pause: &Pause,
+    pauses: &[Arc<Pause>; 2],
 ) {
     for stream in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
@@ -393,7 +412,7 @@ fn serve(
         }
         if let Ok(stream) = stream {
             // One bad connection must not take the server down for the rest.
-            handle(stream, routes, hits, archives_refused, pause).ok();
+            handle(stream, routes, hits, archives_refused, pauses).ok();
         }
     }
 }
@@ -409,7 +428,7 @@ fn handle(
     routes: &Mutex<Routes>,
     hits: &Hits,
     archives_refused: &AtomicBool,
-    pause: &Pause,
+    [archive_pause, listing_pause]: &[Arc<Pause>; 2],
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
     stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
@@ -419,8 +438,12 @@ fn handle(
         .expect("hit counter")
         .entry(request.path.clone())
         .or_default() += 1;
-    if request.path.ends_with(".vip") {
-        pause.hold();
+    if request.path.starts_with(SILENT_FEED_DIR) {
+        return Ok(());
+    }
+    match request.path.ends_with(".vip") {
+        true => archive_pause.hold(),
+        false => listing_pause.hold(),
     }
     let refused = archives_refused.load(Ordering::SeqCst) && request.path.ends_with(".vip");
     let response = match refused {

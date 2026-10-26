@@ -6,16 +6,16 @@ use lvpm_tui::{app, ui};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 impl TuiWorld {
-    fn draw(&mut self) {
-        let app = &self.app;
-        self.terminal
+    /// The screen the TUI draws now, one string per row.
+    pub fn screen(&mut self) -> Vec<String> {
+        self.app();
+        let (Some(app), terminal) = (&mut self.app, &mut self.terminal) else {
+            unreachable!("the TUI started");
+        };
+        terminal
             .draw(|frame| ui::draw(frame, app))
             .expect("drawing on a test terminal");
-    }
-
-    /// The screen as drawn, one string per row.
-    fn rows(&self) -> Vec<String> {
-        let buffer = self.terminal.backend().buffer();
+        let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -25,14 +25,17 @@ impl TuiWorld {
             .collect()
     }
 
-    fn key(&mut self, key: &str, kind: KeyEventKind) {
+    pub fn press(&mut self, code: KeyCode, kind: KeyEventKind) {
+        let event = KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind);
+        self.app().handle(Event::Key(event));
+    }
+
+    pub fn key(&mut self, key: &str, kind: KeyEventKind) {
         let mut chars = key.chars();
         let (Some(c), None) = (chars.next(), chars.next()) else {
-            panic!("one character keys only so far: {key:?}");
+            panic!("one character keys only: {key:?}");
         };
-        let event = KeyEvent::new_with_kind(KeyCode::Char(c), KeyModifiers::NONE, kind);
-        self.app.handle(Event::Key(event));
-        self.draw();
+        self.press(KeyCode::Char(c), kind);
     }
 }
 
@@ -48,7 +51,6 @@ fn size(text: &str) -> (u16, u16) {
 async fn runs_at(world: &mut TuiWorld, at: String) {
     let (width, height) = size(&at);
     world.terminal.backend_mut().resize(width, height);
-    world.draw();
 }
 
 #[when(regex = r"^the terminal is resized to (\d+x\d+)$")]
@@ -60,7 +62,7 @@ async fn resized_to(world: &mut TuiWorld, to: String) {
 /// frame between them: its corners on the second and second-to-last rows.
 #[then(regex = r"^the header bar and the key footer are drawn( with their borders)?$")]
 async fn chrome_is_drawn(world: &mut TuiWorld) {
-    let rows = world.rows();
+    let rows = world.screen();
     let (first, last) = (&rows[0], &rows[rows.len() - 1]);
     assert!(first.starts_with(" lvpm "), "header: {first:?}");
     assert!(last.contains("q quit"), "footer: {last:?}");
@@ -77,7 +79,7 @@ async fn chrome_is_drawn(world: &mut TuiWorld) {
 
 #[then("it shows only a message asking for at least 80x24")]
 async fn only_the_size_message(world: &mut TuiWorld) {
-    let screen = world.rows().join("\n");
+    let screen = world.screen().join("\n");
     assert!(screen.contains("at least 80x24"), "{screen}");
     assert!(!screen.contains("lvpm "), "the header is drawn:\n{screen}");
     assert!(!screen.contains('┌'), "a frame is drawn:\n{screen}");
@@ -97,14 +99,18 @@ async fn released(world: &mut TuiWorld, key: String) {
 /// TUI draws once more and returns.
 #[then("the TUI's event loop ends without an error")]
 async fn loop_ends(world: &mut TuiWorld) {
-    let ended = app::run(&mut world.terminal, &mut world.app, || {
+    world.app();
+    let (Some(app), terminal) = (&mut world.app, &mut world.terminal) else {
+        unreachable!("the TUI started");
+    };
+    let ended = app::run(terminal, app, || {
         panic!("the loop asked for another event after the TUI quit")
     });
     ended.expect("the loop ends");
-    assert!(!world.app.is_running());
+    assert!(!app.is_running());
 }
 
 #[then("the TUI is still running")]
 async fn still_running(world: &mut TuiWorld) {
-    assert!(world.app.is_running());
+    assert!(world.app().is_running());
 }

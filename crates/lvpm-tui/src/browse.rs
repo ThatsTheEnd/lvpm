@@ -1,0 +1,308 @@
+//! The browse list: every package in the catalog with its status relative to
+//! the destination, narrowed by a search and a status filter.
+
+use lvpm_core::index::Entry;
+use lvpm_core::install::Manifest;
+use lvpm_core::ops::query::{self, Catalog};
+use lvpm_core::project::{name_key, same_name};
+use lvpm_core::target::LvTarget;
+use lvpm_core::version::Version;
+use ratatui::widgets::TableState;
+
+/// A package's state in the destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    Installed,
+    /// The version core would resolve is newer than the installed one.
+    Update {
+        available: Version,
+    },
+    NotInstalled,
+    /// No version fits the destination's LabVIEW; the newest needs this year.
+    NeedsLabview(u32),
+}
+
+impl Status {
+    pub fn text(&self) -> String {
+        match self {
+            Status::Installed => "installed".into(),
+            Status::Update { .. } => "update".into(),
+            Status::NotInstalled => "not installed".into(),
+            Status::NeedsLabview(year) => format!("needs LV {year}"),
+        }
+    }
+}
+
+/// The status rule. `versions` is one package's, newest first; the available
+/// version is the newest that fits `target`, as install would resolve it.
+pub fn status(
+    versions: &[Entry],
+    installed: Option<&Version>,
+    target: Option<&LvTarget>,
+) -> Status {
+    let fits = |e: &&Entry| target.is_none_or(|t| query::needs_newer_labview(e, t).is_none());
+    let available = versions.iter().find(fits).map(|e| &e.version);
+    match (installed, available) {
+        (Some(have), Some(newer)) if newer > have => Status::Update {
+            available: newer.clone(),
+        },
+        (Some(_), _) => Status::Installed,
+        (None, Some(_)) => Status::NotInstalled,
+        (None, None) => Status::NeedsLabview(
+            versions
+                .first()
+                .zip(target)
+                .and_then(|(newest, t)| query::needs_newer_labview(newest, t))
+                .unwrap_or_default(),
+        ),
+    }
+}
+
+/// One row of the list.
+#[derive(Debug)]
+pub struct Package {
+    pub name: String,
+    pub display_name: Option<String>,
+    /// Newest first.
+    pub versions: Vec<Entry>,
+    pub installed: Option<Version>,
+    pub status: Status,
+}
+
+impl Package {
+    /// The version the row offers: the one core would resolve, else the newest.
+    pub fn available(&self) -> Option<&Version> {
+        match &self.status {
+            Status::Update { available } => Some(available),
+            _ => self.versions.first().map(|e| &e.version),
+        }
+    }
+}
+
+/// Which rows the filter keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    #[default]
+    All,
+    Installed,
+    Updates,
+}
+
+impl Filter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Installed => "installed",
+            Filter::Updates => "updates",
+        }
+    }
+
+    fn next(self) -> Filter {
+        match self {
+            Filter::All => Filter::Installed,
+            Filter::Installed => Filter::Updates,
+            Filter::Updates => Filter::All,
+        }
+    }
+
+    fn keeps(self, status: &Status) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Installed => matches!(status, Status::Installed | Status::Update { .. }),
+            Filter::Updates => matches!(status, Status::Update { .. }),
+        }
+    }
+}
+
+/// The loaded list and how it is narrowed.
+#[derive(Debug, Default)]
+pub struct Browse {
+    pub packages: Vec<Package>,
+    /// Every source asked, for the empty list to name.
+    pub sources: Vec<String>,
+    /// The sources that could not be read, with why.
+    pub failed: Vec<(String, String)>,
+    pub search: String,
+    /// Keys go to the search box.
+    pub searching: bool,
+    pub filter: Filter,
+    /// Indexes into `packages` of the rows shown.
+    pub rows: Vec<usize>,
+    pub table: TableState,
+    /// How many rows the last draw showed: what PgUp and PgDn move by.
+    pub page: usize,
+}
+
+impl Browse {
+    /// The list for `catalog`, whose entries are by name and newest first.
+    pub fn new(catalog: Catalog, installed: &[Manifest], target: Option<&LvTarget>) -> Browse {
+        let mut packages: Vec<Package> = Vec::new();
+        for entry in catalog.entries {
+            match packages.last_mut() {
+                Some(last) if name_key(&last.name) == name_key(&entry.name) => {
+                    last.versions.push(entry)
+                }
+                _ => packages.push(Package {
+                    name: entry.name.clone(),
+                    display_name: entry.display_name.clone(),
+                    versions: vec![entry],
+                    installed: None,
+                    status: Status::NotInstalled,
+                }),
+            }
+        }
+        for package in &mut packages {
+            package.installed = installed
+                .iter()
+                .find(|m| same_name(&m.name, &package.name))
+                .map(|m| Version::parse(&m.version));
+            package.status = status(&package.versions, package.installed.as_ref(), target);
+        }
+        let mut browse = Browse {
+            packages,
+            sources: catalog.sources,
+            failed: catalog.failed,
+            page: 1,
+            ..Browse::default()
+        };
+        browse.refilter();
+        browse
+    }
+
+    pub fn selected(&self) -> Option<&Package> {
+        let row = self.table.selected()?;
+        self.rows.get(row).map(|&i| &self.packages[i])
+    }
+
+    /// Recompute the rows shown, keeping the selected package when it stays.
+    fn refilter(&mut self) {
+        let keep = self
+            .table
+            .selected()
+            .and_then(|row| self.rows.get(row).copied());
+        let query = self.search.to_lowercase();
+        self.rows = (0..self.packages.len())
+            .filter(|&i| {
+                let p = &self.packages[i];
+                p.versions[0].matches(&query) && self.filter.keeps(&p.status)
+            })
+            .collect();
+        let at = keep
+            .and_then(|k| self.rows.iter().position(|&r| r == k))
+            .unwrap_or(0);
+        self.table.select((!self.rows.is_empty()).then_some(at));
+    }
+
+    /// Move the selection by `by` rows, stopping at either end.
+    pub fn step(&mut self, by: isize) {
+        let Some(last) = self.rows.len().checked_sub(1) else {
+            return;
+        };
+        let at = self.table.selected().unwrap_or(0);
+        self.table
+            .select(Some(at.saturating_add_signed(by).min(last)));
+    }
+
+    pub fn first(&mut self) {
+        self.step(isize::MIN);
+    }
+
+    pub fn last(&mut self) {
+        self.step(isize::MAX);
+    }
+
+    pub fn page_size(&self) -> isize {
+        self.page.max(1) as isize
+    }
+
+    pub fn next_filter(&mut self) {
+        self.filter = self.filter.next();
+        self.refilter();
+    }
+
+    pub fn type_char(&mut self, c: char) {
+        self.search.push(c);
+        self.refilter();
+    }
+
+    pub fn backspace(&mut self) {
+        self.search.pop();
+        self.refilter();
+    }
+
+    /// Esc: the search is cleared and every package is listed again.
+    pub fn clear_search(&mut self) {
+        self.search.clear();
+        self.searching = false;
+        self.refilter();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn entry(version: &str, lv_min: f64) -> Entry {
+        Entry {
+            name: "alpha".into(),
+            version: Version::parse(version),
+            url: String::new(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: Some(lv_min),
+            source: String::new(),
+        }
+    }
+
+    const LABVIEW_2025: LvTarget = LvTarget {
+        version: 25.0,
+        bitness: 64,
+        path: PathBuf::new(),
+    };
+
+    fn of(versions: &[Entry], installed: Option<&str>) -> Status {
+        status(
+            versions,
+            installed.map(Version::parse).as_ref(),
+            Some(&LABVIEW_2025),
+        )
+    }
+
+    #[test]
+    fn a_newer_compatible_version_is_an_update() {
+        let versions = [entry("2.0", 20.0), entry("1.0", 20.0)];
+        assert_eq!(
+            of(&versions, Some("1.0")),
+            Status::Update {
+                available: Version::parse("2.0")
+            }
+        );
+        assert_eq!(of(&versions, Some("2.0")), Status::Installed);
+        assert_eq!(of(&versions, None), Status::NotInstalled);
+    }
+
+    #[test]
+    fn a_newer_version_the_labview_cannot_take_is_no_update() {
+        let versions = [entry("2.0", 99.0), entry("1.0", 20.0)];
+        assert_eq!(of(&versions, Some("1.0")), Status::Installed);
+        assert_eq!(of(&versions, None), Status::NotInstalled);
+    }
+
+    #[test]
+    fn a_package_with_no_version_that_fits_names_the_labview_it_needs() {
+        let versions = [entry("1.0", 99.0)];
+        assert_eq!(of(&versions, None), Status::NeedsLabview(2099));
+        assert_eq!(
+            status(&versions, None, None),
+            Status::NotInstalled,
+            "a destination without a LabVIEW gates nothing"
+        );
+    }
+
+    #[test]
+    fn an_installed_version_newer_than_any_listed_is_installed() {
+        assert_eq!(of(&[entry("1.0", 20.0)], Some("3.0")), Status::Installed);
+    }
+}

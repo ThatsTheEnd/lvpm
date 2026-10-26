@@ -1,20 +1,35 @@
 //! `lvpm-tui`: lvpm in a terminal user interface.
 
+// The front end is where process state is read; the workspace-wide
+// `clippy.toml` bars it from `lvpm-core` only.
+#![allow(clippy::disallowed_methods)]
+
 use clap::Parser;
+use lvpm_core::{config, target};
 use lvpm_tui::app::{self, App};
+use lvpm_tui::destination::EnvBuilder;
 use ratatui::crossterm::event;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {}
 
-fn main() -> std::io::Result<()> {
+/// How long the loop waits for a key before it looks for the worker's result.
+const TICK: Duration = Duration::from_millis(100);
+
+fn main() -> anyhow::Result<()> {
     Cli::parse();
+    // Read before the terminal is taken, so an error prints as usual.
+    let builder = EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
     // Made before the terminal is set up, so a set-up that fails half way is
     // undone too.
     let _restore = Restore(ratatui::restore);
     let mut terminal = ratatui::try_init()?;
-    app::run(&mut terminal, &mut App::new(), event::read)
+    app::run(&mut terminal, &mut App::new(builder), || {
+        event::poll(TICK)?.then(event::read).transpose()
+    })?;
+    Ok(())
 }
 
 /// Puts the terminal back (raw mode off, main screen) when dropped, which

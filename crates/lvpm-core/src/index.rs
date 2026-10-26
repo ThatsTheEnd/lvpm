@@ -98,7 +98,7 @@ pub const CACHE_SOURCE: &str = "cache";
 
 impl Entry {
     /// Whether the name or display name contains `query`, which is lowercase.
-    fn matches(&self, query: &str) -> bool {
+    pub fn matches(&self, query: &str) -> bool {
         self.name.to_lowercase().contains(query)
             || self
                 .display_name
