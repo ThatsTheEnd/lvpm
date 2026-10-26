@@ -1,13 +1,17 @@
-//! The wording of query results: what `targets`, `search`, `list` and
-//! `cache add` print for the data core returns. Each function returns the whole
+//! The wording of query results: what `targets`, `search`, `search --all`,
+//! `list` and `cache add` print for the data core returns. Each function returns the whole
 //! text, line ends included, for the caller to write to stdout.
 
 use lvpm_core::index::{Entry, Import};
 use lvpm_core::install::Manifest;
+use lvpm_core::ops::query::Catalog;
 use lvpm_core::target::LvTarget;
 
 /// How many search hits are shown; the rest are counted.
 const SEARCH_ROWS_SHOWN: usize = 40;
+/// The name and version columns of `search` and `search --all`.
+const NAME_WIDTH: usize = 52;
+const VERSION_WIDTH: usize = 14;
 
 pub fn targets(targets: &[LvTarget]) -> String {
     if targets.is_empty() {
@@ -28,7 +32,7 @@ pub fn search(query: &str, hits: &[Entry]) -> String {
         .take(SEARCH_ROWS_SHOWN)
         .map(|e| {
             format!(
-                "{:<52} {:<14} {}\n",
+                "{:<NAME_WIDTH$} {:<VERSION_WIDTH$} {}\n",
                 e.name,
                 e.version.to_string(),
                 e.display_name.as_deref().unwrap_or("")
@@ -42,6 +46,54 @@ pub fn search(query: &str, hits: &[Entry]) -> String {
         ));
     }
     text
+}
+
+/// One row per entry, every one of them, for stdout.
+pub fn catalog(query: Option<&str>, catalog: &Catalog) -> String {
+    if !catalog.entries.is_empty() {
+        return catalog.entries.iter().map(catalog_row).collect();
+    }
+    match (query, catalog.sources.as_slice()) {
+        (Some(query), _) => format!("no packages matching {query:?}\n"),
+        (None, []) => "no package sources are configured\n".to_string(),
+        (None, sources) => {
+            let named: String = sources.iter().map(|s| format!("  {s}\n")).collect();
+            format!("no packages found in:\n{named}")
+        }
+    }
+}
+
+/// The sources the catalog could not read, for stderr.
+pub fn unread_sources(catalog: &Catalog) -> String {
+    let line =
+        |(source, why): &(String, String)| format!("warning: could not read {source}: {why}\n");
+    catalog.failed.iter().map(line).collect()
+}
+
+fn catalog_row(e: &Entry) -> String {
+    let mut row = format!(
+        "{:<NAME_WIDTH$} {:<VERSION_WIDTH$} {}",
+        e.name,
+        e.version.to_string(),
+        e.display_name.as_deref().unwrap_or("")
+    );
+    if !e.requires.is_empty() {
+        let needs: Vec<String> = e
+            .requires
+            .iter()
+            .map(|r| match &r.min {
+                Some(min) if r.min_exclusive => format!("{}>{min}", r.name),
+                Some(min) => format!("{}>={min}", r.name),
+                None => r.name.clone(),
+            })
+            .collect();
+        row.push_str(&format!("  needs {}", needs.join(", ")));
+    }
+    if let Some(lv) = e.lv_min {
+        row.push_str(&format!("  LabVIEW>={lv}"));
+    }
+    row.push_str(&format!("  from {}\n", e.source));
+    row
 }
 
 pub fn list(installed: &[Manifest]) -> String {
@@ -155,6 +207,73 @@ mod tests {
 
         let exactly_forty = search("pkg", &hits[..40]);
         assert_eq!(exactly_forty.lines().count(), 40);
+    }
+
+    #[test]
+    fn a_catalog_row_shows_requirements_minimum_labview_and_source_after_searchs_columns() {
+        use lvpm_core::index::Requirement;
+
+        let mut beta = entry("beta", Some("Beta"));
+        beta.requires = vec![
+            Requirement {
+                name: "alpha".into(),
+                min: Some(Version::parse("1.0")),
+                min_exclusive: false,
+            },
+            Requirement {
+                name: "gamma".into(),
+                min: Some(Version::parse("2")),
+                min_exclusive: true,
+            },
+        ];
+        beta.lv_min = Some(20.0);
+        beta.source = "http://feed/index.vipr".into();
+        let mut plain = entry("plain", None);
+        plain.source = "packages".into();
+        let catalog = Catalog {
+            entries: vec![beta, plain],
+            sources: Vec::new(),
+            failed: Vec::new(),
+        };
+        let text = super::catalog(None, &catalog);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[0],
+            format!(
+                "{:<52} {:<14} Beta  needs alpha>=1.0, gamma>2  LabVIEW>=20  from http://feed/index.vipr",
+                "beta", "1.0"
+            )
+        );
+        assert_eq!(
+            lines[1],
+            format!("{:<52} {:<14}   from packages", "plain", "1.0")
+        );
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn an_empty_catalog_names_its_sources_or_the_query_and_failures_are_warnings() {
+        let empty = |sources: &[&str]| Catalog {
+            entries: Vec::new(),
+            sources: sources.iter().map(|s| s.to_string()).collect(),
+            failed: vec![("http://feed".into(), "refused".into())],
+        };
+        assert_eq!(
+            catalog(None, &empty(&["packages", "http://feed"])),
+            "no packages found in:\n  packages\n  http://feed\n"
+        );
+        assert_eq!(
+            catalog(Some("zzz"), &empty(&["packages"])),
+            "no packages matching \"zzz\"\n"
+        );
+        assert_eq!(
+            catalog(None, &empty(&[])),
+            "no package sources are configured\n"
+        );
+        assert_eq!(
+            unread_sources(&empty(&[])),
+            "warning: could not read http://feed: refused\n"
+        );
     }
 
     #[test]

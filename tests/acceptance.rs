@@ -48,6 +48,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-lockfile/slice-14-remaining-operations-move-to-core.feature",
     "tests/features/lvpm-lockfile/slice-15-cancellation-before-files-are-written.feature",
     "tests/features/lvpm-lockfile/slice-16-documentation-and-help-text.feature",
+    "tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature",
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";

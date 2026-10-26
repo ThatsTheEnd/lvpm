@@ -7,13 +7,13 @@ use crate::support::sandbox::ALTERED_RECORDINGS_DIR;
 use cucumber::{given, then, when};
 use std::path::{Path, PathBuf};
 
-fn golden_dir() -> PathBuf {
+pub(super) fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("golden")
 }
 
-fn check_or_panic(golden: &Golden, name: &str, output: &Output) {
+pub(super) fn check_or_panic(golden: &Golden, name: &str, output: &Output) {
     if let Err(why) = golden.check(name, output) {
         panic!("{why}");
     }
@@ -304,7 +304,7 @@ const ROWS: &[Row] = &[
 ];
 
 #[when(expr = "the characterization row {string} runs")]
-async fn row_runs(world: &mut CliWorld, name: String) {
+pub(super) async fn row_runs(world: &mut CliWorld, name: String) {
     let row = ROWS
         .iter()
         .find(|row| row.name == name)

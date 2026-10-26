@@ -372,7 +372,12 @@ enum Cmd {
     /// Search the indexes.
     Search {
         /// Text to look for in package names and display names, ignoring case.
-        query: String,
+        #[arg(required_unless_present = "all")]
+        query: Option<String>,
+        /// List every version of every package, with no cap on the rows, and
+        /// the source each came from.
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -570,7 +575,16 @@ fn main() -> Result<()> {
             print!("{}", render::query::list(&ops::query::list(&env)?));
             Ok(())
         }
-        Cmd::Search { query } => {
+        Cmd::Search { query, all: true } => {
+            let catalog = ops::query::catalog(&env, query.as_deref())?;
+            eprint!("{}", render::query::unread_sources(&catalog));
+            print!("{}", render::query::catalog(query.as_deref(), &catalog));
+            Ok(())
+        }
+        Cmd::Search { query, all: false } => {
+            let query = query
+                .as_deref()
+                .expect("clap requires a query without --all");
             print!(
                 "{}",
                 render::query::search(query, &ops::query::search(&env, query)?)
