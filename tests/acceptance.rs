@@ -293,7 +293,7 @@ fn run_features() {
     }
     if interactive_not_run > 0 {
         println!(
-            "{interactive_not_run} @{INTERACTIVE_TAG} scenarios left to their headless copies              ({HEADLESS_LABVIEW_ENV_VAR}=1)"
+            "{interactive_not_run} @{INTERACTIVE_TAG} scenarios left to their headless copies ({HEADLESS_LABVIEW_ENV_VAR}=1)"
         );
     }
     if pending_not_run > 0 {
