@@ -156,6 +156,9 @@ pub struct Project {
     pub dev_dependencies: Vec<(String, Constraint)>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
+    /// `[distribution]`, as written: only `lvpm build` reads it, through
+    /// `distribution::validate`.
+    pub distribution: Option<toml::Table>,
 }
 
 impl Default for Project {
@@ -169,6 +172,7 @@ impl Default for Project {
             dependencies: Vec::new(),
             dev_dependencies: Vec::new(),
             nipm: Vec::new(),
+            distribution: None,
         }
     }
 }
@@ -197,6 +201,7 @@ struct File {
     #[serde(rename = "dev-dependencies")]
     dev_dependencies: toml::Table,
     nipm: NipmTable,
+    distribution: Option<toml::Table>,
 }
 
 #[derive(Deserialize, Default)]
@@ -239,6 +244,7 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
             .as_deref()
             .map(labview_minimum)
             .transpose()?,
+        distribution: f.distribution,
         ..Project::default()
     };
     for (key, value) in f.sources {
