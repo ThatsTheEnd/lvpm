@@ -238,7 +238,7 @@ pub fn create(
         std::fs::write(
             &manifest_path,
             format!(
-                "[project]\nname = \"{name}\"\nlabview = \"{}\"\n\n[dependencies]\n",
+                "[project]\nname = \"{name}\"\nlabview = \">={}\"\n\n[dependencies]\n",
                 target.year()
             ),
         )
@@ -373,11 +373,14 @@ mod tests {
 
     #[test]
     fn a_venv_is_refused_for_a_manifest_labview_that_is_no_year_or_newer_than_the_installation() {
-        for (labview, said) in [("soon", "not a year"), ("2030", "is older than")] {
+        for (labview, said) in [
+            ("soon", "not a minimum LabVIEW year"),
+            ("2030", "is older than"),
+        ] {
             let repo = scratch_dir(&format!("minimum-{labview}"));
             std::fs::write(
                 repo.join(project::FILE_NAME),
-                format!("[project]\nlabview = \"{labview}\"\n"),
+                format!("[project]\nlabview = \">={labview}\"\n"),
             )
             .unwrap();
             let why = create(
@@ -387,8 +390,8 @@ mod tests {
                 &[labview_2026()],
                 &NullSink,
             )
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+            let why = format!("{why:#}");
             assert!(why.contains(said), "{labview}: {why}");
             assert!(!repo.join(".lv-venv").exists());
             let _ = std::fs::remove_dir_all(&repo);

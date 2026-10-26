@@ -746,7 +746,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("a working directory");
         std::fs::write(
             cwd.path().join(MANIFEST_FILE),
-            "[project]\nname = \"demo\"\nlabview = \"2026\"\n",
+            "[project]\nname = \"demo\"\nlabview = \">=2026\"\n",
         )
         .expect("write a manifest");
         real_installation_risk(&args, cwd.path(), &[labview_2026()], false, true).is_some()
@@ -889,7 +889,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("a working directory");
         std::fs::write(
             cwd.path().join(MANIFEST_FILE),
-            "[project]\nname = \"demo\"\nlabview = \"2026\"\n",
+            "[project]\nname = \"demo\"\nlabview = \">=2026\"\n",
         )
         .expect("write a manifest");
         let lvpm_dir = cwd.path().join(VENV_DIR).join(".lvpm");
@@ -1296,7 +1296,7 @@ mod tests {
         sandbox.put_local_package(beta);
         sandbox.use_local_project(Some("2024"));
         let manifest = std::fs::read_to_string(sandbox.work_dir().join(MANIFEST_FILE)).unwrap();
-        assert!(manifest.contains("labview = \"2024\""), "{manifest}");
+        assert!(manifest.contains("labview = \">=2024\""), "{manifest}");
         let output = sandbox.run_lvpm(&["search", "a"], None);
         assert_eq!(output.exit_code, 0, "{output:?}");
         assert!(output.stdout.contains("alpha"), "{output:?}");
@@ -1320,7 +1320,7 @@ mod tests {
         let sandbox = sandbox_with_feed();
         sandbox.use_loopback_project_for_labview(LABVIEW_YEAR);
         let manifest = std::fs::read_to_string(sandbox.work_dir().join(MANIFEST_FILE)).unwrap();
-        assert!(manifest.contains("labview = \"2026\""), "{manifest}");
+        assert!(manifest.contains("labview = \">=2026\""), "{manifest}");
         sandbox.setup_lvpm(&["search", "a"]);
     }
 

@@ -55,7 +55,7 @@ indexes to use. Local package folders are configured globally instead. Any
 [project]
 name = "NovaXC"
 version = "0.1.0"
-labview = "2025"                  # the oldest LabVIEW the project is meant for
+labview = ">=2025"                # the oldest LabVIEW the project is meant for
 
 [sources]                         # repositories beyond the public indexes
 mirror = "http://host:8090/files" # a hosted index.vipr folder
