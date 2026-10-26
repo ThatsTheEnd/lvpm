@@ -1279,6 +1279,7 @@ dependencies = [
  "cucumber",
  "futures",
  "lvpm-core",
+ "lvpm-testkit",
  "md-5",
  "regex",
  "serde",
@@ -1306,6 +1307,17 @@ dependencies = [
  "toml_edit",
  "windows-sys 0.61.2",
  "winreg",
+ "zip",
+]
+
+[[package]]
+name = "lvpm-testkit"
+version = "0.8.0"
+dependencies = [
+ "lvpm-core",
+ "md-5",
+ "serde_json",
+ "sha2",
  "zip",
 ]
 

@@ -7,7 +7,7 @@
 //! public default feeds, and the package archives those feeds point at. Every
 //! response carries one fixed `ETag`; a request presenting it gets `304`.
 
-use super::fixtures::FixturePackage;
+use crate::fixtures::FixturePackage;
 use md5::{Digest, Md5};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
@@ -503,7 +503,7 @@ fn response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::fixtures::PACKAGES;
+    use crate::fixtures::PACKAGES;
 
     struct Reply {
         status_line: String,
