@@ -13,10 +13,11 @@ Feature: Package details
     And it lists the file groups of 2.0 with their target directories and files
     And the output matches the "info-alpha" recording
 
+  # The binary would find this machine's LabVIEW; core is handed none.
+  @core
   Scenario: info needs no LabVIEW
-    Given no LabVIEW is installed
-    When "lvpm info alpha" runs
-    Then it shows the details of 2.0 and exits 0
+    When core reads the details of "alpha" with no LabVIEW installed
+    Then the details are those of 2.0
 
   Scenario: a chosen version
     When "lvpm info alpha@1.0" runs

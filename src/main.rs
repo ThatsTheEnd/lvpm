@@ -369,6 +369,13 @@ enum Cmd {
     },
     /// Show what lvpm has installed into the selected target.
     List,
+    /// Show a package's details: its description, requirements, files and
+    /// versions. Downloads the archive into the cache if it is not there yet.
+    Info {
+        /// The package, and optionally which version: newest if not given.
+        #[arg(value_name = "PACKAGE[@VERSION]")]
+        package: String,
+    },
     /// Search the indexes, or with --all list the whole catalog.
     Search {
         /// Text to look for in package names and display names, ignoring case.
@@ -578,8 +585,18 @@ fn main() -> Result<()> {
         }
         Cmd::Search { query, all: true } => {
             let catalog = ops::query::catalog(&env, query.as_deref())?;
-            eprint!("{}", render::query::unread_sources(&catalog));
+            eprint!("{}", render::query::unread_sources(&catalog.failed));
             print!("{}", render::query::catalog(query.as_deref(), &catalog));
+            Ok(())
+        }
+        Cmd::Info { package } => {
+            let (name, version) = match package.split_once('@') {
+                Some((name, version)) => (name, Some(version)),
+                None => (package.as_str(), None),
+            };
+            let info = ops::query::info(&env, name, version)?;
+            eprint!("{}", render::query::unread_sources(&info.failed));
+            print!("{}", render::query::info(&info));
             Ok(())
         }
         Cmd::Search { query, all: false } => {

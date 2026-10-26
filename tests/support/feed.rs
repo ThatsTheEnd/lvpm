@@ -51,7 +51,7 @@ struct FaultyArchive {
     served: Option<&'static [u8]>,
 }
 
-const NOT_AN_ARCHIVE: &[u8] = b"these bytes are not a zip archive";
+pub const NOT_AN_ARCHIVE: &[u8] = b"these bytes are not a zip archive";
 const FAULTY_ARCHIVES: &[FaultyArchive] = &[
     // The MD5 matches what is served, which is not an archive.
     FaultyArchive {
@@ -198,6 +198,12 @@ impl Feed {
     pub fn publish(&self, dir: &str, listing: &str) {
         let mut routes = self.routes.lock().expect("the routes");
         routes.insert(index_path(dir), listing.as_bytes().to_vec());
+    }
+
+    /// From now on `path` answers `bytes`.
+    pub fn serve(&self, path: &str, bytes: Vec<u8>) {
+        let mut routes = self.routes.lock().expect("the routes");
+        routes.insert(path.to_string(), bytes);
     }
 
     /// The value for `HTTP_PROXY`.
@@ -360,7 +366,7 @@ pub fn listing(packages: &[FixturePackage], with_md5: bool) -> String {
     body
 }
 
-fn md5_hex(bytes: &[u8]) -> String {
+pub fn md5_hex(bytes: &[u8]) -> String {
     let mut hash = Md5::new();
     hash.update(bytes);
     hash.finalize()

@@ -132,6 +132,7 @@ impl Renderer {
             Event::HeadlessInstallationChosen { .. } | Event::HeadlessImpliesLocked => {
                 headless::render(self, event)
             }
+            Event::ArchiveFetching { .. } => query::render(self, event),
         }
     }
 
