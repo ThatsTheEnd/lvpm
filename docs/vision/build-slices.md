@@ -77,7 +77,9 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    - **`lvpm build`.** Upstream PR #15 proposes a `[build]` table in
      `lvpm.toml` and a `Build.vi` runner. ADR 1 rules out `[build]`.
    - **The manifest.** ADR 1 makes upstream's `labview = "2025"` an error,
-     and upstream has users.
+     and upstream has users. Upstream PR #16 also adds
+     `[dependency-groups]` with `--with`, `include-groups` and `main`. ADR 1
+     keeps `[dev-dependencies]` as the group `dev`, and S11 plans `--group`.
    - **The core/CLI split and hooks.** Upstream's `refactor-main.md` (PR #15)
      plans its own split of `main.rs` and an event layer. This fork already
      has `crates/lvpm-core` and `events.rs`. PR #15's `--hooks auto|always|never`
