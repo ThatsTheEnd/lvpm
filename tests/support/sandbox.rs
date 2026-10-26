@@ -88,18 +88,24 @@ static FOREIGN_LISTENERS: LazyLock<HashSet<u16>> = LazyLock::new(|| {
         .map(|out| venv::listening_ports(&String::from_utf8_lossy(&out.stdout)))
         .unwrap_or_default()
 });
+/// Whether a port can be listened on: Windows reserves blocks anew at each
+/// boot, and lvpm moves a venv off a reserved port, away from `predicted_port`.
+fn binds(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
+}
+
 /// A sandbox directory whose venv port is none of those: any one path has a
 /// small chance of colliding, so this is a handful of tries at most.
 const MAX_DIR_ATTEMPTS: usize = 1_000;
 
-fn create_dir_avoiding(taken: &HashSet<u16>) -> TempDir {
+fn create_dir_avoiding(taken: &HashSet<u16>, binds: &dyn Fn(u16) -> bool) -> TempDir {
     for _ in 0..MAX_DIR_ATTEMPTS {
         let dir = tempfile::Builder::new()
             .prefix(TEMP_DIR_PREFIX)
             .tempdir()
             .expect("create the sandbox directory");
         let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
-        if !taken.contains(&port) {
+        if !taken.contains(&port) && binds(port) {
             return dir;
         }
     }
@@ -247,7 +253,7 @@ pub struct Sandbox {
 
 impl Sandbox {
     pub fn new() -> Sandbox {
-        let dir = create_dir_avoiding(&FOREIGN_LISTENERS);
+        let dir = create_dir_avoiding(&FOREIGN_LISTENERS, &binds);
         let sandbox = Sandbox {
             dir,
             feed: OnceLock::new(),
@@ -1255,9 +1261,14 @@ mod tests {
         let taken: HashSet<u16> = (3400..4000)
             .filter(|port| !(3500..3510).contains(port))
             .collect();
-        let dir = create_dir_avoiding(&taken);
+        let dir = create_dir_avoiding(&taken, &|_| true);
         let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
         assert!((3500..3510).contains(&port), "{port}");
+
+        // Of those, 3500..3505 cannot be bound — reserved by Windows, say.
+        let dir = create_dir_avoiding(&taken, &|p| !(3500..3505).contains(&p));
+        let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
+        assert!((3505..3510).contains(&port), "{port}");
     }
 
     #[test]
