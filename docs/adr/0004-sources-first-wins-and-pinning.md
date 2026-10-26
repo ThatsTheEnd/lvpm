@@ -4,7 +4,7 @@ Date: 2026-10-26
 
 ## Status
 
-Accepted
+Proposed. Decided after the upstream alignment meeting on 2026-10-30.
 
 ## Context
 
