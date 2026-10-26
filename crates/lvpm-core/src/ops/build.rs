@@ -61,6 +61,14 @@ pub fn build(env: &OpEnv) -> Result<Built> {
                 );
             }
             let rel = rel.to_string_lossy().replace('\\', "/");
+            // A file named `..\x` on Linux would become a `..` entry in the zip.
+            if rel.split('/').any(|s| s == "..") || rel.contains(':') {
+                bail!(
+                    "{} is a member of {} but its name cannot go into a package",
+                    m.display(),
+                    d.library.display()
+                );
+            }
             distribution::spec_safe("a member's path", &rel)?;
             Ok((format!("{}/{rel}", d.install_dir), m))
         })

@@ -272,8 +272,9 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; this
   that names the key.
 - Paths in `[distribution]` use forward slashes and stay inside their
   folder: `top-level-library` inside the project, `install-dir` below the
-  LabVIEW folder. A member that is a link to a file outside the library's
-  folder is refused.
+  LabVIEW folder. A listed member that is a link to a file outside the
+  library's folder is refused; links inside an auto-populating folder are
+  skipped.
 - The package name takes letters, digits, `_`, `-` and `.`. A quote or line
   break in `vendor`, `display-name` or a dependency name is refused, since
   it would end up in the package's spec.

@@ -72,10 +72,14 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     let library = top_level_library(dist, root)?;
     let vendor = required(vip, "distribution.vip", "vendor")?;
     let display_name = required(vip, "distribution.vip", "display-name")?;
+    // The default goes through the same check: a vendor of `..\x` must not leave vi.lib.
     let install_dir = match string(vip, "distribution.vip", "install-dir")? {
-        Some(d) => d.replace('\\', "/").trim_matches('/').to_string(),
+        Some(d) => d,
         None => format!("vi.lib/{vendor}/{display_name}"),
-    };
+    }
+    .replace('\\', "/")
+    .trim_matches('/')
+    .to_string();
     if install_dir.is_empty()
         || install_dir.contains(':')
         || install_dir.split('/').any(|s| s == "..")
@@ -104,7 +108,8 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
             .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
     {
         bail!(
-            "distribution.vip.name = {name:?}: a package name takes letters, digits, '_', '-' and '.',              like \"vendor_lib_name\""
+            "distribution.vip.name = {name:?}: a package name takes letters, digits, '_', '-' and '.', \
+             like \"vendor_lib_name\""
         );
     }
     let Some(version) = &p.version else {
@@ -398,6 +403,10 @@ display-name = "Demo Lib"
             (bad_dir("../x"), "distribution.vip.install-dir"),
             (bad_dir("/"), "distribution.vip.install-dir"),
             (bad_dir("C:/x"), "distribution.vip.install-dir"),
+            (
+                GOOD.replace("\"Demo Lib\"", r#""..\\..\\x""#),
+                "distribution.vip.install-dir",
+            ),
             (
                 GOOD.replace(
                     "vendor =",
