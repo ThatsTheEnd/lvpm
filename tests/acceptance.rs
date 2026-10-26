@@ -24,10 +24,11 @@ use futures::future::LocalBoxFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use support::global::GlobalRun;
 use support::golden::{Mode, Output};
-use support::sandbox::Sandbox;
+use support::sandbox::{LABVIEW_YEAR, Sandbox};
 use support::selection::{
-    INTERACTIVE_TAG, LABVIEW_TAG, PENDING_TAG_PREFIX, Selection, UNSAFE_TAG, select,
+    GLOBAL_TAG, INTERACTIVE_TAG, LABVIEW_TAG, PENDING_TAG_PREFIX, Selection, UNSAFE_TAG, select,
 };
 
 /// The features the harness runs, relative to the package root. Later slices
@@ -173,7 +174,11 @@ fn after_scenario<'a>(
 }
 
 /// Run one feature file; its scenario counts, and how it went.
-fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>) {
+fn run_feature(
+    path: PathBuf,
+    mode: Mode,
+    global_busy: bool,
+) -> (ScenarioCounts, Result<(), String>) {
     let labview_not_run = Arc::new(AtomicUsize::new(0));
     let unsafe_not_run = Arc::new(AtomicUsize::new(0));
     let pending_not_run = Arc::new(AtomicUsize::new(0));
@@ -207,16 +212,21 @@ fn run_feature(path: PathBuf, mode: Mode) -> (ScenarioCounts, Result<(), String>
             .after(after_scenario)
             .fail_on_skipped()
             .filter_run(path, move |_, _, scenario| {
-                let (counter, runs) =
-                    match select(&scenario.tags, test_labview, only_labview, headless_labview) {
-                        Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
-                        Selection::Run => return true,
-                        Selection::NotLabview => return false,
-                        Selection::Unsafe => (&counted_unsafe, false),
-                        Selection::Pending => (&counted_pending, false),
-                        Selection::NeedsLabview => (&counted_labview, false),
-                        Selection::Interactive => (&counted_interactive, false),
-                    };
+                let (counter, runs) = match select(
+                    &scenario.tags,
+                    test_labview,
+                    only_labview,
+                    headless_labview,
+                    global_busy,
+                ) {
+                    Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
+                    Selection::Run => return true,
+                    Selection::NotLabview | Selection::GlobalBusy => return false,
+                    Selection::Unsafe => (&counted_unsafe, false),
+                    Selection::Pending => (&counted_pending, false),
+                    Selection::NeedsLabview => (&counted_labview, false),
+                    Selection::Interactive => (&counted_interactive, false),
+                };
                 counter.fetch_add(1, Ordering::SeqCst);
                 runs
             }),
@@ -264,12 +274,21 @@ fn run_features() {
     if let Some(banner) = mode.banner() {
         eprintln!("{banner}");
     }
+    // Held until the features ran, or a panic unwinds: it ends the LabVIEW
+    // this run started and gives the claim back. A headless run uses the
+    // LabVIEW its CI script started, and claims nothing.
+    let global = (env_flag(TEST_LABVIEW_ENV_VAR) && !env_flag(HEADLESS_LABVIEW_ENV_VAR))
+        .then(|| GlobalRun::claim_for_this_run(LABVIEW_YEAR.parse().expect("a year")));
+    let global_busy = global.as_ref().and_then(|run| run.busy.clone());
+    if let Some(why) = &global_busy {
+        println!("@{GLOBAL_TAG} scenarios not run: the global LabVIEW is in use — {why}");
+    }
     let mut failures = Vec::new();
     let (mut labview_not_run, mut unsafe_not_run, mut pending_not_run) = (0, 0, 0);
     let (mut labview_ran, mut interactive_not_run) = (0, 0);
     for feature in FEATURE_FILES {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
-        let (counts, outcome) = run_feature(path, mode);
+        let (counts, outcome) = run_feature(path, mode, global_busy.is_some());
         labview_ran += counts.labview_ran;
         labview_not_run += counts.labview_not_run;
         unsafe_not_run += counts.unsafe_not_run;

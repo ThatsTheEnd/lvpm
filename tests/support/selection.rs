@@ -13,6 +13,9 @@ pub const UNSAFE_TAG: &str = "unsafe";
 /// a headless one: it is not run where the LabVIEW is headless (a container),
 /// and a headless copy of it runs there instead, where one exists.
 pub const INTERACTIVE_TAG: &str = "interactive-labview";
+/// A `@labview` scenario that drives the LabVIEW installation itself, the one
+/// LabVIEW every worktree on the machine shares: one run at a time uses it.
+pub const GLOBAL_TAG: &str = "global-labview";
 
 /// Whether a scenario runs, and if not, why.
 #[derive(Debug, PartialEq, Eq)]
@@ -26,15 +29,20 @@ pub enum Selection {
     NotLabview,
     /// An `@interactive-labview` scenario under `LVPM_TEST_LABVIEW_HEADLESS=1`.
     Interactive,
+    /// A `@global-labview` scenario while another run, or the user, has the
+    /// global LabVIEW.
+    GlobalBusy,
 }
 
 /// `test_labview`: `LVPM_TEST_LABVIEW=1`; `only_labview`: `LVPM_TEST_ONLY_LABVIEW=1`;
-/// `headless_labview`: `LVPM_TEST_LABVIEW_HEADLESS=1`.
+/// `headless_labview`: `LVPM_TEST_LABVIEW_HEADLESS=1`; `global_busy`: this run
+/// could not have the global LabVIEW.
 pub fn select(
     tags: &[String],
     test_labview: bool,
     only_labview: bool,
     headless_labview: bool,
+    global_busy: bool,
 ) -> Selection {
     let has = |wanted: &str| tags.iter().any(|tag| tag == wanted);
     match () {
@@ -42,6 +50,7 @@ pub fn select(
         _ if tags.iter().any(|tag| tag.starts_with(PENDING_TAG_PREFIX)) => Selection::Pending,
         _ if has(LABVIEW_TAG) && !test_labview => Selection::NeedsLabview,
         _ if has(INTERACTIVE_TAG) && headless_labview => Selection::Interactive,
+        _ if has(GLOBAL_TAG) && global_busy => Selection::GlobalBusy,
         _ if !has(LABVIEW_TAG) && only_labview => Selection::NotLabview,
         _ => Selection::Run,
     }
@@ -58,33 +67,39 @@ mod tests {
     #[test]
     fn only_labview_keeps_the_labview_scenarios_and_never_the_unsafe_ones() {
         assert_eq!(
-            select(&tags(&["labview"]), true, true, false),
+            select(&tags(&["labview"]), true, true, false, false),
             Selection::Run
         );
-        assert_eq!(select(&tags(&[]), true, true, false), Selection::NotLabview);
         assert_eq!(
-            select(&tags(&["labview", "unsafe"]), true, true, false),
+            select(&tags(&[]), true, true, false, false),
+            Selection::NotLabview
+        );
+        assert_eq!(
+            select(&tags(&["labview", "unsafe"]), true, true, false, false),
             Selection::Unsafe
         );
         assert_eq!(
-            select(&tags(&["labview", "pending-9"]), true, true, false),
+            select(&tags(&["labview", "pending-9"]), true, true, false, false),
             Selection::Pending
         );
     }
 
     #[test]
     fn without_only_labview_every_safe_scenario_runs_and_labview_ones_need_the_flag() {
-        assert_eq!(select(&tags(&[]), false, false, false), Selection::Run);
         assert_eq!(
-            select(&tags(&["labview"]), false, false, false),
-            Selection::NeedsLabview
-        );
-        assert_eq!(
-            select(&tags(&["labview"]), true, false, false),
+            select(&tags(&[]), false, false, false, false),
             Selection::Run
         );
         assert_eq!(
-            select(&tags(&["unsafe"]), true, false, false),
+            select(&tags(&["labview"]), false, false, false, false),
+            Selection::NeedsLabview
+        );
+        assert_eq!(
+            select(&tags(&["labview"]), true, false, false, false),
+            Selection::Run
+        );
+        assert_eq!(
+            select(&tags(&["unsafe"]), true, false, false, false),
             Selection::Unsafe
         );
     }
@@ -93,13 +108,34 @@ mod tests {
     fn a_headless_labview_skips_the_interactive_scenarios_and_runs_the_rest() {
         let interactive = tags(&["labview", "interactive-labview"]);
         assert_eq!(
-            select(&interactive, true, true, true),
+            select(&interactive, true, true, true, false),
             Selection::Interactive
         );
-        assert_eq!(select(&interactive, true, true, false), Selection::Run);
         assert_eq!(
-            select(&tags(&["labview"]), true, true, true),
+            select(&interactive, true, true, false, false),
             Selection::Run
+        );
+        assert_eq!(
+            select(&tags(&["labview"]), true, true, true, false),
+            Selection::Run
+        );
+    }
+
+    #[test]
+    fn a_global_labview_scenario_waits_for_a_run_that_has_the_global_labview() {
+        let global = tags(&["labview", "global-labview"]);
+        assert_eq!(
+            select(&global, true, false, false, true),
+            Selection::GlobalBusy
+        );
+        assert_eq!(select(&global, true, false, false, false), Selection::Run);
+        assert_eq!(
+            select(&tags(&["labview"]), true, false, false, true),
+            Selection::Run
+        );
+        assert_eq!(
+            select(&global, false, false, false, true),
+            Selection::NeedsLabview
         );
     }
 }

@@ -613,10 +613,21 @@ impl Sandbox {
         });
         let port = global::vi_server_port(&ini);
         assert!(
-            global::vi_server_enabled(&ini) && process::port_is_listening(port),
-            "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}: start it yourself, \
-             this scenario never starts or restarts the user's LabVIEW"
+            global::vi_server_enabled(&ini),
+            "LabVIEW {LABVIEW_YEAR} has VI Server switched off in its LabVIEW.ini"
         );
+        // A run that holds the claim found nothing on the port, so it starts
+        // its own LabVIEW, and ends it when the run is over. A headless run
+        // claims nothing: its CI script started the LabVIEW.
+        if !process::port_is_listening(port) {
+            let started = global::start_claimed_labview(&labview.dir, port)
+                .unwrap_or_else(|why| panic!("{why}"));
+            assert!(
+                started,
+                "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}, and this run \
+                 does not hold the global LabVIEW claim, so it starts none"
+            );
+        }
         let mut learned = self.learned();
         learned.labview_port = Some(port);
         learned.store_existed = global::store_dir(&program_data).exists();
