@@ -44,7 +44,9 @@ irm https://raw.githubusercontent.com/ThatsTheEnd/lvpm/main/scripts/install.ps1 
 .\install.ps1
 ```
 
-This installs per-user and needs no elevation. Script options, the manual
+This installs per-user and needs no elevation. If PowerShell refuses to run
+the script, allow it with [Set-ExecutionPolicy](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.security/set-executionpolicy?view=powershell-7.6).
+Script options, the manual
 download, Linux and building from source are in [docs/install.md](docs/install.md).
 
 ## Quick start
@@ -90,6 +92,34 @@ and `.ogp` packages and the public `.ogpd` / `.vipr` directories work as-is,
 with the LabVIEW-side work (fixing VI links, running hook VIs) done over VI
 Server, a documented TCP protocol. [docs/ogpm-model.md](docs/ogpm-model.md)
 is the reference and the term-by-term map from OGPT to lvpm.
+
+## JSON output and exit codes
+
+`--json` makes every command but the diagnostics (`app-probe`, `vi-probe`,
+`vi-save`, `vi-run`) write JSON Lines to stdout. Each event is one line,
+`{"event": "<name>", "data": {...}}`, for example
+`{"event": "phase_started", "data": {"phase": "download"}}`; an event with no
+fields has no `data`, for example `{"event": "indexes_loading"}`. The last line is
+`{"result": ...}` when the command succeeds or `{"error": "<message>"}` when
+it fails; no other line has either key. The query commands put their data in
+the result (`search`, `info`, `list`, `targets`, `config get`, `cache add`,
+`venv status`, `lock --check`); the others put `{"command": "<name>"}` there.
+`venv status` gives `{"exists": false, "status": null}` when there is no venv.
+A LabVIEW's `version` is its internal version (`26.3` for LabVIEW 2026), not
+a package version.
+Under `--json` a command never prompts: `venv remove` fails unless it gets
+`--yes`.
+
+The exit code is the same with or without `--json`:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | The command succeeded |
+| 1 | The command failed; the message says why |
+| 2 | The arguments are wrong (a usage error); nothing ran |
+
+The event names, the result and error keys and these codes are stable: a
+change to them is a breaking change and gets a major version.
 
 ## Learn more
 
