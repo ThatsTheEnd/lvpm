@@ -3,6 +3,7 @@
 
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// The checksum file in the pilot folder: one SHA-256 per archive.
 pub const CHECKSUMS_FILE: &str = "SHA256SUMS";
@@ -137,6 +138,78 @@ pub const PILOT_A_COMMIT: &str = "f7cc16a391faa1e982b54ae22d2f43c9df1ef581";
 /// Pilot A as its vendor published it.
 pub const PILOT_A_ARCHIVE: &str = "hse_lib_hse_logger-2.2.2.114.vip";
 
+/// Pilot B's pinned commit; README.md beside the build-slice features names it.
+pub const PILOT_B_COMMIT: &str = "723d7a672b5f0eafa9f98ea63629ba5855d50227";
+/// Pilot B as its vendor published it.
+pub const PILOT_B_ARCHIVE: &str = "labview_open_source_lib_serializer-1.2.1.16.vip";
+
+/// The checkout the variable `env_var` names, once its HEAD is `commit` and
+/// nothing in it is modified or untracked; otherwise what is wrong with it.
+pub fn pilot_checkout(env_var: &str, commit: &str) -> Result<PathBuf, String> {
+    let path = std::env::var_os(env_var).ok_or_else(|| format!("{env_var} names no checkout"))?;
+    checkout_at(env_var, path, commit)
+}
+
+fn checkout_at(env_var: &str, path: std::ffi::OsString, commit: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(path);
+    let shown = path.display();
+    let at = format!("{env_var}={shown}");
+    if !path.is_dir() {
+        return Err(format!("{at} does not exist or is not a folder"));
+    }
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(args)
+            .output()
+            .map_err(|e| format!("{at}: running git: {e}"))
+    };
+    let head = git(&["rev-parse", "HEAD"])?;
+    if !head.status.success() {
+        return Err(format!("{at} is not a git repository"));
+    }
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    if head != commit {
+        return Err(format!(
+            "{at} is at {head}, not the pinned commit {commit}; run `git -C {shown} checkout {commit}`"
+        ));
+    }
+    let status = git(&["status", "--porcelain"])?;
+    if !status.stdout.is_empty() {
+        return Err(format!(
+            "{at} has uncommitted changes (`git -C {shown} status` lists them); build from a clean checkout"
+        ));
+    }
+    Ok(path)
+}
+
+/// The package names of a `Requires` value (`a>=1.0,b`), without their bounds.
+pub fn requires_names(requires: &str) -> Vec<String> {
+    requires
+        .split(',')
+        .map(|part| part.split(['<', '>', '=']).next().unwrap_or("").trim())
+        .filter(|name| !name.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// The package names `archive`'s spec requires.
+pub fn requires_of(archive: &Path) -> Vec<String> {
+    let file = std::fs::File::open(archive)
+        .unwrap_or_else(|e| panic!("opening {}: {e}", archive.display()));
+    let mut zip = zip::ZipArchive::new(file)
+        .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("spec").expect("a spec entry"), &mut text)
+        .expect("a text spec");
+    let spec = lvpm_core::spec::parse(&text).expect("a spec lvpm reads");
+    spec.requires
+        .as_deref()
+        .map(requires_names)
+        .unwrap_or_default()
+}
+
 /// The file entries of a package below `File Group 0/<under>`, relative to
 /// `File Group 0/`, sorted.
 pub fn group_zero_files(archive: &Path, under: &str) -> Vec<String> {
@@ -242,6 +315,91 @@ mod tests {
     fn pilot_a_ships_its_library() {
         let archive = pilots_dir().join("hse_lib_hse_logger-2.2.2.114.vip");
         assert!(library_names(&archive).contains(&"hse-logger.lvlib".to_string()));
+    }
+
+    const VAR: &str = "LVPM_TEST_PILOT_X";
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    /// A repository with one commit, and that commit's id.
+    fn repo_with_a_commit() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        git(dir.path(), &["add", "a.txt"]);
+        git(dir.path(), &["commit", "-q", "-m", "a"]);
+        let head = git(dir.path(), &["rev-parse", "HEAD"]);
+        (dir, head)
+    }
+
+    #[test]
+    fn a_clean_checkout_at_the_pinned_commit_is_accepted() {
+        let (dir, head) = repo_with_a_commit();
+        assert_eq!(
+            checkout_at(VAR, dir.path().as_os_str().to_owned(), &head),
+            Ok(dir.path().to_path_buf())
+        );
+    }
+
+    #[test]
+    fn a_checkout_at_another_commit_names_both_and_the_fix() {
+        let (dir, first) = repo_with_a_commit();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        git(dir.path(), &["add", "b.txt"]);
+        git(dir.path(), &["commit", "-q", "-m", "b"]);
+        let second = git(dir.path(), &["rev-parse", "HEAD"]);
+        let why = checkout_at(VAR, dir.path().as_os_str().to_owned(), &first).unwrap_err();
+        let fix = format!("git -C {} checkout {first}", dir.path().display());
+        for wanted in [VAR, &first, &second, &fix] {
+            assert!(why.contains(wanted), "{wanted} is not in: {why}");
+        }
+    }
+
+    #[test]
+    fn pilot_checkout_rejects_a_missing_path_a_non_repo_and_a_dirty_checkout() {
+        let (repo, head) = repo_with_a_commit();
+        let missing = repo.path().join("nowhere");
+        let non_repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join("a.txt"), "changed").unwrap();
+        for (path, what) in [
+            (missing.as_path(), "does not exist"),
+            (non_repo.path(), "not a git repository"),
+            (repo.path(), "uncommitted changes"),
+        ] {
+            let why = checkout_at(VAR, path.as_os_str().to_owned(), &head).unwrap_err();
+            for wanted in [VAR, &path.display().to_string(), what] {
+                assert!(why.contains(wanted), "{wanted} is not in: {why}");
+            }
+        }
+    }
+
+    #[test]
+    fn pilot_b_requires_data_manipulation_and_nothing_else() {
+        let archive = pilots_dir().join(PILOT_B_ARCHIVE);
+        assert_eq!(
+            requires_of(&archive),
+            ["labview_open_source_lib_data_manipulation"]
+        );
+    }
+
+    #[test]
+    fn requires_names_drop_the_version_bounds() {
+        assert_eq!(
+            requires_names("a>=1.0,b,  c<2.0 , d==3"),
+            ["a", "b", "c", "d"]
+        );
+        assert!(requires_names("").is_empty());
     }
 
     #[test]

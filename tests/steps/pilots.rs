@@ -3,13 +3,14 @@
 
 use crate::CliWorld;
 use crate::support::pilots::{
-    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_COMMIT, archives, bad_vi_lines, check_checksums,
-    copy_tree, find_files_named, group_zero_files, labviewcli, library_names, pilots_dir,
+    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_COMMIT, PILOT_B_ARCHIVE, PILOT_B_COMMIT, archives,
+    bad_vi_lines, check_checksums, copy_tree, find_files_named, group_zero_files, labviewcli,
+    library_names, pilot_checkout, pilots_dir, requires_of,
 };
 use crate::support::process::{self, port_is_listening};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
 use crate::support::sandbox::LABVIEW_YEAR;
-use crate::support::selection::PILOT_A_ENV_VAR;
+use crate::support::selection::{PILOT_A_ENV_VAR, PILOT_B_ENV_VAR};
 use crate::support::venv::{self, VENV_DIR};
 use cucumber::{given, then, when};
 use std::path::{Path, PathBuf};
@@ -46,6 +47,23 @@ top-level-library = "Source/HSE-Logger/hse-logger.lvlib"
 [distribution.vip]
 vendor = "Hampel Software Engineering"
 display-name = "HSE Logger"
+"#;
+/// Pilot B's `lvpm.toml`: its repository has none, and this is what it would
+/// hold. The dependency is the one its published spec requires.
+const PILOT_B_MANIFEST: &str = r#"[project]
+name = "labview_open_source_lib_serializer"
+version = "1.2.1.16"
+labview = ">=2013"
+
+[dependencies]
+labview_open_source_lib_data_manipulation = ">=1.5.0.15"
+
+[distribution]
+top-level-library = "source/OpenSerializer.lvlib"
+
+[distribution.vip]
+vendor = "LabVIEW Open Source Project"
+display-name = "OpenSerializer"
 "#;
 const MASS_COMPILE_LOG: &str = "mass-compile.log";
 /// A LabVIEW loading a venv's addons takes a while to open VI Server.
@@ -348,26 +366,9 @@ fn project_b_without_pilot_a_archive(world: &mut CliWorld) -> PathBuf {
     source
 }
 
-/// The checkout `LVPM_TEST_PILOT_A` names, once its HEAD is the pinned commit.
+/// The checkout `LVPM_TEST_PILOT_A` names, at the pinned commit.
 fn pilot_a_checkout() -> PathBuf {
-    let checkout = PathBuf::from(
-        std::env::var_os(PILOT_A_ENV_VAR)
-            .unwrap_or_else(|| panic!("{PILOT_A_ENV_VAR} names no checkout of pilot A")),
-    );
-    let head = Command::new("git")
-        .arg("-C")
-        .arg(&checkout)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .unwrap_or_else(|e| panic!("git rev-parse in {}: {e}", checkout.display()));
-    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
-    assert_eq!(
-        head,
-        PILOT_A_COMMIT,
-        "{PILOT_A_ENV_VAR}={} is not at pilot A's pinned commit",
-        checkout.display()
-    );
-    checkout
+    pilot_checkout(PILOT_A_ENV_VAR, PILOT_A_COMMIT).unwrap_or_else(|why| panic!("{why}"))
 }
 
 fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
@@ -382,4 +383,39 @@ fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
     let built = dir.join("dist").join(PILOT_A_ARCHIVE);
     assert!(built.is_file(), "lvpm build wrote no {}", built.display());
     world.pilots.pilot_a = Some(built);
+}
+
+/// Pilot B's source is read from the checkout `LVPM_TEST_PILOT_B` names and
+/// copied into the sandbox's work directory, where the build writes its `dist/`.
+#[given("pilot B's repository at its pinned commit")]
+async fn pilot_b_source(world: &mut CliWorld) {
+    let checkout =
+        pilot_checkout(PILOT_B_ENV_VAR, PILOT_B_COMMIT).unwrap_or_else(|why| panic!("{why}"));
+    copy_tree(&checkout.join("source"), &world.work("source"));
+}
+
+#[given("an lvpm.toml for it written by the scenario")]
+async fn pilot_b_manifest(world: &mut CliWorld) {
+    world.build.manifest = PILOT_B_MANIFEST
+        .parse()
+        .expect("pilot B's manifest is TOML");
+    world.write_build_manifest();
+}
+
+#[then(regex = r#"^dist holds "([^"]+)"$"#)]
+async fn dist_holds(world: &mut CliWorld, package: String) {
+    world.succeeded();
+    let built = world.work("dist").join(&package);
+    assert!(built.is_file(), "lvpm build wrote no {}", built.display());
+}
+
+#[then("its Requires names the same packages as the published archive's")]
+async fn requires_match_published(world: &mut CliWorld) {
+    if let Err(why) = check_checksums(&pilots_dir()) {
+        panic!("{why}");
+    }
+    let built = world.work("dist").join(PILOT_B_ARCHIVE);
+    let want = requires_of(&pilots_dir().join(PILOT_B_ARCHIVE));
+    assert!(!want.is_empty(), "the published archive requires nothing");
+    assert_eq!(requires_of(&built), want);
 }
