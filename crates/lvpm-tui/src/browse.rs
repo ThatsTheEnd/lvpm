@@ -1,7 +1,7 @@
 //! The browse list: every package in the catalog with its status relative to
 //! the destination, narrowed by a search and a status filter.
 
-use lvpm_core::index::Entry;
+use lvpm_core::index::{CACHE_SOURCE, Entry};
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::query::{self, Catalog};
 use lvpm_core::project::{name_key, same_name};
@@ -69,6 +69,34 @@ pub struct Package {
     /// newest, which needs a newer LabVIEW.
     pub available: Option<Version>,
     pub status: Status,
+}
+
+impl Package {
+    /// Where the offered version comes from, short enough for its column.
+    pub fn source(&self) -> &str {
+        let offered = self
+            .versions
+            .iter()
+            .find(|e| Some(&e.version) == self.available.as_ref());
+        offered.map_or("", |e| source_label(&e.source))
+    }
+}
+
+/// A source, short: a feed by its host (`github` for GitHub's), else `local`
+/// for a folder or `cache` for an imported archive.
+pub fn source_label(source: &str) -> &str {
+    let Some((_, rest)) = source.split_once("://") else {
+        return if source == CACHE_SOURCE {
+            "cache"
+        } else {
+            "local"
+        };
+    };
+    let host = rest.split(['/', ':']).next().unwrap_or(rest);
+    match host.ends_with("github.com") || host.ends_with("githubusercontent.com") {
+        true => "github",
+        false => host.strip_prefix("www.").unwrap_or(host),
+    }
 }
 
 /// Which rows the filter keeps.
@@ -248,6 +276,19 @@ impl Browse {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_source_is_named_by_its_host_or_its_kind() {
+        let label = source_label;
+        assert_eq!(label("https://www.vipm.io/feeds/index.vipr"), "vipm.io");
+        assert_eq!(label("http://host:8090/files/index.vipr"), "host");
+        assert_eq!(
+            label("https://raw.githubusercontent.com/o/r/main/i"),
+            "github"
+        );
+        assert_eq!(label(r"C:\packages"), "local");
+        assert_eq!(label(CACHE_SOURCE), "cache");
+    }
 
     fn entry(version: &str, lv_min: f64) -> Entry {
         Entry {

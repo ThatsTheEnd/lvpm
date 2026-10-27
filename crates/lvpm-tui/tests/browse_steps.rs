@@ -342,7 +342,10 @@ async fn row_with_versions(
     have: String,
     newer: String,
 ) {
-    assert_eq!(world.row(&name), [name, have, newer, status]);
+    let mut row = world.row(&name);
+    // The source column; `source_label`'s unit test covers its wording.
+    row.remove(1);
+    assert_eq!(row, [name, have, newer, status]);
 }
 
 #[then(regex = r#"^"([^"]+)" is "([^"]+)"$"#)]

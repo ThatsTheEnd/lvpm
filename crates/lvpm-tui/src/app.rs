@@ -81,6 +81,8 @@ pub struct App {
     pub showing_log: bool,
     /// Where each install's log lines are appended; `None` writes nothing.
     pub log_file: Option<PathBuf>,
+    /// Each feed the catalog load asked, with how it answered so far.
+    pub feeds: Vec<(String, String)>,
 }
 
 impl App {
@@ -99,6 +101,7 @@ impl App {
             log: Vec::new(),
             showing_log: false,
             log_file: None,
+            feeds: Vec::new(),
         };
         app.start(Job::Load { refresh: false });
         app
@@ -126,6 +129,9 @@ impl App {
 
     fn start(&mut self, job: Job) {
         debug_assert!(self.pending.is_none(), "one job at a time");
+        if matches!(job, Job::Load { .. }) {
+            self.feeds.clear();
+        }
         self.pending = Some((job.clone(), worker::spawn(&self.builder, job)));
     }
 
@@ -185,6 +191,10 @@ impl App {
     /// Take in one of the install's events: the plan or the progress. Those
     /// of a plan dropped with Esc have no op to go to.
     fn event(&mut self, event: &lvpm_core::events::Event) {
+        if matches!(self.pending, Some((Job::Load { .. }, _))) {
+            self.feed(event);
+            return;
+        }
         let Some(op) = &mut self.op else {
             return;
         };
@@ -195,6 +205,39 @@ impl App {
                 let entry = self.log.last_mut();
                 if let (Some(entry), Some(line)) = (entry, log::line(event)) {
                     entry.push(line);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Take in one of the catalog load's events: a feed asked or answered.
+    fn feed(&mut self, event: &lvpm_core::events::Event) {
+        use lvpm_core::events::{Event, FeedOutcome};
+        match event {
+            Event::FeedCheckStart { url, first_run } => {
+                let state = if *first_run {
+                    "downloading…"
+                } else {
+                    "checking…"
+                };
+                self.feeds.push((url.clone(), state.into()));
+            }
+            Event::FeedChecked {
+                url,
+                outcome,
+                bytes,
+                elapsed,
+            } => {
+                let seconds = elapsed.as_secs_f32();
+                let state = match outcome {
+                    FeedOutcome::Unchanged => format!("unchanged, {seconds:.1}s"),
+                    FeedOutcome::Downloaded => {
+                        format!("{:.1} MB in {seconds:.1}s", *bytes as f32 / 1_048_576.0)
+                    }
+                };
+                if let Some(feed) = self.feeds.iter_mut().rev().find(|(u, _)| u == url) {
+                    feed.1 = state;
                 }
             }
             _ => {}
@@ -608,6 +651,7 @@ mod tests {
             log: Vec::new(),
             showing_log: false,
             log_file: None,
+            feeds: Vec::new(),
         }
     }
 
@@ -963,6 +1007,42 @@ mod tests {
         assert!(app.reloading());
         press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
         assert_eq!(app.note.as_deref(), Some("the catalog is still loading"));
+    }
+
+    #[test]
+    fn the_load_shows_each_feed_as_it_is_asked_and_answered() {
+        use lvpm_core::events::{Event, FeedOutcome};
+        let mut app = idle();
+        let (send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((Job::Load { refresh: false }, receive));
+        let (a, b) = ("http://a/index.vipr", "http://b/index.vipr");
+        for event in [
+            Event::FeedCheckStart {
+                url: a.into(),
+                first_run: true,
+            },
+            Event::FeedChecked {
+                url: a.into(),
+                outcome: FeedOutcome::Downloaded,
+                bytes: 3 * 1_048_576,
+                elapsed: std::time::Duration::from_millis(4200),
+            },
+            Event::FeedCheckStart {
+                url: b.into(),
+                first_run: false,
+            },
+        ] {
+            send.send(Done::Event(event)).expect("the app receives");
+        }
+        app.poll();
+        let feeds = [(a, "3.0 MB in 4.2s"), (b, "checking…")];
+        let shown: Vec<_> = app
+            .feeds
+            .iter()
+            .map(|(u, s)| (u.as_str(), s.as_str()))
+            .collect();
+        assert_eq!(shown, feeds);
+        assert!(app.op.is_none(), "a load's events start no install");
     }
 
     #[test]

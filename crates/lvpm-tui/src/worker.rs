@@ -157,7 +157,11 @@ pub fn spawn(builder: &EnvBuilder, job: Job) -> Receiver<Done> {
 fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
     match job {
         Job::Load { refresh } => {
-            let env = builder.env(&Quiet, refresh);
+            let sink = Forward {
+                send: send.clone(),
+                park: None,
+            };
+            let env = builder.env(&sink, refresh);
             let destination = builder.destination();
             let listing = query::catalog(&env, None).and_then(|catalog| {
                 let installed = match destination.is_ok() {

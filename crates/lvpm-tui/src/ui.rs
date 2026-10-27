@@ -45,6 +45,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ]);
     if app.reloading() {
         title.spans.push(Span::raw("   reloading…"));
+        if let Some((url, state)) = app.feeds.last() {
+            title.spans.push(Span::raw(format!(" {url} {state}")));
+        }
     }
     frame.render_widget(Paragraph::new(title), header);
 
@@ -62,7 +65,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let inner = block.inner(body);
         frame.render_widget(block, body);
         match &mut app.listing {
-            Listing::Loading => frame.render_widget(Paragraph::new("Loading the catalog…"), inner),
+            Listing::Loading => {
+                let mut lines = vec![Line::raw("Loading the catalog…"), Line::raw("")];
+                lines.extend(
+                    app.feeds
+                        .iter()
+                        .map(|(url, state)| Line::raw(format!("{state:<18} {url}"))),
+                );
+                frame.render_widget(Paragraph::new(lines), inner)
+            }
             Listing::Failed(error) => frame.render_widget(
                 Paragraph::new(error.as_str()).wrap(Wrap { trim: false }),
                 inner,
@@ -282,6 +293,7 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
         let package = &browse.packages[i];
         Row::new([
             package.name.clone(),
+            package.source().to_string(),
             package
                 .installed
                 .as_ref()
@@ -299,12 +311,13 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
         rows,
         [
             Constraint::Fill(1),
+            Constraint::Length(16),
             Constraint::Length(10),
             Constraint::Length(10),
             Constraint::Length(14),
         ],
     )
-    .header(Row::new(["Package", "Installed", "Available", "Status"]).style(reversed()))
+    .header(Row::new(["Package", "Source", "Installed", "Available", "Status"]).style(reversed()))
     .row_highlight_style(reversed())
     .highlight_symbol("> ");
     frame.render_stateful_widget(table, list, &mut browse.table);

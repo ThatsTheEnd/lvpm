@@ -53,7 +53,7 @@ you can recognize.
 | 4 | Do checks 2 and 3 again, but make the window shorter than 24 rows. | The same as checks 2 and 3. |
 | 5 | Press `q`. | lvpm-tui exits. The `echo before` line is back. The cursor shows. Type `abc`: the letters echo, and Enter runs the line. |
 | 6 | Start lvpm-tui again and press Ctrl-C. | The same as check 5. |
-| 7 | Start lvpm-tui again and wait for the catalog. | "Loading the catalog…" shows first, then a table with the columns Package, Installed, Available and Status. The selected row is in reverse video with `>` before it. |
+| 7 | Start lvpm-tui again and wait for the catalog. | "Loading the catalog…" shows first, with one line per feed that says it is being checked or downloaded and then how it answered. Then a table with the columns Package, Source, Installed, Available and Status; Source names a feed by its host (`github` for GitHub), else `local` or `cache`. The selected row is in reverse video with `>` before it. |
 | 8 | Press Down, Up, PgDn, PgUp, End and Home. | The selection moves; the list scrolls so that the selected row stays visible. |
 | 9 | Press `/`, type part of a package name, then press Enter. | The `Search:` line shows the text and a `_` cursor while typing. The list shrinks to the matching packages. |
 | 10 | Press `/`, then Esc. | The search is cleared and every package is listed again. |
