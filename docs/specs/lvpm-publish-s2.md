@@ -1,7 +1,7 @@
 <!-- spec-version: 14.0.1 -->
 # Spec: `lvpm publish --to <folder>` (slice S2)
 
-**Format:** dev-team specs 14.0.1 · **Status:** gate passed with provisional answers (see Ambiguity Log) · **Date:** 2026-10-26 ·
+**Format:** dev-team specs 14.0.1 · **Status:** gate passed; the three stakeholder answers were confirmed by the user on 2026-10-27 · **Date:** 2026-10-26 ·
 **Slice:** [S2 in build-slices.md](../vision/build-slices.md#slice-s2-lvpm-publish---to-folder) ·
 **Builds on:** S1 ([lvpm-build-s1.md](lvpm-build-s1.md)), S0 ([s0-pilot-loop.feature](../../tests/features/build-slices/s0-pilot-loop.feature))
 
@@ -44,7 +44,8 @@ publish fails, names the file and says to run `lvpm build`. Other files in
 1. Check that `<dir>` exists and is a directory. lvpm does not create it,
    because a mistyped share path would otherwise create a stray folder.
 2. If `<dir>/<file name>` exists, fail and name it. Nothing is written.
-3. Copy the package to `<dir>/.<file name>.<pid>.tmp` and sync it.
+3. Copy the package to a staged `.tmp` name beside the target, unique per
+   process and moment, and sync it.
 4. Move the temporary file into place without replacing: `hard_link` the
    temporary file to the final name (this fails if the name exists), then
    remove the temporary file. On any failure, remove the temporary file.
@@ -118,15 +119,15 @@ about. The published file is byte-identical to the one in `dist/`.
 
 ## Ambiguity Log
 
-The user was away while this was specced, so no `requires-stakeholder-input`
-item could be asked. Each has a provisional answer, the smallest one that
-works, and `/plan` must confirm them with the user before build.
+The user was away while this was specced. The three `requires-stakeholder-input`
+items got a provisional answer each, and the user confirmed all three in chat on
+2026-10-27.
 
 | Decision | Classification | Resolved By | Rationale / Answer |
 |----------|---------------|-------------|-------------------|
-| Does `--to` default to a configured feed? (the slice asks /specs to decide) | `requires-stakeholder-input` | **open**, provisional | `--to` is required. A default could be the only `sources.local` entry or a new `publish.to` setting. Either can be added later without breaking anyone. Alternative not ruled out: default to the single `sources.local` entry. |
-| Which `dist/` files are published | `requires-stakeholder-input` | **open**, provisional | Only the current version's package. The slice text says "Copy `dist/*.vip`", which could mean every file, and that would publish stale builds of earlier versions. Alternative not ruled out: all `dist/*.vip`, each refused if already present. |
-| A missing `<dir>` | `requires-stakeholder-input` | **open**, provisional | Fail, without creating the folder. A typo in a UNC path should not create a folder. Alternative not ruled out: `create_dir_all`, as `build` does for `dist/`. |
+| Does `--to` default to a configured feed? (the slice asks /specs to decide) | `requires-stakeholder-input` | user, 2026-10-27 | `--to` is required. A default could be the only `sources.local` entry or a new `publish.to` setting. Either can be added later without breaking anyone. Alternative declined by the user: default to the single `sources.local` entry. |
+| Which `dist/` files are published | `requires-stakeholder-input` | user, 2026-10-27 | Only the current version's package. The slice text says "Copy `dist/*.vip`", which could mean every file, and that would publish stale builds of earlier versions. Alternative declined by the user: all `dist/*.vip`, each refused if already present. |
+| A missing `<dir>` | `requires-stakeholder-input` | user, 2026-10-27 | Fail, without creating the folder. A typo in a UNC path should not create a folder. Alternative declined by the user: `create_dir_all`, as `build` does for `dist/`. |
 | Publish a byte-identical file that is already there | `inferable` | inference | Fail, like any other existing file. The slice says publishing an existing version "fails and changes nothing" and makes no exception. That keeps scripts honest: a re-run tells you the version exists. |
 | Does publish build first? | `inferable` | inference | No. The slice says publish copies `dist/*.vip`. Building is `lvpm build`'s job, and a hidden build could publish something the author never looked at. |
 | How "rename without replacing" is done | `inferable` | inference | `hard_link` plus removing the temp file. It is in std and works on NTFS and SMB. `std::fs::rename` replaces on Windows, so it cannot be used. |
@@ -143,4 +144,4 @@ works, and `/plan` must confirm them with the user before build.
 - [x] Architecture constrains without over-engineering
 - [x] Terminology consistent across artifacts
 - [x] No contradictions between artifacts
-- [x] Every gap/ambiguity finding is logged. The three `requires-stakeholder-input` items carry provisional answers that `/plan` must confirm with the user.
+- [x] Every gap/ambiguity finding is logged. The three `requires-stakeholder-input` items were answered by the user.
