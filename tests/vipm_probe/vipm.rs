@@ -224,7 +224,8 @@ pub fn check_env(get: &dyn Fn(&str) -> Option<OsString>) -> Result<Env, String> 
 /// The line before the first install.
 pub fn start_line(variants: usize) -> String {
     format!(
-        "probing {variants} variants through VIPM: do not interrupt; if you must, \
+        "probing {variants} variants through VIPM; none of pilot A, Data Manipulation or the \
+         palette may be installed on this machine; do not interrupt: if you must, \
          the next start tells you what to uninstall"
     )
 }
@@ -468,6 +469,10 @@ mod tests {
         let line = start_line(14);
         assert!(
             line.contains("14 variants") && line.contains("do not interrupt"),
+            "{line}"
+        );
+        assert!(
+            line.contains("none of pilot A, Data Manipulation or the palette"),
             "{line}"
         );
     }

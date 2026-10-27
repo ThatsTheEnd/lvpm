@@ -24,6 +24,9 @@ pub const SCOPE: [&str; 8] = [
     "project",
 ];
 
+/// Where a run keeps the names of what it may have installed.
+pub const STATE_FILE: &str = "in-progress.json";
+
 /// What a run works on.
 pub struct Probe<'a> {
     pub vipm: &'a Vipm<'a>,
@@ -39,7 +42,7 @@ pub struct Probe<'a> {
     pub archive_name: &'a str,
 }
 
-fn write_text(path: &Path, text: &str) -> Result<(), String> {
+pub fn write_text(path: &Path, text: &str) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
@@ -234,6 +237,46 @@ fn finish(
     }
     std::fs::remove_file(probe.state_file).ok();
     Ok(still_listed)
+}
+
+/// The path a `git status --porcelain` line is about (the new one of a rename).
+fn porcelain_path(line: &str) -> &str {
+    let path = line.get(3..).unwrap_or_default();
+    path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"')
+}
+
+/// The lines of a `git status --porcelain`, without those below `.claude/`:
+/// this repo's hooks write there during any session.
+fn outside_claude(status: &str) -> BTreeSet<&str> {
+    status
+        .lines()
+        .filter(|line| !porcelain_path(line).starts_with(".claude/"))
+        .collect()
+}
+
+/// Whether the run changed what `git status --porcelain` says.
+pub fn git_status_unchanged(before: &str, after: &str) -> Result<(), String> {
+    let (was, is) = (outside_claude(before), outside_claude(after));
+    let appeared: Vec<&&str> = is.difference(&was).collect();
+    let gone: Vec<&&str> = was.difference(&is).collect();
+    match appeared.is_empty() && gone.is_empty() {
+        true => Ok(()),
+        false => Err(format!(
+            "git status changed during the run (paths under .claude/ aside): \
+             new lines {appeared:?}, lines gone {gone:?}"
+        )),
+    }
+}
+
+/// Whether the scoped LabVIEW tree is what it was before the run.
+pub fn final_tree_check(labview: &Path, before: &Snapshot, after: &Snapshot) -> Result<(), String> {
+    match snapshot::diff(labview, before, after).as_slice() {
+        [] => Ok(()),
+        changes => Err(format!(
+            "the LabVIEW tree differs from its snapshot from before the run: {}",
+            describe(changes)
+        )),
+    }
 }
 
 const CANNOT_TELL: &str = "vipm info cannot tell installed from not installed";
@@ -884,6 +927,45 @@ mod tests {
         assert!(
             state.exists(),
             "the next start checks what the state file names"
+        );
+    }
+
+    #[test]
+    fn git_status_change_outside_claude_fails_the_run() {
+        let before = " M .claude/metrics/a.jsonl\n?? .dev-team-reports/\n";
+        assert_eq!(git_status_unchanged(before, before), Ok(()));
+        let only_claude =
+            " M .claude/metrics/a.jsonl\n M .claude/metrics/b.jsonl\n?? .dev-team-reports/\n";
+        assert_eq!(git_status_unchanged(before, only_claude), Ok(()));
+        let after = " M .claude/metrics/a.jsonl\n M src/x.rs\n?? .dev-team-reports/\n\
+                     R  old.rs -> .claude/new.rs\n";
+        let why = git_status_unchanged(before, after).unwrap_err();
+        assert!(why.contains("src/x.rs"), "{why}");
+        assert!(!why.contains("metrics") && !why.contains("new.rs"), "{why}");
+        let gone = git_status_unchanged(before, "").unwrap_err();
+        assert!(gone.contains(".dev-team-reports/"), "{gone}");
+    }
+
+    #[test]
+    fn a_final_tree_difference_fails_the_run() {
+        use crate::support::snapshot::Entry;
+        let entry = |size| Entry { size, mtime: None };
+        let before = Snapshot::from([
+            (PathBuf::from("vi.lib/a.vi"), entry(1)),
+            (PathBuf::from("vi.lib/b.vi"), entry(2)),
+        ]);
+        assert_eq!(
+            final_tree_check(Path::new("."), &before, &before.clone()),
+            Ok(())
+        );
+        let after = Snapshot::from([
+            (PathBuf::from("vi.lib/a.vi"), entry(1)),
+            (PathBuf::from("vi.lib/c.vi"), entry(3)),
+        ]);
+        let why = final_tree_check(Path::new("."), &before, &after).unwrap_err();
+        assert!(
+            why.contains("extra vi.lib/c.vi") && why.contains("missing vi.lib/b.vi"),
+            "{why}"
         );
     }
 }

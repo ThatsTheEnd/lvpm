@@ -100,9 +100,97 @@ pub fn render(header: &Header, rows: &[Row], diff: &RefDiff, not_varied: &[Strin
     out
 }
 
+/// `<n> variants: <a> accepted, <r> rejected; table: <path>`
+pub fn summary_line(rows: &[Row], table: &std::path::Path) -> String {
+    let accepted = rows.iter().filter(|row| row.accepted).count();
+    format!(
+        "{} variants: {accepted} accepted, {} rejected; table: {}",
+        rows.len(),
+        rows.len() - accepted,
+        table.display()
+    )
+}
+
+/// `YYYYMMDDTHHMMSS` of a time given as seconds since the Unix epoch, in UTC.
+pub fn utc_stamp(seconds: u64) -> String {
+    let (days, rest) = (seconds / 86_400, seconds % 86_400);
+    // Days since 1970-01-01 to a calendar date (Howard Hinnant's civil_from_days).
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let day_of_era = z - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// The folder a run writes to: `<date>T<time>-vipm-<version>`, the version
+/// being the first dotted number of `vipm --version`'s first line.
+pub fn run_folder(stamp: &str, vipm_version: &str) -> String {
+    let token = vipm_version
+        .split_whitespace()
+        .find(|t| t.contains('.') && t.chars().any(|c| c.is_ascii_digit()))
+        .unwrap_or(vipm_version);
+    let safe: String = token
+        .chars()
+        .map(|c| match c.is_ascii_alphanumeric() || c == '.' {
+            true => c,
+            false => '_',
+        })
+        .collect();
+    format!("{stamp}-vipm-{safe}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_summary_counts_accepted_and_rejected() {
+        let row = |accepted| Row {
+            variant: "v".into(),
+            accepted,
+            exit: None,
+            note: String::new(),
+            same_files: None,
+        };
+        let rows = [row(true), row(false), row(true)];
+        let line = summary_line(&rows, std::path::Path::new("t/table.md"));
+        assert_eq!(
+            line,
+            "3 variants: 2 accepted, 1 rejected; table: t/table.md"
+        );
+    }
+
+    #[test]
+    fn a_stamp_is_the_utc_date_and_time() {
+        assert_eq!(utc_stamp(0), "19700101T000000");
+        assert_eq!(utc_stamp(1_700_000_000), "20231114T221320");
+        assert_eq!(utc_stamp(1_709_164_799), "20240228T235959");
+        assert_eq!(utc_stamp(1_709_164_800), "20240229T000000");
+    }
+
+    #[test]
+    fn the_run_folder_names_the_vipm_version() {
+        assert_eq!(
+            run_folder("20240229T000000", "VIPM CLI 26.3.0 (build 5)"),
+            "20240229T000000-vipm-26.3.0"
+        );
+        assert_eq!(run_folder("s", "odd/name"), "s-vipm-odd_name");
+    }
 
     fn header() -> Header {
         Header {
