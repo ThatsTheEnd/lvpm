@@ -155,6 +155,8 @@ fn git_command(path: &Path) -> Command {
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
         git.env_remove(var);
     }
+    // git's untranslated messages, so errors and tests read the same on any locale
+    git.env("LC_ALL", "C").env("LANGUAGE", "C");
     git
 }
 
