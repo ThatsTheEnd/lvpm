@@ -15,6 +15,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// How long the output of a command that has ended or been killed is awaited:
 /// a process it started may hold the pipes open for much longer.
 const READER_GRACE: Duration = Duration::from_secs(5);
+/// How long the tool that kills a command's process tree may take.
+const KILL_DEADLINE: Duration = Duration::from_secs(10);
+/// How long the PowerShell that sweeps a venv's processes may take.
+const SWEEP_DEADLINE: Duration = Duration::from_secs(60);
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long a killed LabVIEW has to give its VI Server port back.
 pub const PORT_CLOSE_DEADLINE: Duration = Duration::from_secs(15);
@@ -71,12 +75,15 @@ pub fn run_capturing(
             stdout: String::new(),
             stderr: String::new(),
         })?;
-    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
-        // A child that exits without reading closes the pipe; that is its answer.
-        stdin.write_all(text.as_bytes()).ok();
-    }
     let stdout = read_in_background(child.stdout.take().expect("piped stdout"));
     let stderr = read_in_background(child.stderr.take().expect("piped stderr"));
+    if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
+        // From its own thread, so a child that never reads cannot hold the
+        // deadline back. A child that exits without reading, or is killed,
+        // closes the pipe; that ends the write.
+        let text = text.to_owned();
+        std::thread::spawn(move || stdin.write_all(text.as_bytes()).ok());
+    }
     let status = wait_until(&mut child, Instant::now() + timeout);
     let until = Instant::now() + READER_GRACE;
     let (stdout, stderr) = (stdout.text_by(until), stderr.text_by(until));
@@ -124,15 +131,29 @@ fn wait_until(
 /// would keep the pipes open.
 fn stop(child: &mut Child) {
     if cfg!(windows) {
-        Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok();
+        let mut taskkill = Command::new("taskkill");
+        taskkill.args(["/T", "/F", "/PID", &child.id().to_string()]);
+        run_quietly(taskkill, KILL_DEADLINE);
     }
     child.kill().ok();
     child.wait().ok();
+}
+
+/// Run `command` with its output dropped; kill it when `timeout` passes.
+/// Not `run_capturing`: that stops what it runs through `stop`, which runs this.
+fn run_quietly(mut command: Command, timeout: Duration) {
+    let Ok(mut child) = command.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
+        return;
+    };
+    let deadline = Instant::now() + timeout;
+    while matches!(child.try_wait(), Ok(None)) {
+        if Instant::now() >= deadline {
+            child.kill().ok();
+            child.wait().ok();
+            return;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// What a pipe has given so far, and whether it has reached its end.
@@ -223,12 +244,13 @@ pub fn stop_processes_in(venv_dir: &Path) -> usize {
     if !cfg!(windows) {
         return 0;
     }
-    std::process::Command::new("powershell")
+    let mut powershell = Command::new("powershell");
+    powershell
         .args(["-NoProfile", "-NonInteractive", "-Command", &sweep_script()])
-        .env(SWEEP_ROOT_ENV_VAR, venv_dir)
-        .output()
+        .env(SWEEP_ROOT_ENV_VAR, venv_dir);
+    run_capturing(powershell, None, SWEEP_DEADLINE)
         .ok()
-        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
+        .and_then(|out| out.stdout.trim().parse().ok())
         .unwrap_or(0)
 }
 
@@ -360,6 +382,28 @@ mod tests {
     }
 
     #[test]
+    fn input_the_child_never_reads_does_not_hold_back_the_timeout() {
+        let input = "x".repeat(8 * 1024 * 1024);
+        let started = Instant::now();
+        let error = run_within(sleeper(), Some(&input), Duration::from_millis(500)).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the write held the deadline back"
+        );
+    }
+
+    #[test]
+    fn a_helper_command_past_its_deadline_is_killed() {
+        let started = Instant::now();
+        run_quietly(sleeper(), Duration::from_millis(300));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "was not killed promptly"
+        );
+    }
+
+    #[test]
     fn a_program_that_cannot_start_is_an_error_not_a_hang() {
         let error = run_within(
             Command::new("no-such-program-lvpm-test"),
@@ -440,13 +484,27 @@ mod tests {
         copy
     }
 
+    /// A spawned child that is killed when this goes out of scope, so a failed
+    /// assertion leaves no `ping` running for a minute.
     #[cfg(windows)]
-    fn spawn_named(dir: &Path, program: &str) -> Child {
-        Command::new(ping_copy(dir, program))
+    struct KillOnDrop(Child);
+
+    #[cfg(windows)]
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    #[cfg(windows)]
+    fn spawn_named(dir: &Path, program: &str) -> KillOnDrop {
+        let child = Command::new(ping_copy(dir, program))
             .args(["-n", "60", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
-            .unwrap()
+            .unwrap();
+        KillOnDrop(child)
     }
 
     #[cfg(windows)]
@@ -465,25 +523,21 @@ mod tests {
         assert_eq!(stop_processes_in(&venv), 1);
 
         let deadline = Instant::now() + Duration::from_secs(10);
-        while named_in_venv.try_wait().unwrap().is_none() && Instant::now() < deadline {
+        while named_in_venv.0.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::sleep(POLL_INTERVAL);
         }
         assert!(
-            named_in_venv.try_wait().unwrap().is_some(),
+            named_in_venv.0.try_wait().unwrap().is_some(),
             "LabVIEW.exe in the venv survived"
         );
         assert!(
-            other_program_in_venv.try_wait().unwrap().is_none(),
+            other_program_in_venv.0.try_wait().unwrap().is_none(),
             "a program not on the list was stopped"
         );
         assert!(
-            named_in_sibling.try_wait().unwrap().is_none(),
+            named_in_sibling.0.try_wait().unwrap().is_none(),
             "a name sharing only a prefix was stopped"
         );
-        other_program_in_venv.kill().ok();
-        named_in_sibling.kill().ok();
-        other_program_in_venv.wait().ok();
-        named_in_sibling.wait().ok();
     }
 
     #[test]
