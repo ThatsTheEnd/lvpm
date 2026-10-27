@@ -10,6 +10,7 @@
 use super::env::OpEnv;
 use super::install::{
     Applied, InstallOptions, InstallPlan, PlannedPackage, announce_target, apply, finish,
+    order_dependencies_first,
 };
 use super::lock as locking;
 use super::session::{Downloads, InstallSession};
@@ -398,7 +399,12 @@ pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], no_dev: bool) -> SyncP
 
     let mut wanted = Vec::new();
     let to_put_on_disk = lock.packages.iter().filter(|package| wanted_here(package));
-    for package in dependencies_first(to_put_on_disk.collect()) {
+    let ordered = order_dependencies_first(
+        to_put_on_disk.collect(),
+        |package| name_key(&package.name),
+        |package| package.requires.iter().map(|r| name_key(r)).collect(),
+    );
+    for package in ordered {
         let step = match have.get(&name_key(&package.name)) {
             None => SyncStep::Install {
                 name: package.name.clone(),
@@ -426,38 +432,6 @@ fn is_the_locked_one(installed: &Manifest, locked: &LockedPackage) -> bool {
             .archive_sha256
             .as_deref()
             .is_some_and(|sha256| sha256.eq_ignore_ascii_case(&locked.sha256))
-}
-
-/// `packages` with each one after the packages it requires. Otherwise the
-/// order is theirs.
-fn dependencies_first(packages: Vec<&LockedPackage>) -> Vec<&LockedPackage> {
-    let by_name: HashMap<String, &LockedPackage> = packages
-        .iter()
-        .map(|package| (name_key(&package.name), *package))
-        .collect();
-    let mut ordered = Vec::with_capacity(packages.len());
-    let mut visited = HashSet::new();
-    for package in &packages {
-        visit(package, &by_name, &mut visited, &mut ordered);
-    }
-    ordered
-}
-
-fn visit<'a>(
-    package: &'a LockedPackage,
-    by_name: &HashMap<String, &'a LockedPackage>,
-    visited: &mut HashSet<String>,
-    ordered: &mut Vec<&'a LockedPackage>,
-) {
-    if !visited.insert(name_key(&package.name)) {
-        return;
-    }
-    for required in &package.requires {
-        if let Some(dependency) = by_name.get(&name_key(required)) {
-            visit(dependency, by_name, visited, ordered);
-        }
-    }
-    ordered.push(package);
 }
 
 /// Get every archive a sync will put on disk, before it changes anything.

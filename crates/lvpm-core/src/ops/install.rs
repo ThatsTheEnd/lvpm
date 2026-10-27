@@ -21,7 +21,7 @@ use crate::target::Roots;
 use crate::version::Version;
 use crate::{install, relink};
 use anyhow::{Result, bail, ensure};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 type Zip = zip::ZipArchive<std::io::Cursor<Vec<u8>>>;
@@ -76,6 +76,41 @@ impl PlannedPackage {
             expected_sha256: None,
         }
     }
+}
+
+/// `items` with each one after the items it requires, by `key`; otherwise in
+/// their own order. A requirement that names no item is ignored.
+pub(super) fn order_dependencies_first<T>(
+    items: Vec<T>,
+    key: impl Fn(&T) -> String,
+    requires: impl Fn(&T) -> Vec<String>,
+) -> Vec<T> {
+    fn visit<T>(
+        i: usize,
+        items: &[T],
+        at: &HashMap<String, usize>,
+        requires: &dyn Fn(&T) -> Vec<String>,
+        seen: &mut [bool],
+        order: &mut Vec<usize>,
+    ) {
+        if std::mem::replace(&mut seen[i], true) {
+            return;
+        }
+        for r in requires(&items[i]) {
+            if let Some(&j) = at.get(&r) {
+                visit(j, items, at, requires, seen, order);
+            }
+        }
+        order.push(i);
+    }
+    let at: HashMap<String, usize> = items.iter().enumerate().map(|(i, t)| (key(t), i)).collect();
+    let mut seen = vec![false; items.len()];
+    let mut order = Vec::with_capacity(items.len());
+    for i in 0..items.len() {
+        visit(i, &items, &at, &requires, &mut seen, &mut order);
+    }
+    let mut slots: Vec<Option<T>> = items.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
 /// What [`apply`] did, as [`finish`] needs to know it.
@@ -274,7 +309,19 @@ pub fn resolve_greedy(
         );
     }
 
-    entries.reverse(); // dependencies before dependents
+    // The worklist's reversed pre-order is not topological: top -> [b, c]
+    // with b -> c would put b first.
+    let entries = order_dependencies_first(
+        entries,
+        |p| project::name_key(&p.entry.name),
+        |p| {
+            p.entry
+                .requires
+                .iter()
+                .map(|r| project::name_key(&r.name))
+                .collect()
+        },
+    );
 
     env.sink.emit(Event::Resolved {
         packages: entries
@@ -821,6 +868,39 @@ mod tests {
     use crate::errors::Cancelled;
     use crate::events::NullSink;
     use std::io::Write;
+
+    #[test]
+    fn dependencies_come_before_dependents_for_a_chain_a_diamond_and_a_shortcut() {
+        let order = |graph: &[(&'static str, &[&'static str])]| {
+            let items: Vec<(&str, &[&str])> = graph.to_vec();
+            order_dependencies_first(
+                items,
+                |(n, _)| n.to_string(),
+                |(_, r)| r.iter().map(|s| s.to_string()).collect(),
+            )
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&[("top", &["mid"]), ("mid", &["base"]), ("base", &[])]),
+            ["base", "mid", "top"]
+        );
+        assert_eq!(
+            order(&[
+                ("top", &["left", "right"]),
+                ("left", &["base"]),
+                ("right", &["base"]),
+                ("base", &[])
+            ]),
+            ["base", "left", "right", "top"]
+        );
+        // The order resolve_greedy's worklist produced before: b, c, top.
+        assert_eq!(
+            order(&[("b", &["c"]), ("c", &[]), ("top", &["b", "c"])]),
+            ["c", "b", "top"]
+        );
+    }
 
     #[test]
     fn a_named_package_with_no_name_or_an_empty_constraint_is_refused_not_read_as_any_version() {
