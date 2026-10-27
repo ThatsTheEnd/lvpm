@@ -464,7 +464,7 @@ mod tests {
 
     const SHORT: Timeouts = Timeouts {
         install: Duration::from_millis(30),
-        other: Duration::from_millis(30),
+        other: Duration::from_millis(20),
     };
 
     fn exited(code: i32, output: &str) -> Ran {
@@ -489,6 +489,8 @@ mod tests {
         state_file: PathBuf,
         installed: RefCell<BTreeSet<String>>,
         log: RefCell<Vec<String>>,
+        /// The deadline each command was given.
+        deadlines: RefCell<Vec<(String, Duration)>>,
         /// The state file's content at each install.
         state_seen: RefCell<Vec<Option<String>>>,
         listing: Listing,
@@ -511,9 +513,10 @@ mod tests {
             self.log
                 .borrow_mut()
                 .push(args[..2.min(args.len())].join(" "));
+            self.deadlines.borrow_mut().push((args[0].clone(), timeout));
             match args[0].as_str() {
-                "install" => self.install(&args[1], timeout),
-                "uninstall" => self.uninstall(&args[1], timeout),
+                "install" => self.install(&args[1]),
+                "uninstall" => self.uninstall(&args[1]),
                 "info" => {
                     let listed = match self.listing {
                         Listing::Honest => self.installed.borrow().contains(&args[1]),
@@ -529,7 +532,7 @@ mod tests {
             }
         }
 
-        fn install(&self, file: &str, timeout: Duration) -> Ran {
+        fn install(&self, file: &str) -> Ran {
             let state = std::fs::read_to_string(&self.state_file).ok();
             self.state_seen.borrow_mut().push(state);
             if self.reject.is_some_and(|r| file.contains(r)) {
@@ -546,15 +549,13 @@ mod tests {
                 std::fs::write(self.labview.join(outside), "x").unwrap();
             }
             if self.hang_install.is_some_and(|h| file.contains(h)) {
-                std::thread::sleep(timeout);
                 return Ran::TimedOut("partial: synthetic".into());
             }
             exited(0, "installed")
         }
 
-        fn uninstall(&self, name: &str, timeout: Duration) -> Ran {
+        fn uninstall(&self, name: &str) -> Ran {
             if self.hang_uninstall {
-                std::thread::sleep(timeout);
                 return Ran::TimedOut(String::new());
             }
             if self.fail_uninstall {
@@ -770,6 +771,18 @@ mod tests {
         assert!(!rows[0].accepted);
         assert_eq!(rows[0].exit, None);
         assert_eq!(rows[0].note, "timed out after 0.03s");
+        let deadlines = fake.deadlines.borrow();
+        let given = |command: &str| -> Vec<Duration> {
+            let of = deadlines.iter().filter(|(c, _)| c == command);
+            of.map(|(_, d)| *d).collect()
+        };
+        assert_eq!(
+            given("install"),
+            [SHORT.install; 2],
+            "reference and variant"
+        );
+        assert!(given("uninstall").iter().all(|d| *d == SHORT.other));
+        assert!(given("info").iter().all(|d| *d == SHORT.other));
         let kept = std::fs::read_to_string(machine.out().join("01-Requires_b.txt")).unwrap();
         assert_eq!(
             kept, "partial: synthetic",

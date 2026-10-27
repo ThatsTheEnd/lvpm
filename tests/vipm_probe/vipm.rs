@@ -260,6 +260,8 @@ mod tests {
     /// A fake `vipm` that answers by its first argument and logs every call.
     struct Fake {
         calls: RefCell<Vec<String>>,
+        /// The deadline each command was given.
+        deadlines: RefCell<Vec<(String, Duration)>>,
         install: Ran,
         info: Ran,
         uninstall: Ran,
@@ -269,6 +271,7 @@ mod tests {
         fn new(install: Ran, info: Ran) -> Fake {
             Fake {
                 calls: RefCell::default(),
+                deadlines: RefCell::default(),
                 install,
                 info,
                 uninstall: exited(0, ""),
@@ -277,16 +280,13 @@ mod tests {
 
         fn run(&self, args: &[String], timeout: Duration) -> Ran {
             self.calls.borrow_mut().push(args.join(" "));
+            self.deadlines.borrow_mut().push((args[0].clone(), timeout));
             let answer = match args[0].as_str() {
                 "install" => &self.install,
                 "info" => &self.info,
                 "uninstall" => &self.uninstall,
                 _ => return exited(0, "vipm synthetic 1.0"),
             };
-            // A hung command is still there at its deadline, and is killed.
-            if matches!(answer, Ran::TimedOut(_)) {
-                std::thread::sleep(timeout);
-            }
             answer.clone()
         }
     }
@@ -365,11 +365,14 @@ mod tests {
     #[test]
     fn a_command_past_its_timeout_is_killed_and_rejected() {
         let fake = Fake::new(Ran::TimedOut(String::new()), exited(0, "pkg 1.0.0.1"));
-        let started = std::time::Instant::now();
         let judged = with(&fake, |v| {
             v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
         });
-        assert!(started.elapsed() >= SHORT.install);
+        assert_eq!(
+            *fake.deadlines.borrow(),
+            [("install".to_string(), SHORT.install)],
+            "an install gets the install deadline"
+        );
         assert!(!judged.accepted);
         assert_eq!(judged.exit, None);
         assert_eq!(judged.note, "timed out after 0.05s");
@@ -443,6 +446,10 @@ mod tests {
         let why = with(&fake, |v| v.remove("pkg")).unwrap_err();
         assert!(why.contains("vipm uninstall pkg"), "{why}");
         assert!(why.contains("timed out after 0.02s"), "{why}");
+        assert_eq!(
+            *fake.deadlines.borrow(),
+            [("uninstall".to_string(), SHORT.other)]
+        );
     }
 
     #[test]
