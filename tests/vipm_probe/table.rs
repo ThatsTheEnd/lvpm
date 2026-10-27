@@ -32,10 +32,13 @@ pub fn first_line(output: &str) -> String {
         .to_string()
 }
 
-/// A cell on one line: a pipe would end it, a newline would end its row.
+/// A cell on one line: a pipe would end it, a newline would end its row, and
+/// an angle bracket could open markup.
 pub fn escape(cell: &str) -> String {
     cell.replace('\\', "\\\\")
         .replace('|', "\\|")
+        .replace('<', "\\<")
+        .replace('>', "\\>")
         .replace("\r\n", "\\n")
         .replace(['\n', '\r'], "\\n")
 }
@@ -247,6 +250,15 @@ mod tests {
             lines_of_rows(&text),
             ["| a\\|b | rejected | 1 | x \\| y\\nz\\nw | - |"]
         );
+    }
+
+    #[test]
+    fn angle_brackets_cannot_open_markup_in_a_cell() {
+        assert_eq!(escape("<b>x</b> a<b"), "\\<b\\>x\\</b\\> a\\<b");
+        let rows = [row("v", false, Some(1), "<script>")];
+        let text = render(&header(), &rows, &RefDiff::default(), &["<x>".into()]);
+        assert!(text.contains("| \\<script\\> |"), "{text}");
+        assert!(text.contains("- \\<x\\>"), "{text}");
     }
 
     #[test]
