@@ -8,7 +8,8 @@ use crate::support::snapshot::{self, Change, LABVIEW_NOISE, Snapshot};
 use crate::table::Row;
 use crate::variants::{Pkg, Variant};
 use crate::vipm::{
-    DATA_MANIPULATION, PALETTE, TOUCHED, Vipm, preflight, progress, uninstall_command,
+    DATA_MANIPULATION, NOT_LISTED_NOTE, PALETTE, TOUCHED, Vipm, preflight, progress,
+    uninstall_command,
 };
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -351,19 +352,21 @@ fn reference_install(
     let reference = begin(probe, "reference", reference_file, &packages, baseline)?;
     if !reference.judged.accepted {
         let output = stem_path(probe, "reference", ".txt");
-        return Err(match reference.judged.exit {
-            Some(0) => format!(
-                "{CANNOT_TELL}: the install of the published pilot A archive exited 0 \
+        return Err(
+            match (reference.judged.exit, reference.judged.note.as_str()) {
+                (Some(0), NOT_LISTED_NOTE) => format!(
+                    "{CANNOT_TELL}: the install of the published pilot A archive exited 0 \
                  but it is not listed; VIPM's output is in {}",
-                output.display()
-            ),
-            _ => format!(
-                "environment: the install of the published pilot A archive did not succeed \
+                    output.display()
+                ),
+                _ => format!(
+                    "environment: the install of the published pilot A archive did not succeed \
                  ({}); VIPM's output is in {}; no findings recorded",
-                reference.judged.note,
-                output.display()
-            ),
-        });
+                    reference.judged.note,
+                    output.display()
+                ),
+            },
+        );
     }
     finish(probe, "the reference install", &packages, baseline)?;
     let full_after = snapshot::scan(probe.labview, None, &LABVIEW_NOISE)?;
@@ -490,6 +493,8 @@ mod tests {
         Honest,
         Never,
         Always,
+        /// `vipm info` hangs.
+        Hangs,
     }
 
     /// A stand-in LabVIEW tree and a `vipm` that installs into it.
@@ -527,11 +532,13 @@ mod tests {
             match args[0].as_str() {
                 "install" => self.install(&args[1]),
                 "uninstall" => self.uninstall(&args[1]),
+                "info" if self.listing == Listing::Hangs => Ran::TimedOut(String::new()),
                 "info" => {
                     let listed = match self.listing {
                         Listing::Honest => self.installed.borrow().contains(&args[1]),
                         Listing::Never => false,
                         Listing::Always => true,
+                        Listing::Hangs => unreachable!("answered above"),
                     };
                     match listed {
                         true => exited(0, &format!("{} 1.0.0.1", args[1])),
@@ -796,6 +803,21 @@ mod tests {
             why.starts_with("environment") && why.contains("timed out after"),
             "{why}"
         );
+    }
+
+    #[test]
+    fn a_reference_install_vipm_info_cannot_judge_stops_the_run_as_environment() {
+        let machine = Machine::new();
+        let mut fake = machine.fake();
+        fake.listing = Listing::Hangs;
+        let why = machine.run(&fake, &[id_variant("ID=a")]).unwrap_err();
+        assert!(why.starts_with("environment"), "{why}");
+        assert!(
+            why.contains("`vipm info p`") && why.contains("timed out"),
+            "{why}"
+        );
+        assert!(!why.contains("cannot tell installed"), "{why}");
+        assert_eq!(fake.calls("install").len(), 1, "no variant was installed");
     }
 
     #[test]

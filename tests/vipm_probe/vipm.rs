@@ -75,6 +75,9 @@ pub struct Judged {
     pub output: String,
 }
 
+/// The note of an install that exited 0 but that `vipm info` does not list.
+pub const NOT_LISTED_NOTE: &str = "not listed by vipm info";
+
 pub fn timed_out_note(timeout: Duration) -> String {
     format!("timed out after {}s", timeout.as_secs_f64())
 }
@@ -114,13 +117,14 @@ impl<'a> Vipm<'a> {
     }
 
     /// Whether `vipm info <name>` lists the package: it exits 0 and its output
-    /// holds the name and, when given, the version. Broad on purpose: a false
-    /// "listed" only stops the run. An error means the command gave no answer.
+    /// holds the name and, when given, the version, each as a whole token (not
+    /// inside a longer name or number). Otherwise broad: a false "listed" only
+    /// stops the run. An error means the command gave no answer.
     pub fn info(&self, name: &str, version: Option<&str>) -> Result<bool, String> {
         match self.exec(&["info", name], self.timeouts.other) {
             Ran::Exited { code, output } => Ok(code == 0
-                && output.contains(name)
-                && version.is_none_or(|v| output.contains(v))),
+                && has_token(&output, name)
+                && version.is_none_or(|v| has_token(&output, v))),
             Ran::TimedOut(_) => Err(format!(
                 "`vipm info {name}` {}",
                 timed_out_note(self.timeouts.other)
@@ -153,12 +157,12 @@ impl<'a> Vipm<'a> {
                     note: first_line(&output),
                     output,
                 },
-                Ok(false) => rejected(Some(0), "not listed by vipm info".into(), output),
+                Ok(false) => rejected(Some(0), NOT_LISTED_NOTE.into(), output),
                 Err(why) => rejected(Some(0), why, output),
             },
             Ran::Exited { code, output } => rejected(Some(code), first_line(&output), output),
             Ran::TimedOut(output) => rejected(None, timed_out_note(self.timeouts.install), output),
-            Ran::CannotStart(why) => rejected(None, format!("could not start: {why}"), why),
+            Ran::CannotStart(why) => rejected(None, why.clone(), why),
         }
     }
 
@@ -177,6 +181,22 @@ impl<'a> Vipm<'a> {
             Ran::CannotStart(why) => Err(format!("`{command}`: {why}")),
         }
     }
+}
+
+/// Whether `needle` stands in `text` as a whole token: letters, digits, `_`
+/// and a `.` between them join a token, so `1.0.0.1` is not in `11.0.0.12`.
+fn has_token(text: &str, needle: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let joins = |next: &mut dyn Iterator<Item = char>| match next.next() {
+        Some(c) if word(c) => true,
+        Some('.') => next.next().is_some_and(word),
+        _ => false,
+    };
+    text.match_indices(needle).any(|(at, _)| {
+        let before = &mut text[..at].chars().rev();
+        let after = &mut text[at + needle.len()..].chars();
+        !joins(before) && !joins(after)
+    })
 }
 
 /// The command that removes `name` by hand.
@@ -311,6 +331,29 @@ mod tests {
     }
 
     #[test]
+    fn the_version_and_the_name_must_be_whole_tokens() {
+        let cases = [
+            ("pkg 11.0.0.12 installed", false),
+            ("pkg 1.0.0.12 installed", false),
+            ("pkg 1.0.0.1.5 installed", false),
+            ("pkg 21.0.0.1 installed", false),
+            ("xpkg 1.0.0.1", false),
+            ("pkg_extra 1.0.0.1", false),
+            ("my.pkg 1.0.0.1", false),
+            ("pkg 1.0.0.1", true),
+            ("pkg 1.0.0.1.", true),
+            ("pkg-1.0.0.1", true),
+            ("[pkg] (1.0.0.1)", true),
+            ("pkg 11.0.0.12, pkg 1.0.0.1", true),
+        ];
+        for (output, listed) in cases {
+            let fake = Fake::new(exited(0, ""), exited(0, output));
+            let got = with(&fake, |v| v.info("pkg", Some("1.0.0.1")));
+            assert_eq!(got, Ok(listed), "{output}");
+        }
+    }
+
+    #[test]
     fn without_a_version_the_name_is_enough() {
         let fake = Fake::new(exited(0, ""), exited(0, "pkg 9.9.9"));
         assert_eq!(with(&fake, |v| v.info("pkg", None)), Ok(true));
@@ -337,7 +380,7 @@ mod tests {
         });
         assert!(!judged.accepted);
         assert_eq!(judged.exit, Some(0));
-        assert_eq!(judged.note, "not listed by vipm info");
+        assert_eq!(judged.note, NOT_LISTED_NOTE);
     }
 
     #[test]
@@ -465,22 +508,22 @@ mod tests {
 
     #[test]
     fn a_command_that_cannot_start_is_said_for_each_command() {
-        let boom = || Ran::CannotStart("boom".into());
+        let boom = || Ran::CannotStart("could not start: boom".into());
         let fake = Fake::new(boom(), boom());
         let judged = with(&fake, |v| {
             v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
         });
         assert!(!judged.accepted);
         assert_eq!(judged.exit, None);
-        assert_eq!(judged.note, "could not start: boom");
-        assert_eq!(judged.output, "boom");
+        assert_eq!(judged.note, "could not start: boom", "said once");
+        assert_eq!(judged.output, "could not start: boom");
         let why = with(&fake, |v| v.info("pkg", None)).unwrap_err();
-        assert_eq!(why, "`vipm info pkg`: boom");
+        assert_eq!(why, "`vipm info pkg`: could not start: boom");
 
         let mut fake = Fake::new(exited(0, ""), exited(0, ""));
         fake.uninstall = boom();
         let why = with(&fake, |v| v.remove("pkg")).unwrap_err();
-        assert_eq!(why, "`vipm uninstall pkg`: boom");
+        assert_eq!(why, "`vipm uninstall pkg`: could not start: boom");
         let run = |_: &[String], _: Duration| boom();
         assert!(Vipm::new(&run, SHORT).version().is_err());
     }
