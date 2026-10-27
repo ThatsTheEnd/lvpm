@@ -397,15 +397,15 @@ the acceptance scenarios pin.
 
 ## Build Progress
 
-- [ ] Wave 1
-  - [ ] Slice 1: lvpm publish
-    - [ ] 1.0 a shared staging name
-    - [ ] 1.1 the publish operation and the command
-    - [ ] 1.2 consumed by lock
-- [ ] Wave 2
-  - [ ] Slice 2: the docs and the pilot loop
-    - [ ] 2.1 the docs
-    - [ ] 2.2 the loop scenario
+- [x] Wave 1
+  - [x] Slice 1: lvpm publish
+    - [x] 1.0 a shared staging name
+    - [x] 1.1 the publish operation and the command
+    - [x] 1.2 consumed by lock
+- [x] Wave 2
+  - [x] Slice 2: the docs and the pilot loop
+    - [x] 2.1 the docs
+    - [x] 2.2 the loop scenario
 
 ## Approval
 
