@@ -219,34 +219,43 @@ fn begin(
     Ok(Started { judged, installed })
 }
 
-/// Uninstall what the state file names, check the scoped tree against
-/// `baseline`, and delete the state file. Whether `vipm info` still lists a
-/// package after its uninstall.
+/// Uninstall what the state file names, then check that `vipm info` no longer
+/// lists any of it and the scoped tree is as `baseline` had it; only then
+/// delete the state file, so a failure leaves it for the next start.
 fn finish(
     probe: &Probe,
     label: &str,
     packages: &[String],
     baseline: &Snapshot,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     for name in packages {
         remove_if_listed(probe.vipm, name)?;
     }
-    let mut still_listed = false;
+    let mut listed = Vec::new();
     for name in packages {
-        still_listed |= probe.vipm.info(name, None)?;
+        if probe.vipm.info(name, None)? {
+            listed.push(name.as_str());
+        }
+    }
+    if !listed.is_empty() {
+        let commands: Vec<String> = listed.iter().map(|p| uninstall_command(p)).collect();
+        return Err(format!(
+            "{CANNOT_TELL}: after {label} `vipm info` still lists {} after its uninstall;              uninstall with `{}`, then re-run",
+            listed.join(", "),
+            commands.join("`, `")
+        ));
     }
     let changes = snapshot::diff(probe.labview, baseline, &scan_scope(probe.labview)?);
     if !changes.is_empty() {
         let commands: Vec<String> = packages.iter().map(|p| uninstall_command(p)).collect();
         return Err(format!(
-            "after {label} the LabVIEW tree differs from its snapshot: {}; \
-             uninstall with `{}`, then re-run",
+            "after {label} the LabVIEW tree differs from its snapshot: {};              uninstall with `{}`, then re-run",
             describe(&changes),
             commands.join("`, `")
         ));
     }
     std::fs::remove_file(probe.state_file).ok();
-    Ok(still_listed)
+    Ok(())
 }
 
 /// The path a `git status --porcelain` line is about (the new one of a rename).
@@ -339,11 +348,7 @@ fn reference_install(
             ),
         });
     }
-    if finish(probe, "the reference install", &packages, baseline)? {
-        return Err(format!(
-            "{CANNOT_TELL}: the published pilot A archive is still listed after its uninstall"
-        ));
-    }
+    finish(probe, "the reference install", &packages, baseline)?;
     let full_after = snapshot::scan(probe.labview, None, &LABVIEW_NOISE)?;
     let outside: Vec<Change> = snapshot::diff(probe.labview, full_before, &full_after)
         .into_iter()
@@ -408,11 +413,7 @@ fn probe_variant(
     let started = begin(probe, &stem, &file, &packages, baseline)?;
     eprintln!("{}", progress(index, total, &variant.name, "cleaning up"));
     let label = format!("variant {}", variant.name);
-    if finish(probe, &label, &packages, baseline)? {
-        return Err(format!(
-            "after {label} `vipm info` still lists a package after its uninstall"
-        ));
-    }
+    finish(probe, &label, &packages, baseline)?;
     let same_files = match started.judged.accepted {
         true => Some(record_install_diff(
             probe,
@@ -501,6 +502,8 @@ mod tests {
         outside: Option<&'static str>,
         fail_uninstall: bool,
         hang_uninstall: bool,
+        /// Uninstalling this package exits 0 and removes nothing.
+        keep: Option<&'static str>,
     }
 
     impl Fake {
@@ -556,6 +559,9 @@ mod tests {
             }
             if self.fail_uninstall {
                 return exited(1, "cannot uninstall: synthetic");
+            }
+            if self.keep == Some(name) {
+                return exited(0, "");
             }
             let dir = self.labview.join("vi.lib").join(name);
             std::fs::remove_dir_all(&dir).ok();
@@ -781,6 +787,31 @@ mod tests {
             why.contains("variant Requires=b") && why.contains("stale.vi"),
             "{why}"
         );
+    }
+
+    #[test]
+    fn a_package_still_listed_after_its_uninstall_keeps_the_state_file() {
+        let machine = Machine::new();
+        let mut fake = machine.fake();
+        fake.keep = Some(DATA_MANIPULATION);
+        let why = machine
+            .run(&fake, &[requires_variant("Requires=b")])
+            .unwrap_err();
+        assert!(
+            why.contains(&format!("`vipm uninstall {DATA_MANIPULATION}`")),
+            "{why}"
+        );
+        assert!(
+            machine.state_file().exists(),
+            "the next start must check what is still installed"
+        );
+
+        let machine = Machine::new();
+        let mut fake = machine.fake();
+        fake.listing = Listing::Always;
+        let why = machine.run(&fake, &[id_variant("ID=a")]).unwrap_err();
+        assert!(why.contains("`vipm uninstall p`"), "{why}");
+        assert!(machine.state_file().exists());
     }
 
     #[test]
