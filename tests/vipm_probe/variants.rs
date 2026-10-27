@@ -632,6 +632,39 @@ mod tests {
         }
     }
 
+    fn pkg_of(spec: &str) -> Pkg {
+        Pkg {
+            entries: vec![("spec".into(), spec.as_bytes().to_vec())],
+        }
+    }
+
+    /// The names of the variants `published_key_variants` makes, and the keys it lists.
+    fn keyed(base: &str, reference: &str, other: &str) -> (Vec<String>, Vec<String>) {
+        let (reference, other) = (pkg_of(reference), pkg_of(other));
+        let published = [reference.clone(), other];
+        let (list, rest) = published_key_variants(&pkg_of(base), &reference, &published);
+        (list.into_iter().map(|v| v.name).collect(), rest)
+    }
+
+    #[test]
+    fn a_published_key_in_one_spec_only_or_written_by_lvpm_or_with_its_own_variant_gets_none() {
+        let reference = "[Package]\nOurs=\"1\"\nID=\"abc\"\nShared=\"s\"\nOnlyHere=\"o\"\n\
+                         [Description]\nLicense Agreement=\"l\"\n";
+        let other = reference.replace("OnlyHere=\"o\"\n", "");
+        let (names, rest) = keyed("[Package]\nOurs=\"1\"\n", reference, &other);
+        assert_eq!(names, ["[Package]/Shared"]);
+        assert!(rest.is_empty(), "{rest:?}");
+    }
+
+    #[test]
+    fn description_keys_come_last_and_only_five_keys_get_a_variant() {
+        let reference = "[Description]\nSummary=\"s\"\n[S]\nk1=\"1\"\nk2=\"2\"\nk3=\"3\"\n\
+                         k4=\"4\"\nk5=\"5\"\nk6=\"6\"\n";
+        let (names, rest) = keyed("[Package]\n", reference, reference);
+        assert_eq!(names, ["[S]/k1", "[S]/k2", "[S]/k3", "[S]/k4", "[S]/k5"]);
+        assert_eq!(rest, ["[S]/k6", "[Description]/Summary"]);
+    }
+
     #[test]
     fn the_id_variants_set_a_32_digit_id_and_the_random_one_is_pinned() {
         let (reference, all) = reference_and_published();
@@ -670,6 +703,20 @@ mod tests {
             set_key(text, "C", "k", Some("\"v\"")),
             "[A]\nx=\"1\"\ny=\"2\"\n\n[B]\nz=\"3\"\n\n[C]\nk=\"v\"\n"
         );
+    }
+
+    #[test]
+    fn a_non_utf8_byte_in_a_spec_value_survives_a_variant_that_changes_another_key() {
+        let spec = b"[Package]\nName=\"p\"\nDisplay Name=\"a\x93b\"\n".to_vec();
+        let base = Pkg {
+            entries: vec![("spec".into(), spec)],
+        };
+        let applied = Variant::new("v")
+            .key("Package", "ID", Some("\"x\""))
+            .apply(&base);
+        let bytes = applied.get("spec").unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"a\x93b\""), "{bytes:?}");
+        assert!(bytes.windows(3).any(|w| w == b"ID="), "{bytes:?}");
     }
 
     #[test]

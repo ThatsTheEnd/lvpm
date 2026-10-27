@@ -595,6 +595,24 @@ Requires=b>=1.0,a
     }
 
     #[test]
+    fn a_copied_tree_has_the_files_and_folders_of_the_original() {
+        let from = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(from.path().join("a/b")).unwrap();
+        std::fs::create_dir_all(from.path().join("a/empty")).unwrap();
+        std::fs::write(from.path().join("top.txt"), "t").unwrap();
+        std::fs::write(from.path().join("a/b/deep.txt"), "deep").unwrap();
+        let to = tempfile::tempdir().unwrap();
+        let copy = to.path().join("copy");
+        copy_tree(from.path(), &copy);
+        let shape = |root: &Path| -> Vec<(PathBuf, Option<u64>)> {
+            let found = super::super::snapshot::scan(root, None, &[]).unwrap();
+            found.into_iter().map(|(path, e)| (path, e.size)).collect()
+        };
+        assert_eq!(shape(&copy), shape(from.path()));
+        assert!(copy.join("a/empty").is_dir(), "an empty folder is copied");
+    }
+
+    #[test]
     fn files_are_found_by_name_ignoring_case() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("a/b")).unwrap();

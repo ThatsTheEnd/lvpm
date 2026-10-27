@@ -179,8 +179,8 @@ mod tests {
     #[test]
     fn the_run_folder_names_the_vipm_version() {
         assert_eq!(
-            run_folder("20240229T000000", "VIPM CLI 26.3.0 (build 5)"),
-            "20240229T000000-vipm-26.3.0"
+            run_folder("20240229T000000", "Example CLI 1.2.3 (build 9)"),
+            "20240229T000000-vipm-1.2.3"
         );
         assert_eq!(run_folder("s", "odd/name"), "s-vipm-odd_name");
     }
@@ -240,6 +240,11 @@ mod tests {
             lines_of_rows(&text),
             ["| a\\|b | rejected | 1 | x \\| y\\nz\\nw | - |"]
         );
+    }
+
+    #[test]
+    fn a_backslash_is_escaped_so_it_cannot_cancel_the_escape_of_a_pipe() {
+        assert_eq!(escape("a\\|b"), "a\\\\\\|b");
     }
 
     #[test]
