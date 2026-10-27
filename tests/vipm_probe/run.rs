@@ -259,18 +259,18 @@ fn finish(
     Ok(())
 }
 
-/// The path a `git status --porcelain` line is about (the new one of a rename).
-fn porcelain_path(line: &str) -> &str {
-    let path = line.get(3..).unwrap_or_default();
-    path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"')
+/// The paths a `git status --porcelain` line is about: both ends of a rename.
+fn porcelain_paths(line: &str) -> impl Iterator<Item = &str> {
+    let paths = line.get(3..).unwrap_or_default();
+    paths.split(" -> ").map(|path| path.trim_matches('"'))
 }
 
-/// The lines of a `git status --porcelain`, without those below `.claude/`:
-/// this repo's hooks write there during any session.
+/// The lines of a `git status --porcelain`, without those whose paths are all
+/// below `.claude/`: this repo's hooks write there during any session.
 fn outside_claude(status: &str) -> BTreeSet<&str> {
     status
         .lines()
-        .filter(|line| !porcelain_path(line).starts_with(".claude/"))
+        .filter(|line| !porcelain_paths(line).all(|path| path.starts_with(".claude/")))
         .collect()
 }
 
@@ -1031,13 +1031,24 @@ mod tests {
         let only_claude =
             " M .claude/metrics/a.jsonl\n M .claude/metrics/b.jsonl\n?? .dev-team-reports/\n";
         assert_eq!(git_status_unchanged(before, only_claude), Ok(()));
-        let after = " M .claude/metrics/a.jsonl\n M src/x.rs\n?? .dev-team-reports/\n\
-                     R  old.rs -> .claude/new.rs\n";
+        let after = " M .claude/metrics/a.jsonl\n M src/x.rs\n?? .dev-team-reports/\n";
         let why = git_status_unchanged(before, after).unwrap_err();
         assert!(why.contains("src/x.rs"), "{why}");
-        assert!(!why.contains("metrics") && !why.contains("new.rs"), "{why}");
+        assert!(!why.contains("metrics"), "{why}");
         let gone = git_status_unchanged(before, "").unwrap_err();
         assert!(gone.contains(".dev-team-reports/"), "{gone}");
+    }
+
+    #[test]
+    fn a_rename_is_ignored_only_when_both_its_paths_are_below_claude() {
+        let before = "?? x\n";
+        let renamed = |line: &str| git_status_unchanged(before, &format!("{before}{line}\n"));
+        assert_eq!(renamed("R  .claude/a -> .claude/b"), Ok(()));
+        assert_eq!(renamed("R  .claude/a -> \".claude/b c\""), Ok(()));
+        for line in ["R  old.rs -> .claude/new.rs", "R  .claude/a -> src/b.rs"] {
+            let why = renamed(line).unwrap_err();
+            assert!(why.contains(line), "{why}");
+        }
     }
 
     #[test]
