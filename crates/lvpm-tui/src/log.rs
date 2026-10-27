@@ -81,10 +81,12 @@ pub fn append(path: &Path, lines: &[String]) -> io::Result<()> {
     // Feed text may hold terminal escapes; a `type tui.log` must not run them.
     let text: String = lines
         .iter()
-        .flat_map(|line| line.chars().chain(['\n']))
-        .flat_map(|c| match c.is_control() && c != '\n' {
-            true => c.escape_unicode().collect::<Vec<_>>(),
-            false => vec![c],
+        .flat_map(|line| {
+            let escaped = line.chars().flat_map(|c| match c.is_control() {
+                true => c.escape_unicode().collect::<Vec<_>>(),
+                false => vec![c],
+            });
+            escaped.chain(['\n'])
         })
         .collect();
     file.write_all(text.as_bytes())

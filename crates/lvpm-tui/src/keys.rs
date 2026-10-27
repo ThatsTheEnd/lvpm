@@ -6,7 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// A key and what it does.
 #[derive(Debug)]
 pub struct Binding {
-    /// How the footer and the help screen name the key.
+    /// How the footer names the key.
     pub key: &'static str,
     /// What the key does, in a word or two.
     pub action: &'static str,
