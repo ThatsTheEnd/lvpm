@@ -177,17 +177,37 @@ fn file_stem(index: usize, variant: &str) -> String {
     format!("{index:02}-{safe}")
 }
 
-/// Pilot A, and what a package that `Requires` something makes VIPM fetch with it.
-fn packages_for(name: &str, pkg: &Pkg) -> Vec<String> {
-    let requires = match lvpm_core::spec::parse(&pkg.spec()) {
-        Ok(spec) => spec.requires.is_some(),
-        Err(_) => true,
-    };
+/// Pilot A, and what the spec's `Requires` makes VIPM install with it: the
+/// packages it names, and the palette that Data Manipulation brings. A name
+/// the preflight does not check is an error, not something to uninstall.
+fn packages_for(name: &str, pkg: &Pkg) -> Result<Vec<String>, String> {
+    let spec = lvpm_core::spec::parse(&pkg.spec()).map_err(|e| format!("a spec: {e:#}"))?;
     let mut packages = vec![name.to_string()];
-    if requires {
-        packages.extend([DATA_MANIPULATION.to_string(), PALETTE.to_string()]);
+    let mut add = |package: &str| match packages.iter().any(|p| p == package) {
+        true => {}
+        false => packages.push(package.to_string()),
+    };
+    for required in spec.requires.iter().flat_map(|list| list.split(',')) {
+        let package = required
+            .trim()
+            .split(['<', '>', '=', ' '])
+            .next()
+            .unwrap_or_default();
+        if package.is_empty() {
+            continue;
+        }
+        if !TOUCHED.contains(&package) {
+            return Err(format!(
+                "a package requires {package}, which the preflight does not check; \
+                 add it to TOUCHED in tests/vipm_probe/vipm.rs"
+            ));
+        }
+        add(package);
+        if package == DATA_MANIPULATION {
+            add(PALETTE);
+        }
     }
-    packages
+    Ok(packages)
 }
 
 /// An install, judged, with the files it added to the scoped tree.
@@ -331,7 +351,7 @@ fn reference_install(
     let reference_pkg = std::fs::read(reference_file)
         .map_err(|e| format!("reading {}: {e}", reference_file.display()))
         .and_then(|bytes| Pkg::read(&bytes))?;
-    let packages = packages_for(probe.name, &reference_pkg);
+    let packages = packages_for(probe.name, &reference_pkg)?;
     let reference = begin(probe, "reference", reference_file, &packages, baseline)?;
     if !reference.judged.accepted {
         let output = stem_path(probe, "reference", ".txt");
@@ -410,7 +430,7 @@ fn probe_variant(
     let stem = file_stem(index, &variant.name);
     let pkg = variant.apply(base);
     let file = write_variant(probe, &stem, &pkg)?;
-    let packages = packages_for(probe.name, &pkg);
+    let packages = packages_for(probe.name, &pkg)?;
     let started = begin(probe, &stem, &file, &packages, baseline)?;
     eprintln!("{}", progress(index, total, &variant.name, "cleaning up"));
     let label = format!("variant {}", variant.name);
@@ -540,7 +560,7 @@ mod tests {
                 return exited(2, "rejected: synthetic\nmore");
             }
             let pkg = Pkg::read(&std::fs::read(file).unwrap()).unwrap();
-            for name in packages_for("p", &pkg) {
+            for name in packages_for("p", &pkg).unwrap() {
                 let dir = self.labview.join("vi.lib").join(&name);
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::write(dir.join(format!("{name}.vi")), "vi").unwrap();
@@ -656,7 +676,60 @@ mod tests {
     }
 
     fn requires_variant(name: &str) -> Variant {
-        Variant::new(name).key("Dependencies", "Requires", Some("\"x>=1.0\""))
+        requires(name, &format!("{DATA_MANIPULATION}>=1.0"))
+    }
+
+    fn requires(name: &str, list: &str) -> Variant {
+        Variant::new(name).key("Dependencies", "Requires", Some(&format!("\"{list}\"")))
+    }
+
+    #[test]
+    fn the_packages_follow_what_the_spec_requires() {
+        let packages = |list: Option<&str>| {
+            let variant = list.map_or_else(|| Variant::new("none"), |l| requires("r", l));
+            packages_for("p", &variant.apply(&sample_base()))
+        };
+        let own = |names: &[&str]| Ok(names.iter().map(|n| n.to_string()).collect());
+        assert_eq!(packages(None), own(&["p"]));
+        assert_eq!(
+            packages(Some(&format!("{DATA_MANIPULATION}>=1.5.0.15"))),
+            own(&["p", DATA_MANIPULATION, PALETTE]),
+            "Data Manipulation brings the palette"
+        );
+        assert_eq!(packages(Some(PALETTE)), own(&["p", PALETTE]));
+        assert_eq!(
+            packages(Some(&format!("{DATA_MANIPULATION}=1, {PALETTE}>=2"))),
+            own(&["p", DATA_MANIPULATION, PALETTE]),
+            "no package twice"
+        );
+        let why = packages(Some("other>=1")).unwrap_err();
+        assert!(why.contains("other") && why.contains("preflight"), "{why}");
+    }
+
+    #[test]
+    fn every_variant_installs_only_what_the_preflight_checks() {
+        use crate::support::pilots::{PILOT_A_ARCHIVE, archives, pilots_dir};
+        let read = |path: &Path| Pkg::read(&std::fs::read(path).unwrap()).unwrap();
+        let published: Vec<Pkg> = archives(&pilots_dir()).iter().map(|p| read(p)).collect();
+        let reference = read(&pilots_dir().join(PILOT_A_ARCHIVE));
+        let (variants, _) =
+            crate::variants::variants(&sample_base(), &reference, &published).unwrap();
+        for variant in variants.iter() {
+            let packages = packages_for(PILOT_A, &variant.apply(&sample_base())).unwrap();
+            for package in packages {
+                assert!(
+                    TOUCHED.contains(&package.as_str()),
+                    "{}: {package}",
+                    variant.name
+                );
+            }
+        }
+        let packages = packages_for(PILOT_A, &reference).unwrap();
+        assert_eq!(
+            packages,
+            [PILOT_A],
+            "the published archive requires nothing"
+        );
     }
 
     #[test]
