@@ -1,6 +1,7 @@
 //! The pilot libraries of the build slices: their archives, each with a SHA-256 checksum
 //! in `tests/fixtures/pilots/SHA256SUMS`, and what a mass compile of them says.
 
+use super::snapshot::hex;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,10 +60,6 @@ pub fn check_checksums(dir: &Path) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The `.lvlib` file names inside a `.vip`: what would show that its package
