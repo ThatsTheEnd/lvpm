@@ -78,7 +78,15 @@ pub fn append(path: &Path, lines: &[String]) -> io::Result<()> {
         fs::rename(path, backup(path)).ok();
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    // Feed text may hold terminal escapes; a `type tui.log` must not run them.
+    let text: String = lines
+        .iter()
+        .flat_map(|line| line.chars().chain(['\n']))
+        .flat_map(|c| match c.is_control() && c != '\n' {
+            true => c.escape_unicode().collect::<Vec<_>>(),
+            false => vec![c],
+        })
+        .collect();
     file.write_all(text.as_bytes())
 }
 
@@ -127,6 +135,15 @@ mod tests {
         fs::File::create(path)
             .and_then(|file| file.set_len(len))
             .expect("a sized log");
+    }
+
+    #[test]
+    fn control_characters_are_written_escaped() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("tui.log");
+        append(&path, &["evil\u{1b}]0;x\u{7}".into()]).expect("appended");
+        let text = fs::read_to_string(&path).expect("the log");
+        assert_eq!(text, "evil\\u{1b}]0;x\\u{7}\n");
     }
 
     #[test]

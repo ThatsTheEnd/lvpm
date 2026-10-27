@@ -10,7 +10,7 @@ use crate::{keys, log, ui};
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::install::Manifest;
 use lvpm_core::ops::Destination;
-use lvpm_core::ops::query::{Catalog, PackageInfo, resolvable};
+use lvpm_core::ops::query::{Catalog, PackageInfo, needs_newer_labview, resolvable};
 use lvpm_core::project::same_name;
 use lvpm_core::target::LvTarget;
 use ratatui::Terminal;
@@ -513,7 +513,14 @@ impl App {
                 self.detail = None;
             } else if keys::INSTALL.matches(key) {
                 let (name, version) = detail.key();
-                self.plan(&name, &version);
+                let entry = detail.entry().clone();
+                // An exact pin skips core's LabVIEW check, so the TUI refuses it here.
+                match self.target().and_then(|t| needs_newer_labview(&entry, t)) {
+                    Some(year) => {
+                        self.note = Some(format!("{name} {version} needs LabVIEW {year}"));
+                    }
+                    None => self.plan(&name, &version),
+                }
             } else {
                 detail_key(detail, key);
             }
@@ -917,6 +924,24 @@ mod tests {
         press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.detail.is_none());
         assert_eq!(browse(&app).selected().unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn install_from_the_details_refuses_a_version_that_needs_a_newer_labview() {
+        let mut app = listing();
+        let labview_2025 = LvTarget {
+            version: 25.0,
+            bitness: 64,
+            path: "LabVIEW 2025".into(),
+        };
+        app.destination = Ok(Destination::Global(lvpm_core::target::Roots::labview(
+            &labview_2025,
+        )));
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        app.detail = browse(&app).selected().map(Detail::new);
+        press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert_eq!(app.note.as_deref(), Some("gamma 1.0 needs LabVIEW 2099"));
+        assert!(app.op.is_none());
     }
 
     #[test]
