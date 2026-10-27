@@ -74,7 +74,8 @@ pub fn append(path: &Path, lines: &[String]) -> io::Result<()> {
     }
     // shortcut: two TUIs rotating at once can lose an entry, lock the file if that matters.
     if fs::metadata(path).is_ok_and(|file| file.len() >= ROTATE_AT) {
-        fs::rename(path, backup(path))?;
+        // A log held open elsewhere cannot move; append anyway and rotate next time.
+        fs::rename(path, backup(path)).ok();
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     let text: String = lines.iter().map(|line| format!("{line}\n")).collect();

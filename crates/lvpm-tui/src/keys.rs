@@ -1,5 +1,5 @@
-//! The keys the TUI acts on. The footer, the help screen and the key dispatch
-//! all read this table, so a key is named and bound in one place.
+//! The keys the TUI acts on. The footer and the key dispatch both read this
+//! table, so a key is named and bound in one place.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

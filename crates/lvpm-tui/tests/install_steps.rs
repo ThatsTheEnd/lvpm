@@ -148,9 +148,8 @@ impl TuiWorld {
         }
     }
 
-    /// Core's error is on screen, at least its start, and names `words`.
-    fn shows_error(&mut self, error: String, words: &[&str]) {
-        assert!(words.iter().all(|w| error.contains(w)), "{error:?}");
+    /// Core's error is on screen, at least its start.
+    fn shows_error(&mut self, error: String) {
         let start: String = error
             .lines()
             .next()
@@ -414,7 +413,7 @@ async fn plan_error(world: &mut TuiWorld) {
         panic!("no plan error");
     };
     let error = error.clone();
-    world.shows_error(error, &[]);
+    world.shows_error(error);
 }
 
 #[then(r#"the preview says no source has "omega""#)]
@@ -507,7 +506,7 @@ async fn failed(world: &mut TuiWorld) {
     };
     // shortcut: core's archive error names no package, so "alpha 2.0" is
     // only the title's; show the failing package once core says it.
-    world.shows_error(error, &[]);
+    world.shows_error(error);
     world.shows("Install alpha@2.0");
     assert_eq!(world.version_installed("alpha"), None);
 }

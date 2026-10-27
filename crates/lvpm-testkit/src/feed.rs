@@ -141,7 +141,10 @@ impl Pause {
             .changed
             .wait_timeout_while(state, HOLD_LIMIT, |state| !state.held)
             .expect("the pause");
-        assert!(state.held, "no archive request was held");
+        // Unlocked first: a panic holding it would poison the pause for the feed thread.
+        let held = state.held;
+        drop(state);
+        assert!(held, "no archive request was held");
     }
 }
 
