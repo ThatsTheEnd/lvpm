@@ -8,5 +8,7 @@
 #![allow(clippy::disallowed_methods)]
 
 mod support;
+#[path = "vipm_probe/table.rs"]
+mod table;
 #[path = "vipm_probe/variants.rs"]
 mod variants;
