@@ -18,7 +18,7 @@ Feature: lvpm publish copies the current package into a folder feed
     Given lvpm build has run
     And "A.vi" is changed after the build
     When lvpm publish --to "feed" runs
-    Then "feed" holds exactly "demo_lib-1.2.3.0.vip", byte-identical to "dist/demo_lib-1.2.3.0.vip"
+    Then "feed" holds exactly "demo_lib-1.2.3.0.vip", byte-identical to the package as built
 
   Scenario Outline: an existing file is never replaced
     Given lvpm build has run
@@ -82,6 +82,13 @@ Feature: lvpm publish copies the current package into a folder feed
     And dist holds "demo_lib-1.2.2.0.vip" and "demo_lib-1.2.3.0.vip"
     When lvpm publish --to "feed" runs
     Then "feed" holds exactly "demo_lib-1.2.3.0.vip", byte-identical to "dist/demo_lib-1.2.3.0.vip"
+
+  Scenario: only an older version's package was built
+    Given lvpm build has run for version "1.2.2"
+    And the version is changed to "1.2.3" without a build
+    When lvpm publish --to "feed" runs
+    Then it fails naming "dist/demo_lib-1.2.3.0.vip" and saying to run lvpm build
+    And "feed" is empty
 
   Scenario: --to is required
     Given lvpm build has run

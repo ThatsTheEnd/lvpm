@@ -21,8 +21,10 @@ pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
     let to = paths::resolve(&env.cwd, to);
     let (root, d) = super::packaged(env, "publish")?;
     let name = d.file_name();
-    let package = root.join("dist").join(&name);
-    if !package.is_file() {
+    let package = super::package_path(&root, &d);
+    // Not followed: a link in a fresh checkout could copy any file onto the share.
+    let built = package.symlink_metadata().is_ok_and(|m| m.is_file());
+    if !built {
         bail!("{} does not exist: run lvpm build first", package.display());
     }
     if !to.is_dir() {
@@ -33,14 +35,14 @@ pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
     }
     let target = to.join(&name);
     if target.symlink_metadata().is_ok() {
-        bail!(already(&target));
+        bail!(already_published(&target));
     }
     Ok(Published {
         path: stage_and_link(&package, &to, &name)?,
     })
 }
 
-fn already(target: &Path) -> String {
+fn already_published(target: &Path) -> String {
     format!(
         "{} is already published; a published version is never replaced",
         target.display()
@@ -62,9 +64,9 @@ fn stage_and_link(src: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
         .and_then(|_| out.sync_all())
         .with_context(|| format!("copying {} to {}", src.display(), temp.display()));
     drop(out);
-    let placed = copied.and_then(|()| no_replace_move(&temp, &dest));
-    // shortcut: once linked, the publish stands even if the staged name cannot
-    // be removed (a share that allows create but not delete); feeds skip `.tmp`.
+    let placed = copied.and_then(|()| link_unless_exists(&temp, &dest));
+    // shortcut: a share that allows create but not delete keeps the staged
+    // name (feeds skip `.tmp`); clean up there if one ever shows up in a feed.
     let _ = std::fs::remove_file(&temp);
     placed.map(|()| dest)
 }
@@ -72,10 +74,10 @@ fn stage_and_link(src: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
 /// Give `temp` the name `dest` unless `dest` exists. A hard link, so it fails
 /// on a file system without them; `MoveFileExW` without
 /// `MOVEFILE_REPLACE_EXISTING` is the upgrade if a feed needs that.
-fn no_replace_move(temp: &Path, dest: &Path) -> Result<()> {
+fn link_unless_exists(temp: &Path, dest: &Path) -> Result<()> {
     match std::fs::hard_link(temp, dest) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(already(dest)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(already_published(dest)),
         Err(e) => bail!(
             "could not place {} in {} (its file system may not support hard links): {e}",
             dest.file_name().unwrap_or_default().to_string_lossy(),
@@ -129,7 +131,11 @@ mod tests {
         let dir = folder("copy");
         let feed = dir.join("feed");
         // A folder cannot be read as a file, so the copy fails after the staged file exists.
-        assert!(stage_and_link(&dir, &feed, "p-1.0.0.0.vip").is_err());
+        let why = format!(
+            "{:#}",
+            stage_and_link(&dir, &feed, "p-1.0.0.0.vip").unwrap_err()
+        );
+        assert!(why.contains("copying"), "{why}");
         assert!(names(&feed).is_empty(), "{:?}", names(&feed));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -142,7 +148,7 @@ mod tests {
         let missing = dir.join("missing");
         let why = format!(
             "{:#}",
-            no_replace_move(&temp, &missing.join("p.vip")).unwrap_err()
+            link_unless_exists(&temp, &missing.join("p.vip")).unwrap_err()
         );
         assert!(why.contains(&missing.display().to_string()), "{why}");
         assert!(why.contains("hard links"), "{why}");

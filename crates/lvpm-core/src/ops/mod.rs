@@ -43,3 +43,11 @@ pub(super) fn packaged(
     let d = crate::distribution::validate(&p, root)?;
     Ok((root.to_path_buf(), d))
 }
+
+/// Where `lvpm build` puts, and `lvpm publish` finds, the current version's package.
+pub(super) fn package_path(
+    root: &std::path::Path,
+    d: &crate::distribution::Distribution,
+) -> std::path::PathBuf {
+    root.join("dist").join(d.file_name())
+}

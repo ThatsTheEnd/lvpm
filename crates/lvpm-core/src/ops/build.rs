@@ -74,9 +74,10 @@ pub fn build(env: &OpEnv) -> Result<Built> {
         .into_iter()
         .map(|(f, path)| (group.entry(&f), path))
         .collect();
-    let dist = root.join("dist");
-    std::fs::create_dir_all(&dist).with_context(|| format!("creating {}", dist.display()))?;
-    let path = write_atomically(&dist.join(d.file_name()), &spec::write(&s), &entries)?;
+    let package = super::package_path(root, &d);
+    let dist = package.parent().context("the package has no folder")?;
+    std::fs::create_dir_all(dist).with_context(|| format!("creating {}", dist.display()))?;
+    let path = write_atomically(&package, &spec::write(&s), &entries)?;
     Ok(Built {
         path,
         files: entries.len(),

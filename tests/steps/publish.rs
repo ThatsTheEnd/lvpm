@@ -15,6 +15,8 @@ const CONSUMER: &str = "second";
 #[derive(Debug, Default)]
 pub struct PublishState {
     output: Option<Output>,
+    /// What lvpm lock printed in the second project.
+    lock: Option<Output>,
     /// Publish with no lvpm.toml in the work directory.
     no_manifest: bool,
     /// A file in the feed (or the `--to` target) as it was before publishing;
@@ -72,7 +74,7 @@ impl CliWorld {
     }
 
     /// The message names the file at `rel`: as the work directory spells it,
-    /// or as the file system does. A bare file name is named as itself.
+    /// or as the file system does. The manifest may be named bare.
     fn message_names(&self, message: &str, rel: &str) -> bool {
         let path = self.below_work(rel);
         let mut spellings = vec![path.display().to_string()];
@@ -87,7 +89,7 @@ impl CliWorld {
             let real = real.display().to_string();
             spellings.push(real.strip_prefix(r"\\?\").unwrap_or(&real).to_string());
         }
-        if !rel.contains('/') {
+        if rel == MANIFEST_FILE {
             spellings.push(rel.to_string());
         }
         spellings.iter().any(|s| message.contains(s.as_str()))
@@ -113,7 +115,14 @@ async fn build_has_run_for(world: &mut CliWorld, version: String) {
 
 #[given(regex = r#"^"A\.vi" is changed after the build$"#)]
 async fn changed_after_build(world: &mut CliWorld) {
+    let built = world.names_in("dist").pop().expect("a built package");
+    world.remember(&format!("dist/{built}"));
     world.put("A.vi", "changed after the build");
+}
+
+#[given(regex = r#"^the version is changed to "([^"]+)" without a build$"#)]
+async fn version_changed(world: &mut CliWorld, version: String) {
+    world.set(&["project"], "version", version);
 }
 
 #[given(regex = r#"^"([^"]+)" already holds "([^"]+)" with (.+)$"#)]
@@ -220,7 +229,7 @@ async fn publish_from(world: &mut CliWorld, to: String, from: String) {
 #[when("lvpm lock runs in the second project")]
 async fn lock_in_second(world: &mut CliWorld) {
     let dir = world.sandbox.root().join(CONSUMER);
-    world.publish.output = Some(world.sandbox.run_lvpm_in(&dir, &["lock"], None));
+    world.publish.lock = Some(world.sandbox.run_lvpm_in(&dir, &["lock"], None));
 }
 
 // ---- outcomes ----
@@ -246,6 +255,11 @@ async fn holds_identical(world: &mut CliWorld, feed: String, name: String, origi
     let copy = std::fs::read(world.below_work(&format!("{feed}/{name}"))).expect("the copy");
     let original = std::fs::read(world.below_work(&original)).expect("the original");
     assert!(copy == original, "the copy differs from what was built");
+}
+
+#[then(regex = r#"^"([^"]+)" holds exactly "([^"]+)", byte-identical to the package as built$"#)]
+async fn holds_as_built(world: &mut CliWorld, feed: String, name: String) {
+    holds_earlier(world, feed, name).await;
 }
 
 #[then(regex = r#"^"([^"]+)" holds exactly "([^"]+)", with its earlier bytes$"#)]
@@ -297,6 +311,8 @@ async fn dist_no_vip(world: &mut CliWorld) {
 
 #[then(regex = r#"^"([^"]+)" is as it was, and dist holds only "([^"]+)"$"#)]
 async fn as_it_was(world: &mut CliWorld, rel: String, package: String) {
+    // Reading a folder fails like reading nothing, so check for one first.
+    assert!(!world.below_work(&rel).is_dir(), "{rel} is now a folder");
     let now = std::fs::read(world.below_work(&rel)).ok();
     assert!(
         world.publish.earlier.as_ref() == Some(&now),
@@ -327,7 +343,7 @@ async fn usage_names_to(world: &mut CliWorld) {
     regex = r#"^it succeeds and lvpm\.lock holds "([^"]+)" version "([^"]+)" from a local source$"#
 )]
 async fn locked_from_local(world: &mut CliWorld, name: String, version: String) {
-    let out = world.published();
+    let out = world.publish.lock.as_ref().expect("lvpm lock ran");
     assert_eq!(out.exit_code, 0, "lvpm lock failed: {out:?}");
     let dir = world.sandbox.root().join(CONSUMER);
     let text = std::fs::read_to_string(dir.join("lvpm.lock")).expect("lvpm.lock exists");

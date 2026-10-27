@@ -15,8 +15,8 @@ mod tests {
     #[test]
     fn a_publish_names_the_file_it_wrote() {
         let p = Published {
-            path: PathBuf::from("feed").join("demo-1.0.0.0.vip"),
+            path: PathBuf::from("demo-1.0.0.0.vip"),
         };
-        assert_eq!(published(&p), format!("published {}\n", p.path.display()));
+        assert_eq!(published(&p), "published demo-1.0.0.0.vip\n");
     }
 }
