@@ -173,18 +173,12 @@ mod tests {
     }
 
     #[test]
-    fn pilot_b_tag_without_env_is_not_run() {
+    fn pilot_b_scenario_needs_its_own_variable() {
         let pilot_b = tags(&["pilot-b-source"]);
         assert_eq!(
             select(&pilot_b, &Env::default()),
             Selection::NeedsPilotBSource
         );
-        // Pilot A's checkout does not stand in for pilot B's.
-        let only_a = Env {
-            pilot_a: true,
-            ..Env::default()
-        };
-        assert_eq!(select(&pilot_b, &only_a), Selection::NeedsPilotBSource);
         let env = Env {
             pilot_b: true,
             ..Env::default()
@@ -194,11 +188,40 @@ mod tests {
             select(&tags(&["pilot-source"]), &env),
             Selection::NeedsPilotSource
         );
-        let line = pilot_not_run_line(2, PILOT_B_SOURCE_TAG, PILOT_B_ENV_VAR, "B");
-        assert!(line.contains("LVPM_TEST_PILOT_B"), "{line}");
-        assert!(
-            line.starts_with("2 @pilot-b-source scenarios not run"),
-            "{line}"
+    }
+
+    #[test]
+    fn pilot_a_checkout_does_not_stand_in_for_pilot_b() {
+        let only_a = Env {
+            pilot_a: true,
+            ..Env::default()
+        };
+        assert_eq!(
+            select(&tags(&["pilot-b-source"]), &only_a),
+            Selection::NeedsPilotBSource
+        );
+    }
+
+    #[test]
+    fn labview_is_asked_for_before_a_pilot_checkout() {
+        let tagged = tags(&["labview", "pilot-b-source"]);
+        assert_eq!(select(&tagged, &Env::default()), Selection::NeedsLabview);
+        let labview = Env {
+            test_labview: true,
+            ..Env::default()
+        };
+        assert_eq!(select(&tagged, &labview), Selection::NeedsPilotBSource);
+    }
+
+    #[test]
+    fn the_not_run_line_names_the_variable_and_pilot() {
+        assert_eq!(
+            pilot_not_run_line(3, PILOT_SOURCE_TAG, PILOT_A_ENV_VAR, "A"),
+            "3 @pilot-source scenarios not run (set LVPM_TEST_PILOT_A to a checkout of pilot A)"
+        );
+        assert_eq!(
+            pilot_not_run_line(2, PILOT_B_SOURCE_TAG, PILOT_B_ENV_VAR, "B"),
+            "2 @pilot-b-source scenarios not run (set LVPM_TEST_PILOT_B to a checkout of pilot B)"
         );
     }
 }
