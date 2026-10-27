@@ -156,7 +156,7 @@ impl Drop for Guard<'_> {
     }
 }
 
-fn scan_scope(labview: &Path) -> Result<Snapshot, String> {
+pub fn scan_scope(labview: &Path) -> Result<Snapshot, String> {
     snapshot::scan(labview, Some(&SCOPE), &LABVIEW_NOISE)
 }
 
@@ -235,7 +235,7 @@ fn begin(
         true => &judged.note,
         false => &judged.output,
     };
-    write_text(&probe.out.join(format!("{stem}.txt")), shown)?;
+    write_text(&stem_path(probe, stem, ".txt"), shown)?;
     let installed = match judged.accepted {
         true => snapshot::added(baseline, &scan_scope(probe.labview)?),
         false => BTreeSet::new(),
@@ -349,14 +349,11 @@ fn compare_installs(
 /// install and the uninstall, or when VIPM wrote outside the scope.
 fn reference_install(
     probe: &Probe,
-    reference_file: &Path,
+    (reference_file, reference_pkg): (&Path, &Pkg),
     full_before: &Snapshot,
     baseline: &Snapshot,
 ) -> Result<BTreeSet<PathBuf>, String> {
-    let reference_pkg = std::fs::read(reference_file)
-        .map_err(|e| format!("reading {}: {e}", reference_file.display()))
-        .and_then(|bytes| Pkg::read(&bytes))?;
-    let packages = packages_for(probe.name, &reference_pkg)?;
+    let packages = packages_for(probe.name, reference_pkg)?;
     let reference = begin(probe, "reference", reference_file, &packages, baseline)?;
     if !reference.judged.accepted {
         let output = stem_path(probe, "reference", ".txt");
@@ -458,11 +455,11 @@ fn probe_variant(
     })
 }
 
-/// Install pilot A's published archive, then every variant, checking the
-/// tree after each, and give each variant a row.
+/// Install pilot A's published archive (the file, and what it holds), then
+/// every variant, checking the tree after each, and give each variant a row.
 pub fn run(
     probe: &Probe,
-    reference_file: &Path,
+    reference: (&Path, &Pkg),
     base: &Pkg,
     variants: &[Variant],
 ) -> Result<Vec<Row>, String> {
@@ -470,7 +467,7 @@ pub fn run(
     let full_before = snapshot::scan(probe.labview, None, &LABVIEW_NOISE)?;
     let baseline = snapshot::restrict(&full_before, &SCOPE);
     eprintln!("{}", progress(0, total, "reference", "installing"));
-    let reference = reference_install(probe, reference_file, &full_before, &baseline)?;
+    let reference = reference_install(probe, reference, &full_before, &baseline)?;
     variants
         .iter()
         .enumerate()
@@ -672,7 +669,13 @@ mod tests {
                 version: "1.0.0.1",
                 archive_name: "p-1.0.0.1.vip",
             };
-            run(&probe, &self.reference_file(), &sample_base(), variants)
+            let reference = (self.reference_file(), sample_base());
+            run(
+                &probe,
+                (&reference.0, &reference.1),
+                &sample_base(),
+                variants,
+            )
         }
     }
 

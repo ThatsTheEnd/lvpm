@@ -29,7 +29,6 @@ use support::events::RecordingSink;
 use support::global;
 use support::pilots::{PILOT_A_ARCHIVE, archives, copy_tree, pilots_dir};
 use support::project::MANIFEST_FILE;
-use support::snapshot::{self, LABVIEW_NOISE};
 use variants::Pkg;
 use vipm::{Timeouts, Vipm};
 
@@ -84,7 +83,7 @@ fn probe() -> Result<String, String> {
         ),
     )?;
 
-    let base = build_pilot_a(&env.pilot_a)?;
+    let (base, archive_name) = build_pilot_a(&env.pilot_a)?;
     let published = published_pilots()?;
     let reference_file = pilots_dir().join(PILOT_A_ARCHIVE);
     let reference = Pkg::read(&read(&reference_file)?)?;
@@ -110,9 +109,8 @@ fn probe() -> Result<String, String> {
     let out = probes.join(table::run_folder(&table::utc_stamp(seconds), &vipm_version));
     eprintln!("{}", vipm::start_line(variants.len()));
     let git_before = git_status(repo)?;
-    let tree_before = scan_scope(&labview)?;
+    let tree_before = run::scan_scope(&labview)?;
 
-    let archive_name = format!("{}-{}.vip", spec.name, spec.version);
     let probe = Probe {
         vipm: &vipm,
         labview: &labview,
@@ -122,9 +120,9 @@ fn probe() -> Result<String, String> {
         version: &spec.version,
         archive_name: &archive_name,
     };
-    let rows = run::run(&probe, &reference_file, &base, &variants)?;
+    let rows = run::run(&probe, (&reference_file, &reference), &base, &variants)?;
 
-    run::final_tree_check(&labview, &tree_before, &scan_scope(&labview)?)?;
+    run::final_tree_check(&labview, &tree_before, &run::scan_scope(&labview)?)?;
     run::git_status_unchanged(&git_before, &git_status(repo)?)?;
     let reference_diff = variants::reference_diff(&base, &reference);
     let table_file = out.join("table.md");
@@ -135,10 +133,6 @@ fn probe() -> Result<String, String> {
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))
-}
-
-fn scan_scope(labview: &Path) -> Result<snapshot::Snapshot, String> {
-    snapshot::scan(labview, Some(&run::SCOPE), &LABVIEW_NOISE)
 }
 
 /// The LabVIEW 2026 installation's folder.
@@ -177,8 +171,9 @@ fn published_pilots() -> Result<Vec<Pkg>, String> {
         .collect()
 }
 
-/// Pilot A as lvpm builds it, from a copy of its checkout so the checkout is not touched.
-fn build_pilot_a(checkout: &Path) -> Result<Pkg, String> {
+/// Pilot A as lvpm builds it, from a copy of its checkout so the checkout is
+/// not touched, and the name of the file it was built as.
+fn build_pilot_a(checkout: &Path) -> Result<(Pkg, String), String> {
     let work = tempfile::tempdir().map_err(|e| format!("a temporary folder: {e}"))?;
     let dir = work.path().join("pilot-a");
     copy_tree(&checkout.join("Source"), &dir.join("Source"));
@@ -193,7 +188,11 @@ fn build_pilot_a(checkout: &Path) -> Result<Pkg, String> {
     let env = lvpm_core::ops::OpEnv::new(&sink, config, Vec::new(), dir);
     let built =
         lvpm_core::ops::build::build(&env).map_err(|e| format!("lvpm build of pilot A: {e:#}"))?;
-    Pkg::read(&read(&built.path)?)
+    let name = built.path.file_name().ok_or("the built file has no name")?;
+    Ok((
+        Pkg::read(&read(&built.path)?)?,
+        name.to_string_lossy().into_owned(),
+    ))
 }
 
 /// `git status --porcelain` of the repository.
