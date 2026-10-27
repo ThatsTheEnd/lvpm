@@ -60,9 +60,9 @@ on both pilots. The work ships as **two PRs** with a checkpoint between:
 ### Slice 1: the probe runner
 
 **Depends-on:** none
-**Files:** `tests/vipm_probe.rs`, `tests/vipm_probe/*.rs`, `tests/support/snapshot.rs`, `tests/support/mod.rs`, `docs/specs/lvpm-vip-roundtrip-s1b.md`
+**Files:** `tests/vipm_probe.rs`, `tests/vipm_probe/*.rs`, `tests/support/snapshot.rs`, `tests/support/mod.rs`, `tests/support/process.rs`, `docs/specs/lvpm-vip-roundtrip-s1b.md`
 
-Uses `tests/support` read-only (`mod support;` as `support_unit.rs` does):
+Uses `tests/support` (`mod support;` as `support_unit.rs` does; it changes only `process.rs`, whose timed-out commands now kill their whole process tree):
 `global::claim`, `pilots::{pilots_dir, PILOT_A_ARCHIVE, copy_tree}`. Slice 2
 keeps those names and signatures. `tests/support/tree.rs` is not reused (it
 caps entries at 10,000 and normalises text).
@@ -125,14 +125,14 @@ Feature: VIPM probe runner (dev only)
     Then its line says rejected, reason "not listed by vipm info"
 
   Scenario: a vipm command that hangs is recorded
-    # Covered by: a_command_past_its_timeout_is_killed_and_rejected; a_hung_install_is_rejected_then_cleaned_up_and_checked
+    # Covered by: a_timed_out_command_is_rejected; a_process_that_outlives_the_timeout_is_killed_and_reported; a_hung_install_is_rejected_then_cleaned_up_and_checked
     Given a vipm command that has not exited after its timeout
     When the probe runner runs the variant
     Then the command is killed, its line says rejected, reason "timed out after <n>s"
     And the uninstall and the tree check still run
 
   Scenario: an uninstall that hangs stops the run
-    # Covered by: an_uninstall_past_its_timeout_stops_the_run
+    # Covered by: a_timed_out_uninstall_stops_the_run
     Given vipm uninstall has not exited after its timeout
     When the probe runner cleans up a variant
     Then the command is killed and the run stops naming the package and its uninstall command
@@ -220,13 +220,13 @@ variant per key the reference diff finds in all four fixture specs that lvpm
 does not write, set to the value pilot A's archive carries, **at most 5**
 (others listed in the table, not varied).
 Reference diff: lvpm's pilot A build against `hse_lib_hse_logger-2.2.2.114.vip`,
-by entry, key and value (`spec::parse` plus raw key scan). Table: one line per
+by entry, key and value (raw key scan of the spec text). Table: one line per
 row, pipes and newlines escaped; full VIPM output in `<variant>.txt` beside it.
 Random ID uses a fixed seed. The table header names the VIPM version
 (`vipm --version`) and the LabVIEW version (the LabVIEW 2026 tree's
 `LabVIEW.exe` file version).
 **TEST**: `each_variant_differs_from_the_base_in_its_one_change` (`base`:
-zero differences; every other row: exactly one); `reference_diff_lists_one_sided_entries_and_keys`
+zero differences; every other row: exactly one, the license row's entry and the key naming it counting as one); `reference_diff_lists_one_sided_entries_and_keys`
 on two tiny zips with known one-sided entry, key and changed value;
 `table_has_one_line_per_variant`; `table_escapes_pipes_and_newlines`.
 **REFACTOR**: one `Variant { name, apply: fn(&mut Pkg) }` list.
@@ -249,17 +249,17 @@ non-zero → rejected with output; timeout → rejected "timed out after <n>s". 
 `info` for pilot A, Data Manipulation and the palette; any listed → stop
 naming each with its `vipm uninstall` command. Env: with `--ignored`, a
 missing or non-existent `LVPM_TEST_VIPM` / `LVPM_TEST_PILOT_A` fails naming
-the variable. Progress to stderr: `[7/14] ID=random: installing…`, and a
+the variable. Progress to stderr: `[7/14] ID=random: installing...`, and a
 start line with the variant count and "do not interrupt; if you must, the
 next start tells you what to uninstall".
 **TEST**: fake command: `listed_needs_exit_zero_name_and_version`,
 `exit_zero_not_listed_is_rejected`,
-`nonzero_exit_is_rejected_with_its_output`, `a_command_past_its_timeout_is_killed_and_rejected`
+`nonzero_exit_is_rejected_with_its_output`, `a_timed_out_command_is_rejected`
 (fake sleeps; asserts the uninstall and tree check ran after the kill),
-`an_uninstall_past_its_timeout_stops_the_run`, `preflight_refuses_when_a_touched_package_is_installed`,
+`a_timed_out_uninstall_stops_the_run`, `preflight_refuses_when_a_touched_package_is_installed`,
 `missing_env_names_the_variable`.
 **REFACTOR**: the command seam is a plain closure; no trait.
-**Files**: `tests/vipm_probe.rs`, `tests/vipm_probe/vipm.rs`
+**Files**: `tests/vipm_probe.rs`, `tests/vipm_probe/vipm.rs`, `tests/support/process.rs`
 **Commit**: `test(vipm): drive vipm install/uninstall/info with timeouts and a preflight`
 
 #### Step 1.4: claim, state file, scoped snapshots
@@ -349,7 +349,7 @@ the variant name that justified it.
 ### Slice 2: pilot B builds from its pinned checkout
 
 **Depends-on:** none
-**Files:** `tests/support/selection.rs`, `tests/support/pilots.rs`, `tests/steps/pilots.rs`, `tests/acceptance.rs`, `tests/support_unit.rs`, `tests/features/build-slices/s1b-vip-in-vipm.feature`
+**Files:** `tests/support/selection.rs`, `tests/support/pilots.rs`, `tests/steps/pilots.rs`, `tests/acceptance.rs`, `tests/support_unit.rs`, `tests/features/build-slices/s1b-vip-in-vipm.feature`, `tests/features/build-slices/README.md`
 
 **Behavior:**
 
@@ -372,7 +372,7 @@ failing precondition):
 
 - `pilot_b_scenario_needs_its_own_variable`,
   `pilot_a_checkout_does_not_stand_in_for_pilot_b`,
-  `the_not_run_line_names_the_variable_and_pilot`: `select()` with
+  `the_not_run_line_text_names_the_variable_and_pilot`: `select()` with
   `@pilot-b-source` and no `LVPM_TEST_PILOT_B` returns "not run", with a
   report line naming the variable.
 - `a_checkout_at_another_commit_names_both_and_the_fix`: the checkout check
@@ -390,7 +390,7 @@ failing precondition):
 #### Step 2.1: `LVPM_TEST_PILOT_B`
 
 **Complexity**: standard
-**IMPLEMENT**: `pilot_checkout(env_var, commit) -> Result<PathBuf, String>`
+**IMPLEMENT**: `pilot_checkout(env_var, commit, subtree) -> Result<PathBuf, String>`
 in `tests/support/pilots.rs`, used by pilot A's step and pilot B's;
 `PILOT_B_ENV_VAR`, `PILOT_B_COMMIT = 723d7a672b5f0eafa9f98ea63629ba5855d50227`
 (README). `select()` gets a `@pilot-b-source` arm; its positional bools become
@@ -404,7 +404,7 @@ from `spec::parse` of the fixture archive.
 above; existing selection tests pass with `Env`.
 **REFACTOR**: pilot A's step calls `pilot_checkout`; keep `pilots_dir`,
 `PILOT_A_ARCHIVE`, `copy_tree` unchanged (slice 1 uses them).
-**Files**: `tests/support/selection.rs`, `tests/support/pilots.rs`, `tests/steps/pilots.rs`, `tests/acceptance.rs`, `tests/support_unit.rs`, `tests/features/build-slices/s1b-vip-in-vipm.feature`
+**Files**: `tests/support/selection.rs`, `tests/support/pilots.rs`, `tests/steps/pilots.rs`, `tests/acceptance.rs`, `tests/support_unit.rs`, `tests/features/build-slices/s1b-vip-in-vipm.feature`, `tests/features/build-slices/README.md`
 **Commit**: `test(pilots): pilot B builds from its pinned checkout`
 
 ### Slice 3: lvpm writes what VIPM needs (PR 2, sketch)
@@ -500,6 +500,8 @@ with S1's pilot scenarios in the run count (AC8, AC3).
   vipm.io; network or login failure shows as a rejected row with VIPM's
   message, and the preflight and tree check cover their clean-up.
 - **Slices 3 and 4 have no steps yet** (`plan_waves.py` reports their declared files as over-declared): acknowledged, they are re-planned after step 1.6.
+- **`vipm info` output format is a guess until step 1.6.** `Vipm::info` matches the package name and version as whole tokens (letters, digits, `_`, and `.` between them). If VIPM prints the name glued to the version (e.g. `name.1.0.0.1`), the match needs adjusting at step 1.6.
+- **Backstop review items left for later:** the `ours`/`theirs`/`published` naming in the probe, splitting the remaining multi-behavior tests, whether `Guard::drop` should keep the global claim after a failed uninstall, `global.rs` findings (spawned LabVIEW not checked with `try_wait`, a partial claim file on write error), the hidden success check in the `dist holds` step, a negative pilot B scenario, and symlink handling in `copy_tree`/`snapshot`. The support unit tests run in both `support_unit` and `vipm_probe` (accepted).
 - **Spec deviations to log** in the spec at step 1.6: probe step 1 (census)
   dropped; pilot B has one direct dependency, not two (spec AC5 wording);
   AC6's round trips live in `s1b-vip-in-vipm-roundtrip.feature`, `@unsafe`
