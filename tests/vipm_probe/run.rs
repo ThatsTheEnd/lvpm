@@ -3,6 +3,7 @@
 //! that the LabVIEW tree is as it was.
 
 use crate::support::global::{self, StartOf};
+use crate::support::pilots::requires_names;
 use crate::support::snapshot::{self, Change, LABVIEW_NOISE, Snapshot};
 use crate::table::Row;
 use crate::variants::{Pkg, Variant};
@@ -191,15 +192,8 @@ fn packages_for(name: &str, pkg: &Pkg) -> Result<Vec<String>, String> {
         true => {}
         false => packages.push(package.to_string()),
     };
-    for required in spec.requires.iter().flat_map(|list| list.split(',')) {
-        let package = required
-            .trim()
-            .split(['<', '>', '=', ' '])
-            .next()
-            .unwrap_or_default();
-        if package.is_empty() {
-            continue;
-        }
+    for package in spec.requires.iter().flat_map(|list| requires_names(list)) {
+        let package = package.as_str();
         if !TOUCHED.contains(&package) {
             return Err(format!(
                 "a package requires {package}, which the preflight does not check; \
@@ -705,6 +699,23 @@ mod tests {
         );
         let why = packages(Some("other>=1")).unwrap_err();
         assert!(why.contains("other") && why.contains("preflight"), "{why}");
+    }
+
+    #[test]
+    fn the_committed_data_manipulation_archive_requires_exactly_the_palette() {
+        use crate::support::pilots::{archives, pilots_dir, requires_of};
+        let prefix = format!("{DATA_MANIPULATION}-");
+        let found: Vec<PathBuf> = archives(&pilots_dir())
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(&prefix)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(requires_of(&found[0]), [PALETTE]);
     }
 
     #[test]

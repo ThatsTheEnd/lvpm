@@ -134,6 +134,21 @@ pub fn labviewcli() -> PathBuf {
 pub const PILOT_A_COMMIT: &str = "f7cc16a391faa1e982b54ae22d2f43c9df1ef581";
 /// Pilot A as its vendor published it.
 pub const PILOT_A_ARCHIVE: &str = "hse_lib_hse_logger-2.2.2.114.vip";
+/// The folder of pilot A's checkout that its build copies.
+pub const PILOT_A_SUBTREE: &str = "Source";
+/// Pilot A's `lvpm.toml`: its repository has none, and this is what it would hold.
+pub const PILOT_A_MANIFEST: &str = r#"[project]
+name = "hse_lib_hse_logger"
+version = "2.2.2.114"
+labview = ">=2016"
+
+[distribution]
+top-level-library = "Source/HSE-Logger/hse-logger.lvlib"
+
+[distribution.vip]
+vendor = "Hampel Software Engineering"
+display-name = "HSE Logger"
+"#;
 
 /// Pilot B's pinned commit; README.md beside the build-slice features names it.
 pub const PILOT_B_COMMIT: &str = "723d7a672b5f0eafa9f98ea63629ba5855d50227";
@@ -149,7 +164,7 @@ pub fn pilot_checkout(env_var: &str, commit: &str, subtree: &str) -> Result<Path
 }
 
 /// `git -C path`, with no repository chosen by the caller's environment.
-fn git_command(path: &Path) -> Command {
+pub(crate) fn git_command(path: &Path) -> Command {
     let mut git = Command::new("git");
     git.arg("-C").arg(path);
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
@@ -173,6 +188,8 @@ fn checkout_at(
         return Err(format!("{at} does not exist or is not a folder"));
     }
     // The checkout itself must be the repository, not a folder inside one.
+    // git ignores a relative ceiling, so the path is made absolute first.
+    let path = std::path::absolute(&path).map_err(|e| format!("{at}: its full path: {e}"))?;
     let ceiling = path.parent().unwrap_or(&path);
     let git = |args: &[&str]| {
         let output = git_command(&path)
@@ -200,6 +217,8 @@ fn checkout_at(
         "status",
         "--porcelain",
         "--untracked-files=all",
+        // a git-ignored file in the subtree is copied by the build too
+        "--ignored",
         "--",
         subtree,
     ];
@@ -215,7 +234,7 @@ fn checkout_at(
 pub fn requires_names(requires: &str) -> Vec<String> {
     requires
         .split(',')
-        .map(|part| part.split(['<', '>', '=']).next().unwrap_or("").trim())
+        .map(|part| part.trim().split(['<', '>', '=', ' ']).next().unwrap_or(""))
         .filter(|name| !name.is_empty())
         .map(String::from)
         .collect()
@@ -223,18 +242,11 @@ pub fn requires_names(requires: &str) -> Vec<String> {
 
 /// The package names `archive`'s spec requires, sorted.
 pub fn requires_of(archive: &Path) -> Vec<String> {
-    let file = std::fs::File::open(archive)
-        .unwrap_or_else(|e| panic!("opening {}: {e}", archive.display()));
-    let mut zip = zip::ZipArchive::new(file)
-        .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
-    let mut text = String::new();
-    let mut entry = zip
-        .by_name("spec")
-        .unwrap_or_else(|e| panic!("{} has no spec entry: {e}", archive.display()));
-    std::io::Read::read_to_string(&mut entry, &mut text)
-        .unwrap_or_else(|e| panic!("{}'s spec is not text: {e}", archive.display()));
-    let spec = lvpm_core::spec::parse(&text)
-        .unwrap_or_else(|e| panic!("lvpm cannot read {}'s spec: {e}", archive.display()));
+    let bytes =
+        std::fs::read(archive).unwrap_or_else(|e| panic!("reading {}: {e}", archive.display()));
+    let spec = lvpm_core::install::open_archive(bytes)
+        .and_then(|mut zip| lvpm_core::install::read_spec(&mut zip))
+        .unwrap_or_else(|e| panic!("lvpm cannot read {}'s spec: {e:#}", archive.display()));
     let mut names = spec
         .requires
         .as_deref()
@@ -347,7 +359,7 @@ mod tests {
 
     #[test]
     fn pilot_a_ships_its_library() {
-        let archive = pilots_dir().join("hse_lib_hse_logger-2.2.2.114.vip");
+        let archive = pilots_dir().join(PILOT_A_ARCHIVE);
         assert!(library_names(&archive).contains(&"hse-logger.lvlib".to_string()));
     }
 
@@ -466,6 +478,20 @@ mod tests {
     }
 
     #[test]
+    fn a_git_ignored_file_is_refused() {
+        let (repo, head) = repo_with_a_commit();
+        std::fs::write(
+            repo.path().join(".git/info/exclude"),
+            "*.log
+",
+        )
+        .unwrap();
+        std::fs::write(repo.path().join(SUBTREE).join("run.log"), "l").unwrap();
+        let why = refusal(repo.path(), &head);
+        assert!(why.contains("uncommitted changes"), "{why}");
+    }
+
+    #[test]
     fn changes_outside_the_copied_folder_are_accepted() {
         let (repo, head) = repo_with_a_commit();
         std::fs::write(repo.path().join("outside.txt"), "changed").unwrap();
@@ -561,6 +587,11 @@ Requires=b>=1.0,a
             ["a", "b", "c", "d"]
         );
         assert!(requires_names("").is_empty());
+    }
+
+    #[test]
+    fn a_space_before_a_version_bound_ends_the_name() {
+        assert_eq!(requires_names("a >= 1.0, b == 2"), ["a", "b"]);
     }
 
     #[test]

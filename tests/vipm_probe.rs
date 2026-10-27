@@ -24,30 +24,20 @@ mod vipm;
 use run::{Guard, Probe};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use support::events::RecordingSink;
 use support::global;
-use support::pilots::{PILOT_A_ARCHIVE, archives, copy_tree, pilots_dir};
+use support::pilots::{
+    PILOT_A_ARCHIVE, PILOT_A_COMMIT, PILOT_A_MANIFEST, PILOT_A_SUBTREE, archives, check_checksums,
+    copy_tree, git_command, pilot_checkout, pilots_dir,
+};
 use support::project::MANIFEST_FILE;
+use support::selection::PILOT_A_ENV_VAR;
 use variants::Pkg;
 use vipm::{Timeouts, Vipm};
 
 const LABVIEW_YEAR: u32 = 2026;
 const LABVIEW_EXE: &str = "LabVIEW.exe";
-
-/// Pilot A's `lvpm.toml` as S1's scenario writes it: its repository has none.
-const PILOT_A_MANIFEST: &str = r#"[project]
-name = "hse_lib_hse_logger"
-version = "2.2.2.114"
-labview = ">=2016"
-
-[distribution]
-top-level-library = "Source/HSE-Logger/hse-logger.lvlib"
-
-[distribution.vip]
-vendor = "Hampel Software Engineering"
-display-name = "HSE Logger"
-"#;
 
 #[test]
 #[ignore = "drives the real vipm.exe and the installed LabVIEW 2026: set LVPM_TEST_VIPM and LVPM_TEST_PILOT_A"]
@@ -60,17 +50,19 @@ fn probe_vipm() {
 
 /// The run, top to bottom; the summary line when it finishes.
 fn probe() -> Result<String, String> {
-    let env = vipm::check_env(&|name| std::env::var_os(name))?;
+    let vipm_exe = vipm::check_env(&|name| std::env::var_os(name))?;
+    let pilot_a = pilot_checkout(PILOT_A_ENV_VAR, PILOT_A_COMMIT, PILOT_A_SUBTREE)?;
     let labview = labview_tree()?;
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let probes = repo.join("target").join("vipm-probes");
     let state_file = probes.join(run::STATE_FILE);
 
-    let runner = vipm::real_runner(env.vipm);
+    let runner = vipm::real_runner(vipm_exe);
     let vipm = Vipm::new(&runner, Timeouts::REAL);
     let me = std::process::id();
     let start = global::process_start(me).ok_or("this run's own start time cannot be read")?;
     let ini = std::fs::read_to_string(labview.join("LabVIEW.ini")).unwrap_or_default();
+    require_vi_server(&ini)?;
     let _guard = Guard::take(
         &vipm,
         &state_file,
@@ -83,7 +75,7 @@ fn probe() -> Result<String, String> {
         ),
     )?;
 
-    let inputs = load_inputs(&env.pilot_a)?;
+    let inputs = load_inputs(&pilot_a)?;
     let vipm_version = vipm.version()?;
     let header = table::Header {
         vipm: vipm_version.clone(),
@@ -135,6 +127,7 @@ struct Inputs {
 }
 
 fn load_inputs(pilot_a: &Path) -> Result<Inputs, String> {
+    check_checksums(&pilots_dir())?;
     let (base, archive_name) = build_pilot_a(pilot_a)?;
     let published = published_pilots()?;
     let reference_file = pilots_dir().join(PILOT_A_ARCHIVE);
@@ -165,6 +158,19 @@ fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))
 }
 
+/// With VI Server off nothing answers its port, so the check that no other
+/// LabVIEW is running would prove nothing.
+fn require_vi_server(ini: &str) -> Result<(), String> {
+    match global::vi_server_enabled(ini) {
+        true => Ok(()),
+        false => Err(
+            "LabVIEW.ini turns VI Server off: the check for a running LabVIEW listens on its \
+             port, so it would pass with one running; turn VI Server on, then re-run"
+                .to_string(),
+        ),
+    }
+}
+
 /// The LabVIEW 2026 installation's folder.
 fn labview_tree() -> Result<PathBuf, String> {
     let targets = lvpm_core::target::detect().map_err(|e| format!("detecting LabVIEW: {e:#}"))?;
@@ -175,20 +181,29 @@ fn labview_tree() -> Result<PathBuf, String> {
         .ok_or_else(|| format!("no LabVIEW {LABVIEW_YEAR} installation found"))
 }
 
+/// The path travels in the environment, not in the script, so a quote in it
+/// is not PowerShell syntax.
+const LABVIEW_EXE_ENV_VAR: &str = "LVPM_LABVIEW_EXE";
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// The file version of the LabVIEW 2026 `LabVIEW.exe`.
 fn labview_file_version(labview: &Path) -> Result<String, String> {
-    let exe = labview
-        .join(LABVIEW_EXE)
-        .display()
-        .to_string()
-        .replace('\'', "''");
-    let script = format!("(Get-Item -LiteralPath '{exe}').VersionInfo.FileVersion");
-    let out = Command::new("powershell")
+    let script =
+        format!("(Get-Item -LiteralPath $env:{LABVIEW_EXE_ENV_VAR}).VersionInfo.FileVersion");
+    let mut command = Command::new("powershell");
+    command
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| format!("reading the version of {LABVIEW_EXE}: {e}"))?;
-    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Some(version)
+        .env(LABVIEW_EXE_ENV_VAR, labview.join(LABVIEW_EXE));
+    let out = support::process::run_capturing(command, None, VERSION_TIMEOUT)
+        .map_err(|failed| format!("reading the version of {LABVIEW_EXE}: {}", failed.message))?;
+    if out.exit_code != 0 {
+        return Err(format!(
+            "reading the version of {LABVIEW_EXE} failed (exit {}): {}",
+            out.exit_code,
+            out.stderr.trim()
+        ));
+    }
+    Some(out.stdout.trim().to_string())
         .filter(|v| !v.is_empty())
         .ok_or_else(|| format!("{LABVIEW_EXE} has no file version"))
 }
@@ -206,7 +221,7 @@ fn published_pilots() -> Result<Vec<Pkg>, String> {
 fn build_pilot_a(checkout: &Path) -> Result<(Pkg, String), String> {
     let work = tempfile::tempdir().map_err(|e| format!("a temporary folder: {e}"))?;
     let dir = work.path().join("pilot-a");
-    copy_tree(&checkout.join("Source"), &dir.join("Source"));
+    copy_tree(&checkout.join(PILOT_A_SUBTREE), &dir.join(PILOT_A_SUBTREE));
     std::fs::write(dir.join(MANIFEST_FILE), PILOT_A_MANIFEST)
         .map_err(|e| format!("writing pilot A's manifest: {e}"))?;
     let config = lvpm_core::config::Config {
@@ -227,9 +242,7 @@ fn build_pilot_a(checkout: &Path) -> Result<(Pkg, String), String> {
 
 /// `git status --porcelain` of the repository.
 fn git_status(repo: &Path) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let out = git_command(repo)
         .args(["status", "--porcelain"])
         .output()
         .map_err(|e| format!("git status: {e}"))?;
@@ -239,5 +252,52 @@ fn git_status(repo: &Path) -> Result<String, String> {
             "git status failed: {}",
             String::from_utf8_lossy(&out.stderr)
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_labview_ini_with_vi_server_off_refuses_the_probe() {
+        assert!(
+            require_vi_server(
+                "[LabVIEW]
+"
+            )
+            .is_ok(),
+            "absent means on"
+        );
+        let why = require_vi_server(
+            "server.tcp.enabled=False
+",
+        )
+        .unwrap_err();
+        assert!(why.contains("VI Server off"), "{why}");
+    }
+
+    /// A copy of a program that has a file version, as `LabVIEW.exe`, in a
+    /// folder whose name holds a quote.
+    #[cfg(windows)]
+    #[test]
+    fn the_labview_version_is_read_from_a_path_with_a_quote() {
+        let dir = tempfile::Builder::new().prefix("it's-").tempdir().unwrap();
+        let system_root = std::env::var("SystemRoot").unwrap();
+        std::fs::copy(
+            Path::new(&system_root).join(r"System32\cmd.exe"),
+            dir.path().join(LABVIEW_EXE),
+        )
+        .unwrap();
+        let version = labview_file_version(dir.path()).unwrap();
+        assert!(version.chars().any(|c| c.is_ascii_digit()), "{version}");
+    }
+
+    #[test]
+    fn a_labview_without_a_file_version_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LABVIEW_EXE), b"not a program").unwrap();
+        let why = labview_file_version(dir.path()).unwrap_err();
+        assert!(why.contains(LABVIEW_EXE), "{why}");
     }
 }

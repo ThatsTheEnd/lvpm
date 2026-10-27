@@ -9,7 +9,6 @@ use std::process::Command;
 use std::time::Duration;
 
 pub const VIPM_ENV_VAR: &str = "LVPM_TEST_VIPM";
-pub const PILOT_A_ENV_VAR: &str = "LVPM_TEST_PILOT_A";
 
 /// The packages a probe may install: pilot A, and what a `Requires` variant
 /// makes VIPM fetch with it, in the order to uninstall them.
@@ -205,30 +204,19 @@ pub fn preflight(vipm: &Vipm, names: &[&str]) -> Result<(), String> {
     }
 }
 
-/// What the run needs from the environment.
-#[derive(Debug)]
-pub struct Env {
-    pub vipm: PathBuf,
-    pub pilot_a: PathBuf,
-}
-
-pub fn check_env(get: &dyn Fn(&str) -> Option<OsString>) -> Result<Env, String> {
-    let named = |var: &str, what: &str, exists: fn(&Path) -> bool| -> Result<PathBuf, String> {
-        let value = get(var).ok_or_else(|| format!("{var} must name {what}; it is not set"))?;
-        let path = PathBuf::from(value);
-        match exists(&path) {
-            true => Ok(path),
-            false => Err(format!("{var} must name {what}: {} is not", path.display())),
-        }
-    };
-    Ok(Env {
-        vipm: named(VIPM_ENV_VAR, "vipm.exe", Path::is_file)?,
-        pilot_a: named(
-            PILOT_A_ENV_VAR,
-            "a checkout of pilot A (a folder)",
-            Path::is_dir,
-        )?,
-    })
+/// The `vipm.exe` `LVPM_TEST_VIPM` names. Pilot A's checkout is checked by
+/// `support::pilots::pilot_checkout`.
+pub fn check_env(get: &dyn Fn(&str) -> Option<OsString>) -> Result<PathBuf, String> {
+    let value = get(VIPM_ENV_VAR)
+        .ok_or_else(|| format!("{VIPM_ENV_VAR} must name vipm.exe; it is not set"))?;
+    let path = PathBuf::from(value);
+    match path.is_file() {
+        true => Ok(path),
+        false => Err(format!(
+            "{VIPM_ENV_VAR} must name vipm.exe: {} is not",
+            path.display()
+        )),
+    }
 }
 
 /// The line before the first install.
@@ -552,38 +540,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("vipm.exe");
         std::fs::write(&exe, b"x").unwrap();
-        let env_of = |vipm: Option<&Path>, pilot: Option<&Path>| {
-            let vars: Vec<(&str, OsString)> = [(VIPM_ENV_VAR, vipm), (PILOT_A_ENV_VAR, pilot)]
-                .into_iter()
-                .filter_map(|(name, path)| Some((name, path?.as_os_str().to_os_string())))
-                .collect();
-            move |name: &str| {
-                vars.iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|(_, value)| value.clone())
-            }
+        let env_of = |vipm: Option<&Path>| {
+            let value = vipm.map(|path| path.as_os_str().to_os_string());
+            move |name: &str| value.clone().filter(|_| name == VIPM_ENV_VAR)
         };
 
-        let why = check_env(&env_of(None, Some(dir.path()))).unwrap_err();
+        let why = check_env(&env_of(None)).unwrap_err();
         assert!(
             why.contains(VIPM_ENV_VAR) && why.contains("vipm.exe"),
             "{why}"
         );
         let missing = dir.path().join("nope.exe");
-        let why = check_env(&env_of(Some(&missing), Some(dir.path()))).unwrap_err();
+        let why = check_env(&env_of(Some(&missing))).unwrap_err();
         assert!(
             why.contains(VIPM_ENV_VAR) && why.contains("nope.exe"),
             "{why}"
         );
-        let why = check_env(&env_of(Some(&exe), None)).unwrap_err();
-        assert!(why.contains(PILOT_A_ENV_VAR), "{why}");
-        let why = check_env(&env_of(Some(&exe), Some(&exe))).unwrap_err();
+        let why = check_env(&env_of(Some(dir.path()))).unwrap_err();
         assert!(
-            why.contains(PILOT_A_ENV_VAR),
-            "a file is not a checkout: {why}"
+            why.contains(VIPM_ENV_VAR),
+            "a folder is not vipm.exe: {why}"
         );
-        let env = check_env(&env_of(Some(&exe), Some(dir.path()))).unwrap();
-        assert_eq!((env.vipm, env.pilot_a), (exe, dir.path().to_path_buf()));
+        assert_eq!(check_env(&env_of(Some(&exe))), Ok(exe));
     }
 
     #[test]

@@ -3,9 +3,10 @@
 
 use crate::CliWorld;
 use crate::support::pilots::{
-    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_COMMIT, PILOT_B_ARCHIVE, PILOT_B_COMMIT, archives,
-    bad_vi_lines, check_checksums, copy_tree, find_files_named, group_zero_files, labviewcli,
-    library_names, pilot_checkout, pilots_dir, requires_of,
+    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_COMMIT, PILOT_A_MANIFEST, PILOT_A_SUBTREE,
+    PILOT_B_ARCHIVE, PILOT_B_COMMIT, archives, bad_vi_lines, check_checksums, copy_tree,
+    find_files_named, group_zero_files, labviewcli, library_names, pilot_checkout, pilots_dir,
+    requires_of,
 };
 use crate::support::process::{self, port_is_listening};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
@@ -33,24 +34,10 @@ const PROJECT_B_PACKAGES: [&str; 4] = [
 const PILOT_SOURCE_DIR: &str = "pilots";
 const COPIES_DIR: &str = "pilot-copies";
 const PILOT_A_DIR: &str = "pilot-a";
-/// The folder of each pilot checkout that its build copies.
-const PILOT_A_SUBTREE: &str = "Source";
+/// The folder of pilot B's checkout that its build copies.
 const PILOT_B_SUBTREE: &str = "source";
 /// The folder feed `lvpm publish` puts pilot A in.
 const PUBLISHED_FEED_DIR: &str = "published";
-/// Pilot A's `lvpm.toml`: its repository has none, and this is what it would hold.
-const PILOT_A_MANIFEST: &str = r#"[project]
-name = "hse_lib_hse_logger"
-version = "2.2.2.114"
-labview = ">=2016"
-
-[distribution]
-top-level-library = "Source/HSE-Logger/hse-logger.lvlib"
-
-[distribution.vip]
-vendor = "Hampel Software Engineering"
-display-name = "HSE Logger"
-"#;
 /// Pilot B's `lvpm.toml`: its repository has none, and this is what it would
 /// hold. The dependency is the one its published spec requires.
 const PILOT_B_MANIFEST: &str = r#"[project]
