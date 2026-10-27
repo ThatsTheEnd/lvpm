@@ -6,7 +6,8 @@
 .DESCRIPTION
     Lists every git worktree with its branch, uncommitted changes, last
     commit and the pull request of that branch. A worktree whose PR is merged
-    or closed and that has no uncommitted changes is marked "stale".
+    or closed, that has no uncommitted changes and whose HEAD is still the PR
+    head commit is marked "stale".
 
     Then lists the open slice issues (label "slice") that have no open
     blockers and no sub-issues (so the parent issue is left out): the slices
