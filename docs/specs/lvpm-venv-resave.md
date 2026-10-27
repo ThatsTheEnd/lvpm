@@ -95,6 +95,33 @@ lvpm says which package failed, so the user knows where to look.
 8. **Dry run.** `--dry-run` into a venv lists the resave as planned per package
    and creates no staging folder.
 
+## Measurements
+
+Slice 1 of `plans/lvpm-venv-resave.md`, 2026-10-27, LabVIEW 2026 (64-bit)
+v26.3, `data_manipulation` 1.6.0.16 and OpenSerializer 1.2.1.16, scratch
+venvs installed with `lvpm install --no-relink`. Each mass compile is
+`LabVIEWCLI -OperationName MassCompile` against a venv LabVIEW started with
+`lvpm launch` on the venv port (3490), and that PID is stopped afterwards.
+The logs are in the session scratchpad, not in the repository.
+
+| Row | What was done | Result | Decision |
+|---|---|---|---|
+| Baseline | Mass compile `<venv>` after a plain install | 21 bad-VI lines: `TypeDescriptor_SetName.vi` ×18, `Variant_InsertElementIntoCluster.vi` ×2, `Tree to KVP.vi` ×1 | The failure reproduces |
+| M0 | `lvpm relink` on `<venv>/<pkg>/1/` in place, then a mass compile | The relink VI saved 6 files (the `.lvlib`/`.lvclass` files), not `TypeDescriptor_SetName.vi`. The mass compile is unchanged: 21 lines | An in-place resave does not fix it. Staging is needed |
+| M1a | Mass compile the tree at `<venv>/.lvpm/staging/<pkg>/1/`, no `lvaddoninfo.json`, no add-on copy | Exit 3, the same 3 VIs broken | Not usable: it is still add-on context |
+| M1b | The same at the sibling `<venv>/.staging-<pkg>/1/` | Exit 3, the same 3 VIs broken | Not usable: everything under `<venv>` loads as add-on context |
+| M1c | The same at `<project>/.lv-stage-out/<pkg>/1/`, outside `<venv>` | Exit 0, no bad VI. The mass compile rewrote all 98 files | Staging must be outside `<venv>` |
+| M2 | `lvpm relink` (embedded `Relink Package.vi`) on the M1c folder | Saved the same 6 files. `TypeDescriptor_SetName.vi` is not in the report | **Stop condition.** The relink VI saves only what LabVIEW marks modified, and a version-only VI is not marked |
+| M3 (partial) | Move the M1c tree (mass compiled outside) to `<venv>/<pkg>/1/`, restore `lvaddoninfo.json`, mass compile `<venv>` | Exit 0, no bad VI, OpenSerializer included | A full save outside the venv, then the move, fixes the venv |
+| Startup | `lvpm launch` until the port listens | 14 s cold, 6–8 s warm | — |
+
+Other observations:
+- The LabVIEW that `lvpm relink` starts can still run about 15 s after
+  relink returns, with no port open. lvpm does not wait for it to exit.
+- Not yet measured: the one-session vs. fresh-LabVIEW-per-package rows of
+  M3, the OpenSerializer resave, and the upgrade row. They wait on the
+  mechanism decision.
+
 ## Glossary
 
 | Term | Definition | Status | Source |
