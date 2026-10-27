@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-27 · **Revised**: 2026-10-27 (plan review rounds 1 and 2)
 **Branch**: claude/s1b-vipm-roundtrip-spec (build continues on it)
-**Status**: draft
+**Status**: approved (human, 2026-10-27)
 **Gherkin persistence**: plan-file-only (steps write the feature file themselves, as S1 did)
 **Spec**: [docs/specs/lvpm-vip-roundtrip-s1b.md](../docs/specs/lvpm-vip-roundtrip-s1b.md) · issue #60
 
