@@ -71,12 +71,17 @@ fn probe() -> Result<String, String> {
     let vipm = Vipm::new(&runner, Timeouts::REAL);
     let me = std::process::id();
     let start = global::process_start(me).ok_or("this run's own start time cannot be read")?;
+    let ini = std::fs::read_to_string(labview.join("LabVIEW.ini")).unwrap_or_default();
     let _guard = Guard::take(
         &vipm,
         &state_file,
         &global::claim_path(),
         (me, &start),
         &global::process_start,
+        (
+            global::vi_server_port(&ini),
+            &support::process::port_is_listening,
+        ),
     )?;
 
     let base = build_pilot_a(&env.pilot_a)?;

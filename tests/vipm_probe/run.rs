@@ -114,6 +114,9 @@ pub struct Guard<'a> {
     claim: PathBuf,
 }
 
+/// The VI Server port of the LabVIEW tree, and whether anything answers on a port.
+pub type Server<'a> = (u16, &'a dyn Fn(u16) -> bool);
+
 impl<'a> Guard<'a> {
     pub fn take(
         vipm: &'a Vipm<'a>,
@@ -121,8 +124,9 @@ impl<'a> Guard<'a> {
         claim: &Path,
         me: (u32, &str),
         start_of: StartOf,
+        (port, answers): Server,
     ) -> Result<Guard<'a>, String> {
-        global::claim(claim, me, start_of)
+        global::decide(claim, me, start_of, port, answers)
             .map_err(|why| format!("the global LabVIEW is in use: {why}"))?;
         // A refusal here is no Guard: its drop would uninstall what the
         // leftover state file names, which a person may own.
@@ -983,6 +987,33 @@ mod tests {
         );
     }
 
+    /// A LabVIEW tree where nothing answers VI Server.
+    const QUIET: Server = (3363, &|_| false);
+
+    #[test]
+    fn a_labview_that_answers_vi_server_refuses_the_probe() {
+        let machine = Machine::new();
+        let fake = machine.fake();
+        let closure = |args: &[String], timeout: Duration| fake.run(args, timeout);
+        let vipm = Vipm::new(&closure, SHORT);
+        let claim = machine.dir.path().join("claim.lock");
+        let none: StartOf = &|_| None;
+        let busy = |port| port == 3364;
+        let why = Guard::take(
+            &vipm,
+            &machine.state_file(),
+            &claim,
+            (7, "70"),
+            none,
+            (3364, &busy),
+        )
+        .err()
+        .unwrap();
+        assert!(why.contains("port 3364"), "{why}");
+        assert_eq!(fake.log.borrow().len(), 0, "no vipm command ran");
+        assert!(!claim.exists(), "the claim is given back");
+    }
+
     #[test]
     fn a_held_claim_refuses_the_probe() {
         let machine = Machine::new();
@@ -992,7 +1023,7 @@ mod tests {
         let claim = machine.dir.path().join("claim.lock");
         std::fs::write(&claim, "9 90").unwrap();
         let held: StartOf = &|pid| (pid == 9).then(|| "90".to_string());
-        let why = Guard::take(&vipm, &machine.state_file(), &claim, (7, "70"), held)
+        let why = Guard::take(&vipm, &machine.state_file(), &claim, (7, "70"), held, QUIET)
             .err()
             .unwrap();
         assert!(why.contains("PID 9"), "{why}");
@@ -1013,7 +1044,7 @@ mod tests {
         let vipm = Vipm::new(&closure, SHORT);
         write_state(&state, &["b".to_string()]).unwrap();
         fake.installed.borrow_mut().insert("b".to_string());
-        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none)
+        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none, QUIET)
             .err()
             .unwrap();
         assert!(why.contains("b is installed"), "{why}");
@@ -1024,7 +1055,7 @@ mod tests {
         // No state file, but pilot A is installed.
         std::fs::remove_file(&state).unwrap();
         fake.installed.borrow_mut().insert(PILOT_A.to_string());
-        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none)
+        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none, QUIET)
             .err()
             .unwrap();
         assert!(why.contains(&format!("{PILOT_A} is installed")), "{why}");
@@ -1082,7 +1113,7 @@ mod tests {
         let state = machine.state_file();
         // The setup is outside the unwind, so a failure of it fails the test.
         let none: StartOf = &|_| None;
-        let guard = Guard::take(&vipm, &state, &claim, (7, "70"), none).unwrap();
+        let guard = Guard::take(&vipm, &state, &claim, (7, "70"), none, QUIET).unwrap();
         assert!(claim.exists());
         write_state(&state, &["a".to_string(), "b".to_string()]).unwrap();
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
