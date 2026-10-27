@@ -190,6 +190,7 @@ impl Distribution {
             name: self.name.clone(),
             version: self.version.clone(),
             display_name: Some(self.display_name.clone()),
+            description: Default::default(),
             file_groups: vec![FileGroup {
                 index: 0,
                 target_dir: "<application>".into(),
