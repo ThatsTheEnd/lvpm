@@ -339,6 +339,28 @@ Feature: A venv install resaves each package in a staging folder, then moves it 
     And LabVIEW was not started
     And its files are in its add-on folder
 
+  Scenario: a package already saved in the venv's LabVIEW is not resaved
+    Given a venv for LabVIEW 2026 whose LabVIEW saves every package
+    And package "alpha" whose VIs are all saved in LabVIEW 2026
+    And package "beta" whose VIs are saved in LabVIEW 2013
+    When packages "alpha" and "beta" are installed into the venv with --no-relink
+    Then alpha's resave line says it is already saved in LabVIEW 2026 and was skipped
+    And only beta was resaved
+    And both are in their add-on folders
+
+  Scenario: a venv where every package is current starts no LabVIEW
+    Given a venv for LabVIEW 2026
+    And package "alpha" whose VIs are all saved in LabVIEW 2026
+    When package "alpha" is installed into the venv with --no-relink
+    Then LabVIEW was not started
+    And no resave failed
+
+  Scenario: a file whose version cannot be read is resaved
+    Given a venv for LabVIEW 2026 whose LabVIEW saves every package
+    And package "alpha" with one LabVIEW 2026 VI and one ".vi" file that is not a VI
+    When package "alpha" is installed into the venv with --no-relink
+    Then alpha was resaved
+
   Scenario: --no-relink does not skip the resave
     Given a venv whose LabVIEW saves every package
     When package "alpha" is installed into the venv with --no-relink
@@ -404,6 +426,8 @@ markers only, no colour or glyph):
   `RelinkFolderStarted/Done`, with a counter: `resave (2/5) alpha ... 3 saved (14s)` or
   `resave (2/5) alpha ... nothing to save (9s)`. A failure ends the line with
   `FAILED`.
+- A package whose files are all current (step 2.6):
+  `resave (2/5) alpha ... already saved in LabVIEW 2026, skipped`.
 - The failure warning, on the stream the existing `warning:` lines use
   (paths shown with the platform's separator):
   `warning: resave of alpha failed (<reason, one line>). alpha is installed, but VIs saved in an older LabVIEW may load broken. Reinstall alpha first; if it fails again, run lvpm launch and mass compile <venv>/alpha.`
@@ -424,6 +448,7 @@ markers only, no colour or glyph):
   `resave: 2 packages in the venv's LabVIEW:` then the names, capped with
   `PREVIEW_LIMIT` and `... and N more`.
 - JSON: `resave_started`, `resave_done {package, saved}`,
+  `resave_skipped {package, labview}`,
   `resave_failed {package, error}`, `resave_planned {packages}`, and a
   `resave_failed` list of package names in the final summary.
 
@@ -607,6 +632,26 @@ final paths.
 **Files**: `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/events.rs`, `src/render/install.rs`, `src/render/json.rs`
 **Commit**: `feat(venv): a dry run says which packages it would resave`
 
+#### Step 2.6: skip packages already saved in the venv's LabVIEW
+
+**Complexity**: standard
+**IMPLEMENT**: A pure reader in `ops/resave.rs`, `saved_major(path) ->
+Option<u32>`: the LabVIEW major version in the file's RSRC `vers` resource
+(id 4), read with no LabVIEW (spec, M4). Before a staged package's resave,
+the `Resaver` reads every `.vi`/`.ctl`/`.vit` from the same file walk. If
+every file reads the venv's major (`LabVIEW 2026` is 26), it emits
+`ResaveSkipped { package, labview }` and starts no LabVIEW for it. A file
+that cannot be read counts as old. This runs before the start, so a run
+with only current packages starts no LabVIEW and never latches a start
+failure. Shortcut: the minor version (26.1 against 26.3) is not compared;
+compare it when a same-year file is measured to load broken.
+**TEST**: Reader unit tests on byte fixtures built in the test (13.0.1,
+26.3.1, not RSRC, truncated). The three scenarios above, with the fake
+launcher.
+**REFACTOR**: One file walk feeds the skip and the save.
+**Files**: `crates/lvpm-core/src/ops/resave.rs`, `crates/lvpm-core/src/events.rs`, `src/render/install.rs`, `src/render/json.rs`
+**Commit**: `feat(venv): skip the resave of packages already saved in the venv's LabVIEW`
+
 #### Step 2.7: document the resave; the pilot scenario passes
 
 **Complexity**: trivial
@@ -775,10 +820,9 @@ None.
 
 - **Duration.** The forced save loads every VI cold: 83 s for 92 files and
   40 s for 30 (M3a). A 40-package sync can take tens of minutes. One
-  LabVIEW per run already avoids repeated starts. If this is too slow, skip
-  packages whose files are all saved in the venv's LabVIEW already: the
-  version is in each file's header and needs no LabVIEW (spec, M4). No pilot
-  package is current, so this is not in Slice 2.
+  LabVIEW per run already avoids repeated starts. Step 2.6 skips
+  packages whose files are all saved in the venv's LabVIEW already (spec,
+  M4). No pilot package is current, so the pilots pay the full time.
 - **Library files are not saved.** `.lvlib`/`.lvclass` keep their old
   version. Every measured venv compiled clean. If a package breaks on that,
   add the relink VI's library save after the forced save.
@@ -821,6 +865,7 @@ None.
   - [ ] Step 2.3: resave each staged package, warn on failure
   - [ ] Step 2.4: --no-relink and --headless do not skip the resave
   - [ ] Step 2.5: dry run lists the planned resaves
+  - [ ] Step 2.6: skip packages already saved in the venv's LabVIEW
   - [ ] Step 2.7: document the resave; the pilot scenario passes
 
 #### Wave 3
