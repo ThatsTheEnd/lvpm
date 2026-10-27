@@ -83,7 +83,7 @@ pub fn build(env: &OpEnv) -> Result<Built> {
         .collect();
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist).with_context(|| format!("creating {}", dist.display()))?;
-    let path = publish(&dist.join(d.file_name()), &spec::write(&s), &entries)?;
+    let path = write_atomically(&dist.join(d.file_name()), &spec::write(&s), &entries)?;
     Ok(Built {
         path,
         files: entries.len(),
@@ -92,12 +92,8 @@ pub fn build(env: &OpEnv) -> Result<Built> {
 
 /// Write the package beside `path` and rename it over `path` once complete;
 /// on any failure the staged file goes and `path` stays as it was.
-fn publish(path: &Path, spec: &str, members: &[(String, PathBuf)]) -> Result<PathBuf> {
-    let name = path
-        .file_name()
-        .context("a package name")?
-        .to_string_lossy();
-    let temp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+fn write_atomically(path: &Path, spec: &str, members: &[(String, PathBuf)]) -> Result<PathBuf> {
+    let temp = crate::paths::staging_path(path);
     let written = write_zip(&temp, spec, members)
         .and_then(|()| std::fs::rename(&temp, path).context("replacing the package"));
     if let Err(why) = written {
@@ -139,7 +135,7 @@ mod tests {
         let path = dir.join("p-1.0.0.0.vip");
         std::fs::write(&path, "previous").unwrap();
         let gone = vec![("vi.lib/x/A.vi".to_string(), dir.join("A.vi"))];
-        let why = format!("{:#}", publish(&path, "spec", &gone).unwrap_err());
+        let why = format!("{:#}", write_atomically(&path, "spec", &gone).unwrap_err());
         assert!(why.contains("A.vi"), "{why}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "previous");
         let left: Vec<_> = std::fs::read_dir(&dir)

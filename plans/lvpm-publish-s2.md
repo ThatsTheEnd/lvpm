@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-27
 **Branch**: claude/s2-lvpm-publish, off `claude/s1-lvpm-build` (PR #52)
-**Status**: draft (awaiting approval)
+**Status**: approved
 **Gherkin persistence**: custom: tests/features/build-slices/
 **Spec**: [docs/specs/lvpm-publish-s2.md](../docs/specs/lvpm-publish-s2.md)
 
@@ -406,3 +406,7 @@ the acceptance scenarios pin.
   - [ ] Slice 2: the docs and the pilot loop
     - [ ] 2.1 the docs
     - [ ] 2.2 the loop scenario
+
+## Approval
+
+Approved by the user in chat on 2026-10-27 ("I approve the S2 plan, build it").
