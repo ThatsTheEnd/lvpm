@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-27 · **Revised**: 2026-10-27 (plan review rounds 1 and 2)
 **Branch**: claude/s1b-vipm-roundtrip-spec (build continues on it)
-**Status**: approved (human, 2026-10-27)
+**Status**: implemented (PR 1: steps 1.1-1.5 and 2.1; step 1.6 is the operator run, still open)
 **Gherkin persistence**: plan-file-only (steps write the feature file themselves, as S1 did)
 **Spec**: [docs/specs/lvpm-vip-roundtrip-s1b.md](../docs/specs/lvpm-vip-roundtrip-s1b.md) · issue #60
 
@@ -574,7 +574,7 @@ version in the table; patch bump in the gate; deviations in Risks
   - [x] Step 1.4: claim, state file, scoped snapshots
   - [x] Step 1.5: the `#[ignore]` run
   - [ ] Step 1.6: run it (operator, nothing committed but the spec tick)
-- [ ] Slice 2: pilot B builds from its pinned checkout
+- [x] Slice 2: pilot B builds from its pinned checkout
   - [x] Step 2.1: `LVPM_TEST_PILOT_B`
 
 #### Wave 2 (do not build until re-planned after step 1.6)
