@@ -80,6 +80,16 @@ pub fn timed_out_note(timeout: Duration) -> String {
     format!("timed out after {}s", timeout.as_secs_f64())
 }
 
+/// The first line of `output` that says anything.
+pub fn first_line(output: &str) -> String {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 pub struct Vipm<'a> {
     run: Runner<'a>,
     timeouts: Timeouts,
@@ -113,8 +123,8 @@ impl<'a> Vipm<'a> {
                 && output.contains(name)
                 && version.is_none_or(|v| output.contains(v))),
             Ran::TimedOut(_) => Err(format!(
-                "`vipm info {name}` timed out after {}s",
-                self.timeouts.other.as_secs_f64()
+                "`vipm info {name}` {}",
+                timed_out_note(self.timeouts.other)
             )),
             Ran::CannotStart(why) => Err(format!("`vipm info {name}`: {why}")),
         }
@@ -122,7 +132,7 @@ impl<'a> Vipm<'a> {
 
     pub fn version(&self) -> Result<String, String> {
         match self.exec(&["--version"], self.timeouts.other) {
-            Ran::Exited { code: 0, output } => Ok(crate::table::first_line(&output)),
+            Ran::Exited { code: 0, output } => Ok(first_line(&output)),
             other => Err(format!("`vipm --version` gave {other:?}")),
         }
     }
@@ -141,15 +151,13 @@ impl<'a> Vipm<'a> {
                 Ok(true) => Judged {
                     accepted: true,
                     exit: Some(0),
-                    note: crate::table::first_line(&output),
+                    note: first_line(&output),
                     output,
                 },
                 Ok(false) => rejected(Some(0), "not listed by vipm info".into(), output),
                 Err(why) => rejected(Some(0), why, output),
             },
-            Ran::Exited { code, output } => {
-                rejected(Some(code), crate::table::first_line(&output), output)
-            }
+            Ran::Exited { code, output } => rejected(Some(code), first_line(&output), output),
             Ran::TimedOut(output) => rejected(None, timed_out_note(self.timeouts.install), output),
             Ran::CannotStart(why) => rejected(None, format!("could not start: {why}"), why),
         }
@@ -164,8 +172,8 @@ impl<'a> Vipm<'a> {
                 Err(format!("`{command}` failed (exit {code}): {output}"))
             }
             Ran::TimedOut(_) => Err(format!(
-                "`{command}` timed out after {}s and was killed; {name} may still be installed",
-                self.timeouts.other.as_secs_f64()
+                "`{command}` {} and was killed; {name} may still be installed",
+                timed_out_note(self.timeouts.other)
             )),
             Ran::CannotStart(why) => Err(format!("`{command}`: {why}")),
         }
@@ -237,6 +245,15 @@ pub fn progress(index: usize, total: usize, variant: &str, doing: &str) -> Strin
     format!("[{index}/{total}] {variant}: {doing}...")
 }
 
+/// An exit with `output`, for the fakes of the tests here and in `run`.
+#[cfg(test)]
+pub fn exited(code: i32, output: &str) -> Ran {
+    Ran::Exited {
+        code,
+        output: output.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,13 +266,6 @@ mod tests {
 
     #[cfg(windows)]
     const LONG: Duration = Duration::from_secs(60);
-
-    fn exited(code: i32, output: &str) -> Ran {
-        Ran::Exited {
-            code,
-            output: output.into(),
-        }
-    }
 
     /// A fake `vipm` that answers by its first argument and logs every call.
     struct Fake {
@@ -437,6 +447,12 @@ mod tests {
             Ran::CannotStart(why) => assert!(why.contains("could not start"), "{why}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_first_line_is_the_first_one_with_text() {
+        assert_eq!(first_line("\n  \n  boom here \nsecond"), "boom here");
+        assert_eq!(first_line(""), "");
     }
 
     #[test]

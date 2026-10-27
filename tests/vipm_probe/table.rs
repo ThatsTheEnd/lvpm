@@ -22,16 +22,6 @@ pub struct Row {
     pub same_files: Option<bool>,
 }
 
-/// The first line of `output` that says anything.
-pub fn first_line(output: &str) -> String {
-    output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .to_string()
-}
-
 /// A cell on one line: a pipe would end it, a newline would end its row, and
 /// an angle bracket could open markup.
 pub fn escape(cell: &str) -> String {
@@ -259,12 +249,6 @@ mod tests {
         let text = render(&header(), &rows, &RefDiff::default(), &["<x>".into()]);
         assert!(text.contains("| \\<script\\> |"), "{text}");
         assert!(text.contains("- \\<x\\>"), "{text}");
-    }
-
-    #[test]
-    fn the_first_line_is_the_first_one_with_text() {
-        assert_eq!(first_line("\n  \n  boom here \nsecond"), "boom here");
-        assert_eq!(first_line(""), "");
     }
 
     #[test]

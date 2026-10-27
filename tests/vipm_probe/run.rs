@@ -481,7 +481,7 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::variants::sample_base;
-    use crate::vipm::{PILOT_A, Ran, Timeouts};
+    use crate::vipm::{PILOT_A, Ran, Timeouts, exited};
     use std::cell::RefCell;
     use std::time::Duration;
 
@@ -489,13 +489,6 @@ mod tests {
         install: Duration::from_millis(30),
         other: Duration::from_millis(20),
     };
-
-    fn exited(code: i32, output: &str) -> Ran {
-        Ran::Exited {
-            code,
-            output: output.into(),
-        }
-    }
 
     #[derive(Clone, Copy, Default, PartialEq)]
     enum Listing {
