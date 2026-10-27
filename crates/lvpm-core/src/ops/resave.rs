@@ -107,11 +107,7 @@ pub(crate) fn lv_files(folder: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, out);
-            } else if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| ["vi", "ctl", "vit"].contains(&e.to_ascii_lowercase().as_str()))
-            {
+            } else if is_lv_file(&path) {
                 out.push(path);
             }
         }
@@ -120,6 +116,13 @@ pub(crate) fn lv_files(folder: &Path) -> Vec<PathBuf> {
     walk(folder, &mut out);
     out.sort();
     out
+}
+
+/// A file the resave saves: a VI, a control or a VI template.
+pub(crate) fn is_lv_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["vi", "ctl", "vit"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
 /// One LabVIEW for a run's resaves, started for the first package that needs
@@ -135,6 +138,8 @@ pub struct Resaver {
     failed: Vec<String>,
     /// This package's place in the run, for the counter.
     pub(super) position: (usize, usize),
+    /// A dry run's packages that would be resaved.
+    pub(super) planned: Vec<String>,
 }
 
 impl Default for Resaver {
@@ -151,6 +156,7 @@ impl Default for Resaver {
             wanted: 0,
             failed: Vec::new(),
             position: (0, 0),
+            planned: Vec::new(),
         }
     }
 }
@@ -218,6 +224,11 @@ impl Resaver {
     /// packages' names.
     pub(super) fn finish(&mut self, sink: &dyn EventSink) -> Vec<String> {
         self.session = None;
+        if !self.planned.is_empty() {
+            sink.emit(Event::ResavePlanned {
+                packages: std::mem::take(&mut self.planned),
+            });
+        }
         let failed = std::mem::take(&mut self.failed);
         if let Some(error) = self.start_failure.take() {
             // Everything that failed did so for want of a LabVIEW.
@@ -727,5 +738,99 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    fn dry_run() -> InstallOptions {
+        InstallOptions {
+            dry_run: true,
+            ..InstallOptions::default()
+        }
+    }
+
+    fn planned(events: &[Event]) -> Option<Vec<String>> {
+        events.iter().find_map(|e| match e {
+            Event::ResavePlanned { packages } => Some(packages.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_dry_run_lists_the_resaves_before_the_relink_block_and_stages_nothing() {
+        let (repo, venv) = repo("resave-dry");
+        package(&repo, "alpha", "");
+        package(&repo, "beta", "\"alpha >= 1.0\"");
+        let fake = Fake::saving().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("beta"), &dry_run()).unwrap();
+
+        let events = sink.events();
+        assert_eq!(planned(&events), Some(vec!["alpha".into(), "beta".into()]));
+        let at = |want: fn(&Event) -> bool| events.iter().position(want);
+        let block = at(|e| matches!(e, Event::ResavePlanned { .. })).unwrap();
+        let relink = at(|e| matches!(e, Event::RelinkPlanned { .. })).unwrap();
+        assert!(block < relink, "the resave block comes first");
+        for e in &events {
+            if let Event::PlannedWrites { files } = e {
+                for f in files {
+                    assert!(f.path.starts_with(&venv.dir), "{}", f.path.display());
+                }
+            }
+        }
+        assert!(!venv.staging_dir().exists());
+        assert!(!venv.dir.join("alpha").exists());
+        assert_eq!(fake.log().starts, 0);
+    }
+
+    #[test]
+    fn a_dry_run_leaves_a_leftover_staging_folder_alone() {
+        let (repo, venv) = repo("resave-dry-leftover");
+        package(&repo, "alpha", "");
+        let partial = venv.staging_dir().join("beta").join("1").join("half.vi");
+        std::fs::create_dir_all(partial.parent().unwrap()).unwrap();
+        std::fs::write(&partial, b"half").unwrap();
+        Fake::saving().install();
+
+        install(
+            &env_on(&Recorded::default(), &repo),
+            Some("alpha"),
+            &dry_run(),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&partial).unwrap(), b"half");
+    }
+
+    #[test]
+    fn a_dry_run_plans_no_resave_for_a_package_of_documentation_only() {
+        let (repo, _venv) = repo("resave-dry-docs");
+        vip_in(
+            &repo.join("packages"),
+            "docs",
+            "1.0",
+            "",
+            &["d/readme.txt"],
+            false,
+        );
+        Fake::saving().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("docs"), &dry_run()).unwrap();
+
+        assert_eq!(planned(&sink.events()), None);
+    }
+
+    #[test]
+    fn a_dry_run_into_a_prefix_plans_no_resave() {
+        let (repo, _venv) = repo("resave-dry-prefix");
+        package(&repo, "alpha", "");
+        Fake::saving().install();
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &repo);
+        env.flags.prefix = Some(repo.join("dest"));
+
+        install(&env, Some("alpha"), &dry_run()).unwrap();
+
+        assert_eq!(planned(&sink.events()), None);
     }
 }

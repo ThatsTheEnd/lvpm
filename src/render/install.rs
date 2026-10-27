@@ -232,6 +232,24 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 ),
             );
         }
+        Event::ResavePlanned { packages } => {
+            r.line(
+                Stream::Out,
+                &format!(
+                    "\nresave: {} packages in the venv's LabVIEW:",
+                    packages.len()
+                ),
+            );
+            for package in packages.iter().take(PREVIEW_LIMIT) {
+                r.line(Stream::Out, &format!("      {package}"));
+            }
+            if packages.len() > PREVIEW_LIMIT {
+                r.line(
+                    Stream::Out,
+                    &format!("      ... and {} more", packages.len() - PREVIEW_LIMIT),
+                );
+            }
+        }
         Event::ResaveStartFailed { error, packages } => r.line(
             Stream::Err,
             &format!(
@@ -622,6 +640,17 @@ mod tests {
         assert!(
             resaved_then(SkipReason::Headless)
                 .ends_with("\nrelink: skipped (headless). The resave still ran.\n")
+        );
+    }
+
+    #[test]
+    fn a_dry_run_lists_the_resaves_capped() {
+        let packages: Vec<String> = (1..=8).map(|i| format!("p{i}")).collect();
+        let (out, _) = text_of(&[Event::ResavePlanned { packages }]);
+        assert_eq!(
+            out,
+            "\nresave: 8 packages in the venv's LabVIEW:\n      p1\n      p2\n      p3\n      \
+             p4\n      p5\n      p6\n      ... and 2 more\n"
         );
     }
 }

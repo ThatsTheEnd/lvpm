@@ -102,7 +102,8 @@ impl Renderer {
             | Event::ResaveDone { .. }
             | Event::ResaveFailed { .. }
             | Event::ResaveStartFailed { .. }
-            | Event::ResaveRecap { .. } => install::render(self, event),
+            | Event::ResaveRecap { .. }
+            | Event::ResavePlanned { .. } => install::render(self, event),
             Event::HookStarting { .. }
             | Event::HookRan { .. }
             | Event::HookFailed { .. }

@@ -864,7 +864,7 @@ None.
   - [x] Step 2.2: leftover staging and unrecorded folders
   - [x] Step 2.3: resave each staged package, warn on failure
   - [x] Step 2.4: --no-relink and --headless do not skip the resave
-  - [ ] Step 2.5: dry run lists the planned resaves
+  - [x] Step 2.5: dry run lists the planned resaves
   - [ ] Step 2.6: skip packages already saved in the venv's LabVIEW
   - [ ] Step 2.7: document the resave; the pilot scenario passes
 

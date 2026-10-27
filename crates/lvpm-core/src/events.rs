@@ -219,6 +219,8 @@ pub enum Event {
         failed: Vec<String>,
         packages: usize,
     },
+    /// A dry run's packages with LabVIEW files, which a venv install resaves.
+    ResavePlanned { packages: Vec<String> },
 
     // ---- ops::relink ----
     /// The relink pass begins: `folders` to walk with the relink VI at `vi`,

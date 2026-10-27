@@ -10,6 +10,7 @@ use super::env::{Destination, OpEnv};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
+use super::resave;
 use super::session::InstallSession;
 use super::staging::{self, Staging};
 use super::uninstall::uninstall_one;
@@ -576,6 +577,9 @@ fn preview(env: &OpEnv, session: &mut InstallSession, pkg: &Unpacking) -> Result
         pkg.entry.name.clone(),
         relink::folders_for_spec(&pkg.roots, &pkg.spec)?,
     ));
+    if session.venv().is_some() && pkg.plan.writes.iter().any(|w| resave::is_lv_file(&w.dest)) {
+        session.resaver.planned.push(pkg.entry.name.clone());
+    }
     Ok(())
 }
 
