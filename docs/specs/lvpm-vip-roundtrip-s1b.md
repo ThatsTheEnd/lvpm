@@ -1,7 +1,7 @@
 <!-- spec-version: 14.0.1 -->
 # Spec: VIPM installs an lvpm-built `.vip` (slice S1b)
 
-**Format:** dev-team specs 14.0.1 · **Status:** gate blocked on 3 decisions (see Ambiguity Log) · **Date:** 2026-10-27 ·
+**Format:** dev-team specs 14.0.1 · **Status:** gate passed · **Date:** 2026-10-27 ·
 **Slice:** [S1b in build-slices.md](../vision/build-slices.md#slice-s1b-vipm-installs-an-lvpm-built-vip), issue #60 ·
 **Builds on:** [S1 spec](lvpm-build-s1.md), [ADR 2](../adr/0002-vip-first-lvpkg-later.md), [PROVENANCE.md](../../PROVENANCE.md)
 
@@ -19,8 +19,10 @@ installs the dependencies its `spec` asks for.
 
 What VIPM needs is learned only by watching VIPM: install a file, see
 whether it is accepted, compare the installed tree. VIPM is never
-decompiled or disassembled. The findings are written down so that
-PROVENANCE.md can cite them for `.vip` writing.
+decompiled or disassembled. The detailed findings stay on the machine that
+made them, out of the repository; what reaches the repository is the code
+change each finding forces, with a test named after it, and a PROVENANCE.md
+paragraph that says how `.vip` writing was verified.
 
 ## Architecture Specification
 
@@ -32,8 +34,8 @@ PROVENANCE.md can cite them for `.vip` writing.
 | Unit tests, one per VIPM requirement, named after it | next to the code they cover |
 | Probe runner (dev only, not shipped) | `tests/vipm_probe.rs`, `#[ignore]`, runs when `LVPM_TEST_VIPM` names `vipm.exe` |
 | Round-trip scenarios | `tests/features/build-slices/s1b-vip-in-vipm.feature`, tagged `@labview @vipm` (manual) |
-| Findings table | `docs/vip-compat.md` (new) |
-| Provenance | a ".vip writing" paragraph in PROVENANCE.md citing `docs/vip-compat.md` |
+| Findings table (local only) | written by the probe runner to `target/vipm-probes/` (under `target/`, so already gitignored) |
+| Provenance | a ".vip writing" paragraph in PROVENANCE.md: method, VIPM version, and that the results are kept out of the repository like the install snapshots |
 
 **How VIPM is driven.** Only through commands JKI documents: `vipm install
 <file.vip> -y`, `vipm uninstall <name>`, `vipm info <name>` (VIPM 2026.3,
@@ -81,12 +83,12 @@ Scenarios that build it read a checkout named by `LVPM_TEST_PILOT_B` and
 check its HEAD against a pinned commit, as S1 does for pilot A with
 `LVPM_TEST_PILOT_A`. Its `lvpm.toml` is written by the scenario.
 
-**If VIPM rejects the file** and no spec or zip change fixes it, see
-decision Q3.
+**If VIPM rejects the file** and no spec or zip change fixes it: stop and
+ask (decision Q3). The slice assumes VIPM accepts it.
 
 **Constraints.** PROVENANCE: black-box only (decision Q1). No new
-dependency. The probe runner and variant files are never shipped and never
-committed; only the findings table is.
+dependency. The probe runner is never shipped. Variant files and the
+findings table are never committed (decision Q1).
 
 **Out of scope.** Decompiling or disassembling VIPM. `.lvpkg` (S7a).
 Extra file groups, install hooks, `[Description]` fields VIPM accepts
@@ -94,9 +96,13 @@ without. Making VIPM resolve dependencies from lvpm feeds.
 
 ## Acceptance Criteria
 
-1. **Findings table.** `docs/vip-compat.md` lists every probed variant:
-   what changed, accepted or rejected, VIPM's message when rejected, and the
-   VIPM and LabVIEW versions. PROVENANCE.md cites it for `.vip` writing.
+1. **Findings table, local.** One run of the probe runner (`cargo test
+   --test vipm_probe -- --ignored` with `LVPM_TEST_VIPM` set) installs every
+   variant through `vipm.exe` with no manual step and writes a table to
+   `target/vipm-probes/`: what changed, accepted or rejected, VIPM's message
+   when rejected, VIPM and LabVIEW versions. `git status` shows nothing new
+   after the run. PROVENANCE.md has a ".vip writing" paragraph naming the
+   method and the VIPM version.
 2. **Each requirement tested.** For every change step 3 made necessary,
    a unit test named after the VIPM requirement (for example
    `vip_spec_has_id_for_vipm`) fails without the change and passes with it.
@@ -133,10 +139,11 @@ Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 
 | Decision | Classification | Resolved By | Rationale / Answer |
 |----------|---------------|-------------|-------------------|
-| **Q1. Is the probing allowed under VIPM's license, and may the table be published?** | `requires-stakeholder-input` | **open** | The installed license (March 2020) allows use "for your own internal use and evaluation purposes" "in accordance with the documentation" (§1.1). It forbids attempts "to discover any portion of the object or source code or trade secrets" (§1.2(d)), and §3 counts "design and function specifications" as JKI's confidential information, except what is public or independently developed. The dev machine runs the **Free** edition; Appendix A (Community) limits use to non-commercial or OSI open-source work. Installing files and watching the result is what PROVENANCE already describes for install semantics, but whether that counts as "discovering" behaviour, and whether this use is commercial (Hexagon), is a legal question. Options: (a) probe with documented commands and publish the table; (b) probe, keep the table out of the repo; (c) ask JKI first, or skip step 3 and only do the round trips. |
-| **Q2. Probes scripted through `vipm.exe` or run by hand?** | `requires-stakeholder-input` | **open** | Depends on Q1. The CLI is documented and in the Free edition (`install`, `uninstall`, `info` are not marked Pro). Scripting makes the ~15 variants repeatable in minutes; by hand they take an afternoon and cannot be rerun on a new VIPM version. Recommendation: scripted, if Q1 allows. |
-| **Q3. What if VIPM rejects lvpm's `.vip` and no spec or zip change fixes it?** | `requires-stakeholder-input` | **open** | Product direction. Slice's fallback: `.vip` stays lvpm-only, docs say so, and S7a (`.lvpkg`) moves up. Alternative: M2 stays blocked until VIPM accepts it. Recommendation: the slice's fallback. |
+| **Q1. Is the probing allowed under VIPM's license, and may the table be published?** | `requires-stakeholder-input` | human, 2026-10-27 | **(b): probe with documented commands, keep the table out of the repository.** Context given: the installed license (March 2020) allows use "for your own internal use and evaluation purposes" "in accordance with the documentation" (§1.1). It forbids attempts "to discover any portion of the object or source code or trade secrets" (§1.2(d)), and §3 counts "design and function specifications" as JKI's confidential information, except what is public or independently developed. The dev machine runs the **Free** edition; Appendix A (Community) limits use to non-commercial or OSI open-source work. Installing files and watching the result is what PROVENANCE already describes for install semantics, but whether that counts as "discovering" behaviour, and whether this use is commercial (Hexagon), is a legal question. Options: (a) probe with documented commands and publish the table; (b) probe, keep the table out of the repo; (c) ask JKI first, or skip step 3 and only do the round trips. |
+| **Q2. Probes scripted through `vipm.exe` or run by hand?** | `requires-stakeholder-input` | human, 2026-10-27 | **Scripted.** Depends on Q1. The CLI is documented and in the Free edition (`install`, `uninstall`, `info` are not marked Pro). Scripting makes the ~15 variants repeatable in minutes; by hand they take an afternoon and cannot be rerun on a new VIPM version. Recommendation: scripted, if Q1 allows. |
+| **Q3. What if VIPM rejects lvpm's `.vip` and no spec or zip change fixes it?** | `requires-stakeholder-input` | human, 2026-10-27 | **Deferred: assume VIPM accepts lvpm's packages; decide if it does not.** Options were: product direction. Slice's fallback: `.vip` stays lvpm-only, docs say so, and S7a (`.lvpkg`) moves up. Alternative: M2 stays blocked until VIPM accepts it. Recommendation: the slice's fallback. |
 | Rebuild pilot A with VIPM (slice step 2) | `inferable` | inference | `vipm build` needs a public repo (Free/Community) or Pro; pilot A's source is not public. The published archive in the fixtures was built by VIPM from that library, so it is the VIPM reference. Deviation from the slice text, to be noted on #60. |
+| Findings table location (slice says `docs/`) | `inferable` | from Q1 | Q1 keeps the table out of the repository, so it goes to `target/vipm-probes/`. Deviation from the slice text, to be noted on #60. |
 | Pilot B's source in tests | `inferable` | inference | Public, 0-BSD. Same mechanism as pilot A in S1 (`LVPM_TEST_PILOT_*`, pinned HEAD), so tests do not download. |
 | Which variants | `inferable` | inference | The slice lists them; `Requires` with `=` comes from S1's log. |
 | Changing lvpm only where VIPM needs it | `inferable` | inference | S1's decision: no `ID`, icon or license until S1b shows VIPM needs them. Adding more would be unverified copying of VIPM's output. |
@@ -156,4 +163,4 @@ Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 - [x] Architecture constrains without over-engineering
 - [x] Terminology consistent across artifacts
 - [x] No contradictions between artifacts
-- [ ] Every gap/ambiguity finding is logged — inferable with rationale or resolved by human (**Q1–Q3 open**)
+- [x] Every gap/ambiguity finding is logged — inferable with rationale or resolved by human
