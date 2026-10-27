@@ -6,7 +6,9 @@ use crate::support::global::{self, StartOf};
 use crate::support::snapshot::{self, Change, LABVIEW_NOISE, Snapshot};
 use crate::table::Row;
 use crate::variants::{Pkg, Variant};
-use crate::vipm::{DATA_MANIPULATION, PALETTE, Vipm, preflight, progress, uninstall_command};
+use crate::vipm::{
+    DATA_MANIPULATION, PALETTE, TOUCHED, Vipm, preflight, progress, uninstall_command,
+};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -104,7 +106,8 @@ fn remove_if_listed(vipm: &Vipm, name: &str) -> Result<(), String> {
 
 /// The run's hold on the global LabVIEW. Dropping it, after the run or while
 /// a panic unwinds, uninstalls what the state file names and gives the claim
-/// back; the state file stays for the next start to check.
+/// back; the state file stays for the next start to check. It exists only
+/// once the start checks passed, so the state file it reads is this run's.
 pub struct Guard<'a> {
     vipm: &'a Vipm<'a>,
     state_file: PathBuf,
@@ -121,6 +124,13 @@ impl<'a> Guard<'a> {
     ) -> Result<Guard<'a>, String> {
         global::claim(claim, me, start_of)
             .map_err(|why| format!("the global LabVIEW is in use: {why}"))?;
+        // A refusal here is no Guard: its drop would uninstall what the
+        // leftover state file names, which a person may own.
+        if let Err(why) = check_leftover(vipm, state_file).and_then(|()| preflight(vipm, &TOUCHED))
+        {
+            std::fs::remove_file(claim).ok();
+            return Err(why);
+        }
         Ok(Guard {
             vipm,
             state_file: state_file.to_path_buf(),
@@ -447,7 +457,7 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::variants::sample_base;
-    use crate::vipm::{Ran, Timeouts};
+    use crate::vipm::{PILOT_A, Ran, Timeouts};
     use std::cell::RefCell;
     use std::time::Duration;
 
@@ -864,6 +874,38 @@ mod tests {
         assert!(why.contains("PID 9"), "{why}");
         assert_eq!(fake.log.borrow().len(), 0, "no vipm command ran");
         assert_eq!(std::fs::read_to_string(&claim).unwrap(), "9 90");
+    }
+
+    #[test]
+    fn a_refused_start_uninstalls_nothing_and_gives_the_claim_back() {
+        let machine = Machine::new();
+        let state = machine.state_file();
+        let claim = machine.dir.path().join("claim.lock");
+        let none: StartOf = &|_| None;
+
+        // A leftover state file naming a package that is still installed.
+        let fake = machine.fake();
+        let closure = |args: &[String], timeout: Duration| fake.run(args, timeout);
+        let vipm = Vipm::new(&closure, SHORT);
+        write_state(&state, &["b".to_string()]).unwrap();
+        fake.installed.borrow_mut().insert("b".to_string());
+        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none)
+            .err()
+            .unwrap();
+        assert!(why.contains("b is installed"), "{why}");
+        assert_eq!(fake.calls("uninstall"), Vec::<String>::new());
+        assert!(state.exists(), "the file naming the package stays");
+        assert!(!claim.exists(), "the claim is given back");
+
+        // No state file, but pilot A is installed.
+        std::fs::remove_file(&state).unwrap();
+        fake.installed.borrow_mut().insert(PILOT_A.to_string());
+        let why = Guard::take(&vipm, &state, &claim, (7, "70"), none)
+            .err()
+            .unwrap();
+        assert!(why.contains(&format!("{PILOT_A} is installed")), "{why}");
+        assert_eq!(fake.calls("uninstall"), Vec::<String>::new());
+        assert!(!state.exists() && !claim.exists());
     }
 
     #[test]

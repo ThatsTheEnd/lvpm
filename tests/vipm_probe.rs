@@ -31,7 +31,7 @@ use support::pilots::{PILOT_A_ARCHIVE, archives, copy_tree, pilots_dir};
 use support::project::MANIFEST_FILE;
 use support::snapshot::{self, LABVIEW_NOISE};
 use variants::Pkg;
-use vipm::{TOUCHED, Timeouts, Vipm};
+use vipm::{Timeouts, Vipm};
 
 const LABVIEW_YEAR: u32 = 2026;
 const LABVIEW_EXE: &str = "LabVIEW.exe";
@@ -78,8 +78,6 @@ fn probe() -> Result<String, String> {
         (me, &start),
         &global::process_start,
     )?;
-    run::check_leftover(&vipm, &state_file)?;
-    vipm::preflight(&vipm, &TOUCHED)?;
 
     let base = build_pilot_a(&env.pilot_a)?;
     let published = published_pilots()?;
