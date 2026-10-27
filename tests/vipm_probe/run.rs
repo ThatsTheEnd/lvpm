@@ -240,7 +240,8 @@ fn finish(
     if !listed.is_empty() {
         let commands: Vec<String> = listed.iter().map(|p| uninstall_command(p)).collect();
         return Err(format!(
-            "{CANNOT_TELL}: after {label} `vipm info` still lists {} after its uninstall;              uninstall with `{}`, then re-run",
+            "{CANNOT_TELL}: after {label} `vipm info` still lists {} after its uninstall; \
+             uninstall with `{}`, then re-run",
             listed.join(", "),
             commands.join("`, `")
         ));
