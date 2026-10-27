@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// `LVAddons.AdditionalLocations` exists from LabVIEW 2024 Q1 on.
 const MIN_LV: f64 = 24.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Venv {
     /// The repo root — where `lvpm.toml` lives.
     pub repo: PathBuf,
