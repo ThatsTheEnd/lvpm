@@ -686,4 +686,46 @@ mod tests {
         assert_eq!(fake.log().starts, 0);
         assert!(landed(&venv, "alpha"));
     }
+
+    #[test]
+    fn a_headless_install_resaves_with_a_headless_labview_and_skips_only_the_relink() {
+        let (repo, venv) = repo("resave-headless");
+        package(&repo, "alpha", "");
+        let fake = Fake::saving().install();
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &repo);
+        env.headless = true;
+
+        install(&env, Some("alpha"), &InstallOptions::default()).unwrap();
+
+        let events = sink.events();
+        assert_eq!(resaves(&events), ["alpha"]);
+        assert!(events.contains(&Event::PhaseSkipped {
+            phase: crate::events::Phase::Relink,
+            reason: crate::events::SkipReason::Headless,
+            skipped: 1,
+        }));
+        assert_eq!(fake.log().headless, [true]);
+        assert!(landed(&venv, "alpha"));
+    }
+
+    #[test]
+    fn no_relink_skips_the_relink_and_not_the_resave() {
+        let (repo, _venv) = repo("resave-no-relink");
+        package(&repo, "alpha", "");
+        Fake::saving().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("alpha"), &no_relink()).unwrap();
+
+        let events = sink.events();
+        assert_eq!(resaves(&events), ["alpha"]);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::PhaseSkipped {
+                reason: crate::events::SkipReason::Declined,
+                ..
+            }
+        )));
+    }
 }

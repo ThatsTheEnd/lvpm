@@ -34,7 +34,8 @@ pub struct InstallOptions {
     pub dry_run: bool,
     /// Do not install dependencies.
     pub no_deps: bool,
-    /// Copy the files but skip the relink pass.
+    /// Copy the files but skip the relink pass. Not the resave: a venv
+    /// install resaves each package whatever this says.
     pub no_relink: bool,
     /// Relink even where LabVIEW runs headless, where the pass is otherwise
     /// off: nothing there opens the IDE, and a compile or build resolves the

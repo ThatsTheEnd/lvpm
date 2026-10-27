@@ -42,6 +42,8 @@ pub struct Renderer {
     err: Box<dyn Write + Send>,
     /// The stream a begun line is waiting to be ended on.
     open: Option<Stream>,
+    /// A resave began in this run, so a skipped relink says the resave ran.
+    resaved: bool,
 }
 
 impl Renderer {
@@ -50,6 +52,7 @@ impl Renderer {
             out,
             err,
             open: None,
+            resaved: false,
         }
     }
 

@@ -200,10 +200,13 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             package,
             position,
             total,
-        } => r.begin(
-            Stream::Out,
-            &format!("resave ({position}/{total}) {package} ... "),
-        ),
+        } => {
+            r.resaved = true;
+            r.begin(
+                Stream::Out,
+                &format!("resave ({position}/{total}) {package} ... "),
+            )
+        }
         Event::ResaveDone { saved: 0, took, .. } => r.end(
             Stream::Out,
             &format!("nothing to save ({}s)", took.as_secs()),
@@ -286,7 +289,15 @@ fn phase_skipped(r: &mut Renderer, phase: Phase, reason: SkipReason, skipped: us
         (Phase::Relink, SkipReason::ScratchDestination) => {
             "\nrelink: skipped — a scratch tree has no LabVIEW to relink with"
         }
+        (Phase::Relink, SkipReason::Headless) if r.resaved => {
+            "
+relink: skipped (headless). The resave still ran."
+        }
         (phase, SkipReason::Headless) => return headless::phase_skipped(r, phase),
+        (Phase::Relink, SkipReason::Declined) if r.resaved => {
+            "
+relink: skipped (--no-relink). The resave still ran."
+        }
         (Phase::Relink, SkipReason::Declined) => {
             "\nrelink: skipped (--no-relink). These VIs still declare the paths their\n      \
              build machine wrote, so run `lvpm relink <package>` before using them."
@@ -579,6 +590,38 @@ mod tests {
             "warning: the venv's LabVIEW could not start (no LabVIEW.exe in LabVIEW 2026). 2 \
              packages were installed without a resave: alpha, beta. Fix the start problem, then \
              reinstall them.\n"
+        );
+    }
+
+    #[test]
+    fn a_relink_skipped_after_a_resave_says_the_resave_still_ran() {
+        let resaved_then = |reason| {
+            text_of(&[
+                Event::ResaveStarted {
+                    package: "alpha".into(),
+                    position: 1,
+                    total: 1,
+                },
+                Event::ResaveDone {
+                    package: "alpha".into(),
+                    saved: 1,
+                    took: std::time::Duration::from_secs(9),
+                },
+                Event::PhaseSkipped {
+                    phase: Phase::Relink,
+                    reason,
+                    skipped: 1,
+                },
+            ])
+            .0
+        };
+        assert!(
+            resaved_then(SkipReason::Declined)
+                .ends_with("\nrelink: skipped (--no-relink). The resave still ran.\n")
+        );
+        assert!(
+            resaved_then(SkipReason::Headless)
+                .ends_with("\nrelink: skipped (headless). The resave still ran.\n")
         );
     }
 }

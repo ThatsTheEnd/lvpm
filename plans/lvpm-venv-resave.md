@@ -863,7 +863,7 @@ None.
   - [x] Step 2.1: stage the files, move into place, write the manifest after the move
   - [x] Step 2.2: leftover staging and unrecorded folders
   - [x] Step 2.3: resave each staged package, warn on failure
-  - [ ] Step 2.4: --no-relink and --headless do not skip the resave
+  - [x] Step 2.4: --no-relink and --headless do not skip the resave
   - [ ] Step 2.5: dry run lists the planned resaves
   - [ ] Step 2.6: skip packages already saved in the venv's LabVIEW
   - [ ] Step 2.7: document the resave; the pilot scenario passes
