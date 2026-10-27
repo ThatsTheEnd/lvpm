@@ -775,9 +775,10 @@ None.
 
 - **Duration.** The forced save loads every VI cold: 83 s for 92 files and
   40 s for 30 (M3a). A 40-package sync can take tens of minutes. One
-  LabVIEW per run already avoids repeated starts. Saving only what LabVIEW
-  reports as old is the upgrade if this is too slow; it needs a VI Server
-  property read the client does not have.
+  LabVIEW per run already avoids repeated starts. If this is too slow, skip
+  packages whose files are all saved in the venv's LabVIEW already: the
+  version is in each file's header and needs no LabVIEW (spec, M4). No pilot
+  package is current, so this is not in Slice 2.
 - **Library files are not saved.** `.lvlib`/`.lvclass` keep their old
   version. Every measured venv compiled clean. If a package breaks on that,
   add the relink VI's library save after the forced save.

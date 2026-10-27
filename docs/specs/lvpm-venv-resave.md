@@ -117,6 +117,7 @@ The logs are in the session scratchpad, not in the repository.
 | M3b (fresh per package) | The same, with a fresh LabVIEW for each package | 92 + 30 saved (83 s + 96 s). Mass compile: exit 0, no bad VI | Also safe, and slower: the dependency loads cold again |
 | M3c (upgrade) | In the M3b venv, with OpenSerializer still installed: stage a fresh unsaved copy, force-save, remove the old folder, move in, mass compile | 30 saved (35 s). Mass compile: exit 0, no bad VI | Stage and save first, then remove the old version: safe. The feed has one OpenSerializer version, so the "new" version is a fresh copy of the same one |
 | Startup | `lvpm launch` until the port listens | 14 s cold, 6–8 s warm | — |
+| M4 (file version) | Read the LabVIEW version each `.vi`/`.ctl`/`.vit` was saved in, from the `vers` resource in its file header, with no LabVIEW. Before and after the forced save, and inside each pilot `.vip` | Before: every file 13.0.1 (the open-source packages) or 16.0.0 (pilot A, 91 files). After the forced save: 26.3.1, the venv's LabVIEW | The version is readable and the save changes it, so a package whose files all match the venv's LabVIEW could skip the resave. No pilot package qualifies, so the pilots gain nothing |
 
 Other observations:
 - The LabVIEW that `lvpm relink` starts can still run about 15 s after
