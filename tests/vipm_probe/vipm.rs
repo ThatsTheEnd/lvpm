@@ -187,15 +187,18 @@ impl<'a> Vipm<'a> {
 /// and a `.` between them join a token, so `1.0.0.1` is not in `11.0.0.12`.
 fn has_token(text: &str, needle: &str) -> bool {
     let word = |c: char| c.is_alphanumeric() || c == '_';
-    let joins = |next: &mut dyn Iterator<Item = char>| match next.next() {
-        Some(c) if word(c) => true,
-        Some('.') => next.next().is_some_and(word),
-        _ => false,
-    };
+    // A '.' joins a longer name before the token, but only a longer number
+    // after it, so a file suffix such as `1.0.0.1.vip` still ends the token.
+    let joins =
+        |next: &mut dyn Iterator<Item = char>, dot_joins: fn(char) -> bool| match next.next() {
+            Some(c) if word(c) => true,
+            Some('.') => next.next().is_some_and(dot_joins),
+            _ => false,
+        };
     text.match_indices(needle).any(|(at, _)| {
         let before = &mut text[..at].chars().rev();
         let after = &mut text[at + needle.len()..].chars();
-        !joins(before) && !joins(after)
+        !joins(before, |c| c.is_alphanumeric() || c == '_') && !joins(after, |c| c.is_ascii_digit())
     })
 }
 
@@ -343,6 +346,8 @@ mod tests {
             ("my.pkg 1.0.0.1", false),
             ("pkg 1.0.0.1", true),
             ("pkg 1.0.0.1.", true),
+            ("pkg 1.0.0.1.vip", true),
+            ("pkg.lvlib 1.0.0.1", true),
             ("pkg-1.0.0.1", true),
             ("[pkg] (1.0.0.1)", true),
             ("pkg 11.0.0.12, pkg 1.0.0.1", true),

@@ -359,6 +359,10 @@ fn reference_install(
                  but it is not listed; VIPM's output is in {}",
                     output.display()
                 ),
+                (Some(0), note) => format!(
+                    "environment: the install of the published pilot A archive exited 0                  but `vipm info` gave no answer ({note}); VIPM's output is in {}; no findings recorded",
+                    output.display()
+                ),
                 _ => format!(
                     "environment: the install of the published pilot A archive did not succeed \
                  ({}); VIPM's output is in {}; no findings recorded",

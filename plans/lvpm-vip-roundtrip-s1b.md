@@ -371,7 +371,7 @@ Not Gherkin, unit tests (a scenario cannot assert its own skip or its own
 failing precondition):
 
 - `pilot_b_scenario_needs_its_own_variable`,
-  `pilot_a_checkout_does_not_stand_in_for_pilot_b`,
+  `pilot_a_checkout_does_not_stand_in_for_pilot_b`, `pilot_b_checkout_does_not_stand_in_for_pilot_a`,
   `the_not_run_line_text_names_the_variable_and_pilot`: `select()` with
   `@pilot-b-source` and no `LVPM_TEST_PILOT_B` returns "not run", with a
   report line naming the variable.
