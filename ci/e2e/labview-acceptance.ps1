@@ -8,7 +8,8 @@ $ErrorActionPreference = 'Stop'
 # Measured on a LabVIEW 2026 machine with LVPM_TEST_LABVIEW=1 and
 # LVPM_TEST_ONLY_LABVIEW=1 (2026-10-25): 29 run, 4 @unsafe never run. Here the
 # 2 @interactive-labview ones give way to their 2 headless copies: 29 again.
-$expected = 29
+# lvpm-tui slice 3 added 5 @labview --json scenarios (2026-10-26, CI log): 34.
+$expected = 34
 $src = 'C:\src\lvpm'
 
 if (-not $InContainer) {
