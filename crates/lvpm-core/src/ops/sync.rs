@@ -2025,4 +2025,47 @@ mod tests {
             assert_eq!(project.lock_bytes(), Some(lock), "{flag}");
         }
     }
+
+    #[test]
+    fn sync_resaves_too_dependencies_first() {
+        use crate::ops::resave::fake::Fake;
+        use crate::ops::testing::{labview_2026, venv_in, vip_in};
+        let scratch = Scratch::new("resave");
+        vip_in(
+            &scratch.folder(),
+            "alpha",
+            "1.0",
+            "",
+            &["alpha/a.vi"],
+            false,
+        );
+        vip_in(
+            &scratch.folder(),
+            "beta",
+            "1.0",
+            "alpha",
+            &["beta/b.vi"],
+            false,
+        );
+        scratch.write_manifest(&["beta"]);
+        let venv = venv_in(&scratch.root);
+        let fake = Fake::saving().install();
+        let mut env = scratch.env(&NullSink, vec![scratch.folder()]);
+        env.targets = vec![labview_2026()];
+        let opts = SyncOptions {
+            install: InstallOptions {
+                no_relink: true,
+                ..InstallOptions::default()
+            },
+            ..SyncOptions::default()
+        };
+
+        sync(&env, &opts).unwrap();
+
+        let resaved: Vec<String> = fake.log().resaves.into_iter().map(|(p, _)| p).collect();
+        assert_eq!(resaved, ["alpha", "beta"]);
+        for package in ["alpha", "beta"] {
+            assert!(install::is_installed(&venv.store(), package), "{package}");
+        }
+    }
 }

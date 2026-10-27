@@ -144,7 +144,13 @@ pub enum Event {
     HooksNotRun { hooks: Vec<String> },
     /// The install is finished as far as the files go. On a dry run `files`
     /// would be written and nothing changed.
-    InstallDone { files: usize, dry_run: bool },
+    /// `resave_failed` names the venv packages that landed without a resave.
+    InstallDone {
+        files: usize,
+        dry_run: bool,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        resave_failed: Vec<String>,
+    },
     /// A phase of the operation begins. Resolve begins once; Download and
     /// Unpack begin once for each package; Relink, Hooks and Refresh begin
     /// only when they run, and are otherwise reported by `PhaseSkipped`.
@@ -181,6 +187,38 @@ pub enum Event {
     /// A venv package folder that no install record named was removed, so
     /// the package lands in an empty one.
     UnrecordedFolderReplaced { dir: PathBuf },
+    /// The venv's LabVIEW is about to start for the run's resaves.
+    ResaveStarting,
+    /// A staged package is being resaved, the `position`th of `total`
+    /// packages in the run.
+    ResaveStarted {
+        package: String,
+        position: usize,
+        total: usize,
+    },
+    /// The package's LabVIEW files are saved in the venv's LabVIEW.
+    ResaveDone {
+        package: String,
+        saved: usize,
+        took: Duration,
+    },
+    /// The resave failed; the package lands as it is. `folder` is the
+    /// package's folder in the venv, to mass compile.
+    ResaveFailed {
+        package: String,
+        error: String,
+        folder: PathBuf,
+    },
+    /// The venv's LabVIEW did not start, so `packages` landed unsaved.
+    ResaveStartFailed {
+        error: String,
+        packages: Vec<String>,
+    },
+    /// The run's resaves, when any failed: `failed` of `packages`.
+    ResaveRecap {
+        failed: Vec<String>,
+        packages: usize,
+    },
 
     // ---- ops::relink ----
     /// The relink pass begins: `folders` to walk with the relink VI at `vi`,

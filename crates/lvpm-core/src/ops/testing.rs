@@ -152,3 +152,48 @@ pub(crate) fn venv_in(repo: &Path) -> Venv {
     )
     .unwrap()
 }
+
+/// A package archive `<name>-<version>.vip` in `dir`: `files` under
+/// `<application>`, each holding its own name, and `requires` as the spec's
+/// `Requires=` line. `corrupt` spoils the first file, so its unpack fails.
+pub(crate) fn vip_in(
+    dir: &Path,
+    name: &str,
+    version: &str,
+    requires: &str,
+    files: &[&str],
+    corrupt: bool,
+) -> PathBuf {
+    use std::io::Write;
+    let mut spec = format!("[Package]\nName=\"{name}\"\nVersion=\"{version}\"\n\n");
+    if !requires.is_empty() {
+        spec.push_str(&format!("[Dependencies]\nRequires=\"{requires}\"\n\n"));
+    }
+    spec.push_str(&format!(
+        "[Files]\nNum File Groups=\"1\"\n\n[File Group 0]\nTarget Dir=\"<application>\"\n\
+         Replace Mode=\"Always\"\nNum Files={}\n",
+        files.len()
+    ));
+    for (i, f) in files.iter().enumerate() {
+        spec.push_str(&format!("File {i}=\"{f}\"\n"));
+    }
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    writer.start_file("spec", stored).unwrap();
+    writer.write_all(spec.as_bytes()).unwrap();
+    for f in files {
+        writer
+            .start_file(format!("File Group 0/{f}"), stored)
+            .unwrap();
+        writer.write_all(format!("PAYLOAD {f}").as_bytes()).unwrap();
+    }
+    let mut bytes = writer.finish().unwrap().into_inner();
+    if corrupt {
+        let at = bytes.windows(7).position(|w| w == b"PAYLOAD").unwrap();
+        bytes[at] = b'X';
+    }
+    let archive = dir.join(format!("{name}-{version}.vip"));
+    std::fs::write(&archive, bytes).unwrap();
+    archive
+}

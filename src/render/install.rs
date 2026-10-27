@@ -158,6 +158,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         Event::InstallDone {
             files,
             dry_run: true,
+            ..
         } => r.line(
             Stream::Out,
             &format!("\ndry run: {files} files would be written, nothing changed"),
@@ -165,6 +166,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         Event::InstallDone {
             files,
             dry_run: false,
+            ..
         } => r.line(Stream::Out, &format!("\ndone. {files} files written.")),
         Event::PhaseSkipped {
             phase,
@@ -190,8 +192,68 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 dir.display()
             ),
         ),
+        Event::ResaveStarting => r.line(
+            Stream::Out,
+            "starting the venv's LabVIEW for the resave (about a minute per package)",
+        ),
+        Event::ResaveStarted {
+            package,
+            position,
+            total,
+        } => r.begin(
+            Stream::Out,
+            &format!("resave ({position}/{total}) {package} ... "),
+        ),
+        Event::ResaveDone { saved: 0, took, .. } => r.end(
+            Stream::Out,
+            &format!("nothing to save ({}s)", took.as_secs()),
+        ),
+        Event::ResaveDone { saved, took, .. } => r.end(
+            Stream::Out,
+            &format!("{saved} saved ({}s)", took.as_secs()),
+        ),
+        Event::ResaveFailed {
+            package,
+            error,
+            folder,
+        } => {
+            r.end(Stream::Out, "FAILED");
+            r.line(
+                Stream::Err,
+                &format!(
+                    "warning: resave of {package} failed ({}). {package} is installed, but VIs \
+                     saved in an older LabVIEW may load broken. Reinstall {package} first; if it \
+                     fails again, run lvpm launch and mass compile {}.",
+                    one_line(error),
+                    folder.display()
+                ),
+            );
+        }
+        Event::ResaveStartFailed { error, packages } => r.line(
+            Stream::Err,
+            &format!(
+                "warning: the venv's LabVIEW could not start ({}). {} packages were installed \
+                 without a resave: {}. Fix the start problem, then reinstall them.",
+                one_line(error),
+                packages.len(),
+                packages.join(", ")
+            ),
+        ),
+        Event::ResaveRecap { failed, packages } => r.line(
+            Stream::Out,
+            &format!(
+                "resave: {} of {packages} packages failed: {} (see the warnings above)",
+                failed.len(),
+                failed.join(", ")
+            ),
+        ),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
+}
+
+/// A cause's text on one line, for a warning that must stay one.
+fn one_line(error: &str) -> String {
+    error.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn planned_writes(r: &mut Renderer, files: &[PlannedFile]) {
@@ -375,10 +437,12 @@ mod tests {
             Event::InstallDone {
                 files: 2,
                 dry_run: true,
+                resave_failed: Vec::new(),
             },
             Event::InstallDone {
                 files: 2,
                 dry_run: false,
+                resave_failed: Vec::new(),
             },
         ]);
         assert_eq!(
@@ -448,5 +512,73 @@ mod tests {
             ],
         }]);
         assert_eq!(out, "      hooks not run: PostInstall, PreUninstall\n");
+    }
+
+    #[test]
+    fn a_resave_has_one_line_per_package_a_warning_per_failure_and_a_recap() {
+        use std::time::Duration;
+        let started = |package: &str, position| Event::ResaveStarted {
+            package: package.into(),
+            position,
+            total: 3,
+        };
+        let (out, err) = text_of(&[
+            Event::ResaveStarting,
+            started("alpha", 1),
+            Event::ResaveFailed {
+                package: "alpha".into(),
+                error: "1 of 1 files did not save; first a.vi: VI Server\nerror 1003".into(),
+                folder: PathBuf::from("venv").join("alpha"),
+            },
+            started("beta", 2),
+            Event::ResaveDone {
+                package: "beta".into(),
+                saved: 3,
+                took: Duration::from_millis(14_400),
+            },
+            started("gamma", 3),
+            Event::ResaveDone {
+                package: "gamma".into(),
+                saved: 0,
+                took: Duration::from_secs(9),
+            },
+            Event::ResaveRecap {
+                failed: vec!["alpha".into()],
+                packages: 3,
+            },
+        ]);
+        assert_eq!(
+            out,
+            "starting the venv's LabVIEW for the resave (about a minute per package)\n\
+             resave (1/3) alpha ... FAILED\n\
+             resave (2/3) beta ... 3 saved (14s)\n\
+             resave (3/3) gamma ... nothing to save (9s)\n\
+             resave: 1 of 3 packages failed: alpha (see the warnings above)\n"
+        );
+        let folder = PathBuf::from("venv").join("alpha");
+        assert_eq!(
+            err,
+            format!(
+                "warning: resave of alpha failed (1 of 1 files did not save; first a.vi: VI \
+                 Server error 1003). alpha is installed, but VIs saved in an older LabVIEW may \
+                 load broken. Reinstall alpha first; if it fails again, run lvpm launch and mass \
+                 compile {}.\n",
+                folder.display()
+            )
+        );
+    }
+
+    #[test]
+    fn a_labview_that_could_not_start_is_one_warning_naming_every_package() {
+        let (_, err) = text_of(&[Event::ResaveStartFailed {
+            error: "no LabVIEW.exe in LabVIEW 2026".into(),
+            packages: vec!["alpha".into(), "beta".into()],
+        }]);
+        assert_eq!(
+            err,
+            "warning: the venv's LabVIEW could not start (no LabVIEW.exe in LabVIEW 2026). 2 \
+             packages were installed without a resave: alpha, beta. Fix the start problem, then \
+             reinstall them.\n"
+        );
     }
 }

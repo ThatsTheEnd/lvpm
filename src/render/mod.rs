@@ -93,7 +93,13 @@ impl Renderer {
             | Event::PhaseSkipped { .. }
             | Event::LaunchHint
             | Event::StagingLeftoverRemoved { .. }
-            | Event::UnrecordedFolderReplaced { .. } => install::render(self, event),
+            | Event::UnrecordedFolderReplaced { .. }
+            | Event::ResaveStarting
+            | Event::ResaveStarted { .. }
+            | Event::ResaveDone { .. }
+            | Event::ResaveFailed { .. }
+            | Event::ResaveStartFailed { .. }
+            | Event::ResaveRecap { .. } => install::render(self, event),
             Event::HookStarting { .. }
             | Event::HookRan { .. }
             | Event::HookFailed { .. }

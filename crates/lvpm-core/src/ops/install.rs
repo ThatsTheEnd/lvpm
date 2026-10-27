@@ -384,12 +384,21 @@ pub fn apply(
     // How many packages declared a hook this install did not run — decides
     // whether the headless note below is owed. Each package already said which.
     let mut hooks_unrun = 0usize;
-    for planned in &plan.entries {
-        if let Some(done) = install_one(env, session, planned, opts, hooks)? {
-            files += done.files;
-            hooks_unrun += usize::from(done.hooks_unrun);
+    let total = plan.entries.len();
+    let mut each = || -> Result<()> {
+        for (i, planned) in plan.entries.iter().enumerate() {
+            session.resaver.position = (i + 1, total);
+            if let Some(done) = install_one(env, session, planned, opts, hooks)? {
+                files += done.files;
+                hooks_unrun += usize::from(done.hooks_unrun);
+            }
         }
-    }
+        Ok(())
+    };
+    let outcome = each();
+    // On the error path too: the LabVIEW closes and the failures are told.
+    let resave_failed = session.resaver.finish(env.sink);
+    outcome?;
     if hooks.off_headless && hooks_unrun > 0 {
         env.sink.emit(Event::PhaseSkipped {
             phase: Phase::Hooks,
@@ -400,6 +409,7 @@ pub fn apply(
     env.sink.emit(Event::InstallDone {
         files,
         dry_run: opts.dry_run,
+        resave_failed,
     });
     Ok(Applied {
         files,
@@ -648,6 +658,7 @@ fn unpack(
                 )
             });
             let m = staged.inspect_err(|_| staging.discard())?;
+            session.resave(env, &staging, name);
             staging::land(env, session, &staging, &m)?;
             m
         }
