@@ -222,20 +222,27 @@ pub fn requires_names(requires: &str) -> Vec<String> {
         .collect()
 }
 
-/// The package names `archive`'s spec requires.
+/// The package names `archive`'s spec requires, sorted.
 pub fn requires_of(archive: &Path) -> Vec<String> {
     let file = std::fs::File::open(archive)
         .unwrap_or_else(|e| panic!("opening {}: {e}", archive.display()));
     let mut zip = zip::ZipArchive::new(file)
         .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
     let mut text = String::new();
-    std::io::Read::read_to_string(&mut zip.by_name("spec").expect("a spec entry"), &mut text)
-        .expect("a text spec");
-    let spec = lvpm_core::spec::parse(&text).expect("a spec lvpm reads");
-    spec.requires
+    let mut entry = zip
+        .by_name("spec")
+        .unwrap_or_else(|e| panic!("{} has no spec entry: {e}", archive.display()));
+    std::io::Read::read_to_string(&mut entry, &mut text)
+        .unwrap_or_else(|e| panic!("{}'s spec is not text: {e}", archive.display()));
+    let spec = lvpm_core::spec::parse(&text)
+        .unwrap_or_else(|e| panic!("lvpm cannot read {}'s spec: {e}", archive.display()));
+    let mut names = spec
+        .requires
         .as_deref()
         .map(requires_names)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    names.sort();
+    names
 }
 
 /// The file entries of a package below `File Group 0/<under>`, relative to
@@ -492,6 +499,60 @@ mod tests {
             requires_of(&archive),
             ["labview_open_source_lib_data_manipulation"]
         );
+    }
+
+    /// A `.vip` holding only a spec with `body` after its `[Package]` section.
+    fn archive_with_spec(body: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a-1.0.vip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        zip.start_file("spec", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(
+            &mut zip,
+            format!(
+                "[Package]
+Name=a
+{body}"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_spec_with_no_requires_requires_nothing() {
+        let (_dir, archive) = archive_with_spec("");
+        assert!(requires_of(&archive).is_empty());
+    }
+
+    #[test]
+    fn requires_are_sorted_by_name() {
+        let (_dir, archive) = archive_with_spec(
+            "[Dependencies]
+Requires=b>=1.0,a
+",
+        );
+        assert_eq!(requires_of(&archive), ["a", "b"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "no-such.vip")]
+    fn a_missing_archive_panics_naming_it() {
+        requires_of(Path::new("no-such.vip"));
+    }
+
+    #[test]
+    #[should_panic(expected = "a-1.0.vip")]
+    fn an_archive_without_a_spec_panics_naming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a-1.0.vip");
+        zip::ZipWriter::new(std::fs::File::create(&path).unwrap())
+            .finish()
+            .unwrap();
+        requires_of(&path);
     }
 
     #[test]
