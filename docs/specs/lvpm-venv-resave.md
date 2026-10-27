@@ -113,14 +113,16 @@ The logs are in the session scratchpad, not in the repository.
 | M1c | The same at `<project>/.lv-stage-out/<pkg>/1/`, outside `<venv>` | Exit 0, no bad VI. The mass compile rewrote all 98 files | Staging must be outside `<venv>` |
 | M2 | `lvpm relink` (embedded `Relink Package.vi`) on the M1c folder | Saved the same 6 files. `TypeDescriptor_SetName.vi` is not in the report | **Stop condition.** The relink VI saves only what LabVIEW marks modified, and a version-only VI is not marked |
 | M3 (partial) | Move the M1c tree (mass compiled outside) to `<venv>/<pkg>/1/`, restore `lvaddoninfo.json`, mass compile `<venv>` | Exit 0, no bad VI, OpenSerializer included | A full save outside the venv, then the move, fixes the venv |
+| M2b (option 1) | Fresh venv; move the tree to the sibling `<project>/.lv-venv.staging/<pkg>/1/`; over VI Server (lvpm's own client), open each `.vi`/`.ctl` and Save Instrument it in place; move it back; mass compile `<venv>` | 92 of 92 saved, 0 failed, in 84 s; the 6 library files untouched. The venv mass compile: exit 0, no bad VI | A forced save of every VI over VI Server fixes it, with no LabVIEWCLI. Chosen by the human on 2026-10-27 |
 | Startup | `lvpm launch` until the port listens | 14 s cold, 6–8 s warm | — |
 
 Other observations:
 - The LabVIEW that `lvpm relink` starts can still run about 15 s after
   relink returns, with no port open. lvpm does not wait for it to exit.
+- The forced save took 84 s for 92 files, mostly cold loads. The relink VI
+  takes about 3 s per folder because it saves only 6 files.
 - Not yet measured: the one-session vs. fresh-LabVIEW-per-package rows of
-  M3, the OpenSerializer resave, and the upgrade row. They wait on the
-  mechanism decision.
+  M3, the OpenSerializer resave, and the upgrade row.
 
 ## Glossary
 
