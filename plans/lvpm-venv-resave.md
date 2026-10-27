@@ -27,23 +27,38 @@ starts (see Slice 1).
 ## Acceptance Criteria
 
 - [ ] AC1 resave works (`@labview`): the S0 scenario "both pilots install
-      into a fresh venv and mass compile there" passes. Today it fails on
-      `TypeDescriptor_SetName.vi` and its callers.
+      into a fresh venv and mass compile there" passes: a LabVIEWCLI mass
+      compile of `<venv>` in a freshly started venv LabVIEW exits 0 and its
+      log has no "Bad VI" or "Failed to load" line. Today it fails on
+      `TypeDescriptor_SetName.vi` and its callers. Runs only with
+      `LVPM_TEST_LABVIEW=1` on a LabVIEW 2026 host.
 - [ ] AC2 files land in place: every installed file is under
       `<venv>/<package>/1/`; the PostInstall VI stays in the venv's hooks
-      folder, as today. The manifest names only those paths, and no field
-      names the staging folder. No staging folder is left.
-- [ ] AC3 venv only: a `--prefix` install writes no staging folder and
-      reports no resave. Global installs keep their recorded output.
+      folder, as today. Every path in the install record (its files, its
+      relink folders and its PostInstall VI) starts with
+      `<venv>/<package>/1/` or the hooks folder, and none names the staging
+      folder. No staging folder is left. A failed staging step leaves the
+      old version installed.
+- [ ] AC3 venv only: a `--prefix` or global install writes no staging
+      folder and reports no resave.
 - [ ] AC4 flags: `--no-relink` skips the relink pass but not the resave;
       `--headless` resaves too.
 - [ ] AC5 failure is a warning: the package is still installed, the warning
-      names it and says what to do, the run ends with a recap of the failed
-      resaves, and the exit code is 0 (unless the relink pass fails, as today).
-- [ ] AC6 broken VIs are named, relative to the package folder (Slice 3, its
-      own PR).
+      is the fixed `warning: resave of <pkg> failed ...` line (see "Output
+      wording"), the run ends with the `resave: N of M packages failed: ...`
+      recap, JSON output carries the failure, an error mid-run still closes
+      the LabVIEW, and the exit code is 0 (unless the relink pass fails, as
+      today).
+- [ ] AC6 broken VIs are named (Slice 3, its own PR): the relink report's
+      `not_executable` list, relative to the package folder, at most 6 lines
+      then "... and N more"; a path outside the staging folder is shown in
+      full.
 - [ ] AC7 leftover staging is removed at the start of the next venv install.
-- [ ] AC8 dry run lists the planned resaves and creates no staging folder.
+      A staging folder that cannot be removed fails the install and names it.
+- [ ] AC8 dry run lists the planned resaves in one block and creates no
+      staging folder.
+- [ ] AC9 order: dependencies are installed and resaved before their
+      dependents (chain, diamond, and top → [b, c] with b → c).
 
 ### AC → scenario → test
 
@@ -60,13 +75,14 @@ or reports broken VIs. The `@labview` scenarios go into
 | AC1 | S0 "both pilots install into a fresh venv and mass compile there" | cucumber `@labview` (exists) | 2.7 |
 | AC2 | "installed files are only in the add-on folder", "the install record points the relink pass at the final folder", "an upgrade lands through staging too", "a package installed through staging uninstalls completely" | unit | 2.1 |
 | AC2 | "the VI fixture lands through staging" | cucumber `@labview` | 2.3 |
-| AC3 | "a --prefix install uses no staging folder" | unit; the recorded global outputs stay unchanged | 2.1, 2.3 |
+| AC3 | "a --prefix install uses no staging folder", "a global install uses no staging folder" | unit | 2.1, 2.3 |
 | AC4 | "flags that skip the relink pass do not skip the resave" | unit | 2.4 |
-| AC5 | "a resave failure is a warning", "one package failing does not stop the next", "a LabVIEW that cannot start is reported once", "a failed resave with the relink pass on", "the warning wording" | unit, render unit | 2.3 |
+| AC2 | "a failed staging step leaves the old version installed" | unit | 2.1 |
+| AC5 | "JSON output carries the resave failure", "an error after a resave started still closes the LabVIEW", "a resave failure is a warning", "one package failing does not stop the next", "a LabVIEW that cannot start is reported once", "a failed resave with the relink pass on", "the warning wording" | unit, render unit | 2.3 |
 | AC6 | Slice 3 scenarios | unit; cucumber `@labview` | 3.1, 3.2 |
-| AC7 | "a staging folder left by an interrupted install is removed", "a dry run leaves a leftover staging folder alone" | unit | 2.2, 2.5 |
+| AC7 | "an undeletable leftover staging folder fails the install", "a staging folder left by an interrupted install is removed", "a dry run leaves a leftover staging folder alone" | unit | 2.2, 2.5 |
 | AC8 | "a dry run lists the resaves" and its negatives | unit | 2.5 |
-| Order | "dependencies are resaved before dependents" (chain and diamond), "sync resaves too" | unit | 2.0, 2.3 |
+| AC9 | "dependencies are resaved before dependents" (chain and diamond), "sync resaves too" | unit | 2.0, 2.3 |
 | Error | "a folder with no install record is replaced" | unit | 2.2 |
 
 ## Approach stances (decision-defaults)
@@ -239,7 +255,7 @@ Feature: A venv install resaves each package in a staging folder, then moves it 
     When package "alpha" is installed into the venv with --no-relink
     Then the exit code is 0
     And a warning starts with "warning: resave of alpha failed (" and says "Reinstall alpha first"
-    And the last lines before "done." recap that the resave of 1 of 1 packages failed: alpha
+    And the last lines before "done." are "resave: 1 of 1 packages failed: alpha (see the warnings above)"
     And every file of alpha is under the venv's "alpha/1" folder
     And the venv has no staging folder
 
@@ -273,7 +289,7 @@ Feature: A venv install resaves each package in a staging folder, then moves it 
     Then the exit code is 0
     And LabVIEW was started once
     And one warning says the venv's LabVIEW could not start and names alpha and beta
-    And the recap says 2 of 2 packages failed
+    And the recap is "resave: 2 of 2 packages failed: alpha, beta (see the warnings above)"
     And both are in their add-on folders
     And the venv has no staging folder
 
