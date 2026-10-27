@@ -16,6 +16,7 @@ pub mod relink;
 pub mod route;
 pub mod session;
 pub mod snapshot;
+pub mod staging;
 pub mod start;
 pub mod sync;
 #[cfg(test)]

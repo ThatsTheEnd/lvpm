@@ -11,6 +11,7 @@ use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_inf
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
 use super::session::InstallSession;
+use super::staging::{self, Staging};
 use super::uninstall::uninstall_one;
 use crate::cache::sha256_hex;
 use crate::events::{Event, HookKind, PackageFolders, PackageRef, Phase, PlannedFile, SkipReason};
@@ -527,7 +528,9 @@ fn settle_installed(
         old_files: old.files.len(),
         dry_run: opts.dry_run,
     });
-    if !opts.dry_run {
+    // A venv removes the old version only once the new one is staged
+    // (`staging::land`).
+    if !opts.dry_run && session.venv().is_none() {
         // Taking out the old version is the first file write of a replacement.
         env.cancel.begin_unpack()?;
         uninstall_one(env, session, &entry.name)?;
@@ -614,14 +617,32 @@ fn unpack(
         );
     }
 
-    let m = install::apply(
-        &pkg.roots,
-        &pkg.spec,
-        &mut pkg.zip,
-        &pkg.plan,
-        pre.as_deref(),
-        &pkg.archive_sha256,
-    )?;
+    let m = match session.venv().map(|v| Staging::for_package(v, name)) {
+        None => install::apply(
+            &pkg.roots,
+            &pkg.spec,
+            &mut pkg.zip,
+            &pkg.plan,
+            pre.as_deref(),
+            &pkg.archive_sha256,
+        )?,
+        Some(staging) => {
+            let staged = staging.create().and_then(|()| {
+                install::unpack_to(
+                    &pkg.roots,
+                    &pkg.spec,
+                    &mut pkg.zip,
+                    &pkg.plan,
+                    pre.as_deref(),
+                    &pkg.archive_sha256,
+                    Some(&staging),
+                )
+            });
+            let m = staged.inspect_err(|_| staging.discard())?;
+            staging::land(env, session, &staging, &m)?;
+            m
+        }
+    };
     env.sink.emit(Event::PackageDone {
         files: m.files.len(),
         dry_run: false,
