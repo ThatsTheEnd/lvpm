@@ -9,47 +9,47 @@
     or closed and that has no uncommitted changes is marked "stale".
 
     Then lists the open slice issues (label "slice") that have no open
-    blockers: the slices that can be built next. The full picture is the
-    "lvpm mission" project: https://github.com/users/ThatsTheEnd/projects/2
+    blockers and no sub-issues (so the parent issue is left out): the slices
+    that can be built next. The full picture is the "lvpm mission" project:
+    https://github.com/users/ThatsTheEnd/projects/2
 
     Needs git and an authenticated gh.
 #>
 $ErrorActionPreference = 'Stop'
 
-$prs = gh pr list --state all --limit 300 --json headRefName,number,state,title | ConvertFrom-Json
+$prs = gh pr list --state all --limit 1000 --json headRefName,number,state,title | ConvertFrom-Json
 
 $rows = @()
-$wt = $null
+$worktree = $null
 foreach ($line in (git worktree list --porcelain) + '') {
-    if ($line -like 'worktree *') { $wt = @{ Path = $line.Substring(9); Branch = '(detached)' } }
-    elseif ($line -like 'branch refs/heads/*') { $wt.Branch = $line.Substring(18) }
-    elseif ($line -eq '' -and $wt) {
+    if ($line -like 'worktree *') { $worktree = @{ Path = $line -replace '^worktree ', ''; Branch = '(detached)' } }
+    elseif ($line -like 'branch refs/heads/*') { $worktree.Branch = $line -replace '^branch refs/heads/', '' }
+    elseif ($line -eq '' -and $worktree) {
         # Agent metrics and review reports change in every worktree; they are not work in progress.
-        $dirty = @(git -C $wt.Path status --porcelain -- . ':!.claude/metrics' ':!.dev-team-reports').Count
-        $age = git -C $wt.Path log -1 --format=%cr
+        $uncommitted = @(git -C $worktree.Path status --porcelain -- . ':!.claude/metrics' ':!.dev-team-reports').Count
+        $lastCommitAge = git -C $worktree.Path log -1 --format=%cr
         # The newest PR of the branch; a branch name can be reused.
-        $pr = $prs | Where-Object headRefName -eq $wt.Branch | Sort-Object number -Descending | Select-Object -First 1
+        $pr = $prs | Where-Object headRefName -eq $worktree.Branch | Sort-Object number -Descending | Select-Object -First 1
         $prText = if ($pr) { "#$($pr.number) $($pr.state) $($pr.title)" } else { '(no PR)' }
-        git merge-base --is-ancestor $wt.Branch origin/main 2>$null
-        $inMain = $LASTEXITCODE -eq 0 -and $wt.Branch -ne 'main'
-        $stale = (($pr -and $pr.state -ne 'OPEN') -or $inMain) -and $dirty -eq 0
+        $stale = $pr -and $pr.state -ne 'OPEN' -and $uncommitted -eq 0
         $rows += [pscustomobject]@{
-            Worktree = Split-Path $wt.Path -Leaf
-            Branch   = $wt.Branch
-            Dirty    = $dirty
-            Last     = $age
-            PR       = $prText
-            Note     = if ($stale) { 'stale' } else { '' }
+            Worktree    = Split-Path $worktree.Path -Leaf
+            Branch      = $worktree.Branch
+            Uncommitted = $uncommitted
+            LastCommit  = $lastCommitAge
+            PR          = $prText
+            Note        = if ($stale) { 'stale' } else { '' }
         }
-        $wt = $null
+        $worktree = $null
     }
 }
 '== Worktrees'
 $rows | Format-Table -AutoSize | Out-String -Width 200
 
 '== Ready to build (open slices, no open blockers)'
-$issues = gh api 'repos/{owner}/{repo}/issues?labels=slice&state=open&per_page=100' | ConvertFrom-Json
+# --paginate prints one JSON array per page; ConvertFrom-Json unrolls each.
+$issues = gh api --paginate 'repos/{owner}/{repo}/issues?labels=slice&state=open&per_page=100' | ConvertFrom-Json | ForEach-Object { $_ }
 $ready = $issues | Where-Object {
-    $_.issue_dependencies_summary.blocked_by -eq 0 -and $_.sub_issues_summary.total -eq 0
+    -not $_.pull_request -and $_.issue_dependencies_summary.blocked_by -eq 0 -and $_.sub_issues_summary.total -eq 0
 }
 $ready | Sort-Object number | ForEach-Object { "  #$($_.number)  $($_.title)  [$($_.milestone.title)]" }

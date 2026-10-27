@@ -36,9 +36,8 @@ worktree is working on what, and which slices can be built next.
 3. After each merge, run the slice's demo by hand and adjust the next
    slices here if something you learned changes them.
 
-Shipped so far: S0 (#49), S1 (#52) and S2 (#55). S10b (`lvpm info`) and S10c
-(`--json`) came from the lvpm-tui plan (#47, #48), not from this file. Two of
-S1's changes matter to later slices: `[project] labview` is now a minimum such
+Which slices shipped is on the board. Two of S1's changes matter to later
+slices: `[project] labview` is now a minimum such
 as `">=2025"`, and `lvpm build` reports no event (its op returns
 `Built { path, files }`).
 
@@ -534,6 +533,8 @@ Decide in `/specs`: `.dragon` as well; pinned (exact) or floor (`>=`) constraint
 
 ### Slice S10b: `lvpm info`
 
+**Shipped** in #47 (lvpm-tui plan), not from this slice.
+
 **Depends-on:** none
 **Files:** `src/main.rs`, `src/render/query.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/ops/query.rs`
 
@@ -546,6 +547,8 @@ Acceptance criteria:
 Demo: `lvpm info hse_lib_hse_logger`.
 
 ### Slice S10c: `--json` and documented exit codes
+
+**Shipped** in #48 (lvpm-tui plan), not from this slice.
 
 **Depends-on:** none
 **Files:** `src/main.rs`, `src/render/`, `crates/lvpm-core/src/errors.rs`
