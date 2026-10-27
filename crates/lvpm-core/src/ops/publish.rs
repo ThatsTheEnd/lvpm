@@ -22,11 +22,7 @@ pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
     let (root, d) = super::packaged(env, "publish")?;
     let name = d.file_name();
     let package = super::package_path(&root, &d);
-    // Not followed: a link in a fresh checkout could copy any file onto the share.
-    let built = package.symlink_metadata().is_ok_and(|m| m.is_file());
-    if !built {
-        bail!("{} does not exist: run lvpm build first", package.display());
-    }
+    built(&package)?;
     if !to.is_dir() {
         bail!(
             "{} is not a folder: lvpm publish puts packages into an existing folder",
@@ -40,6 +36,19 @@ pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
     Ok(Published {
         path: stage_and_link(&package, &to, &name)?,
     })
+}
+
+/// `package` is a file lvpm build wrote. The file itself is not followed: a
+/// link in a fresh checkout could copy any file onto the share.
+fn built(package: &Path) -> Result<()> {
+    match package.symlink_metadata() {
+        Ok(m) if m.is_file() => Ok(()),
+        Ok(m) if m.is_symlink() => bail!(
+            "{} is a link, not a package lvpm build wrote: run lvpm build",
+            package.display()
+        ),
+        _ => bail!("{} does not exist: run lvpm build first", package.display()),
+    }
 }
 
 fn already_published(target: &Path) -> String {
@@ -137,6 +146,25 @@ mod tests {
         );
         assert!(why.contains("copying"), "{why}");
         assert!(names(&feed).is_empty(), "{:?}", names(&feed));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_linked_package_is_refused() {
+        let dir = folder("symlink");
+        let (real, link) = (dir.join("secret.txt"), dir.join("p-1.0.0.0.vip"));
+        std::fs::write(&real, "secret").unwrap();
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, &link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link);
+        if made.is_err() {
+            // Windows without Developer Mode cannot make one; nothing to check.
+            return std::fs::remove_dir_all(&dir).unwrap_or(());
+        }
+        let why = format!("{:#}", built(&link).unwrap_err());
+        assert!(why.contains("is a link"), "{why}");
+        assert!(built(&real).is_ok());
         std::fs::remove_dir_all(&dir).ok();
     }
 

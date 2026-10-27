@@ -259,7 +259,16 @@ async fn holds_identical(world: &mut CliWorld, feed: String, name: String, origi
 
 #[then(regex = r#"^"([^"]+)" holds exactly "([^"]+)", byte-identical to the package as built$"#)]
 async fn holds_as_built(world: &mut CliWorld, feed: String, name: String) {
-    holds_earlier(world, feed, name).await;
+    assert_eq!(
+        world.names_in(&feed),
+        std::slice::from_ref(&name),
+        "what {feed} holds"
+    );
+    let copy = std::fs::read(world.below_work(&format!("{feed}/{name}"))).ok();
+    assert!(
+        world.publish.earlier.as_ref() == Some(&copy),
+        "the published copy differs from the package as built"
+    );
 }
 
 #[then(regex = r#"^"([^"]+)" holds exactly "([^"]+)", with its earlier bytes$"#)]
