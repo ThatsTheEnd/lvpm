@@ -157,8 +157,11 @@ pub(super) fn land(
 
 /// A rename that waits out a brief hold: on Windows an antivirus scan, or
 /// the LabVIEW that just saved a file, can keep it open for a moment, and a
-/// folder with an open file cannot move (measured: the pilot install's last
-/// package, once in two runs).
+/// folder with an open file cannot move. A hold that lasts is copied past:
+/// the resave's LabVIEW keeps a handle on a staged folder of a package with
+/// classes until it closes (measured: the pilot's serializer, every run), and
+/// a held folder's files still copy. The stage it leaves is cleared by
+/// [`Staging::discard`], or by the next install.
 fn move_in(from: &Path, to: &Path) -> std::io::Result<()> {
     let mut wait = std::time::Duration::from_millis(100);
     loop {
@@ -167,9 +170,23 @@ fn move_in(from: &Path, to: &Path) -> std::io::Result<()> {
                 std::thread::sleep(wait);
                 wait *= 2;
             }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return copy_in(from, to).inspect_err(|_| {
+                    let _ = std::fs::remove_dir_all(to);
+                });
+            }
             done => return done,
         }
     }
+}
+
+fn copy_in(from: &Path, to: &Path) -> std::io::Result<()> {
+    for file in super::resave::files_under(from) {
+        let dest = to.join(file.strip_prefix(from).expect("found under it"));
+        std::fs::create_dir_all(dest.parent().expect("a file has a folder"))?;
+        std::fs::copy(&file, &dest)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -506,6 +523,30 @@ mod tests {
 
         release.join().unwrap();
         assert_eq!(std::fs::read(to.join("a.vi")).unwrap(), b"a");
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_held_for_good_is_copied_in() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let repo = testing::scratch_dir("stage-held-for-good");
+        let (from, to) = (repo.join("staged"), repo.join("landed"));
+        std::fs::create_dir_all(from.join("sub")).unwrap();
+        std::fs::write(from.join("sub").join("a.vi"), "a").unwrap();
+        // A folder handle that does not share delete, as LabVIEW holds one.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(from.join("sub"))
+            .unwrap();
+
+        super::move_in(&from, &to).unwrap();
+
+        assert_eq!(std::fs::read(to.join("sub").join("a.vi")).unwrap(), b"a");
+        drop(held);
         let _ = std::fs::remove_dir_all(&repo);
     }
 

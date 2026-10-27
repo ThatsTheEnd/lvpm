@@ -126,7 +126,8 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             dry_run,
         } => {
             let mark = if *dry_run { "?" } else { "+" };
-            r.begin(Stream::Out, &format!("{mark} {name} {version} ... "));
+            r.package_line = format!("{mark} {name} {version} ... ");
+            r.begin(Stream::Out, &r.package_line.clone());
         }
         Event::PackageDone {
             files,
@@ -135,7 +136,10 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         Event::PackageDone {
             files,
             dry_run: false,
-        } => r.end(Stream::Out, &format!("{files} files")),
+        } => match r.open {
+            Some(Stream::Out) => r.end(Stream::Out, &format!("{files} files")),
+            _ => r.line(Stream::Out, &format!("{}{files} files", r.package_line)),
+        },
         Event::PlannedWrites { files } => planned_writes(r, files),
         Event::FilesKept { count } => r.line(
             Stream::Out,
@@ -674,6 +678,38 @@ mod tests {
         assert_eq!(
             out,
             "resave (2/5) alpha ... already saved in LabVIEW 2026, skipped\n"
+        );
+    }
+
+    #[test]
+    fn a_package_line_a_resave_came_between_is_written_again_in_full() {
+        let (out, _) = text_of(&[
+            Event::PackageStart {
+                name: "alpha".into(),
+                version: "1.0".into(),
+                dry_run: false,
+            },
+            Event::ResaveStarted {
+                package: "alpha".into(),
+                position: 1,
+                total: 1,
+            },
+            Event::ResaveDone {
+                package: "alpha".into(),
+                saved: 1,
+                took: std::time::Duration::from_secs(9),
+            },
+            Event::PackageDone {
+                files: 2,
+                dry_run: false,
+            },
+        ]);
+        assert_eq!(
+            out,
+            "+ alpha 1.0 ... 
+resave (1/1) alpha ... 1 saved (9s)
++ alpha 1.0 ... 2 files
+"
         );
     }
 }

@@ -48,7 +48,7 @@ pub const ALPHA_FOLDER: &str = "folder";
 const TEMP_DIR_PREFIX: &str = "lvpm-acceptance-";
 
 /// No lvpm command takes this long; a hang is a bug. A venv install resaves
-/// in a real LabVIEW, which takes minutes for the pilots (about 2 at 4 packages).
+/// in a real LabVIEW, which took over 2 minutes for the pilots' 4 packages.
 const RUN_TIMEOUT: Duration = Duration::from_secs(600);
 /// The variable that makes lvpm treat the machine as headless. A child has it
 /// only when its sandbox was told so.

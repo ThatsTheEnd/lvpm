@@ -101,12 +101,20 @@ impl Drop for VenvSession {
 /// The files of a staged package a resave saves: its VIs, controls and
 /// templates, sorted. Libraries and classes are left as they are.
 pub(crate) fn lv_files(folder: &Path) -> Vec<PathBuf> {
+    files_under(folder)
+        .into_iter()
+        .filter(|f| is_lv_file(f))
+        .collect()
+}
+
+/// Every file under `folder`, sorted.
+pub(crate) fn files_under(folder: &Path) -> Vec<PathBuf> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, out);
-            } else if is_lv_file(&path) {
+            } else {
                 out.push(path);
             }
         }
