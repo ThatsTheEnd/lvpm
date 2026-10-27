@@ -407,6 +407,7 @@ Feature: A venv install resaves each package in a staging folder, then moves it 
   @labview
   Scenario: the VI fixture lands through staging
     Given a venv for LabVIEW 2026 and the VI fixture package
+    And LV_RTE_HEADLESS is set
     When I run "lvpm install lvpm_vi_fixture --no-relink --labview-version 2026"
     Then the exit code is 0
     And the output has a resave line for lvpm_vi_fixture

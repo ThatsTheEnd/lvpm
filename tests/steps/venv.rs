@@ -88,13 +88,15 @@ async fn venv_still_exists(world: &mut CliWorld) {
 /// The count only: the duration differs every run.
 #[then(expr = "the output has a resave line for {word}")]
 async fn has_resave_line(world: &mut CliWorld, package: String) {
-    let out = &world.output().stdout;
+    let (out, err) = (&world.output().stdout, &world.output().stderr);
     assert!(
         out.lines().any(|line| line.starts_with("resave (1/1) ")
             && line.contains(&format!(" {package} ... "))
             && line.contains(" saved (")),
         "no resave line for {package} in:
-{out}"
+{out}
+stderr:
+{err}"
     );
 }
 
