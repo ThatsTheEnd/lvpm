@@ -20,9 +20,18 @@ every package, `--no-relink`/`--headless` do not skip the resave, and a
 failure installs anyway with a warning.
 
 The cause of the breakage is not understood. This is a workaround for the
-measured case, not a fix of the cause. If Slice 1's M0 shows that an
-in-place resave is enough, Slice 2 is re-planned with the human before it
-starts (see Slice 1).
+measured case, not a fix of the cause.
+
+**Re-planned after Slice 1 (2026-10-27, with the human).** Slice 1 measured
+three things (spec, `Measurements`):
+- every folder under `<venv>` loads as add-on context;
+- the relink VI does not save the version-only VI;
+- a forced save of every VI outside the venv, then the move, fixes it.
+
+So the resave is a forced save through lvpm's own VI Server client: open
+every `.vi`/`.ctl`/`.vit` of the staged package and Save Instrument it in
+place, in one LabVIEW for the whole run. Staging is the sibling folder
+`<project>/.lv-venv.staging/`. The human chose this over LabVIEWCLI.
 
 ## Acceptance Criteria
 
@@ -53,7 +62,8 @@ starts (see Slice 1).
       `not_executable` list, relative to the package folder, at most 6 lines
       then "... and N more"; a path outside the staging folder is shown in
       full.
-- [ ] AC7 leftover staging is removed at the start of the next venv install.
+- [ ] AC7 leftover staging (`<project>/.lv-venv.staging/`, beside the venv)
+      is removed at the start of the next venv install.
       A staging folder that cannot be removed fails the install and names it.
 - [ ] AC8 dry run lists the planned resaves in one block and creates no
       staging folder.
@@ -65,9 +75,9 @@ starts (see Slice 1).
 Most behaviour needs a venv, and a venv needs a real LabVIEW 2026 install.
 The headless proofs are therefore core unit tests, using
 `ops::testing::venv_in`. That venv is bound to a LabVIEW that is not there,
-so starting it fails at once. The resave module also takes the per-folder
-runner as a parameter (step 2.3), so tests fake a LabVIEW that saves, fails
-or reports broken VIs. The `@labview` scenarios go into
+so starting it fails at once. The resave module also takes its LabVIEW
+launcher as a parameter (step 2.3), so tests fake a LabVIEW that saves or
+fails. The `@labview` scenarios go into
 `tests/features/lvpm-venv-resave.feature`.
 
 | AC | Scenario | Asserted by | Step |
@@ -118,6 +128,13 @@ or reports broken VIs. The `@labview` scenarios go into
 
 **Behavior:** none. This slice is a measurement gate. It changes no product
 code. Each measurement has a binary result and says what it changes.
+
+**Result (done, 2026-10-27):** M0 failed, so staging is needed. M1 failed
+for both locations under `<venv>`, and a folder outside `<venv>` passed. M2
+hit its stop condition. With the human, the forced VI Server save
+replaced the relink VI (M2b). M3 passed in one session, with a fresh
+LabVIEW per package, and for the upgrade order. Rows and logs: spec,
+`Measurements`. Commits e3fb8ef, 010afce and 39b0d0a.
 
 **Steps:**
 
@@ -170,7 +187,9 @@ is still running.
 **Depends-on:** 1
 **Files:** `crates/lvpm-core/src/venv.rs`, `crates/lvpm-core/src/install.rs`, `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/ops/staging.rs`, `crates/lvpm-core/src/ops/resave.rs`, `crates/lvpm-core/src/ops/session.rs`, `crates/lvpm-core/src/ops/mod.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/events.rs`, `src/render/install.rs`, `src/render/relink.rs`, `src/render/json.rs`, `tests/features/lvpm-venv-resave.feature`, `tests/acceptance.rs`, `tests/steps/venv.rs`, `docs/usage.md`
 
-Staging and landing go into a new `ops/staging.rs`, and the LabVIEW lifecycle into a new `ops/resave.rs`.
+Staging and landing go into a new `ops/staging.rs`, and the LabVIEW lifecycle and the forced save into a new `ops/resave.rs`.
+"A package with LabVIEW files" means one whose installed files include a
+`.vi`, `.ctl` or `.vit`. Only those are resaved.
 `ops/install.rs` is already about 960 lines, so it only chooses the
 placement and calls the new module.
 
@@ -380,7 +399,7 @@ Feature: A venv install resaves each package in a staging folder, then moves it 
 markers only, no colour or glyph):
 - One-time, before the first start:
   `starting the venv's LabVIEW for the resave (about a minute per package)`
-  ("about a minute" if M3 allows one LabVIEW per run).
+  (measured: 40–85 s per package, mostly cold loads; one LabVIEW per run).
 - Per package with LabVIEW files, one begin/end line in the style of
   `RelinkFolderStarted/Done`, with a counter: `resave (2/5) alpha ... 3 saved (14s)` or
   `resave (2/5) alpha ... nothing to save (9s)`. A failure ends the line with
@@ -430,7 +449,10 @@ test stays green.
 
 **Complexity**: complex
 **IMPLEMENT**:
-- Add `Venv::staging_dir()` at the location Slice 1 chose.
+- Add `Venv::staging_dir()`: the venv folder's sibling with `.staging`
+  appended (`<project>/.lv-venv.staging/`). It is on the venv's volume and
+  outside the add-on root (M1). Creating it writes a `.gitignore` of `*`,
+  as `venv create` does for the venv.
 - In `install_one`, choose a `Placement { InPlace, Staged(staging) }` once,
   the way `HookPolicy::new` is chosen. Venv destinations are `Staged`;
   `--prefix` and global are `InPlace` and take today's path unchanged.
@@ -452,9 +474,8 @@ test stays green.
 - Upgrade order, for `Staged` only: `settle_installed` no longer calls
   `uninstall_one` before the download. Stage and resave the new version,
   then remove the old version, then move. A failed stage leaves the old
-  version installed. The dry-run event order follows. If Slice 1's upgrade
-  row of M3 shows that resaving while the old version is mounted breaks
-  links, keep today's remove-first order and drop this promise.
+  version installed. The dry-run event order follows. M3c measured this
+  order as safe.
 - Staging and landing live in a new `ops/staging.rs`. `ops/resave.rs` holds
   only the `Resaver`.
 
@@ -496,18 +517,25 @@ without its own call.
 **IMPLEMENT**:
 - `ops::resave::Resaver` owns the LabVIEW lifecycle. It starts the venv's
   LabVIEW with `launch::ensure_instance` the first time a staged package
-  has relink folders. It starts a fresh one per package, unless Slice 1's M3
-  showed that one per run is safe. Shutdown is unconditional (a `Drop`
-  guard calling `shutdown_if_spawned`), so a `?`, a cancel or a sync
-  `incomplete` path cannot leave a LabVIEW holding staged files.
+  has LabVIEW files, and keeps that one LabVIEW for the run (M3a). Shutdown
+  is unconditional (a `Drop` guard calling `shutdown_if_spawned`), so a
+  `?`, a cancel or a sync `incomplete` path cannot leave a LabVIEW holding
+  staged files.
 - The first start failure is latched. The remaining packages are moved
   without a resave, and one warning names them all.
 - The test seam is a `Launcher` trait with one method,
   `start(headless) -> Result<Box<dyn Session>>`. A `Session` has
   `resave(staged_folder) -> Result<Outcome>`, and dropping it closes the
-  LabVIEW. The real launcher is `ensure_instance` plus `Relinker::open`,
-  `run(folder)` and `summarize_log`, about ten lines, closed with
-  `shutdown_if_spawned`. The fake launcher counts starts and closes, records
+  LabVIEW. The real launcher is `ensure_instance` plus a
+  `viserver::Connection`. It retries the handshake while VI Server still
+  refuses it (error 63), as `ensure_vi_server` waits today. Its `resave`
+  walks the staged package for `.vi`/`.ctl`/`.vit`, sorted. For each file it
+  calls `open_vi_reference`, `save_instrument` to the same path, then
+  `release`. `Outcome` is the saved count. Any file that fails makes the
+  package's resave fail, with the count and the first file and error as the
+  reason. The other files are still tried. `.lvlib`/`.lvclass` files are
+  not saved; every M3 row was clean without them. The relink VI is not
+  used. Closed with `shutdown_if_spawned`. The fake launcher counts starts and closes, records
   the headless flag, and either fails the start or returns scripted outcomes
   per package (keyed by the staged folder's package name). It can also check
   the filesystem when each resave starts. "Saves", "fails the resave" and
@@ -520,9 +548,9 @@ without its own call.
   warning. `apply` calls it on both its `Ok` and `Err` paths.
 - `run_relink` and the relink pass are not changed: the resave emits none of
   their events and does not mark the manifest relinked.
-- Between stage and move, each package with relink folders is resaved. Any
-  error from the VI Server, the VI or a timeout becomes `ResaveFailed`. The
-  package is moved as it is, and the install goes on.
+- Between stage and move, each package with LabVIEW files is resaved. Any
+  VI Server error, or a call with no answer in 180 s, becomes
+  `ResaveFailed`. The package is moved as it is, and the install goes on.
 - Events `ResaveStarting` (the one-time line), `ResaveStarted`,
   `ResaveDone`, `ResaveFailed`, `ResaveStartFailed` and the recap, worded as
   in "Output wording" above, in `src/render/install.rs` and
@@ -532,6 +560,8 @@ Write the `@labview` scenario into `tests/features/lvpm-venv-resave.feature`
 and list the file in `tests/acceptance.rs`.
 **TEST**: Unit tests, with the fake launcher, for:
 - the per-package line;
+- the real session's file walk (a pure function over a temporary folder):
+  `.vi`/`.ctl`/`.vit` only, sorted, `.lvlib`/`.lvclass` and docs left out;
 - a failure is a warning;
 - one failure does not stop the next;
 - a start failure is reported once, with one start attempt;
@@ -568,8 +598,8 @@ launcher's recorded flag) and render tests for both skip lines.
 
 **Complexity**: standard
 **IMPLEMENT**: `preview` for a venv destination emits one
-`ResavePlanned { packages }` for the packages with relink folders, from the
-same folder list `RelinkPlanned` uses. Render it as one capped block before
+`ResavePlanned { packages }` for the packages with LabVIEW files. Render
+it as one capped block before
 the relink block. Nothing is staged or removed. Planned writes are the
 final paths.
 **TEST**: The three dry-run unit scenarios.
@@ -599,6 +629,14 @@ result in the PR.
 ### Slice 3: name the VIs a resave left broken (its own PR)
 
 **Depends-on:** 2
+
+**Re-plan before building (after the Slice 1 result).** The resave no
+longer runs the relink VI, so step 3.1's report reaches only the relink
+pass, not the resave. Naming broken VIs after a resave needs a broken-state
+read per VI over VI Server, which the Rust client does not have yet. This
+slice is re-planned with the human after Slice 2 ships. The steps below are
+the original plan, kept for that re-plan.
+
 **Files:** `crates/lvpm-core/src/lv-src/relink-package.vi`, `crates/lvpm-core/src/relink.rs`, `crates/lvpm-core/src/ops/resave.rs`, `crates/lvpm-core/src/ops/relink.rs`, `crates/lvpm-core/src/events.rs`, `src/render/install.rs`, `src/render/relink.rs`, `src/render/json.rs`, `tests/support/fixtures.rs`, `tests/fixtures/`, `tests/features/lvpm-venv-resave.feature`, `tests/steps/venv.rs`
 
 **Behavior:**
@@ -724,8 +762,8 @@ None.
 
 - A real interruption, such as a killed process during a resave. Step 2.2
   removes the folder it leaves behind. The kill itself is not simulated.
-- Rename across volumes. Staging is under the venv by construction, so it
-  is on the same volume.
+- Rename across volumes. Staging is the venv's sibling, so it is on the same
+  volume unless the venv folder itself is a mount point.
 - A rename that fails after the old version was removed during an upgrade.
   Both folders are on one volume and lvpm owns the target, so a test would
   need to fake the file system. The old version is then gone. The error names
@@ -735,15 +773,17 @@ None.
 
 ## Risks & Open Questions
 
-- **M0 or M2 can change the plan.** If an in-place resave fixes the VI
-  (M0), Slice 2 is re-planned smaller with the human. If the relink VI does
-  not save a version-only change (M2), the mechanism does not hold and
-  Slice 1 stops.
-- **Startup cost.** The safe default is a fresh LabVIEW per package with
-  LabVIEW files, because LabVIEW enumerates add-ons only at launch
-  (`launch.rs`). A 40-package sync then pays up to 40 starts. M3 measures
-  whether one per run is safe. The relink pass still starts its own
-  LabVIEW afterwards, which is unchanged.
+- **Duration.** The forced save loads every VI cold: 83 s for 92 files and
+  40 s for 30 (M3a). A 40-package sync can take tens of minutes. One
+  LabVIEW per run already avoids repeated starts. Saving only what LabVIEW
+  reports as old is the upgrade if this is too slow; it needs a VI Server
+  property read the client does not have.
+- **Library files are not saved.** `.lvlib`/`.lvclass` keep their old
+  version. Every measured venv compiled clean. If a package breaks on that,
+  add the relink VI's library save after the forced save.
+- **The measurement covers one breakage.** It is `data_manipulation` 1.6.0.16
+  with OpenSerializer. The S0 pilot scenario (AC1) is the gate for both
+  pilots.
 - **Partial saves.** On a timeout or LabVIEW error, the package is moved
   as far as the save got, as the spec says. Re-unpacking the pristine
   files instead is the upgrade if partial saves turn out worse than
@@ -762,15 +802,15 @@ None.
 - **Global installs.** The same breakage may exist in global `vi.lib`. It is
   out of scope by the user's answer and unmeasured.
 - **Spec glossary.** "Add-on folder", "Staging folder" and "Resave" are
-  still `unverified` in the spec. Slice 1 verifies the first two.
+  verified by Slice 1 and updated in the spec.
 
 ## Build Progress
 
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: measure in LabVIEW before building
-  - [ ] Step 1.1: measurements in a scratch venv
+- [x] Slice 1: measure in LabVIEW before building
+  - [x] Step 1.1: measurements in a scratch venv
 
 #### Wave 2
 - [ ] Slice 2: staged install with resave
@@ -783,7 +823,7 @@ None.
   - [ ] Step 2.7: document the resave; the pilot scenario passes
 
 #### Wave 3
-- [ ] Slice 3: name the VIs a resave left broken (its own PR)
+- [ ] Slice 3: name the VIs a resave left broken (its own PR; re-plan first)
   - [ ] Step 3.1: the relink VI reports not-executable VIs
   - [ ] Step 3.2: the resave warning names broken VIs
 

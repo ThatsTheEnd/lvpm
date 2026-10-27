@@ -29,20 +29,20 @@ lvpm says which package failed, so the user knows where to look.
 | Part | Where |
 |---|---|
 | Staged unpack, resave and move for a venv destination | `crates/lvpm-core/src/ops/install.rs` (`apply`), with the venv paths in `venv.rs` |
-| The resave pass over one staged package | reuses `relink.rs` and `Relink Package.vi` (load, then save what LabVIEW marks modified) |
-| Report of VIs still broken after the save | an extension of the relink VI's `report log out` JSON, read in `relink.rs` |
+| The resave pass over one staged package | `crates/lvpm-core/src/ops/resave.rs`: over lvpm's own VI Server client (`viserver.rs`), open every `.vi`/`.ctl`/`.vit` and Save Instrument it in place |
+| Report of VIs still broken after the save | not part of this change; it needs a broken-state read over VI Server (plan, Slice 3) |
 | New events (resave started, done, failed for a package) | `crates/lvpm-core/src/events.rs`, worded in `src/render` |
 
 **Flow for one venv install run.**
 
 1. Packages are handled in dependency order, dependencies first.
 2. For each package, lvpm unpacks its files into
-   `<venv>/.lvpm/staging/<package>/1/`. That layout mirrors
-   `<venv>/<package>/1/`, so the relative links inside the package stay
-   valid after the move.
-3. lvpm then runs the resave pass over the staged folders. It uses the
-   venv's LabVIEW over VI Server and starts that LabVIEW the way the relink
-   pass does today.
+   `<project>/.lv-venv.staging/<package>/1/`, the venv's sibling. That
+   layout mirrors `<venv>/<package>/1/`, so the relative links inside the
+   package stay valid after the move.
+3. lvpm then force-saves every VI of the staged package in the venv's
+   LabVIEW over VI Server. It starts that LabVIEW once per run, the way the
+   relink pass starts it today.
 4. lvpm moves the staged tree to `<venv>/<package>/1/`. It is a rename on
    the same volume.
 5. The install manifest records the final paths, never the staging paths.
@@ -52,9 +52,9 @@ lvpm says which package failed, so the user knows where to look.
 **Constraints**
 - **Venv only.** `--global`, `--labview-version` and `--prefix` installs do
   not change.
-- **Every package is staged and loaded.** lvpm does not read VI versions.
-  LabVIEW decides what to save, because it marks an old-version VI modified
-  when it loads it.
+- **Every package is staged and saved.** lvpm does not read VI versions.
+  It saves every VI, because LabVIEW does not mark an old-version VI
+  modified when it loads it (Measurements, M2).
 - **`--no-relink` and `--headless` do not skip the resave.** They skip only
   the relink pass, as today.
 - **A failed resave never stops the install.** A failure is a LabVIEW error,
@@ -62,12 +62,11 @@ lvpm says which package failed, so the user knows where to look.
   the package into the add-on folder anyway, as it was unpacked or as far as
   the save got. It emits a warning that names the package and, when they are
   known, the broken VIs. The install exits 0 unless something else fails.
-- The staging folder must not be an add-on root that LabVIEW scans: `.lvpm/`
-  has no `lvaddoninfo.json`. If staging under `.lvpm/` still loads as add-on
-  context, the plan moves staging to another folder on the same volume. The
-  plan measures this before it builds anything else.
+- The staging folder must be outside `<venv>`: every folder under it loads
+  as add-on context (Measurements, M1). It is the sibling
+  `<project>/.lv-venv.staging/`, on the same volume.
 - An interrupted install can leave a staging folder behind. The next install
-  removes `<venv>/.lvpm/staging/` before it starts.
+  removes `<project>/.lv-venv.staging/` before it starts.
 - Dry run: says that a resave is planned, per package, and writes nothing.
 - No new dependency.
 
@@ -79,7 +78,7 @@ lvpm says which package failed, so the user knows where to look.
    and its callers.
 2. **Files land in place.** After a venv install, every installed file is under
    `<venv>/<package>/1/`, the manifest names only those paths, and
-   `<venv>/.lvpm/staging/` is empty or gone.
+   `<project>/.lv-venv.staging/` is gone.
 3. **Venv only.** A `--prefix` install writes no staging folder and emits no
    resave event (headless test). Global installs keep their current output.
 4. **Flags.** `--no-relink` skips the relink pass but not the resave. An
@@ -132,9 +131,9 @@ Other observations:
 | Term | Definition | Status | Source |
 |------|------------|--------|--------|
 | Old-version VI | A VI whose file was last saved by a LabVIEW older than the venv's LabVIEW | `verified` | User request ("old-version VIs") |
-| Add-on folder | `<venv>/<package>/1/`, which LabVIEW loads through `LVAddons.AdditionalLocations` | `unverified` | `venv.rs`, the venv's `labview.ini` |
-| Staging folder | `<venv>/.lvpm/staging/<package>/1/`: the same layout, outside any add-on root | `unverified` | This spec |
-| Resave | Load a staged package in the venv's LabVIEW and save what LabVIEW marks modified | `unverified` | `relink.rs`, `Relink Package.vi` |
+| Add-on folder | `<venv>/<package>/1/`, which LabVIEW loads through `LVAddons.AdditionalLocations`. Every folder under `<venv>` loads as add-on context | `verified` | `venv.rs`, the venv's `labview.ini`; Measurements M1 |
+| Staging folder | `<project>/.lv-venv.staging/<package>/1/`: the same layout, beside the venv and outside its add-on root | `verified` | Measurements M1c, M3 |
+| Resave | Open every `.vi`/`.ctl`/`.vit` of a staged package in the venv's LabVIEW over VI Server and save it in place | `verified` | Measurements M2b, M3 |
 
 ## Ambiguity Log
 
@@ -144,11 +143,11 @@ Other observations:
 | Which packages are staged | `requires-stakeholder-input` | human | Every package. LabVIEW saves only what it upgrades on load, and lvpm reads no VI versions. |
 | `--no-relink` / `--headless` | `requires-stakeholder-input` | human | The resave still runs. It is about correctness, so only the relink pass is skipped. |
 | Resave failure | `requires-stakeholder-input` | human | Install anyway and warn, naming the package. |
-| Mechanism | `inferable` | inference | Reuse `Relink Package.vi`. It already loads and saves in the target LabVIEW over VI Server, and `docs/ogpm-model.md` lists "mass-compile-by-load-and-save" as done through it. Predictability check: the alternative is LabVIEWCLI MassCompile. It is ruled out because lvpm drives LabVIEW only over VI Server. |
-| Does the relink VI save a VI that is modified only by a version upgrade | `inferable` | inference | `docs/ci-docker.md` says unrelinked VIs "show as modified and want saving", and the VI saves modified VIs. The plan verifies this first in LabVIEW (AC1). |
+| Mechanism | `requires-stakeholder-input` | human, 2026-10-27 | First inferred as "reuse `Relink Package.vi`". M2 measured that it does not save the version-only VI. The human chose a forced save over lvpm's own VI Server client (measured in M2b) over LabVIEWCLI MassCompile, so lvpm still drives LabVIEW only over VI Server. |
+| Does the relink VI save a VI that is modified only by a version upgrade | `inferable` | measurement | No (M0, M2). It saves only the `.lvlib`/`.lvclass` files LabVIEW marks modified. |
 | Order across packages | `inferable` | inference | Dependencies come first, so a dependent loads already-resaved dependencies from their add-on folders. Loading against a not-yet-resaved dependency would break the dependent during its own save. |
-| Staging location | `inferable` | inference | Under `<venv>/.lvpm/` on the same volume, so the move is a rename. The layout is mirrored so in-package relative links hold. It must not be scanned as an add-on, which the plan measures first. |
-| Links to dependencies saved from staging | `inferable` | inference | They can be stored relative to the staging path. The relink pass after the move repairs them. With `--no-relink` they point into stable venv paths. The plan checks this in AC1. |
+| Staging location | `inferable` | measurement | The sibling `<project>/.lv-venv.staging/`. Both locations under `<venv>` load as add-on context (M1a, M1b). The sibling is on the same volume, so the move is a rename, and the layout is mirrored so in-package relative links hold. |
+| Links to dependencies saved from staging | `inferable` | measurement | They hold after the move with no relink pass, in one LabVIEW session and with a fresh one per package (M3a, M3b). |
 | Detecting broken VIs | `inferable` | inference | Follows from the user's failure answer, which covers "a VI stays broken". The relink VI's JSON report gains the not-executable list. |
 | Existing venvs that are already broken | `inferable` | inference | Out of scope. Reinstalling, for example by deleting `.lv-venv` and running `lvpm sync`, runs the new path. The user docs say so. |
 | Uninstall | `inferable` | inference | Unchanged. The manifest holds final paths only (AC2). |
