@@ -33,6 +33,9 @@ const PROJECT_B_PACKAGES: [&str; 4] = [
 const PILOT_SOURCE_DIR: &str = "pilots";
 const COPIES_DIR: &str = "pilot-copies";
 const PILOT_A_DIR: &str = "pilot-a";
+/// The folder of each pilot checkout that its build copies.
+const PILOT_A_SUBTREE: &str = "Source";
+const PILOT_B_SUBTREE: &str = "source";
 /// The folder feed `lvpm publish` puts pilot A in.
 const PUBLISHED_FEED_DIR: &str = "published";
 /// Pilot A's `lvpm.toml`: its repository has none, and this is what it would hold.
@@ -368,12 +371,16 @@ fn project_b_without_pilot_a_archive(world: &mut CliWorld) -> PathBuf {
 
 /// The checkout `LVPM_TEST_PILOT_A` names, at the pinned commit.
 fn pilot_a_checkout() -> PathBuf {
-    pilot_checkout(PILOT_A_ENV_VAR, PILOT_A_COMMIT).unwrap_or_else(|why| panic!("{why}"))
+    pilot_checkout(PILOT_A_ENV_VAR, PILOT_A_COMMIT, PILOT_A_SUBTREE)
+        .unwrap_or_else(|why| panic!("{why}"))
 }
 
 fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
     let dir = world.sandbox.root().join(PILOT_A_DIR);
-    copy_tree(&pilot_a_checkout().join("Source"), &dir.join("Source"));
+    copy_tree(
+        &pilot_a_checkout().join(PILOT_A_SUBTREE),
+        &dir.join(PILOT_A_SUBTREE),
+    );
     std::fs::write(dir.join(MANIFEST_FILE), PILOT_A_MANIFEST).expect("write pilot A's manifest");
     let output = world.sandbox.run_lvpm_in(&dir, &["build"], None);
     assert_eq!(
@@ -389,9 +396,12 @@ fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
 /// copied into the sandbox's work directory, where the build writes its `dist/`.
 #[given("pilot B's repository at its pinned commit")]
 async fn pilot_b_source(world: &mut CliWorld) {
-    let checkout =
-        pilot_checkout(PILOT_B_ENV_VAR, PILOT_B_COMMIT).unwrap_or_else(|why| panic!("{why}"));
-    copy_tree(&checkout.join("source"), &world.work("source"));
+    let checkout = pilot_checkout(PILOT_B_ENV_VAR, PILOT_B_COMMIT, PILOT_B_SUBTREE)
+        .unwrap_or_else(|why| panic!("{why}"));
+    copy_tree(
+        &checkout.join(PILOT_B_SUBTREE),
+        &world.work(PILOT_B_SUBTREE),
+    );
 }
 
 #[given("an lvpm.toml for it written by the scenario")]

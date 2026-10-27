@@ -144,10 +144,11 @@ pub const PILOT_B_COMMIT: &str = "723d7a672b5f0eafa9f98ea63629ba5855d50227";
 pub const PILOT_B_ARCHIVE: &str = "labview_open_source_lib_serializer-1.2.1.16.vip";
 
 /// The checkout the variable `env_var` names, once its HEAD is `commit` and
-/// nothing in it is modified or untracked; otherwise what is wrong with it.
-pub fn pilot_checkout(env_var: &str, commit: &str) -> Result<PathBuf, String> {
+/// nothing in its `subtree` (the folder a build copies) is modified or
+/// untracked; otherwise what is wrong with it.
+pub fn pilot_checkout(env_var: &str, commit: &str, subtree: &str) -> Result<PathBuf, String> {
     let path = std::env::var_os(env_var).ok_or_else(|| format!("{env_var} names no checkout"))?;
-    checkout_at(env_var, path, commit)
+    checkout_at(env_var, path, commit, subtree)
 }
 
 /// `git -C path`, with no repository chosen by the caller's environment.
@@ -160,7 +161,12 @@ fn git_command(path: &Path) -> Command {
     git
 }
 
-fn checkout_at(env_var: &str, path: std::ffi::OsString, commit: &str) -> Result<PathBuf, String> {
+fn checkout_at(
+    env_var: &str,
+    path: std::ffi::OsString,
+    commit: &str,
+    subtree: &str,
+) -> Result<PathBuf, String> {
     let path = PathBuf::from(path);
     let shown = path.display();
     let at = format!("{env_var}={shown}");
@@ -190,9 +196,17 @@ fn checkout_at(env_var: &str, path: std::ffi::OsString, commit: &str) -> Result<
             "{at} is at {head}, not the pinned commit {commit}; run `git -C \"{shown}\" checkout {commit}`"
         ));
     }
-    if !git(&["status", "--porcelain"])?.is_empty() {
+    let status = [
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        subtree,
+    ];
+    if !git(&status)?.is_empty() {
         return Err(format!(
-            "{at} has uncommitted changes (`git -C \"{shown}\" status` lists them); build from a clean checkout"
+            "{at} has uncommitted changes in {subtree} (`git -C \"{shown}\" status -- {subtree}` lists them); build from a clean checkout"
         ));
     }
     Ok(path)
@@ -332,6 +346,8 @@ mod tests {
     }
 
     const VAR: &str = "LVPM_TEST_PILOT_X";
+    /// The folder of the repositories below that a build would copy.
+    const SUBTREE: &str = "Source";
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
@@ -351,8 +367,10 @@ mod tests {
     fn repo_with_a_commit() -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q"]);
-        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
-        git(dir.path(), &["add", "a.txt"]);
+        std::fs::create_dir(dir.path().join(SUBTREE)).unwrap();
+        std::fs::write(dir.path().join(SUBTREE).join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("outside.txt"), "o").unwrap();
+        git(dir.path(), &["add", "."]);
         git(dir.path(), &["commit", "-q", "-m", "a"]);
         let head = git(dir.path(), &["rev-parse", "HEAD"]);
         (dir, head)
@@ -362,7 +380,7 @@ mod tests {
     fn a_clean_checkout_at_the_pinned_commit_is_accepted() {
         let (dir, head) = repo_with_a_commit();
         assert_eq!(
-            checkout_at(VAR, dir.path().as_os_str().to_owned(), &head),
+            checkout_at(VAR, dir.path().as_os_str().to_owned(), &head, SUBTREE),
             Ok(dir.path().to_path_buf())
         );
     }
@@ -374,7 +392,7 @@ mod tests {
         git(dir.path(), &["add", "b.txt"]);
         git(dir.path(), &["commit", "-q", "-m", "b"]);
         let second = git(dir.path(), &["rev-parse", "HEAD"]);
-        let why = checkout_at(VAR, dir.path().as_os_str().to_owned(), &first).unwrap_err();
+        let why = checkout_at(VAR, dir.path().as_os_str().to_owned(), &first, SUBTREE).unwrap_err();
         let fix = format!("git -C \"{}\" checkout {first}", dir.path().display());
         for wanted in [VAR, &first, &second, &fix] {
             assert!(why.contains(wanted), "{wanted} is not in: {why}");
@@ -382,13 +400,13 @@ mod tests {
     }
 
     fn refusal(path: &Path, commit: &str) -> String {
-        checkout_at(VAR, path.as_os_str().to_owned(), commit).unwrap_err()
+        checkout_at(VAR, path.as_os_str().to_owned(), commit, SUBTREE).unwrap_err()
     }
 
     #[test]
     fn a_variable_nothing_sets_names_no_checkout() {
         assert_eq!(
-            pilot_checkout("LVPM_TEST_PILOT_NOTHING_SETS_THIS", "abc"),
+            pilot_checkout("LVPM_TEST_PILOT_NOTHING_SETS_THIS", "abc", SUBTREE),
             Err("LVPM_TEST_PILOT_NOTHING_SETS_THIS names no checkout".to_string())
         );
     }
@@ -420,7 +438,7 @@ mod tests {
     #[test]
     fn a_modified_file_is_refused() {
         let (repo, head) = repo_with_a_commit();
-        std::fs::write(repo.path().join("a.txt"), "changed").unwrap();
+        std::fs::write(repo.path().join(SUBTREE).join("a.txt"), "changed").unwrap();
         let why = refusal(repo.path(), &head);
         for wanted in [
             VAR,
@@ -432,6 +450,27 @@ mod tests {
     }
 
     #[test]
+    fn an_untracked_file_is_refused() {
+        let (repo, head) = repo_with_a_commit();
+        let nested = repo.path().join(SUBTREE).join("new");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("b.txt"), "b").unwrap();
+        let why = refusal(repo.path(), &head);
+        assert!(why.contains("uncommitted changes"), "{why}");
+    }
+
+    #[test]
+    fn changes_outside_the_copied_folder_are_accepted() {
+        let (repo, head) = repo_with_a_commit();
+        std::fs::write(repo.path().join("outside.txt"), "changed").unwrap();
+        std::fs::write(repo.path().join("noise.txt"), "n").unwrap();
+        assert_eq!(
+            checkout_at(VAR, repo.path().as_os_str().to_owned(), &head, SUBTREE),
+            Ok(repo.path().to_path_buf())
+        );
+    }
+
+    #[test]
     fn a_checkout_git_cannot_read_is_refused_not_accepted() {
         let (repo, head) = repo_with_a_commit();
         std::fs::write(repo.path().join(".git/index"), "not an index").unwrap();
@@ -439,7 +478,7 @@ mod tests {
         for wanted in [
             VAR,
             &repo.path().display().to_string(),
-            "git status",
+            "status",
             "index file",
         ] {
             assert!(why.contains(wanted), "{wanted} is not in: {why}");
