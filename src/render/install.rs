@@ -319,13 +319,11 @@ fn phase_skipped(r: &mut Renderer, phase: Phase, reason: SkipReason, skipped: us
             "\nrelink: skipped — a scratch tree has no LabVIEW to relink with"
         }
         (Phase::Relink, SkipReason::Headless) if r.resaved => {
-            "
-relink: skipped (headless). The resave still ran."
+            "\nrelink: skipped (headless). The resave still ran."
         }
         (phase, SkipReason::Headless) => return headless::phase_skipped(r, phase),
         (Phase::Relink, SkipReason::Declined) if r.resaved => {
-            "
-relink: skipped (--no-relink). The resave still ran."
+            "\nrelink: skipped (--no-relink). The resave still ran."
         }
         (Phase::Relink, SkipReason::Declined) => {
             "\nrelink: skipped (--no-relink). These VIs still declare the paths their\n      \

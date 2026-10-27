@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_resave_with_the_relink_pass_on_fails_at_the_relink_start() {
+    fn a_labview_that_cannot_start_with_the_relink_pass_on_fails_at_the_relink_start() {
         let (repo, venv) = repo("resave-relink");
         package(&repo, "alpha", "");
         Fake::cannot_start().install();
@@ -665,7 +665,7 @@ mod tests {
 
     #[test]
     fn an_error_after_a_resave_started_still_closes_the_labview() {
-        let (repo, _venv) = repo("resave-error");
+        let (repo, venv) = repo("resave-error");
         package(&repo, "alpha", "");
         vip_in(
             &repo.join("packages"),
@@ -683,6 +683,8 @@ mod tests {
         let log = fake.log();
         assert_eq!(log.resaves.len(), 1, "alpha was resaved first");
         assert_eq!((log.starts, log.closes), (1, 1));
+        assert!(landed(&venv, "alpha"));
+        assert!(!venv.staging_dir().join("beta").exists());
     }
 
     #[test]
@@ -817,6 +819,11 @@ mod tests {
         let block = at(|e| matches!(e, Event::ResavePlanned { .. })).unwrap();
         let relink = at(|e| matches!(e, Event::RelinkPlanned { .. })).unwrap();
         assert!(block < relink, "the resave block comes first");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::PlannedWrites { .. }))
+        );
         for e in &events {
             if let Event::PlannedWrites { files } = e {
                 for f in files {
@@ -915,9 +922,15 @@ mod tests {
         assert_eq!(read_major(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
         assert_eq!(read_major(b"PAYLOAD a.vi"), None);
         let whole = rsrc([0x26, 0x31, 0x80, 0x01]);
-        for cut in [10, 30, 50, whole.len() - 5] {
+        // The section's last field is never read, so cut only before it.
+        for cut in 0..whole.len() - 4 {
             assert_eq!(read_major(&whole[..cut]), None, "cut at {cut}");
         }
+        // A huge section count with no id 4 runs off the end, not forever.
+        let mut endless = whole.clone();
+        endless[100..104].copy_from_slice(&u32::MAX.to_be_bytes());
+        endless[108..112].copy_from_slice(&5u32.to_be_bytes());
+        assert_eq!(read_major(&endless), None);
     }
 
     fn saved_in(repo: &Path, name: &str, members: &[(&str, Vec<u8>)]) {
@@ -973,6 +986,37 @@ mod tests {
         assert_eq!(fake.log().starts, 0);
         assert!(summary(&events).is_empty());
         assert!(!events.contains(&Event::ResaveStarting));
+    }
+
+    #[test]
+    fn a_package_with_one_older_file_is_resaved_and_the_recap_counts_only_resaves() {
+        let (repo, _venv) = repo("resave-mixed");
+        let (now, old) = (
+            rsrc([0x26, 0x31, 0x80, 0x01]),
+            rsrc([0x13, 0x01, 0x80, 0x00]),
+        );
+        saved_in(&repo, "alpha", &[("a/a.vi", now.clone())]);
+        saved_in(&repo, "beta", &[("b/b.vi", old.clone())]);
+        saved_in(&repo, "gamma", &[("g/now.vi", now), ("g/old.vi", old)]);
+        vip_in(
+            &repo.join("packages"),
+            "all",
+            "1.0",
+            "alpha >= 1.0, beta >= 1.0, gamma >= 1.0",
+            &[],
+            false,
+        );
+        Fake::failing(&["beta"]).install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("all"), &no_relink()).unwrap();
+
+        let events = sink.events();
+        assert_eq!(resaves(&events), ["beta", "gamma"]);
+        assert!(events.contains(&Event::ResaveRecap {
+            failed: vec!["beta".into()],
+            packages: 2,
+        }));
     }
 
     #[test]

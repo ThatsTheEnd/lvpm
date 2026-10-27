@@ -109,7 +109,8 @@ pub(super) fn clear_unrecorded(
 
 /// Move a staged package into its addon folder and record it there. An old
 /// version is removed only now, so a package that failed to stage leaves it
-/// installed.
+/// installed. One that fails to move in (a file held open) is left
+/// uninstalled; the next install clears its staging and installs it again.
 pub(super) fn land(
     env: &OpEnv,
     session: &mut InstallSession,
@@ -396,6 +397,7 @@ mod tests {
         let archive = vip(&repo, "2.0", &["lib/a.vi"], false, false);
         let fake = testing::FakeInstallation::new(&repo);
 
+        let lv = super::super::resave::fake::Fake::saving().install();
         let mut prefix = env(&repo);
         prefix.flags.prefix = Some(repo.join("dest"));
         install(&prefix, &archive, "2.0").unwrap();
@@ -410,6 +412,7 @@ mod tests {
 
         assert!(!venv.staging_dir().exists());
         assert!(!venv.dir.join("alpha").exists());
+        assert_eq!(lv.log().starts + lv.log().resaves.len(), 0, "no resave");
         let _ = std::fs::remove_dir_all(&repo);
     }
 

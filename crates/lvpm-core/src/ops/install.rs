@@ -577,6 +577,8 @@ fn preview(env: &OpEnv, session: &mut InstallSession, pkg: &Unpacking) -> Result
         pkg.entry.name.clone(),
         relink::folders_for_spec(&pkg.roots, &pkg.spec)?,
     ));
+    // shortcut: lists packages the version skip may pass over, since a dry run
+    // unpacks nothing to read; read the archive members if that misleads.
     if session.venv().is_some() && pkg.plan.writes.iter().any(|w| resave::is_lv_file(&w.dest)) {
         session.resaver.planned.push(pkg.entry.name.clone());
     }

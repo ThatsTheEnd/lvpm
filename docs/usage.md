@@ -248,8 +248,9 @@ resave (2/2) oglib_string ... already saved in LabVIEW 2026, skipped
   mostly the cold load of its VIs. A package whose VIs are all saved in the
   venv's LabVIEW version already is skipped, and starts no LabVIEW.
 - `--no-relink` and headless installs skip only the relink. The resave
-  still runs, and the relink line says so. `--dry-run` lists the packages it
-  would resave and starts no LabVIEW.
+  still runs, and the relink line says so. `--dry-run` lists the packages with
+  VIs it may resave, including ones the version check will skip, and starts
+  no LabVIEW.
 - A failed resave is a warning, not an error: the package is still
   installed and the exit code stays 0. The warning names the package and its
   folder. Reinstall the package; if it fails again, run `lvpm launch` and
