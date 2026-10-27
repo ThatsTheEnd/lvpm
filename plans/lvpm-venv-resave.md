@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-27
 **Branch**: claude/venv-resave-spec, off `main` at 8a5586b
-**Status**: draft
+**Status**: approved
 **Gherkin persistence**: plan-file-only
 **Spec**: [docs/specs/lvpm-venv-resave.md](../docs/specs/lvpm-venv-resave.md)
 
