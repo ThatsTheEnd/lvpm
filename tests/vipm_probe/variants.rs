@@ -111,6 +111,9 @@ pub fn spec_keys(text: &str) -> Vec<(Key, String)> {
     let mut keys: Vec<(Key, String)> = Vec::new();
     let mut section = String::new();
     for line in text.lines().map(str::trim) {
+        if line.starts_with(';') {
+            continue;
+        }
         if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             section = name.to_string();
         } else if let Some((key, value)) = line.split_once('=') {
@@ -691,6 +694,13 @@ mod tests {
             diff.keys_changed,
             [("[Package]/Version".into(), "\"1\"".into(), "\"2\"".into())]
         );
+    }
+
+    #[test]
+    fn comment_lines_are_not_spec_keys() {
+        let keys = spec_keys("; a=1\n[A]\n;b=2\n  ; c=3\nd=4\n");
+        let names: Vec<(String, String)> = keys.into_iter().map(|(k, _)| k).collect();
+        assert_eq!(names, [("A".to_string(), "d".to_string())]);
     }
 
     #[test]
