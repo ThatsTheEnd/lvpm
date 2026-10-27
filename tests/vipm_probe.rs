@@ -83,7 +83,59 @@ fn probe() -> Result<String, String> {
         ),
     )?;
 
-    let (base, archive_name) = build_pilot_a(&env.pilot_a)?;
+    let inputs = load_inputs(&env.pilot_a)?;
+    let vipm_version = vipm.version()?;
+    let header = table::Header {
+        vipm: vipm_version.clone(),
+        labview: labview_file_version(&labview)?,
+    };
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let out = probes.join(table::run_folder(&table::utc_stamp(seconds), &vipm_version));
+    eprintln!("{}", vipm::start_line(inputs.variants.len()));
+    let git_before = git_status(repo)?;
+    let tree_before = run::scan_scope(&labview)?;
+
+    let probe = Probe {
+        vipm: &vipm,
+        labview: &labview,
+        out: &out,
+        state_file: &state_file,
+        name: &inputs.name,
+        version: &inputs.version,
+        archive_name: &inputs.archive_name,
+    };
+    let reference = (inputs.reference_file.as_path(), &inputs.reference);
+    let rows = run::run(&probe, reference, &inputs.base, &inputs.variants)?;
+
+    run::final_tree_check(&labview, &tree_before, &run::scan_scope(&labview)?)?;
+    run::git_status_unchanged(&git_before, &git_status(repo)?)?;
+    let reference_diff = variants::reference_diff(&inputs.base, &inputs.reference);
+    let table_file = out.join("table.md");
+    let text = table::render(&header, &rows, &reference_diff, &inputs.not_varied);
+    run::write_text(&table_file, &text)?;
+    Ok(table::summary_line(&rows, &table_file))
+}
+
+/// What the run installs and compares, made before anything is installed.
+struct Inputs {
+    /// Pilot A as lvpm builds it, and the file name VIPM is given it under.
+    base: Pkg,
+    archive_name: String,
+    /// Pilot A's name and version.
+    name: String,
+    version: String,
+    /// Pilot A as its vendor published it: the file, and what it holds.
+    reference_file: PathBuf,
+    reference: Pkg,
+    variants: Vec<variants::Variant>,
+    /// The published keys that got no variant.
+    not_varied: Vec<String>,
+}
+
+fn load_inputs(pilot_a: &Path) -> Result<Inputs, String> {
+    let (base, archive_name) = build_pilot_a(pilot_a)?;
     let published = published_pilots()?;
     let reference_file = pilots_dir().join(PILOT_A_ARCHIVE);
     let reference = Pkg::read(&read(&reference_file)?)?;
@@ -97,38 +149,16 @@ fn probe() -> Result<String, String> {
             vipm::PILOT_A
         ));
     }
-
-    let vipm_version = vipm.version()?;
-    let header = table::Header {
-        vipm: vipm_version.clone(),
-        labview: labview_file_version(&labview)?,
-    };
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let out = probes.join(table::run_folder(&table::utc_stamp(seconds), &vipm_version));
-    eprintln!("{}", vipm::start_line(variants.len()));
-    let git_before = git_status(repo)?;
-    let tree_before = run::scan_scope(&labview)?;
-
-    let probe = Probe {
-        vipm: &vipm,
-        labview: &labview,
-        out: &out,
-        state_file: &state_file,
-        name: &spec.name,
-        version: &spec.version,
-        archive_name: &archive_name,
-    };
-    let rows = run::run(&probe, (&reference_file, &reference), &base, &variants)?;
-
-    run::final_tree_check(&labview, &tree_before, &run::scan_scope(&labview)?)?;
-    run::git_status_unchanged(&git_before, &git_status(repo)?)?;
-    let reference_diff = variants::reference_diff(&base, &reference);
-    let table_file = out.join("table.md");
-    let text = table::render(&header, &rows, &reference_diff, &not_varied);
-    run::write_text(&table_file, &text)?;
-    Ok(table::summary_line(&rows, &table_file))
+    Ok(Inputs {
+        base,
+        archive_name,
+        name: spec.name,
+        version: spec.version,
+        reference_file,
+        reference,
+        variants,
+        not_varied,
+    })
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
