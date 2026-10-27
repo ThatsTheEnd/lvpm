@@ -547,7 +547,7 @@ mod tests {
             }
             if self.hang_install.is_some_and(|h| file.contains(h)) {
                 std::thread::sleep(timeout);
-                return Ran::TimedOut;
+                return Ran::TimedOut("partial: synthetic".into());
             }
             exited(0, "installed")
         }
@@ -555,7 +555,7 @@ mod tests {
         fn uninstall(&self, name: &str, timeout: Duration) -> Ran {
             if self.hang_uninstall {
                 std::thread::sleep(timeout);
-                return Ran::TimedOut;
+                return Ran::TimedOut(String::new());
             }
             if self.fail_uninstall {
                 return exited(1, "cannot uninstall: synthetic");
@@ -770,6 +770,11 @@ mod tests {
         assert!(!rows[0].accepted);
         assert_eq!(rows[0].exit, None);
         assert_eq!(rows[0].note, "timed out after 0.03s");
+        let kept = std::fs::read_to_string(machine.out().join("01-Requires_b.txt")).unwrap();
+        assert_eq!(
+            kept, "partial: synthetic",
+            "what VIPM wrote before the kill"
+        );
         let uninstalls = fake.calls("uninstall");
         for name in [DATA_MANIPULATION, PALETTE] {
             let command = format!("uninstall {name}");

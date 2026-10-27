@@ -25,8 +25,8 @@ pub enum Ran {
         code: i32,
         output: String,
     },
-    /// Still running at its deadline, and killed.
-    TimedOut,
+    /// Still running at its deadline, and killed; what it had written.
+    TimedOut(String),
     CannotStart(String),
 }
 
@@ -52,13 +52,15 @@ pub fn real_runner(exe: PathBuf) -> impl Fn(&[String], Duration) -> Ran {
     move |args, timeout| {
         let mut command = Command::new(&exe);
         command.args(args);
-        match process::run_within(command, None, timeout) {
+        match process::run_capturing(command, None, timeout) {
             Ok(out) => Ran::Exited {
                 code: out.exit_code,
                 output: format!("{}{}", out.stdout, out.stderr),
             },
-            Err(why) if why.starts_with("timed out after") => Ran::TimedOut,
-            Err(why) => Ran::CannotStart(why),
+            Err(failed) if failed.timed_out => {
+                Ran::TimedOut(format!("{}{}", failed.stdout, failed.stderr))
+            }
+            Err(failed) => Ran::CannotStart(failed.message),
         }
     }
 }
@@ -110,7 +112,7 @@ impl<'a> Vipm<'a> {
             Ran::Exited { code, output } => Ok(code == 0
                 && output.contains(name)
                 && version.is_none_or(|v| output.contains(v))),
-            Ran::TimedOut => Err(format!(
+            Ran::TimedOut(_) => Err(format!(
                 "`vipm info {name}` timed out after {}s",
                 self.timeouts.other.as_secs_f64()
             )),
@@ -148,7 +150,7 @@ impl<'a> Vipm<'a> {
             Ran::Exited { code, output } => {
                 rejected(Some(code), crate::table::first_line(&output), output)
             }
-            Ran::TimedOut => rejected(None, timed_out_note(self.timeouts.install), String::new()),
+            Ran::TimedOut(output) => rejected(None, timed_out_note(self.timeouts.install), output),
             Ran::CannotStart(why) => rejected(None, format!("could not start: {why}"), why),
         }
     }
@@ -161,7 +163,7 @@ impl<'a> Vipm<'a> {
             Ran::Exited { code, output } => {
                 Err(format!("`{command}` failed (exit {code}): {output}"))
             }
-            Ran::TimedOut => Err(format!(
+            Ran::TimedOut(_) => Err(format!(
                 "`{command}` timed out after {}s and was killed; {name} may still be installed",
                 self.timeouts.other.as_secs_f64()
             )),
@@ -245,6 +247,9 @@ mod tests {
         other: Duration::from_millis(20),
     };
 
+    #[cfg(windows)]
+    const LONG: Duration = Duration::from_secs(60);
+
     fn exited(code: i32, output: &str) -> Ran {
         Ran::Exited {
             code,
@@ -279,7 +284,7 @@ mod tests {
                 _ => return exited(0, "vipm synthetic 1.0"),
             };
             // A hung command is still there at its deadline, and is killed.
-            if *answer == Ran::TimedOut {
+            if matches!(answer, Ran::TimedOut(_)) {
                 std::thread::sleep(timeout);
             }
             answer.clone()
@@ -311,7 +316,7 @@ mod tests {
     fn without_a_version_the_name_is_enough() {
         let fake = Fake::new(exited(0, ""), exited(0, "pkg 9.9.9"));
         assert_eq!(with(&fake, |v| v.info("pkg", None)), Ok(true));
-        let fake = Fake::new(exited(0, ""), Ran::TimedOut);
+        let fake = Fake::new(exited(0, ""), Ran::TimedOut(String::new()));
         assert!(with(&fake, |v| v.info("pkg", None)).is_err());
     }
 
@@ -359,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_command_past_its_timeout_is_killed_and_rejected() {
-        let fake = Fake::new(Ran::TimedOut, exited(0, "pkg 1.0.0.1"));
+        let fake = Fake::new(Ran::TimedOut(String::new()), exited(0, "pkg 1.0.0.1"));
         let started = std::time::Instant::now();
         let judged = with(&fake, |v| {
             v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
@@ -376,9 +381,65 @@ mod tests {
     }
 
     #[test]
+    fn a_timed_out_install_keeps_what_it_wrote() {
+        let fake = Fake::new(Ran::TimedOut("half done".into()), exited(0, "pkg 1.0.0.1"));
+        let judged = with(&fake, |v| {
+            v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
+        });
+        assert_eq!(judged.output, "half done");
+        assert_eq!(judged.note, "timed out after 0.05s");
+    }
+
+    /// A stand-in for `vipm.exe`: `cmd` takes the arguments as its own.
+    #[cfg(windows)]
+    fn through_cmd(args: &[&str], timeout: Duration) -> Ran {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        real_runner(PathBuf::from("cmd"))(&args, timeout)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_real_runner_maps_an_exit_a_timeout_and_a_missing_program() {
+        let Ran::Exited { code, output } = through_cmd(&["/c", "echo", "synthetic"], LONG) else {
+            panic!("the command did not exit");
+        };
+        assert_eq!((code, output.trim()), (0, "synthetic"));
+        let Ran::Exited { code, .. } = through_cmd(&["/c", "exit", "3"], LONG) else {
+            panic!("the command did not exit");
+        };
+        assert_eq!(code, 3);
+
+        let started = std::time::Instant::now();
+        let ran = through_cmd(
+            &[
+                "/c",
+                "echo",
+                "partial",
+                "&",
+                "ping",
+                "-n",
+                "30",
+                "127.0.0.1",
+            ],
+            Duration::from_millis(1500),
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        match ran {
+            Ran::TimedOut(output) => assert!(output.contains("partial"), "{output}"),
+            other => panic!("{other:?}"),
+        }
+
+        let missing = real_runner(PathBuf::from("no-such-vipm-lvpm-test"));
+        match missing(&["--version".to_string()], LONG) {
+            Ran::CannotStart(why) => assert!(why.contains("could not start"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn an_uninstall_past_its_timeout_stops_the_run() {
         let mut fake = Fake::new(exited(0, ""), exited(0, ""));
-        fake.uninstall = Ran::TimedOut;
+        fake.uninstall = Ran::TimedOut(String::new());
         let why = with(&fake, |v| v.remove("pkg")).unwrap_err();
         assert!(why.contains("vipm uninstall pkg"), "{why}");
         assert!(why.contains("timed out after 0.02s"), "{why}");
