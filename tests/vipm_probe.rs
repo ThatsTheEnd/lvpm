@@ -6,9 +6,13 @@
 // Test code reads the test process's environment; the workspace-wide
 // `clippy.toml` bars that from `lvpm-core` only.
 #![allow(clippy::disallowed_methods)]
+// Removed with step 1.5, when the run uses everything the earlier steps built.
+#![allow(dead_code)]
 
 mod support;
 #[path = "vipm_probe/table.rs"]
 mod table;
 #[path = "vipm_probe/variants.rs"]
 mod variants;
+#[path = "vipm_probe/vipm.rs"]
+mod vipm;

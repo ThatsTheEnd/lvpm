@@ -268,7 +268,7 @@ const MAX_KEY_VARIANTS: usize = 5;
 /// Keys with a variant of their own.
 const OWN_VARIANT_KEYS: [(&str, &str); 2] =
     [("Package", "ID"), ("Description", "License Agreement")];
-const REQUIRES: &str = "labview_open_source_lib_data_manipulation";
+use crate::vipm::DATA_MANIPULATION as REQUIRES;
 const REQUIRES_VERSION: &str = "1.5.0.15";
 
 /// The variants of `base` (lvpm's build of pilot A), and the keys every one
