@@ -65,7 +65,7 @@ missing target folder is an error.
 The path assertions in these scenarios compare paths, not strings. "Names
 X" means the message holds a path that names the same file as X: the step
 canonicalises the expected path and compares it with the canonicalised
-path in the message, so short names and `\?\` prefixes do not matter.
+path in the message, so 8.3 short names and `\\?\` prefixes do not matter.
 
 ```gherkin
 Feature: lvpm publish copies the current package into a folder feed
