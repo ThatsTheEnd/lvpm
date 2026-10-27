@@ -176,6 +176,20 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             "\nnext: `lvpm launch` starts LabVIEW on this venv — a LabVIEW already open on it\n      \
              has to be restarted to see what was just installed",
         ),
+        Event::StagingLeftoverRemoved { dir } => r.line(
+            Stream::Out,
+            &format!(
+                "removed the staging folder an interrupted install left: {}",
+                dir.display()
+            ),
+        ),
+        Event::UnrecordedFolderReplaced { dir } => r.line(
+            Stream::Out,
+            &format!(
+                "      replaced {}, which no install record named; files added there by hand are gone",
+                dir.display()
+            ),
+        ),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
 }

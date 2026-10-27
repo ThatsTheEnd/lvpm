@@ -176,6 +176,11 @@ pub enum Event {
     /// A venv install is done; a LabVIEW already open on the venv has to be
     /// restarted to see it.
     LaunchHint,
+    /// A venv install removed the staging folder an interrupted install left.
+    StagingLeftoverRemoved { dir: PathBuf },
+    /// A venv package folder that no install record named was removed, so
+    /// the package lands in an empty one.
+    UnrecordedFolderReplaced { dir: PathBuf },
 
     // ---- ops::relink ----
     /// The relink pass begins: `folders` to walk with the relink VI at `vi`,

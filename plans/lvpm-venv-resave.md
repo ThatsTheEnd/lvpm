@@ -861,7 +861,7 @@ None.
 - [ ] Slice 2: staged install with resave
   - [x] Step 2.0: dependencies first on every install path
   - [x] Step 2.1: stage the files, move into place, write the manifest after the move
-  - [ ] Step 2.2: leftover staging and unrecorded folders
+  - [x] Step 2.2: leftover staging and unrecorded folders
   - [ ] Step 2.3: resave each staged package, warn on failure
   - [ ] Step 2.4: --no-relink and --headless do not skip the resave
   - [ ] Step 2.5: dry run lists the planned resaves

@@ -374,6 +374,11 @@ pub fn apply(
     plan: &InstallPlan,
     opts: &InstallOptions,
 ) -> Result<Applied> {
+    if !opts.dry_run
+        && let Some(v) = session.venv()
+    {
+        staging::clear_leftover(env, v)?;
+    }
     let hooks = HookPolicy::new(env, session, opts);
     let mut files = 0usize;
     // How many packages declared a hook this install did not run — decides
@@ -627,6 +632,10 @@ fn unpack(
             &pkg.archive_sha256,
         )?,
         Some(staging) => {
+            if staging::clear_unrecorded(env, session, &staging, name)? {
+                // The plan took that folder's files for ones to overwrite or keep.
+                pkg.plan = install::plan(&pkg.roots, &pkg.spec, &mut pkg.zip)?;
+            }
             let staged = staging.create().and_then(|()| {
                 install::unpack_to(
                     &pkg.roots,

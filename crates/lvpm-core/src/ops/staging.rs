@@ -6,6 +6,7 @@
 use super::env::OpEnv;
 use super::session::InstallSession;
 use super::uninstall::uninstall_one;
+use crate::events::Event;
 use crate::install::{self, Manifest};
 use crate::venv::Venv;
 use anyhow::{Context, Result};
@@ -70,6 +71,42 @@ impl Staging {
     }
 }
 
+/// Remove the staging folder an interrupted install left, before anything is
+/// fetched. One that cannot go fails the install: what is in it would mix with
+/// this run's packages.
+pub(super) fn clear_leftover(env: &OpEnv, venv: &Venv) -> Result<()> {
+    let dir = venv.staging_dir();
+    if !dir.exists() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(&dir).with_context(|| {
+        format!(
+            "cannot remove the staging folder {}. Close the venv's LabVIEW and delete it, then retry.",
+            dir.display()
+        )
+    })?;
+    env.sink.emit(Event::StagingLeftoverRemoved { dir });
+    Ok(())
+}
+
+/// Remove a package folder that no install record names, so the package lands
+/// in an empty one. True when there was one.
+pub(super) fn clear_unrecorded(
+    env: &OpEnv,
+    session: &InstallSession,
+    staging: &Staging,
+    package: &str,
+) -> Result<bool> {
+    let dir = &staging.final_root;
+    if !dir.exists() || install::is_installed(session.store(), package) {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(dir).with_context(|| format!("removing {}", dir.display()))?;
+    env.sink
+        .emit(Event::UnrecordedFolderReplaced { dir: dir.clone() });
+    Ok(true)
+}
+
 /// Move a staged package into its addon folder and record it there. An old
 /// version is removed only now, so a package that failed to stage leaves it
 /// installed.
@@ -124,7 +161,7 @@ mod tests {
     use super::super::testing;
     use super::super::uninstall::uninstall_one;
     use crate::config::Config;
-    use crate::events::NullSink;
+    use crate::events::{Event, EventSink, NullSink};
     use crate::index::Entry;
     use crate::install;
     use crate::ops::env::OpEnv;
@@ -200,13 +237,17 @@ mod tests {
     }
 
     fn env(repo: &Path) -> OpEnv<'static> {
+        env_on(&NullSink, repo)
+    }
+
+    fn env_on<'a>(sink: &'a dyn EventSink, repo: &Path) -> OpEnv<'a> {
         let config = Config {
             cache: repo.join("cache"),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
         };
         OpEnv::new(
-            &NullSink,
+            sink,
             config,
             vec![testing::labview_2026()],
             repo.to_path_buf(),
@@ -369,6 +410,102 @@ mod tests {
 
         assert!(!venv.staging_dir().exists());
         assert!(!venv.dir.join("alpha").exists());
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_staging_folder_left_by_an_interrupted_install_is_removed() {
+        let repo = testing::scratch_dir("stage-leftover");
+        let venv = testing::venv_in(&repo);
+        let left = venv.staging_dir().join("beta").join("1");
+        std::fs::create_dir_all(&left).unwrap();
+        std::fs::write(left.join("half.vi"), "half").unwrap();
+        let archive = vip(&repo, "2.0", &["lib/a.vi"], false, false);
+
+        let sink = testing::Recorded::default();
+        install(&env_on(&sink, &repo), &archive, "2.0").unwrap();
+
+        assert!(!venv.staging_dir().exists());
+        assert!(!venv.dir.join("beta").exists(), "nothing of it landed");
+        assert!(sink.events().contains(&Event::StagingLeftoverRemoved {
+            dir: venv.staging_dir()
+        }));
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_undeletable_leftover_staging_folder_fails_the_install() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let repo = testing::scratch_dir("stage-held");
+        let venv = testing::venv_in(&repo);
+        std::fs::create_dir_all(venv.staging_dir()).unwrap();
+        let held = venv.staging_dir().join("held.vi");
+        std::fs::write(&held, "held").unwrap();
+        // Shared with nobody, as a LabVIEW that has the VI open holds it.
+        let open = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&held)
+            .unwrap();
+        let archive = vip(&repo, "2.0", &["lib/a.vi"], false, false);
+
+        let why = install(&env(&repo), &archive, "2.0").unwrap_err();
+
+        assert_eq!(
+            why.to_string(),
+            format!(
+                "cannot remove the staging folder {}. Close the venv's LabVIEW and delete it, then retry.",
+                venv.staging_dir().display()
+            )
+        );
+        assert!(!venv.dir.join("alpha").exists(), "nothing was installed");
+        drop(open);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_folder_with_no_install_record_is_replaced() {
+        let repo = testing::scratch_dir("stage-unrecorded");
+        let venv = testing::venv_in(&repo);
+        let root = venv.dir.join("alpha").join("1");
+        std::fs::create_dir_all(root.join("lib")).unwrap();
+        std::fs::write(root.join("by-hand.vi"), "mine").unwrap();
+        std::fs::write(root.join("lib/a.vi"), "old").unwrap();
+        let archive = vip(&repo, "2.0", &["lib/a.vi"], false, false);
+
+        let sink = testing::Recorded::default();
+        install(&env_on(&sink, &repo), &archive, "2.0").unwrap();
+
+        assert_eq!(tree(&root), ["lib/a.vi", "lvaddoninfo.json"]);
+        assert!(
+            sink.events()
+                .contains(&Event::UnrecordedFolderReplaced { dir: root.clone() })
+        );
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_dry_run_leaves_a_leftover_staging_folder_and_an_unrecorded_folder_alone() {
+        let repo = testing::scratch_dir("stage-dry");
+        let venv = testing::venv_in(&repo);
+        let left = venv.staging_dir().join("half.vi");
+        let mine = venv.dir.join("alpha").join("1").join("by-hand.vi");
+        for f in [&left, &mine] {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, "x").unwrap();
+        }
+        let archive = vip(&repo, "2.0", &["lib/a.vi"], false, false);
+
+        let env = env(&repo);
+        let mut session = InstallSession::new(env.destination().unwrap());
+        let opts = InstallOptions {
+            dry_run: true,
+            ..InstallOptions::default()
+        };
+        apply(&env, &mut session, &plan(&archive, "2.0"), &opts).unwrap();
+
+        assert!(left.is_file() && mine.is_file());
         let _ = std::fs::remove_dir_all(&repo);
     }
 }

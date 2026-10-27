@@ -91,7 +91,9 @@ impl Renderer {
             | Event::HooksNotRun { .. }
             | Event::InstallDone { .. }
             | Event::PhaseSkipped { .. }
-            | Event::LaunchHint => install::render(self, event),
+            | Event::LaunchHint
+            | Event::StagingLeftoverRemoved { .. }
+            | Event::UnrecordedFolderReplaced { .. } => install::render(self, event),
             Event::HookStarting { .. }
             | Event::HookRan { .. }
             | Event::HookFailed { .. }
