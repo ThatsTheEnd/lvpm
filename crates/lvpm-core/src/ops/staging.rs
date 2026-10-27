@@ -142,7 +142,7 @@ pub(super) fn land(
     }
     if staging.stage_root.exists() {
         std::fs::create_dir_all(to.parent().expect("an addon folder has a parent"))?;
-        std::fs::rename(&staging.stage_root, to).with_context(|| {
+        move_in(&staging.stage_root, to).with_context(|| {
             format!(
                 "moving {} to {}",
                 staging.stage_root.display(),
@@ -153,6 +153,23 @@ pub(super) fn land(
     install::write_manifest(session.store(), m)?;
     staging.discard();
     Ok(())
+}
+
+/// A rename that waits out a brief hold: on Windows an antivirus scan, or
+/// the LabVIEW that just saved a file, can keep it open for a moment, and a
+/// folder with an open file cannot move (measured: the pilot install's last
+/// package, once in two runs).
+fn move_in(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut wait = std::time::Duration::from_millis(100);
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && wait.as_secs() < 5 => {
+                std::thread::sleep(wait);
+                wait *= 2;
+            }
+            done => return done,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -464,6 +481,31 @@ mod tests {
         );
         assert!(!venv.dir.join("alpha").exists(), "nothing was installed");
         drop(open);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_move_waits_out_a_file_held_for_a_moment() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let repo = testing::scratch_dir("stage-held-briefly");
+        let (from, to) = (repo.join("staged"), repo.join("landed"));
+        std::fs::create_dir_all(&from).unwrap();
+        std::fs::write(from.join("a.vi"), "a").unwrap();
+        let open = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(from.join("a.vi"))
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(open);
+        });
+
+        super::move_in(&from, &to).unwrap();
+
+        release.join().unwrap();
+        assert_eq!(std::fs::read(to.join("a.vi")).unwrap(), b"a");
         let _ = std::fs::remove_dir_all(&repo);
     }
 
