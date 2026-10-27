@@ -18,7 +18,7 @@
 $ErrorActionPreference = 'Stop'
 
 # Fork PRs can reuse a local branch name; only this repo's branches count.
-$prs = gh pr list --state all --limit 1000 --json headRefName,number,state,title,isCrossRepository | ConvertFrom-Json | Where-Object { -not $_.isCrossRepository }
+$prs = (gh pr list --state all --limit 1000 --json headRefName,number,state,title,isCrossRepository | ConvertFrom-Json) | Where-Object { -not $_.isCrossRepository }
 
 $rows = @()
 $worktree = $null
