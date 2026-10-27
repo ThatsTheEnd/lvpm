@@ -52,6 +52,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-lockfile/slice-16-documentation-and-help-text.feature",
     "tests/features/build-slices/s0-pilot-loop.feature",
     "tests/features/build-slices/s1-lvpm-build.feature",
+    "tests/features/build-slices/s2-lvpm-publish.feature",
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";
@@ -101,6 +102,8 @@ pub struct CliWorld {
     pub pilots: steps::pilots::PilotState,
     /// What an `lvpm build` scenario has set up and seen.
     pub build: steps::build::BuildState,
+    /// What an `lvpm publish` scenario has set up and seen.
+    pub publish: steps::publish::PublishState,
 }
 
 impl CliWorld {
@@ -126,6 +129,7 @@ impl CliWorld {
             clippy: Default::default(),
             pilots: Default::default(),
             build: Default::default(),
+            publish: Default::default(),
         }
     }
 

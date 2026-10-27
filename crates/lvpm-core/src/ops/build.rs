@@ -6,7 +6,7 @@
 //! is complete, so a failed build leaves the previous package as it was.
 
 use super::env::OpEnv;
-use crate::{distribution, lvlib, project, spec};
+use crate::{distribution, lvlib, spec};
 use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,15 +21,8 @@ pub struct Built {
 }
 
 pub fn build(env: &OpEnv) -> Result<Built> {
-    let Some((manifest, p)) = env.manifest_for(None, None)? else {
-        bail!(
-            "no {} at or above {}: lvpm build packages a project",
-            project::FILE_NAME,
-            env.cwd.display()
-        );
-    };
-    let root = manifest.parent().context("the manifest has no folder")?;
-    let d = distribution::validate(&p, root)?;
+    let (root, d) = super::packaged(env, "build")?;
+    let root = root.as_path();
 
     let library = root.join(&d.library);
     let folder = library.parent().context("the library has no folder")?;

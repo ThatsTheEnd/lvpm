@@ -16,6 +16,7 @@ mod index;
 mod install;
 pub mod launch;
 pub mod lock;
+pub mod publish;
 pub mod query;
 mod refresh;
 mod relink;
