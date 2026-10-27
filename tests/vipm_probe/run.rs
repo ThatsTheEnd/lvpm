@@ -270,7 +270,8 @@ fn finish(
     if !changes.is_empty() {
         let commands: Vec<String> = packages.iter().map(|p| uninstall_command(p)).collect();
         return Err(format!(
-            "after {label} the LabVIEW tree differs from its snapshot: {};              uninstall with `{}`, then re-run",
+            "after {label} the LabVIEW tree differs from its snapshot: {}; \
+             uninstall with `{}`, then re-run",
             describe(&changes),
             commands.join("`, `")
         ));
