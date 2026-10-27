@@ -404,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_past_its_timeout_is_killed_and_rejected() {
+    fn a_timed_out_command_is_rejected() {
         let fake = Fake::new(Ran::TimedOut(String::new()), exited(0, "pkg 1.0.0.1"));
         let judged = with(&fake, |v| {
             v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn an_uninstall_past_its_timeout_stops_the_run() {
+    fn a_timed_out_uninstall_stops_the_run() {
         let mut fake = Fake::new(exited(0, ""), exited(0, ""));
         fake.uninstall = Ran::TimedOut(String::new());
         let why = with(&fake, |v| v.remove("pkg")).unwrap_err();

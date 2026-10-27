@@ -498,6 +498,7 @@ mod tests {
     }
 
     /// A stand-in LabVIEW tree and a `vipm` that installs into it.
+    // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
     #[derive(Default)]
     struct Fake {
         labview: PathBuf,
@@ -629,7 +630,7 @@ mod tests {
         }
 
         fn state_file(&self) -> PathBuf {
-            self.out().join("in-progress.json")
+            self.out().join(STATE_FILE)
         }
 
         fn fake(&self) -> Fake {
@@ -731,14 +732,9 @@ mod tests {
         let (variants, _) =
             crate::variants::variants(&sample_base(), &reference, &published).unwrap();
         for variant in variants.iter() {
-            let packages = packages_for(PILOT_A, &variant.apply(&sample_base())).unwrap();
-            for package in packages {
-                assert!(
-                    TOUCHED.contains(&package.as_str()),
-                    "{}: {package}",
-                    variant.name
-                );
-            }
+            // An Err names a package the preflight does not check.
+            let packages = packages_for(PILOT_A, &variant.apply(&sample_base()));
+            assert!(packages.is_ok(), "{}: {packages:?}", variant.name);
         }
         let packages = packages_for(PILOT_A, &reference).unwrap();
         assert_eq!(
@@ -822,7 +818,11 @@ mod tests {
 
     #[test]
     fn a_listing_that_does_not_change_with_the_install_stops_the_run() {
-        for listing in [Listing::Never, Listing::Always] {
+        let cases = [
+            (Listing::Never, "exited 0 but it is not listed"),
+            (Listing::Always, "still lists p after its uninstall"),
+        ];
+        for (listing, says) in cases {
             let machine = Machine::new();
             let mut fake = machine.fake();
             fake.listing = listing;
@@ -831,6 +831,7 @@ mod tests {
                 why.contains("vipm info cannot tell installed from not installed"),
                 "{why}"
             );
+            assert!(why.contains(says), "{says}: {why}");
             assert_eq!(fake.calls("install").len(), 1, "no variant was installed");
         }
     }
@@ -1014,6 +1015,7 @@ mod tests {
     }
 
     /// A LabVIEW tree where nothing answers VI Server.
+    // double-waiver: B1 — port_is_listening opens a TCP socket
     const QUIET: Server = (3363, &|_| false);
 
     #[test]
@@ -1023,7 +1025,9 @@ mod tests {
         let closure = |args: &[String], timeout: Duration| fake.run(args, timeout);
         let vipm = Vipm::new(&closure, SHORT);
         let claim = machine.dir.path().join("claim.lock");
+        // double-waiver: B1 — process_start asks the OS about another process
         let none: StartOf = &|_| None;
+        // double-waiver: B1 — port_is_listening opens a TCP socket
         let busy = |port| port == 3364;
         let why = Guard::take(
             &vipm,
@@ -1048,6 +1052,7 @@ mod tests {
         let vipm = Vipm::new(&closure, SHORT);
         let claim = machine.dir.path().join("claim.lock");
         std::fs::write(&claim, "9 90").unwrap();
+        // double-waiver: B1 — process_start asks the OS about another process
         let held: StartOf = &|pid| (pid == 9).then(|| "90".to_string());
         let why = Guard::take(&vipm, &machine.state_file(), &claim, (7, "70"), held, QUIET)
             .err()
@@ -1062,6 +1067,7 @@ mod tests {
         let machine = Machine::new();
         let state = machine.state_file();
         let claim = machine.dir.path().join("claim.lock");
+        // double-waiver: B1 — process_start asks the OS about another process
         let none: StartOf = &|_| None;
 
         // A leftover state file naming a package that is still installed.
@@ -1138,6 +1144,7 @@ mod tests {
         let claim = machine.dir.path().join("claim.lock");
         let state = machine.state_file();
         // The setup is outside the unwind, so a failure of it fails the test.
+        // double-waiver: B1 — process_start asks the OS about another process
         let none: StartOf = &|_| None;
         let guard = Guard::take(&vipm, &state, &claim, (7, "70"), none, QUIET).unwrap();
         assert!(claim.exists());
@@ -1153,6 +1160,31 @@ mod tests {
             state.exists(),
             "the next start checks what the state file names"
         );
+    }
+
+    #[test]
+    fn the_guard_tries_every_package_when_the_first_uninstall_fails_or_hangs() {
+        for (fail, hang) in [(true, false), (false, true)] {
+            let machine = Machine::new();
+            let mut fake = machine.fake();
+            fake.fail_uninstall = fail;
+            fake.hang_uninstall = hang;
+            fake.installed
+                .borrow_mut()
+                .extend(["a".to_string(), "b".to_string()]);
+            let closure = |args: &[String], timeout: Duration| fake.run(args, timeout);
+            let vipm = Vipm::new(&closure, SHORT);
+            let claim = machine.dir.path().join("claim.lock");
+            let state = machine.state_file();
+            // double-waiver: B1 — process_start asks the OS about another process
+            let none: StartOf = &|_| None;
+            let guard = Guard::take(&vipm, &state, &claim, (7, "70"), none, QUIET).unwrap();
+            write_state(&state, &["a".to_string(), "b".to_string()]).unwrap();
+            drop(guard);
+            assert_eq!(fake.calls("uninstall"), ["uninstall a", "uninstall b"]);
+            assert!(!claim.exists(), "the claim is given back");
+            assert!(state.exists(), "the next start checks what it names");
+        }
     }
 
     #[test]
