@@ -81,11 +81,7 @@ pub fn run_capturing(
     let until = Instant::now() + READER_GRACE;
     let (stdout, stderr) = (stdout.text_by(until), stderr.text_by(until));
     let failed = |message: String, timed_out| Failed {
-        message: format!(
-            "{message}
-stdout so far: {stdout}
-stderr so far: {stderr}"
-        ),
+        message: format!("{message}\nstdout so far: {stdout}\nstderr so far: {stderr}"),
         timed_out,
         stdout: stdout.clone(),
         stderr: stderr.clone(),
