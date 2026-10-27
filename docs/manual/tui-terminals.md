@@ -7,11 +7,33 @@ plan step says so, and copy the result table into the pull request.
 
 ## Before you start
 
-Build the binary once:
+No release ships `lvpm-tui.exe` yet, so build it from source. Check out the
+newest TUI branch you want to test; each one contains the slices before it.
 
 ```bash
-cargo build -p lvpm-tui
+cargo build -p lvpm-tui -p lvpm
 ```
+
+`lvpm-tui` takes no flags beyond `--help` and `--version`. It reads the same
+settings and indexes as `lvpm`, and it picks its destination the way `lvpm`
+does with no flags: the nearest venv at or above the current directory, else
+the newest LabVIEW that `lvpm targets` lists. The header shows the destination.
+
+`i` installs into that destination. To keep your LabVIEW installation as it
+is, start `lvpm-tui` inside a scratch project that has a venv:
+
+```bash
+mkdir %TEMP%\tui-test
+cd %TEMP%\tui-test
+(echo [project]& echo name = "tui-test"& echo version = "0.1.0"& echo labview = "2026") > lvpm.toml
+<repo>\target\debug\lvpm.exe venv create
+<repo>\target\debug\lvpm-tui.exe
+```
+
+Replace `<repo>` with the repository root and `2026` with a LabVIEW year that
+`lvpm targets` lists. Remove the venv afterwards with `lvpm venv remove`.
+Checks 1 to 17 do not install, so you can also run them from the repository
+root.
 
 Open each terminal in the repository root:
 
