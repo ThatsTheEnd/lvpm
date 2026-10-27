@@ -349,9 +349,16 @@ mod tests {
         let acl = |args: &[&str]| {
             let mut command = std::process::Command::new("icacls");
             command.arg(&locked).args(args);
-            command.output().unwrap();
+            let out = command.output().unwrap();
+            assert!(out.status.success(), "icacls {args:?}: {out:?}");
         };
         acl(&["/deny", "*S-1-1-0:(RD)"]);
+        // An elevated account (CI runners) lists the folder despite the deny; then there is nothing to test.
+        if std::fs::read_dir(&locked).is_ok() {
+            acl(&["/remove:d", "*S-1-1-0"]);
+            eprintln!("skipped: this account can list a folder whose listing is denied");
+            return;
+        }
         let scanned = scan(dir.path(), None, &[]);
         acl(&["/remove:d", "*S-1-1-0"]);
         let why = scanned.unwrap_err();
