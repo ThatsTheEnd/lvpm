@@ -354,11 +354,11 @@ the variant name that justified it.
 **Behavior:**
 
 ```gherkin
-@pilot-b-source
 Feature: lvpm builds pilot B
   Runs when LVPM_TEST_PILOT_B names a checkout of
   github.com/LabVIEW-Open-Source/Serializer at 723d7a67 (tag 1.2.1).
 
+  @pilot-b-source
   Scenario: pilot B builds from its pinned checkout
     Given pilot B's repository at its pinned commit
     And an lvpm.toml for it written by the scenario
@@ -370,14 +370,20 @@ Feature: lvpm builds pilot B
 Not Gherkin, unit tests (a scenario cannot assert its own skip or its own
 failing precondition):
 
-- `pilot_b_tag_without_env_is_not_run`: `select()` with `@pilot-b-source` and
-  no `LVPM_TEST_PILOT_B` returns "not run", with a report line naming the
-  variable.
-- `a_checkout_at_another_commit_names_both_and_the_fix`: `pilot_checkout`
+- `pilot_b_scenario_needs_its_own_variable`,
+  `pilot_a_checkout_does_not_stand_in_for_pilot_b`,
+  `the_not_run_line_names_the_variable_and_pilot`: `select()` with
+  `@pilot-b-source` and no `LVPM_TEST_PILOT_B` returns "not run", with a
+  report line naming the variable.
+- `a_checkout_at_another_commit_names_both_and_the_fix`: the checkout check
   on a temp `git init` repo returns an error naming the pinned commit, the
-  found commit and `git -C <path> checkout <pinned>`.
-- `pilot_checkout_rejects_a_missing_path_a_non_repo_and_a_dirty_checkout`:
-  each error names the variable, the path and what is wrong.
+  found commit and `git -C "<path>" checkout <pinned>`.
+- `a_variable_nothing_sets_names_no_checkout`, `a_missing_path_is_refused`,
+  `a_folder_that_is_not_a_repository_is_refused`, `a_modified_file_is_refused`,
+  `an_untracked_file_is_refused`, `a_checkout_git_cannot_read_is_refused_not_accepted`:
+  each error names the variable, the path and what is wrong. Only the copied
+  folder (`Source` / `source`) must be clean:
+  `changes_outside_the_copied_folder_are_accepted`.
 
 **Steps:**
 
