@@ -444,6 +444,26 @@ mod tests {
         );
     }
 
+    /// Worked out from the algorithm in `package_id`'s doc, not by this code.
+    #[test]
+    fn the_id_of_known_entries_is_pinned() {
+        assert_eq!(
+            package_id("p", "1.0.0.1", &entries()),
+            "d5ef7ca7915f6d5b72ac8bff01a116b3"
+        );
+    }
+
+    #[test]
+    fn backslash_and_slash_paths_give_the_same_id() {
+        let mut backslashed = entries();
+        backslashed[1].0 = "File Group 0\\vi.lib\\a.vi".into();
+        backslashed[2].0 = "File Group 0\\vi.lib\\b.vi".into();
+        assert_eq!(
+            package_id("p", "1.0.0.1", &entries()),
+            package_id("p", "1.0.0.1", &backslashed)
+        );
+    }
+
     #[test]
     fn the_id_is_32_lowercase_hex_digits() {
         let id = package_id("p", "1.0.0.1", &entries());
@@ -527,17 +547,21 @@ mod tests {
         let (reference, all) = reference_and_published();
         let (list, _) = variants(&sample_base(), &reference, &all).unwrap();
         assert_eq!(list[0].name, "base");
-        assert!(differences(&sample_base(), &list[0].apply(&sample_base())).is_empty());
+        assert_eq!(
+            differences(&sample_base(), &list[0].apply(&sample_base())),
+            BTreeSet::new(),
+            "the base differs from itself"
+        );
         for variant in &list[1..] {
-            let made = variant.apply(&sample_base());
-            let changes = variant.changes();
-            assert!(!changes.is_empty(), "{} names no change", variant.name);
-            assert_eq!(
-                differences(&sample_base(), &made),
-                changes,
-                "{}",
-                variant.name
-            );
+            let found = differences(&sample_base(), &variant.apply(&sample_base()));
+            assert_eq!(found, variant.changes(), "{}", variant.name);
+            // The license variant adds a file and the key that names it: one change.
+            let count = if variant.name == "license=present" {
+                2
+            } else {
+                1
+            };
+            assert_eq!(found.len(), count, "{}: {found:?}", variant.name);
         }
         let names: BTreeSet<&str> = list.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names.len(), list.len(), "variant names repeat");
@@ -589,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn the_id_variants_set_a_32_digit_id_and_the_random_one_is_fixed() {
+    fn the_id_variants_set_a_32_digit_id_and_the_random_one_is_pinned() {
         let (reference, all) = reference_and_published();
         let (list, _) = variants(&sample_base(), &reference, &all).unwrap();
         let id_of = |name: &str| {
@@ -599,8 +623,10 @@ mod tests {
         };
         assert_eq!(id_of("ID=content").len(), 32);
         assert_eq!(id_of("ID=random").len(), 32);
-        assert_eq!(id_of("ID=random"), random_id());
-        assert_ne!(id_of("ID=random"), id_of("ID=content"));
+        // Both worked out apart from this code: MD5 per `package_id`'s doc over
+        // `sample_base`, and the xorshift64 steps from the seed.
+        assert_eq!(id_of("ID=content"), "15c619966b02d959ee322c6068bb6684");
+        assert_eq!(id_of("ID=random"), "7f6c280beaa8e3e7e47119871cf9abe0");
         assert_eq!(id_of("ID=empty"), "\"\"");
     }
 

@@ -1005,11 +1005,13 @@ mod tests {
         let vipm = Vipm::new(&closure, SHORT);
         let claim = machine.dir.path().join("claim.lock");
         let state = machine.state_file();
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let none: StartOf = &|_| None;
-            let _guard = Guard::take(&vipm, &state, &claim, (7, "70"), none).unwrap();
-            assert!(claim.exists());
-            write_state(&state, &["a".to_string(), "b".to_string()]).unwrap();
+        // The setup is outside the unwind, so a failure of it fails the test.
+        let none: StartOf = &|_| None;
+        let guard = Guard::take(&vipm, &state, &claim, (7, "70"), none).unwrap();
+        assert!(claim.exists());
+        write_state(&state, &["a".to_string(), "b".to_string()]).unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
             panic!("a probe failed");
         }));
         assert!(panicked.is_err());

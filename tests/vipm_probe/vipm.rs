@@ -440,6 +440,48 @@ mod tests {
     }
 
     #[test]
+    fn version_is_the_first_line_of_vipm_version() {
+        let fake = Fake::new(exited(0, ""), exited(0, ""));
+        assert_eq!(
+            with(&fake, |v| v.version()),
+            Ok("vipm synthetic 1.0".to_string())
+        );
+        assert_eq!(fake.calls.borrow()[0], "--version");
+    }
+
+    #[test]
+    fn a_version_that_fails_says_what_vipm_gave() {
+        let run = |_: &[String], _: Duration| exited(2, "no such flag");
+        let why = Vipm::new(&run, SHORT).version().unwrap_err();
+        assert!(
+            why.contains("vipm --version") && why.contains("no such flag"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_cannot_start_is_said_for_each_command() {
+        let boom = || Ran::CannotStart("boom".into());
+        let fake = Fake::new(boom(), boom());
+        let judged = with(&fake, |v| {
+            v.judge_install(Path::new("p.vip"), "pkg", "1.0.0.1")
+        });
+        assert!(!judged.accepted);
+        assert_eq!(judged.exit, None);
+        assert_eq!(judged.note, "could not start: boom");
+        assert_eq!(judged.output, "boom");
+        let why = with(&fake, |v| v.info("pkg", None)).unwrap_err();
+        assert_eq!(why, "`vipm info pkg`: boom");
+
+        let mut fake = Fake::new(exited(0, ""), exited(0, ""));
+        fake.uninstall = boom();
+        let why = with(&fake, |v| v.remove("pkg")).unwrap_err();
+        assert_eq!(why, "`vipm uninstall pkg`: boom");
+        let run = |_: &[String], _: Duration| boom();
+        assert!(Vipm::new(&run, SHORT).version().is_err());
+    }
+
+    #[test]
     fn an_uninstall_past_its_timeout_stops_the_run() {
         let mut fake = Fake::new(exited(0, ""), exited(0, ""));
         fake.uninstall = Ran::TimedOut(String::new());

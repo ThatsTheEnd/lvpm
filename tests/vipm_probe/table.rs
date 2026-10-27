@@ -265,15 +265,75 @@ mod tests {
             keys_changed: vec![("[Package]/Version".into(), "1".into(), "2".into())],
         };
         let text = render(&header(), &[], &diff, &["[LabVIEW]/y".into()]);
-        for want in [
-            "- a.txt",
-            "- icon.bmp",
-            "- [Package]/X",
-            "- [Package]/ID",
-            "- [Package]/Version: lvpm 1, published 2",
-            "- [LabVIEW]/y",
-        ] {
-            assert!(text.contains(want), "{want} missing:\n{text}");
-        }
+        assert_eq!(
+            after_the_rows(&text),
+            "\
+## lvpm's build of pilot A against the published archive
+
+### Entries only in lvpm's build
+
+- a.txt
+
+### Entries only in the published archive
+
+- icon.bmp
+
+### Spec keys only in lvpm's build
+
+- [Package]/X
+
+### Spec keys only in the published archive
+
+- [Package]/ID
+
+### Spec keys whose value differs
+
+- [Package]/Version: lvpm 1, published 2
+
+### Keys in every published spec that lvpm does not write and no variant sets
+
+- [LabVIEW]/y
+"
+        );
+    }
+
+    #[test]
+    fn an_empty_reference_diff_says_none_in_every_section() {
+        let text = render(&header(), &[], &RefDiff::default(), &[]);
+        assert_eq!(
+            after_the_rows(&text),
+            "\
+## lvpm's build of pilot A against the published archive
+
+### Entries only in lvpm's build
+
+none
+
+### Entries only in the published archive
+
+none
+
+### Spec keys only in lvpm's build
+
+none
+
+### Spec keys only in the published archive
+
+none
+
+### Spec keys whose value differs
+
+none
+
+### Keys in every published spec that lvpm does not write and no variant sets
+
+none
+"
+        );
+    }
+
+    /// The table from the reference diff's heading to its end.
+    fn after_the_rows(text: &str) -> &str {
+        &text[text.find("## lvpm's build").expect("the diff heading")..]
     }
 }
