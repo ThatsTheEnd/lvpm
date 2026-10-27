@@ -104,7 +104,9 @@ Only PRs that followed the agentic dev-team workflow (`/specs`, then
 - a plan file, `plans/<slug>.md`;
 - cucumber BDD scenarios for the changed behavior, as `.feature` files under
   `tests/features/<slug>/`, registered in `FEATURE_FILES` in
-  `tests/acceptance.rs` so `cargo test` runs them.
+  `tests/acceptance.rs` so `cargo test` runs them. Registering is also what
+  puts their `@labview` scenarios into the Windows e2e job: the job takes the
+  count from the harness, so it keeps no total of its own to update.
 
 A PR without them is closed without review. CI does not check this rule;
 maintainers apply it when they review.

@@ -126,3 +126,8 @@ Feature: Install with a preview, progress and a log
     When an install runs to the end
     Then the install succeeds
     And the footer says tui.log could not be written
+
+  Scenario: the release zip holds both binaries
+    When the Windows release zip is built
+    Then it contains lvpm.exe and lvpm-tui.exe with the same version string
+    And install.ps1 installs both and its output names lvpm-tui

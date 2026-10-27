@@ -951,6 +951,11 @@ Feature: Install with a preview, progress and a log
     When an install runs to the end
     Then the install succeeds
     And the footer says tui.log could not be written
+
+  Scenario: the release zip holds both binaries
+    When the Windows release zip is built
+    Then it contains lvpm.exe and lvpm-tui.exe with the same version string
+    And install.ps1 installs both and its output names lvpm-tui
 ```
 
 **Steps:**
@@ -986,7 +991,7 @@ Feature: Install with a preview, progress and a log
 
 **Complexity**: standard
 **IMPLEMENT**: `build.yml` builds the workspace and uploads both binaries; `package.sh` puts `lvpm-tui.exe` in the Windows zip; `install.ps1` installs it and names it in its output; the packaging job checks both versions; the README says how to start it. Run the manual checklist with an install on screen.
-**TEST**: `ci/package.test.sh` asserts both binaries and one version are in the zip; a root-harness scenario: the Windows release zip holds `lvpm.exe` and `lvpm-tui.exe` with the same version string, and `install.ps1` installs both and its output names lvpm-tui. (It is not in the slice's feature: that feature's background starts the TUI.)
+**TEST**: `ci/package.test.sh` asserts both binaries and one version are in the zip; the zip scenario in the root harness.
 **REFACTOR**: One list of shipped binaries in `package.sh`.
 **Files**: `.github/workflows/build.yml`, `.github/workflows/package.yml`, `ci/package.sh`, `ci/package.test.sh`, `scripts/install.ps1`, `README.md`, `tests/steps/workspace.rs`, `docs/manual/tui-terminals.md`
 **Commit**: `ci: ship lvpm-tui.exe in the release zip`

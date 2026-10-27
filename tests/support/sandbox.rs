@@ -22,7 +22,7 @@ use lvpm_core::target::{self, LvTarget};
 use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -49,9 +49,6 @@ const TEMP_DIR_PREFIX: &str = "lvpm-acceptance-";
 
 /// No lvpm command in the characterization set takes this long; a hang is a bug.
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long the installation's LabVIEW may take to answer VI Server after it
-/// is started: a first start of the day can take a couple of minutes.
-const LABVIEW_START_DEADLINE: Duration = Duration::from_secs(300);
 /// The variable that makes lvpm treat the machine as headless. A child has it
 /// only when its sandbox was told so.
 const HEADLESS_ENV_VAR: &str = "LV_RTE_HEADLESS";
@@ -92,21 +89,24 @@ static FOREIGN_LISTENERS: LazyLock<HashSet<u16>> = LazyLock::new(|| {
         .map(|out| venv::listening_ports(&String::from_utf8_lossy(&out.stdout)))
         .unwrap_or_default()
 });
-/// A sandbox directory whose venv port is none of those and can be opened:
-/// with Windows' reserved ranges most of 3400–3999 may be out, so this can
-/// take dozens of tries, still far below the limit.
+/// Whether a port can be listened on: Windows reserves blocks anew at each
+/// boot, and lvpm moves a venv off a reserved port, away from `predicted_port`.
+fn binds(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
+}
+
+/// A sandbox directory whose venv port is none of those: any one path has a
+/// small chance of colliding, so this is a handful of tries at most.
 const MAX_DIR_ATTEMPTS: usize = 1_000;
 
-fn create_dir_avoiding(taken: &HashSet<u16>) -> TempDir {
+fn create_dir_avoiding(taken: &HashSet<u16>, binds: &dyn Fn(u16) -> bool) -> TempDir {
     for _ in 0..MAX_DIR_ATTEMPTS {
         let dir = tempfile::Builder::new()
             .prefix(TEMP_DIR_PREFIX)
             .tempdir()
             .expect("create the sandbox directory");
         let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
-        // A port Windows has reserved has no listener but cannot be opened
-        // either; `venv create` would step past it, away from `predicted_port`.
-        if !taken.contains(&port) && TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        if !taken.contains(&port) && binds(port) {
             return dir;
         }
     }
@@ -250,20 +250,17 @@ pub struct Sandbox {
     /// Whether the children run with `LV_RTE_HEADLESS` set: only the scenarios
     /// that ask for it, and only their own children.
     headless: AtomicBool,
-    /// The installation's LabVIEW, when this scenario started it.
-    installation_labview: Mutex<Option<Child>>,
 }
 
 impl Sandbox {
     pub fn new() -> Sandbox {
-        let dir = create_dir_avoiding(&FOREIGN_LISTENERS);
+        let dir = create_dir_avoiding(&FOREIGN_LISTENERS, &binds);
         let sandbox = Sandbox {
             dir,
             feed: OnceLock::new(),
             learned: Mutex::new(Learned::default()),
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
-            installation_labview: Mutex::new(None),
         };
         for name in [
             WORK_DIR,
@@ -602,12 +599,11 @@ impl Sandbox {
         })
     }
 
-    /// Make sure the LabVIEW installation is free of the fixture package,
-    /// start its LabVIEW and wait for VI Server, then allow the scenario to
-    /// install the fixture into it. Refuses (panics) when the fixture is there
-    /// already or a LabVIEW already listens on the port: nothing this scenario
-    /// did not put there may be removed, and a LabVIEW someone else started is
-    /// never used (unless `global::USE_RUNNING_LABVIEW_ENV_VAR` says so).
+    /// Make sure the LabVIEW installation is free of the fixture package and
+    /// that its VI Server is answering, then allow the scenario to install the
+    /// fixture into it. Refuses (panics) otherwise: nothing that was not put
+    /// there by this scenario may ever be removed, and a LabVIEW is never
+    /// started or restarted on the user's behalf.
     pub fn require_clean_labview_installation(&self) {
         let labview = self.detected_labview();
         let program_data = global::program_data();
@@ -622,62 +618,29 @@ impl Sandbox {
         let port = global::vi_server_port(&ini);
         assert!(
             global::vi_server_enabled(&ini),
-            "LabVIEW {LABVIEW_YEAR} has VI Server turned off in its LabVIEW.ini"
+            "LabVIEW {LABVIEW_YEAR} has VI Server switched off in its LabVIEW.ini"
         );
-        // Recorded first, so a start that times out still waits for the port to close.
-        self.learned().labview_port = Some(port);
-        if global::use_running_labview() {
+        // A run that holds the claim found nothing on the port, so it starts
+        // its own LabVIEW, and ends it when the run is over. A headless run
+        // claims nothing: its CI script started the LabVIEW.
+        if !process::port_is_listening(port) {
+            let started = global::start_claimed_labview(&labview.dir, port)
+                .unwrap_or_else(|why| panic!("{why}"));
             assert!(
-                process::port_is_listening(port),
-                "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}"
+                started,
+                "LabVIEW {LABVIEW_YEAR} is not answering VI Server on port {port}, and this run \
+                 does not hold the global LabVIEW claim, so it starts none"
             );
-        } else {
-            self.start_installation_labview(&labview, port);
         }
         let mut learned = self.learned();
+        learned.labview_port = Some(port);
         learned.store_existed = global::store_dir(&program_data).exists();
         learned.global_fixture_armed = true;
     }
 
-    /// Start the installation's LabVIEW and wait for its VI Server; it is this
-    /// scenario's own, stopped by `close_installation_labview`.
-    fn start_installation_labview(&self, labview: &LabviewInstall, port: u16) {
-        assert!(
-            !process::port_is_listening(port),
-            "a LabVIEW already listens on port {port}: this scenario only uses a LabVIEW it starts"
-        );
-        let exe = global::labview_exe(&labview.dir);
-        // Null stdio: a LabVIEW that outlives the run must not hold the runner's pipes open.
-        let child = Command::new(&exe)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("starting {}: {e}", exe.display()));
-        *self.started_labview() = Some(child);
-        assert!(
-            process::wait_until_port_is_listening(port, LABVIEW_START_DEADLINE),
-            "the LabVIEW {LABVIEW_YEAR} this scenario started did not answer VI Server on port \
-             {port} within {LABVIEW_START_DEADLINE:?}"
-        );
-    }
-
-    /// Stop the installation's LabVIEW if this scenario started it; whether
-    /// its VI Server port is quiet afterwards.
-    pub fn close_installation_labview(&self) -> bool {
-        let Some(mut child) = self.started_labview().take() else {
-            return true;
-        };
-        child.kill().ok();
-        child.wait().ok();
-        let port = self.learned().labview_port;
-        port.is_none_or(|port| process::wait_until_port_is_quiet(port, PORT_CLOSE_DEADLINE))
-    }
-
-    fn started_labview(&self) -> MutexGuard<'_, Option<Child>> {
-        self.installation_labview
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    /// The directory of the LabVIEW `detect_labview` found.
+    pub fn labview_dir(&self) -> PathBuf {
+        self.detected_labview().dir
     }
 
     fn detected_labview(&self) -> LabviewInstall {
@@ -757,19 +720,8 @@ impl Drop for Sandbox {
     /// A scenario that failed half way must not leave a LabVIEW or the
     /// fixture package behind.
     fn drop(&mut self) {
-        // A panicking restore (lvpm timing out) must not skip stopping LabVIEW below.
-        let restore = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.restore_labview_installation()
-        }));
-        match restore {
-            Ok(Ok(())) => {}
-            Ok(Err(why)) => {
-                eprintln!("could not remove the fixture from the LabVIEW installation: {why}")
-            }
-            Err(_) => eprintln!("removing the fixture from the LabVIEW installation panicked"),
-        }
-        if !self.close_installation_labview() {
-            eprintln!("the LabVIEW installation's LabVIEW still listens on its VI Server port");
+        if let Err(why) = self.restore_labview_installation() {
+            eprintln!("could not remove the fixture from the LabVIEW installation: {why}");
         }
         let venv_was_made = self.learned().venv_port.is_some();
         if venv_was_made {
@@ -815,7 +767,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("a working directory");
         std::fs::write(
             cwd.path().join(MANIFEST_FILE),
-            "[project]\nname = \"demo\"\nlabview = \"2026\"\n",
+            "[project]\nname = \"demo\"\nlabview = \">=2026\"\n",
         )
         .expect("write a manifest");
         real_installation_risk(&args, cwd.path(), &[labview_2026()], false, true).is_some()
@@ -958,7 +910,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("a working directory");
         std::fs::write(
             cwd.path().join(MANIFEST_FILE),
-            "[project]\nname = \"demo\"\nlabview = \"2026\"\n",
+            "[project]\nname = \"demo\"\nlabview = \">=2026\"\n",
         )
         .expect("write a manifest");
         let lvpm_dir = cwd.path().join(VENV_DIR).join(".lvpm");
@@ -1323,9 +1275,14 @@ mod tests {
         let taken: HashSet<u16> = (3400..4000)
             .filter(|port| !(3500..3510).contains(port))
             .collect();
-        let dir = create_dir_avoiding(&taken);
+        let dir = create_dir_avoiding(&taken, &|_| true);
         let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
         assert!((3500..3510).contains(&port), "{port}");
+
+        // Of those, 3500..3505 cannot be bound — reserved by Windows, say.
+        let dir = create_dir_avoiding(&taken, &|p| !(3500..3505).contains(&p));
+        let port = venv::predicted_port(&dir.path().join(WORK_DIR).join(VENV_DIR));
+        assert!((3505..3510).contains(&port), "{port}");
     }
 
     #[test]
@@ -1364,7 +1321,7 @@ mod tests {
         sandbox.put_local_package(beta);
         sandbox.use_local_project(Some("2024"));
         let manifest = std::fs::read_to_string(sandbox.work_dir().join(MANIFEST_FILE)).unwrap();
-        assert!(manifest.contains("labview = \"2024\""), "{manifest}");
+        assert!(manifest.contains("labview = \">=2024\""), "{manifest}");
         let output = sandbox.run_lvpm(&["search", "a"], None);
         assert_eq!(output.exit_code, 0, "{output:?}");
         assert!(output.stdout.contains("alpha"), "{output:?}");
@@ -1388,7 +1345,7 @@ mod tests {
         let sandbox = sandbox_with_feed();
         sandbox.use_loopback_project_for_labview(LABVIEW_YEAR);
         let manifest = std::fs::read_to_string(sandbox.work_dir().join(MANIFEST_FILE)).unwrap();
-        assert!(manifest.contains("labview = \"2026\""), "{manifest}");
+        assert!(manifest.contains("labview = \">=2026\""), "{manifest}");
         sandbox.setup_lvpm(&["search", "a"]);
     }
 

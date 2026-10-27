@@ -3,6 +3,7 @@
 //! call core in-process.
 
 pub mod add_remove;
+pub mod build;
 pub mod cancel;
 pub mod core_io;
 pub mod destination;
@@ -14,6 +15,8 @@ pub mod installation;
 pub mod json;
 pub mod lock;
 pub mod manifest;
+pub mod pilots;
+pub mod publish;
 pub mod query;
 pub mod recording;
 pub mod run;

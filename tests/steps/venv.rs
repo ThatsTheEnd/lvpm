@@ -67,7 +67,7 @@ pub(super) async fn venv_with_package(world: &mut CliWorld, package: String) {
 }
 
 /// Runs after every scenario, even a failed one: a LabVIEW started on the
-/// venv or on the installation must not outlive it, and the LabVIEW installation must be as the
+/// venv must not outlive it, and the LabVIEW installation must be as the
 /// scenario found it.
 pub fn clean_up(world: &mut CliWorld) {
     assert!(
@@ -77,10 +77,6 @@ pub fn clean_up(world: &mut CliWorld) {
     if let Err(why) = world.sandbox.restore_labview_installation() {
         panic!("the LabVIEW installation was not restored: {why}");
     }
-    assert!(
-        world.sandbox.close_installation_labview(),
-        "the LabVIEW installation's LabVIEW still listens on its VI Server port"
-    );
 }
 
 #[then("the venv still exists")]
