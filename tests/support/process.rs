@@ -7,10 +7,14 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Component, Path};
 use std::process::{Child, Command, Stdio};
-use std::thread::JoinHandle;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// How long the output of a command that has ended or been killed is awaited:
+/// a process it started may hold the pipes open for much longer.
+const READER_GRACE: Duration = Duration::from_secs(5);
 const PORT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// How long a killed LabVIEW has to give its VI Server port back.
 pub const PORT_CLOSE_DEADLINE: Duration = Duration::from_secs(15);
@@ -24,13 +28,34 @@ const MIN_DEPTH_BELOW_TEMP: usize = 3;
 /// the PowerShell running it does not match itself.
 const SWEEP_ROOT_ENV_VAR: &str = "LVPM_SWEEP_ROOT";
 
+/// Why a command gave no exit status.
+#[derive(Debug)]
+pub struct Failed {
+    /// `run_within`'s error text: what happened, and the output so far.
+    pub message: String,
+    /// Still running at its deadline, and killed.
+    pub timed_out: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 /// Run `command` to completion, or kill it when `timeout` passes. Its stdin
 /// carries `input` and then ends; with no input it is empty.
 pub fn run_within(
-    mut command: Command,
+    command: Command,
     input: Option<&str>,
     timeout: Duration,
 ) -> Result<Output, String> {
+    run_capturing(command, input, timeout).map_err(|failed| failed.message)
+}
+
+/// `run_within`, with the output a command gave before its deadline kept apart
+/// in the error.
+pub fn run_capturing(
+    mut command: Command,
+    input: Option<&str>,
+    timeout: Duration,
+) -> Result<Output, Failed> {
     let mut child = command
         .stdin(if input.is_some() {
             Stdio::piped()
@@ -40,7 +65,12 @@ pub fn run_within(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start: {e}"))?;
+        .map_err(|e| Failed {
+            message: format!("could not start: {e}"),
+            timed_out: false,
+            stdout: String::new(),
+            stderr: String::new(),
+        })?;
     if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
         // A child that exits without reading closes the pipe; that is its answer.
         stdin.write_all(text.as_bytes()).ok();
@@ -48,8 +78,18 @@ pub fn run_within(
     let stdout = read_in_background(child.stdout.take().expect("piped stdout"));
     let stderr = read_in_background(child.stderr.take().expect("piped stderr"));
     let status = wait_until(&mut child, Instant::now() + timeout);
-    let stdout = stdout.join().expect("stdout reader");
-    let stderr = stderr.join().expect("stderr reader");
+    let until = Instant::now() + READER_GRACE;
+    let (stdout, stderr) = (stdout.text_by(until), stderr.text_by(until));
+    let failed = |message: String, timed_out| Failed {
+        message: format!(
+            "{message}
+stdout so far: {stdout}
+stderr so far: {stderr}"
+        ),
+        timed_out,
+        stdout: stdout.clone(),
+        stderr: stderr.clone(),
+    };
     match status {
         Ok(Some(status)) => Ok(Output {
             stdout,
@@ -57,12 +97,8 @@ pub fn run_within(
             exit_code: status.code().unwrap_or(-1),
             tree: None,
         }),
-        Ok(None) => Err(format!(
-            "timed out after {timeout:?}\nstdout so far: {stdout}\nstderr so far: {stderr}"
-        )),
-        Err(why) => Err(format!(
-            "could not wait for it: {why}\nstdout so far: {stdout}\nstderr so far: {stderr}"
-        )),
+        Ok(None) => Err(failed(format!("timed out after {timeout:?}"), true)),
+        Err(why) => Err(failed(format!("could not wait for it: {why}"), false)),
     }
 }
 
@@ -88,17 +124,52 @@ fn wait_until(
     }
 }
 
+/// Kill the child and, on Windows, what it started: a grandchild left running
+/// would keep the pipes open.
 fn stop(child: &mut Child) {
+    if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok();
+    }
     child.kill().ok();
     child.wait().ok();
 }
 
-fn read_in_background(mut pipe: impl Read + Send + 'static) -> JoinHandle<String> {
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        pipe.read_to_end(&mut bytes).ok();
+/// What a pipe has given so far, and whether it has reached its end.
+struct Reader {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    ended: Receiver<()>,
+}
+
+impl Reader {
+    /// The text read once the pipe ended, or by `deadline`, whichever is first.
+    fn text_by(&self, deadline: Instant) -> String {
+        self.ended
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok();
+        let bytes = self.bytes.lock().unwrap_or_else(PoisonError::into_inner);
         String::from_utf8_lossy(&bytes).into_owned()
-    })
+    }
+}
+
+// The thread outlives a pipe that never ends, until its holder does.
+fn read_in_background(mut pipe: impl Read + Send + 'static) -> Reader {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let (ended_tx, ended) = std::sync::mpsc::channel();
+    let shared = Arc::clone(&bytes);
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+            let mut bytes = shared.lock().unwrap_or_else(PoisonError::into_inner);
+            bytes.extend_from_slice(&chunk[..n]);
+        }
+        ended_tx.send(()).ok();
+    });
+    Reader { bytes, ended }
 }
 
 pub fn port_is_listening(port: u16) -> bool {
@@ -210,6 +281,80 @@ mod tests {
         );
     }
 
+    /// Whether a process named `program` is running.
+    #[cfg(windows)]
+    fn is_running(program: &str) -> bool {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {program}"), "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .to_lowercase()
+            .contains(&program.to_lowercase())
+    }
+
+    #[cfg(windows)]
+    fn stop_by_name(program: &str) {
+        Command::new("taskkill")
+            .args(["/F", "/IM", program])
+            .output()
+            .ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_grandchild_holding_the_pipes_dies_with_its_parent_at_the_deadline() {
+        let scratch = tempfile::Builder::new()
+            .prefix("lvpm-tree-")
+            .tempdir()
+            .unwrap();
+        let program = "lvpm-tree-ping.exe";
+        let mut command = Command::new("cmd");
+        command
+            .args(["/c", "echo", "partial", "&"])
+            .arg(ping_copy(scratch.path(), program))
+            .args(["-n", "30", "127.0.0.1"]);
+        let started = Instant::now();
+        let failed = run_capturing(command, None, Duration::from_millis(1500)).unwrap_err();
+        let took = started.elapsed();
+        let survived = is_running(program);
+        stop_by_name(program);
+        assert!(failed.timed_out, "{}", failed.message);
+        assert!(!survived, "the grandchild outlived the kill");
+        assert!(took < READER_GRACE, "the pipes were not freed: {took:?}");
+        assert!(
+            failed.stdout.contains("partial"),
+            "the output so far is kept: {}",
+            failed.message
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_straggler_holding_the_pipes_after_the_command_exited_does_not_hang_it() {
+        let scratch = tempfile::Builder::new()
+            .prefix("lvpm-straggler-")
+            .tempdir()
+            .unwrap();
+        let program = "lvpm-straggler-ping.exe";
+        let mut command = Command::new("cmd");
+        command
+            .args(["/c", "echo", "partial", "&", "start", "", "/b"])
+            .arg(ping_copy(scratch.path(), program))
+            .args(["-n", "30", "127.0.0.1"]);
+        let started = Instant::now();
+        let output = run_within(command, None, Duration::from_secs(60));
+        let took = started.elapsed();
+        stop_by_name(program);
+        let output = output.unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stdout.contains("partial"), "{}", output.stdout);
+        assert!(
+            took < READER_GRACE + Duration::from_secs(10),
+            "waited for the straggler: {took:?}"
+        );
+    }
+
     #[test]
     fn input_reaches_the_childs_stdin_and_then_the_pipe_closes() {
         let output =
@@ -288,15 +433,20 @@ mod tests {
         stop_processes_in(&std::env::temp_dir());
     }
 
-    /// Runs a copy of `ping.exe` under the given program name from `dir`, so
-    /// the process has that name and a command line that names `dir`.
+    /// A copy of `ping.exe` named `program` in `dir`, so a process running it
+    /// has that name and a command line that names `dir`.
     #[cfg(windows)]
-    fn spawn_named(dir: &Path, program: &str) -> Child {
+    fn ping_copy(dir: &Path, program: &str) -> PathBuf {
         let system_root = std::env::var("SystemRoot").expect("SystemRoot");
         let copy = dir.join(program);
         std::fs::create_dir_all(dir).unwrap();
         std::fs::copy(Path::new(&system_root).join(r"System32\PING.EXE"), &copy).unwrap();
-        Command::new(copy)
+        copy
+    }
+
+    #[cfg(windows)]
+    fn spawn_named(dir: &Path, program: &str) -> Child {
+        Command::new(ping_copy(dir, program))
             .args(["-n", "60", "127.0.0.1"])
             .stdout(Stdio::null())
             .spawn()
