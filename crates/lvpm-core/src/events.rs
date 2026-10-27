@@ -219,6 +219,14 @@ pub enum Event {
         failed: Vec<String>,
         packages: usize,
     },
+    /// A package whose LabVIEW files are all saved in the venv's LabVIEW
+    /// already: no resave, and no LabVIEW started for it.
+    ResaveSkipped {
+        package: String,
+        labview: u32,
+        position: usize,
+        total: usize,
+    },
     /// A dry run's packages with LabVIEW files, which a venv install resaves.
     ResavePlanned { packages: Vec<String> },
 

@@ -232,6 +232,17 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 ),
             );
         }
+        Event::ResaveSkipped {
+            package,
+            labview,
+            position,
+            total,
+        } => r.line(
+            Stream::Out,
+            &format!(
+                "resave ({position}/{total}) {package} ... already saved in LabVIEW {labview}, skipped"
+            ),
+        ),
         Event::ResavePlanned { packages } => {
             r.line(
                 Stream::Out,
@@ -651,6 +662,20 @@ mod tests {
             out,
             "\nresave: 8 packages in the venv's LabVIEW:\n      p1\n      p2\n      p3\n      \
              p4\n      p5\n      p6\n      ... and 2 more\n"
+        );
+    }
+
+    #[test]
+    fn a_package_already_saved_in_the_venvs_labview_is_one_skipped_line() {
+        let (out, _) = text_of(&[Event::ResaveSkipped {
+            package: "alpha".into(),
+            labview: 2026,
+            position: 2,
+            total: 5,
+        }]);
+        assert_eq!(
+            out,
+            "resave (2/5) alpha ... already saved in LabVIEW 2026, skipped\n"
         );
     }
 }

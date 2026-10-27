@@ -19,9 +19,9 @@ pub(crate) trait Launcher {
 
 /// A LabVIEW the resave talks to. Dropping it closes the LabVIEW.
 pub(crate) trait Session {
-    /// Open and save each LabVIEW file of a staged package where it is. How
-    /// many were saved.
-    fn resave(&mut self, staged: &Path) -> Result<usize>;
+    /// Open and save each of a staged package's LabVIEW `files` where it is.
+    /// How many were saved.
+    fn resave(&mut self, staged: &Path, files: &[PathBuf]) -> Result<usize>;
 }
 
 /// The venv's own LabVIEW, started fresh, over VI Server.
@@ -62,12 +62,11 @@ struct VenvSession {
 }
 
 impl Session for VenvSession {
-    fn resave(&mut self, staged: &Path) -> Result<usize> {
-        let files = lv_files(staged);
+    fn resave(&mut self, _staged: &Path, files: &[PathBuf]) -> Result<usize> {
         let connection = self.connection.as_mut().expect("open until dropped");
         let mut first_failure = None;
         let mut failed = 0;
-        for file in &files {
+        for file in files {
             let saved = connection.open_vi_reference(file).and_then(|vi| {
                 let saved = connection.save_instrument(vi, file);
                 let _ = connection.release(vi);
@@ -125,6 +124,41 @@ pub(crate) fn is_lv_file(path: &Path) -> bool {
         .is_some_and(|e| ["vi", "ctl", "vit"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
+/// The LabVIEW major version a file was saved in, read from the `vers`
+/// resource (id 4) of its RSRC header, with no LabVIEW: 26 for LabVIEW 2026.
+/// None for a file that is not one, or is cut short.
+pub(crate) fn saved_major(path: &Path) -> Option<u32> {
+    read_major(&std::fs::read(path).ok()?)
+}
+
+fn read_major(b: &[u8]) -> Option<u32> {
+    let u32_at = |at: usize| -> Option<usize> {
+        let bytes = b.get(at..at.checked_add(4)?)?;
+        Some(u32::from_be_bytes(bytes.try_into().ok()?) as usize)
+    };
+    if !b.starts_with(b"RSRC\r\n") {
+        return None;
+    }
+    let (info, data) = (u32_at(16)?, u32_at(24)?);
+    let base = info.checked_add(u32_at(info.checked_add(44)?)?)?;
+    for kind in 0..=u32_at(base)? {
+        let entry = base + 4 + 12 * kind;
+        if b.get(entry..entry + 4)? != b"vers" {
+            continue;
+        }
+        let list = base + u32_at(entry + 8)?;
+        for section in 0..=u32_at(entry + 4)? {
+            let at = list + 20 * section;
+            if u32_at(at)? == 4 {
+                // Binary-coded decimal: 0x26 is 26.
+                let major = *b.get(data + u32_at(at + 12)? + 4)?;
+                return Some(u32::from(major >> 4) * 10 + u32::from(major & 0x0f));
+            }
+        }
+    }
+    None
+}
+
 /// One LabVIEW for a run's resaves, started for the first package that needs
 /// one and closed by [`Resaver::finish`], or when it is dropped.
 pub struct Resaver {
@@ -172,7 +206,21 @@ impl Resaver {
         staging: &Staging,
         package: &str,
     ) {
-        if lv_files(staging.stage_root()).is_empty() {
+        let files = lv_files(staging.stage_root());
+        if files.is_empty() {
+            return;
+        }
+        let (position, total) = self.position;
+        // shortcut: the minor version (26.1 against 26.3) is not compared;
+        // compare it when a same-year file is measured to load broken.
+        let major = venv.target.version.trunc() as u32;
+        if files.iter().all(|f| saved_major(f) == Some(major)) {
+            sink.emit(Event::ResaveSkipped {
+                package: package.to_string(),
+                labview: venv.target.year(),
+                position,
+                total,
+            });
             return;
         }
         self.wanted += 1;
@@ -191,7 +239,6 @@ impl Resaver {
                 }
             }
         }
-        let (position, total) = self.position;
         sink.emit(Event::ResaveStarted {
             package: package.to_string(),
             position,
@@ -199,7 +246,7 @@ impl Resaver {
         });
         let started = Instant::now();
         let session = self.session.as_mut().expect("started above");
-        match session.resave(staging.stage_root()) {
+        match session.resave(staging.stage_root(), &files) {
             Ok(saved) => sink.emit(Event::ResaveDone {
                 package: package.to_string(),
                 saved,
@@ -337,7 +384,7 @@ pub(crate) mod fake {
     }
 
     impl Session for FakeSession {
-        fn resave(&mut self, staged: &Path) -> Result<usize> {
+        fn resave(&mut self, staged: &Path, files: &[PathBuf]) -> Result<usize> {
             let package = staged
                 .parent()
                 .and_then(Path::file_name)
@@ -361,7 +408,7 @@ pub(crate) mod fake {
             if self.fake.failing.contains(&package) {
                 bail!("1 of 1 files did not save; first a.vi: VI Server\nerror 1003");
             }
-            Ok(lv_files(staged).len())
+            Ok(files.len())
         }
     }
 
@@ -832,5 +879,118 @@ mod tests {
         install(&env, Some("alpha"), &dry_run()).unwrap();
 
         assert_eq!(planned(&sink.events()), None);
+    }
+
+    /// The smallest RSRC file `read_major` reads: one `vers` resource, id 4,
+    /// whose first bytes are `version` (binary-coded decimal).
+    fn rsrc(version: [u8; 4]) -> Vec<u8> {
+        let be = |n: u32| n.to_be_bytes();
+        let (data, info) = (32u32, 40u32);
+        let mut b = b"RSRC\r\n\0\x03LVINLBVW".to_vec();
+        for n in [info, 0, data, 8] {
+            b.extend(be(n));
+        }
+        b.extend(be(4));
+        b.extend(version);
+        b.extend([0; 32]); // the header's copy
+        for n in [0, 0, 0, 52, 0] {
+            b.extend(be(n)); // the fourth: the resource list, past these
+        }
+        b.extend(be(0)); // one kind
+        b.extend(b"vers");
+        b.extend(be(0)); // one resource
+        b.extend(be(16)); // its list, past this entry
+        for n in [4, 0, 0, 0, 0] {
+            b.extend(be(n)); // id 4, data at offset 0
+        }
+        b
+    }
+
+    #[test]
+    fn the_saved_version_is_read_from_the_file_header() {
+        let real = |p: &str| saved_major(&Path::new(env!("CARGO_MANIFEST_DIR")).join(p));
+        assert_eq!(real("src/lv-src/relink-package.vi"), Some(20));
+        assert_eq!(real("../../tests/fixtures/hooks/PostInstall.vi"), Some(26));
+        assert_eq!(read_major(&rsrc([0x13, 0x01, 0x80, 0x00])), Some(13));
+        assert_eq!(read_major(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
+        assert_eq!(read_major(b"PAYLOAD a.vi"), None);
+        let whole = rsrc([0x26, 0x31, 0x80, 0x01]);
+        for cut in [10, 30, 50, whole.len() - 5] {
+            assert_eq!(read_major(&whole[..cut]), None, "cut at {cut}");
+        }
+    }
+
+    fn saved_in(repo: &Path, name: &str, members: &[(&str, Vec<u8>)]) {
+        testing::vip_of(&repo.join("packages"), name, "1.0", "", members);
+    }
+
+    #[test]
+    fn a_package_already_saved_in_the_venvs_labview_is_not_resaved() {
+        let (repo, venv) = repo("resave-skip");
+        saved_in(
+            &repo,
+            "alpha",
+            &[("a/a.vi", rsrc([0x26, 0x31, 0x80, 0x01]))],
+        );
+        saved_in(&repo, "beta", &[("b/b.vi", rsrc([0x13, 0x01, 0x80, 0x00]))]);
+        vip_in(
+            &repo.join("packages"),
+            "both",
+            "1.0",
+            "alpha >= 1.0, beta >= 1.0",
+            &[],
+            false,
+        );
+        let fake = Fake::saving().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("both"), &no_relink()).unwrap();
+
+        let events = sink.events();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::ResaveSkipped { package, labview: 2026, .. } if package == "alpha"
+        )));
+        assert_eq!(resaves(&events), ["beta"]);
+        assert_eq!(fake.log().starts, 1);
+        assert!(landed(&venv, "alpha") && landed(&venv, "beta"));
+    }
+
+    #[test]
+    fn a_venv_where_every_package_is_current_starts_no_labview() {
+        let (repo, _venv) = repo("resave-skip-all");
+        saved_in(
+            &repo,
+            "alpha",
+            &[("a/a.vi", rsrc([0x26, 0x31, 0x80, 0x01]))],
+        );
+        let fake = Fake::cannot_start().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("alpha"), &no_relink()).unwrap();
+
+        let events = sink.events();
+        assert_eq!(fake.log().starts, 0);
+        assert!(summary(&events).is_empty());
+        assert!(!events.contains(&Event::ResaveStarting));
+    }
+
+    #[test]
+    fn a_file_whose_version_cannot_be_read_is_resaved() {
+        let (repo, _venv) = repo("resave-unreadable");
+        saved_in(
+            &repo,
+            "alpha",
+            &[
+                ("a/a.vi", rsrc([0x26, 0x31, 0x80, 0x01])),
+                ("a/b.vi", b"not a VI".to_vec()),
+            ],
+        );
+        Fake::saving().install();
+        let sink = Recorded::default();
+
+        install(&env_on(&sink, &repo), Some("alpha"), &no_relink()).unwrap();
+
+        assert_eq!(resaves(&sink.events()), ["alpha"]);
     }
 }
