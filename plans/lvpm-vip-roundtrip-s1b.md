@@ -211,12 +211,14 @@ different ID; entry order irrelevant; version changed → different ID;
 `(name, bytes)`. Row 0 is `base`, the build as is (no `ID`, `Format Version`
 2017, no icon, no license, `Requires` empty). Every other row makes one change
 from it: `ID` = `package_id` / random / empty; `Format Version` absent or each
-other value the four fixture specs carry (none today); `icon.bmp` present
+other value the four fixture specs carry, set to that value (none today, so
+only `absent`); `icon.bmp` present
 (bytes from pilot A's published archive); `license` + `License Agreement`
 present; `Requires` =
 `labview_open_source_lib_data_manipulation>=1.5.0.15` / same with `=`; and one
 variant per key the reference diff finds in all four fixture specs that lvpm
-does not write, **at most 5** (others listed in the table, not varied).
+does not write, set to the value pilot A's archive carries, **at most 5**
+(others listed in the table, not varied).
 Reference diff: lvpm's pilot A build against `hse_lib_hse_logger-2.2.2.114.vip`,
 by entry, key and value (`spec::parse` plus raw key scan). Table: one line per
 row, pipes and newlines escaped; full VIPM output in `<variant>.txt` beside it.
@@ -243,7 +245,7 @@ install (step 1.4); unit tests use synthetic strings the runner owns, never
 VIPM's output. Each command has a timeout (install 600 s,
 others 120 s; the child is killed past it). Verdict: exit 0 and listed →
 accepted; exit 0 and not listed → rejected "not listed by vipm info";
-non-zero → rejected with output; timeout → rejected "timed out". Preflight:
+non-zero → rejected with output; timeout → rejected "timed out after <n>s". Preflight:
 `info` for pilot A, Data Manipulation and the palette; any listed → stop
 naming each with its `vipm uninstall` command. Env: with `--ignored`, a
 missing or non-existent `LVPM_TEST_VIPM` / `LVPM_TEST_PILOT_A` fails naming
@@ -283,10 +285,15 @@ snapshot only the directories VIPM writes: `vi.lib`,
 only for files whose size or mtime differ; ignore `*.ini`, `*.aliases`
 and LabVIEW's `*.cache`/`*.lvlps` files. Check the tree after **every**
 variant, accepted or rejected; a difference stops the run naming variant,
-file and kind (extra / missing / changed) and the uninstall to run. A
-failing uninstall stops the run. For accepted variants also diff the install
+file and kind (extra / missing / changed) and the uninstall to run. Clean-up uninstalls
+every package `in-progress.json` names for that variant (pilot A, then Data
+Manipulation and the palette for the `Requires` rows), and the tree check
+runs after the whole clean-up. A failing uninstall stops the run. For accepted variants also diff the install
 against VIPM's install of the published pilot A archive (installed once at
-the start, uninstalled before the variants; preflight covers it).
+the start, uninstalled before the variants; preflight covers it). The diff
+(files extra or missing against the reference install) goes to
+`<variant>.install-diff.txt`, and the table gets a column "same files as
+reference: yes/no". It is a finding, not a run failure.
 **TEST**: `a_held_claim_refuses_the_probe`, `a_leftover_state_file_is_cleared_or_stops_the_run`,
 `state_file_written_before_each_install_and_removed_after_a_clean_run`,
 `a_rejected_variant_does_not_leave_the_state_file`,
@@ -294,7 +301,8 @@ the start, uninstalled before the variants; preflight covers it).
 `a_listing_that_does_not_change_with_the_install_stops_the_run`,
 `a_write_outside_the_scope_stops_the_run`,
 `residue_names_extra_missing_and_changed_files`, `ignored_paths_are_not_residue`,
-`failed_uninstall_stops_the_run`, `the_guard_uninstalls_when_a_probe_panics`
+`failed_uninstall_stops_the_run`, `cleanup_uninstalls_every_package_the_state_file_names`,
+`install_diff_against_reference_lists_extra_and_missing`, `the_guard_uninstalls_when_a_probe_panics`
 (fake command records the uninstall after a panicking closure).
 **REFACTOR**: snapshot and diff are plain functions over `BTreeMap<PathBuf, Entry>` in `tests/support/snapshot.rs`, so slice 4's round trips can use them from the acceptance target.
 **Files**: `tests/support/snapshot.rs`, `tests/support/mod.rs`, `tests/vipm_probe/run.rs`, `tests/vipm_probe.rs`
@@ -496,6 +504,12 @@ with S1's pilot scenarios in the run count (AC8, AC3).
   step 1.6 and re-plans step 1.3. The opposite (never listed) is caught by
   the calibration, but only after the reference install, so the start line
   asks the operator to make sure none of the 3 packages is installed.
+- **Narrower than the spec's "tree unchanged" and "git status unchanged"**
+  (deviation to log at 1.6): the tree check covers the scoped directories
+  (after the full-tree discovery around the reference install) and excludes
+  `*.ini`, `*.aliases`, `*.cache`, `*.lvlps`, which LabVIEW and VIPM rewrite
+  on their own; the `git status` check excludes `.claude/`, which this
+  repo's hooks write during any session. Any other change fails the run.
 - Tag names: pilot A is `@pilot-source`, pilot B `@pilot-b-source`;
   renaming pilot A's tag is out of scope.
 
