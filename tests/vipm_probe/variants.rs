@@ -1,5 +1,7 @@
 //! The `.vip` variants the probe installs, and the ID one of them carries.
 
+use crate::support::snapshot::hex;
+use crate::vipm::DATA_MANIPULATION;
 use md5::{Digest, Md5};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
@@ -23,11 +25,6 @@ pub fn package_id(name: &str, version: &str, entries: &[(String, Vec<u8>)]) -> S
         hash.update(format!("{path}\0{}\n", hex(&Md5::digest(bytes))));
     }
     hex(&hash.finalize())
-}
-
-/// `md-5` 0.11 returns an array with no `LowerHex`, so format the bytes here.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A package as the probe edits it: its zip entries in order, `spec` first.
@@ -228,7 +225,8 @@ impl Variant {
 
 /// What differs between two packages: the spec keys (added, removed or with
 /// another value) and the entries other than `spec`.
-pub fn differences(a: &Pkg, b: &Pkg) -> BTreeSet<String> {
+#[cfg(test)]
+fn differences(a: &Pkg, b: &Pkg) -> BTreeSet<String> {
     let keys = |p: &Pkg| -> BTreeMap<Key, String> { spec_keys(&p.spec()).into_iter().collect() };
     let (ka, kb) = (keys(a), keys(b));
     let mut found = BTreeSet::new();
@@ -271,7 +269,6 @@ const MAX_KEY_VARIANTS: usize = 5;
 /// Keys with a variant of their own.
 const OWN_VARIANT_KEYS: [(&str, &str); 2] =
     [("Package", "ID"), ("Description", "License Agreement")];
-use crate::vipm::DATA_MANIPULATION as REQUIRES;
 const REQUIRES_VERSION: &str = "1.5.0.15";
 
 /// The variants of `base` (lvpm's build of pilot A), and the keys every one
@@ -284,20 +281,30 @@ pub fn variants(
     published: &[Pkg],
 ) -> Result<(Vec<Variant>, Vec<String>), String> {
     let spec = lvpm_core::spec::parse(&base.spec()).map_err(|e| format!("the base spec: {e:#}"))?;
-    let id = |value: &str| Variant::new(&format!("ID={value}"));
-    let quoted = |v: &str| format!("\"{v}\"");
-    let mut list = vec![
-        Variant::new("base"),
-        id("content").key(
-            "Package",
-            "ID",
-            Some(&package_id(&spec.name, &spec.version, &base.entries)),
-        ),
-        id("random").key("Package", "ID", Some(&random_id())),
-        id("empty").key("Package", "ID", Some("\"\"")),
-        Variant::new("Format Version=absent").key("Package", "Format Version", None),
-    ];
+    let mut list = id_variants(&spec.name, &spec.version, base);
+    list.extend(format_variants(base, published));
+    list.extend(reference_variants(reference)?);
+    list.extend(requires_variants());
+    let (keyed, not_varied) = published_key_variants(base, reference, published);
+    list.extend(keyed);
+    Ok((list, not_varied))
+}
 
+/// `base` as it is, and the three ways a package can carry an ID.
+fn id_variants(name: &str, version: &str, base: &Pkg) -> Vec<Variant> {
+    let id = |kind: &str, value: &str| {
+        Variant::new(&format!("ID={kind}")).key("Package", "ID", Some(value))
+    };
+    vec![
+        Variant::new("base"),
+        id("content", &package_id(name, version, &base.entries)),
+        id("random", &random_id()),
+        id("empty", "\"\""),
+    ]
+}
+
+/// `Format Version` absent, and set to each other value the published specs carry.
+fn format_variants(base: &Pkg, published: &[Pkg]) -> Vec<Variant> {
     let own_format = spec_keys(&base.spec())
         .into_iter()
         .find(|(k, _)| k.1 == "Format Version")
@@ -308,38 +315,59 @@ pub fn variants(
         .filter(|(k, v)| k.1 == "Format Version" && Some(v) != own_format.as_ref())
         .map(|(_, v)| v)
         .collect();
+    let mut list =
+        vec![Variant::new("Format Version=absent").key("Package", "Format Version", None)];
     for format in other_formats {
         let name = format!("Format Version={}", format.trim_matches('"'));
         list.push(Variant::new(&name).key("Package", "Format Version", Some(&format)));
     }
+    list
+}
 
+/// The icon, and the license with the key that names it, of the published
+/// archive: what lvpm's build lacks.
+fn reference_variants(reference: &Pkg) -> Result<Vec<Variant>, String> {
     let icon = reference
         .get("icon.bmp")
         .ok_or("the reference has no icon.bmp")?;
     let license = reference
         .get("license")
         .ok_or("the reference has no license")?;
-    let reference_keys = spec_keys(&reference.spec());
-    let agreement = reference_keys
-        .iter()
+    let agreement = spec_keys(&reference.spec())
+        .into_iter()
         .find(|(k, _)| k.1 == "License Agreement")
-        .map(|(_, v)| v.as_str())
+        .map(|(_, v)| v)
         .ok_or("the reference has no License Agreement")?;
-    list.push(Variant::new("icon.bmp=present").entry("icon.bmp", icon));
-    list.push(
+    Ok(vec![
+        Variant::new("icon.bmp=present").entry("icon.bmp", icon),
         Variant::new("license=present")
             .entry("license", license)
-            .key("Description", "License Agreement", Some(agreement)),
-    );
-    for operator in [">=", "="] {
-        let requires = quoted(&format!("{REQUIRES}{operator}{REQUIRES_VERSION}"));
-        list.push(Variant::new(&format!("Requires={operator}")).key(
-            "Dependencies",
-            "Requires",
-            Some(&requires),
-        ));
-    }
+            .key("Description", "License Agreement", Some(&agreement)),
+    ])
+}
 
+/// Data Manipulation required with each version operator.
+fn requires_variants() -> Vec<Variant> {
+    [">=", "="]
+        .iter()
+        .map(|operator| {
+            let requires = format!("\"{DATA_MANIPULATION}{operator}{REQUIRES_VERSION}\"");
+            Variant::new(&format!("Requires={operator}")).key(
+                "Dependencies",
+                "Requires",
+                Some(&requires),
+            )
+        })
+        .collect()
+}
+
+/// A variant for each of the first `MAX_KEY_VARIANTS` keys every published
+/// spec carries that lvpm does not write, and the names of the rest.
+fn published_key_variants(
+    base: &Pkg,
+    reference: &Pkg,
+    published: &[Pkg],
+) -> (Vec<Variant>, Vec<String>) {
     let ours: BTreeSet<Key> = spec_keys(&base.spec())
         .into_iter()
         .map(|(k, _)| k)
@@ -348,6 +376,7 @@ pub fn variants(
         .iter()
         .map(|p| spec_keys(&p.spec()).into_iter().map(|(k, _)| k).collect())
         .collect();
+    let reference_keys = spec_keys(&reference.spec());
     // The spec rules `[Description]` fields out of scope, so they come last.
     let mut missing: Vec<&(Key, String)> = reference_keys
         .iter()
@@ -355,7 +384,7 @@ pub fn variants(
         .filter(|(k, _)| !OWN_VARIANT_KEYS.contains(&(k.0.as_str(), k.1.as_str())))
         .collect();
     missing.sort_by_key(|(k, _)| k.0 == "Description");
-    let mut not_varied = Vec::new();
+    let (mut list, mut not_varied) = (Vec::new(), Vec::new());
     for (i, ((section, key), value)) in missing.into_iter().enumerate() {
         if i < MAX_KEY_VARIANTS {
             list.push(Variant::new(&format!("[{section}]/{key}")).key(section, key, Some(value)));
@@ -363,7 +392,7 @@ pub fn variants(
             not_varied.push(format!("[{section}]/{key}"));
         }
     }
-    Ok((list, not_varied))
+    (list, not_varied)
 }
 
 /// Where lvpm's build and a published archive differ.
@@ -425,6 +454,15 @@ pub fn sample_base() -> Pkg {
             ("File Group 0/vi.lib/x/a.vi".into(), b"vi".to_vec()),
         ],
     }
+}
+
+/// Pilot A's published archive, and every published pilot archive (it too).
+#[cfg(test)]
+pub fn reference_and_published() -> (Pkg, Vec<Pkg>) {
+    use crate::support::pilots::{PILOT_A_ARCHIVE, archives, pilots_dir};
+    let read = |path: &std::path::Path| Pkg::read(&std::fs::read(path).unwrap()).unwrap();
+    let all: Vec<Pkg> = archives(&pilots_dir()).iter().map(|p| read(p)).collect();
+    (read(&pilots_dir().join(PILOT_A_ARCHIVE)), all)
 }
 
 #[cfg(test)]
@@ -522,27 +560,6 @@ mod tests {
             package_id("p", "1.0.0.1", &entries()),
             package_id("p", "1.0.0.1", &renamed)
         );
-    }
-
-    use crate::support::pilots::{PILOT_A_ARCHIVE, archives, pilots_dir};
-
-    fn published() -> Vec<(String, Pkg)> {
-        archives(&pilots_dir())
-            .iter()
-            .map(|path| {
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                (name, Pkg::read(&std::fs::read(path).unwrap()).unwrap())
-            })
-            .collect()
-    }
-
-    fn reference_and_published() -> (Pkg, Vec<Pkg>) {
-        let all = published();
-        let reference = all.iter().find(|(n, _)| n == PILOT_A_ARCHIVE).unwrap();
-        (
-            reference.1.clone(),
-            all.into_iter().map(|(_, p)| p).collect(),
-        )
     }
 
     #[test]

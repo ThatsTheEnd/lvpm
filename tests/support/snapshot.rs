@@ -183,7 +183,8 @@ pub fn diff(root: &Path, before: &Snapshot, after: &Snapshot) -> Vec<Change> {
     changes
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Lower-case hex of a digest: `md-5` and `sha2` 0.11 return arrays with no `LowerHex`.
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

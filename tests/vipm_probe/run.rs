@@ -709,10 +709,7 @@ mod tests {
 
     #[test]
     fn every_variant_installs_only_what_the_preflight_checks() {
-        use crate::support::pilots::{PILOT_A_ARCHIVE, archives, pilots_dir};
-        let read = |path: &Path| Pkg::read(&std::fs::read(path).unwrap()).unwrap();
-        let published: Vec<Pkg> = archives(&pilots_dir()).iter().map(|p| read(p)).collect();
-        let reference = read(&pilots_dir().join(PILOT_A_ARCHIVE));
+        let (reference, published) = crate::variants::reference_and_published();
         let (variants, _) =
             crate::variants::variants(&sample_base(), &reference, &published).unwrap();
         for variant in variants.iter() {
