@@ -293,11 +293,12 @@ mod tests {
         assert!(version.chars().any(|c| c.is_ascii_digit()), "{version}");
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_labview_without_a_file_version_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(LABVIEW_EXE), b"not a program").unwrap();
         let why = labview_file_version(dir.path()).unwrap_err();
-        assert!(why.contains(LABVIEW_EXE), "{why}");
+        assert!(why.contains("has no file version"), "{why}");
     }
 }

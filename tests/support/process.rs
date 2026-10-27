@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_command_past_its_deadline_is_killed() {
+    fn a_helper_command_past_its_deadline_returns_promptly() {
         let started = Instant::now();
         run_quietly(sleeper(), Duration::from_millis(300));
         assert!(

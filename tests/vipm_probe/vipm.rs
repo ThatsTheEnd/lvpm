@@ -276,6 +276,7 @@ mod tests {
     const LONG: Duration = Duration::from_secs(60);
 
     /// A fake `vipm` that answers by its first argument and logs every call.
+    // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
     struct Fake {
         calls: RefCell<Vec<String>>,
         /// The deadline each command was given.
@@ -498,6 +499,7 @@ mod tests {
 
     #[test]
     fn a_version_that_fails_says_what_vipm_gave() {
+        // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
         let run = |_: &[String], _: Duration| exited(2, "no such flag");
         let why = Vipm::new(&run, SHORT).version().unwrap_err();
         assert!(
@@ -524,6 +526,7 @@ mod tests {
         fake.uninstall = boom();
         let why = with(&fake, |v| v.remove("pkg")).unwrap_err();
         assert_eq!(why, "`vipm uninstall pkg`: could not start: boom");
+        // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
         let run = |_: &[String], _: Duration| boom();
         assert!(Vipm::new(&run, SHORT).version().is_err());
     }
