@@ -939,6 +939,9 @@ mod tests {
         )));
         press(&mut app, KeyCode::Down, KeyModifiers::NONE);
         app.detail = browse(&app).selected().map(Detail::new);
+        // A job that never ends, so the view reads nothing.
+        let (_send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((Job::Load { refresh: false }, receive));
         press(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         assert_eq!(app.note.as_deref(), Some("gamma 1.0 needs LabVIEW 2099"));
         assert!(app.op.is_none());
