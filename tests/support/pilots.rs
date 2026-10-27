@@ -150,6 +150,16 @@ pub fn pilot_checkout(env_var: &str, commit: &str) -> Result<PathBuf, String> {
     checkout_at(env_var, path, commit)
 }
 
+/// `git -C path`, with no repository chosen by the caller's environment.
+fn git_command(path: &Path) -> Command {
+    let mut git = Command::new("git");
+    git.arg("-C").arg(path);
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        git.env_remove(var);
+    }
+    git
+}
+
 fn checkout_at(env_var: &str, path: std::ffi::OsString, commit: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path);
     let shown = path.display();
@@ -157,28 +167,32 @@ fn checkout_at(env_var: &str, path: std::ffi::OsString, commit: &str) -> Result<
     if !path.is_dir() {
         return Err(format!("{at} does not exist or is not a folder"));
     }
+    // The checkout itself must be the repository, not a folder inside one.
+    let ceiling = path.parent().unwrap_or(&path);
     let git = |args: &[&str]| {
-        Command::new("git")
-            .arg("-C")
-            .arg(&path)
+        let output = git_command(&path)
+            .env("GIT_CEILING_DIRECTORIES", ceiling)
             .args(args)
             .output()
-            .map_err(|e| format!("{at}: running git: {e}"))
+            .map_err(|e| format!("{at}: running git: {e}"))?;
+        match output.status.success() {
+            true => Ok(String::from_utf8_lossy(&output.stdout).trim().to_string()),
+            false => Err(format!(
+                "{at}: `git {}` failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        }
     };
     let head = git(&["rev-parse", "HEAD"])?;
-    if !head.status.success() {
-        return Err(format!("{at} is not a git repository"));
-    }
-    let head = String::from_utf8_lossy(&head.stdout).trim().to_string();
     if head != commit {
         return Err(format!(
-            "{at} is at {head}, not the pinned commit {commit}; run `git -C {shown} checkout {commit}`"
+            "{at} is at {head}, not the pinned commit {commit}; run `git -C \"{shown}\" checkout {commit}`"
         ));
     }
-    let status = git(&["status", "--porcelain"])?;
-    if !status.stdout.is_empty() {
+    if !git(&["status", "--porcelain"])?.is_empty() {
         return Err(format!(
-            "{at} has uncommitted changes (`git -C {shown} status` lists them); build from a clean checkout"
+            "{at} has uncommitted changes (`git -C \"{shown}\" status` lists them); build from a clean checkout"
         ));
     }
     Ok(path)
@@ -320,9 +334,10 @@ mod tests {
     const VAR: &str = "LVPM_TEST_PILOT_X";
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let output = git_command(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", null_device)
             .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
             .args(["-c", "commit.gpgsign=false"])
             .args(args)
@@ -360,27 +375,74 @@ mod tests {
         git(dir.path(), &["commit", "-q", "-m", "b"]);
         let second = git(dir.path(), &["rev-parse", "HEAD"]);
         let why = checkout_at(VAR, dir.path().as_os_str().to_owned(), &first).unwrap_err();
-        let fix = format!("git -C {} checkout {first}", dir.path().display());
+        let fix = format!("git -C \"{}\" checkout {first}", dir.path().display());
         for wanted in [VAR, &first, &second, &fix] {
             assert!(why.contains(wanted), "{wanted} is not in: {why}");
         }
     }
 
+    fn refusal(path: &Path, commit: &str) -> String {
+        checkout_at(VAR, path.as_os_str().to_owned(), commit).unwrap_err()
+    }
+
     #[test]
-    fn pilot_checkout_rejects_a_missing_path_a_non_repo_and_a_dirty_checkout() {
+    fn a_variable_nothing_sets_names_no_checkout() {
+        assert_eq!(
+            pilot_checkout("LVPM_TEST_PILOT_NOTHING_SETS_THIS", "abc"),
+            Err("LVPM_TEST_PILOT_NOTHING_SETS_THIS names no checkout".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missing_path_is_refused() {
         let (repo, head) = repo_with_a_commit();
         let missing = repo.path().join("nowhere");
-        let non_repo = tempfile::tempdir().unwrap();
-        std::fs::write(repo.path().join("a.txt"), "changed").unwrap();
-        for (path, what) in [
-            (missing.as_path(), "does not exist"),
-            (non_repo.path(), "not a git repository"),
-            (repo.path(), "uncommitted changes"),
-        ] {
-            let why = checkout_at(VAR, path.as_os_str().to_owned(), &head).unwrap_err();
-            for wanted in [VAR, &path.display().to_string(), what] {
+        let why = refusal(&missing, &head);
+        for wanted in [VAR, &missing.display().to_string(), "does not exist"] {
+            assert!(why.contains(wanted), "{wanted} is not in: {why}");
+        }
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_is_refused() {
+        let (repo, head) = repo_with_a_commit();
+        let inside_a_repository = repo.path().join("sub");
+        std::fs::create_dir(&inside_a_repository).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for path in [outside.path(), inside_a_repository.as_path()] {
+            let why = refusal(path, &head);
+            for wanted in [VAR, &path.display().to_string(), "not a git repository"] {
                 assert!(why.contains(wanted), "{wanted} is not in: {why}");
             }
+        }
+    }
+
+    #[test]
+    fn a_modified_file_is_refused() {
+        let (repo, head) = repo_with_a_commit();
+        std::fs::write(repo.path().join("a.txt"), "changed").unwrap();
+        let why = refusal(repo.path(), &head);
+        for wanted in [
+            VAR,
+            &repo.path().display().to_string(),
+            "uncommitted changes",
+        ] {
+            assert!(why.contains(wanted), "{wanted} is not in: {why}");
+        }
+    }
+
+    #[test]
+    fn a_checkout_git_cannot_read_is_refused_not_accepted() {
+        let (repo, head) = repo_with_a_commit();
+        std::fs::write(repo.path().join(".git/index"), "not an index").unwrap();
+        let why = refusal(repo.path(), &head);
+        for wanted in [
+            VAR,
+            &repo.path().display().to_string(),
+            "git status",
+            "index file",
+        ] {
+            assert!(why.contains(wanted), "{wanted} is not in: {why}");
         }
     }
 
