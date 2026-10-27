@@ -11,5 +11,6 @@ pub mod process;
 pub mod project;
 pub mod sandbox;
 pub mod selection;
+pub mod snapshot;
 pub mod tree;
 pub mod venv;

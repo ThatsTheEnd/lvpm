@@ -182,7 +182,7 @@ pub struct Variant {
 }
 
 impl Variant {
-    fn new(name: &str) -> Variant {
+    pub fn new(name: &str) -> Variant {
         Variant {
             name: name.to_string(),
             keys: Vec::new(),
@@ -190,14 +190,14 @@ impl Variant {
         }
     }
 
-    fn key(mut self, section: &str, key: &str, value: Option<&str>) -> Variant {
+    pub fn key(mut self, section: &str, key: &str, value: Option<&str>) -> Variant {
         let value = value.map(String::from);
         self.keys
             .push((section.to_string(), key.to_string(), value));
         self
     }
 
-    fn entry(mut self, name: &str, bytes: &[u8]) -> Variant {
+    pub fn entry(mut self, name: &str, bytes: &[u8]) -> Variant {
         self.entries.push((name.to_string(), bytes.to_vec()));
         self
     }
@@ -408,6 +408,23 @@ pub fn reference_diff(ours: &Pkg, reference: &Pkg) -> RefDiff {
 }
 
 #[cfg(test)]
+const SAMPLE_SPEC: &str = "[Package]\nName=\"p\"\nVersion=\"1.0.0.1\"\nDisplay Name=\"P\"\n\n\
+    [File Group 0]\nTarget Dir=\"<application>\"\nReplace Mode=\"Always\"\nNum Files=1\n\
+    File 0=\"vi.lib/x/a.vi\"\n";
+
+/// What `lvpm build` would write for a one-file package.
+#[cfg(test)]
+pub fn sample_base() -> Pkg {
+    let spec = lvpm_core::spec::write(&lvpm_core::spec::parse(SAMPLE_SPEC).unwrap());
+    Pkg {
+        entries: vec![
+            ("spec".into(), spec.into_bytes()),
+            ("File Group 0/vi.lib/x/a.vi".into(), b"vi".to_vec()),
+        ],
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -486,21 +503,6 @@ mod tests {
 
     use crate::support::pilots::{PILOT_A_ARCHIVE, archives, pilots_dir};
 
-    const BASE_SPEC: &str = "[Package]\nName=\"p\"\nVersion=\"1.0.0.1\"\nDisplay Name=\"P\"\n\n\
-        [File Group 0]\nTarget Dir=\"<application>\"\nReplace Mode=\"Always\"\nNum Files=1\n\
-        File 0=\"vi.lib/x/a.vi\"\n";
-
-    /// What `lvpm build` would write for a one-file package.
-    fn base() -> Pkg {
-        let spec = lvpm_core::spec::write(&lvpm_core::spec::parse(BASE_SPEC).unwrap());
-        Pkg {
-            entries: vec![
-                ("spec".into(), spec.into_bytes()),
-                ("File Group 0/vi.lib/x/a.vi".into(), b"vi".to_vec()),
-            ],
-        }
-    }
-
     fn published() -> Vec<(String, Pkg)> {
         archives(&pilots_dir())
             .iter()
@@ -523,14 +525,19 @@ mod tests {
     #[test]
     fn each_variant_differs_from_the_base_in_its_one_change() {
         let (reference, all) = reference_and_published();
-        let (list, _) = variants(&base(), &reference, &all).unwrap();
+        let (list, _) = variants(&sample_base(), &reference, &all).unwrap();
         assert_eq!(list[0].name, "base");
-        assert!(differences(&base(), &list[0].apply(&base())).is_empty());
+        assert!(differences(&sample_base(), &list[0].apply(&sample_base())).is_empty());
         for variant in &list[1..] {
-            let made = variant.apply(&base());
+            let made = variant.apply(&sample_base());
             let changes = variant.changes();
             assert!(!changes.is_empty(), "{} names no change", variant.name);
-            assert_eq!(differences(&base(), &made), changes, "{}", variant.name);
+            assert_eq!(
+                differences(&sample_base(), &made),
+                changes,
+                "{}",
+                variant.name
+            );
         }
         let names: BTreeSet<&str> = list.iter().map(|v| v.name.as_str()).collect();
         assert_eq!(names.len(), list.len(), "variant names repeat");
@@ -551,7 +558,7 @@ mod tests {
     #[test]
     fn the_fixture_specs_carry_one_format_version_so_only_absent_is_varied() {
         let (reference, all) = reference_and_published();
-        let (list, _) = variants(&base(), &reference, &all).unwrap();
+        let (list, _) = variants(&sample_base(), &reference, &all).unwrap();
         let formats: Vec<&str> = list
             .iter()
             .map(|v| v.name.as_str())
@@ -563,7 +570,7 @@ mod tests {
     #[test]
     fn at_most_five_published_keys_get_a_variant_and_the_rest_are_listed() {
         let (reference, all) = reference_and_published();
-        let (list, not_varied) = variants(&base(), &reference, &all).unwrap();
+        let (list, not_varied) = variants(&sample_base(), &reference, &all).unwrap();
         let keyed: Vec<&str> = list
             .iter()
             .map(|v| v.name.as_str())
@@ -584,10 +591,10 @@ mod tests {
     #[test]
     fn the_id_variants_set_a_32_digit_id_and_the_random_one_is_fixed() {
         let (reference, all) = reference_and_published();
-        let (list, _) = variants(&base(), &reference, &all).unwrap();
+        let (list, _) = variants(&sample_base(), &reference, &all).unwrap();
         let id_of = |name: &str| {
             let variant = list.iter().find(|v| v.name == name).unwrap();
-            let keys = spec_keys(&variant.apply(&base()).spec());
+            let keys = spec_keys(&variant.apply(&sample_base()).spec());
             keys.into_iter().find(|(k, _)| k.1 == "ID").unwrap().1
         };
         assert_eq!(id_of("ID=content").len(), 32);

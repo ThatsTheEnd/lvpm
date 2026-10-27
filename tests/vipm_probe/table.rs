@@ -10,12 +10,16 @@ pub struct Header {
 }
 
 /// One variant's outcome.
+#[derive(Debug)]
 pub struct Row {
     pub variant: String,
     pub accepted: bool,
     pub exit: Option<i32>,
     /// The first line of VIPM's output, or why the probe rejected it.
     pub note: String,
+    /// Whether an accepted variant installed the files VIPM's install of the
+    /// published archive did; `None` when it was not installed.
+    pub same_files: Option<bool>,
 }
 
 /// The first line of `output` that says anything.
@@ -50,15 +54,21 @@ fn list(title: &str, items: &[String]) -> String {
 pub fn render(header: &Header, rows: &[Row], diff: &RefDiff, not_varied: &[String]) -> String {
     let mut out = format!(
         "# VIPM probe\n\nVIPM: {}\nLabVIEW: {}\n\n\
-         | variant | verdict | exit | first line of VIPM's output |\n|---|---|---|---|\n",
+         | variant | verdict | exit | first line of VIPM's output | same files as reference |\n\
+         |---|---|---|---|---|\n",
         escape(&header.vipm),
         escape(&header.labview)
     );
     for row in rows {
         let verdict = if row.accepted { "accepted" } else { "rejected" };
         let exit = row.exit.map_or("-".to_string(), |code| code.to_string());
+        let same = match row.same_files {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "-",
+        };
         out.push_str(&format!(
-            "| {} | {verdict} | {exit} | {} |\n",
+            "| {} | {verdict} | {exit} | {} | {same} |\n",
             escape(&row.variant),
             escape(&row.note)
         ));
@@ -107,6 +117,7 @@ mod tests {
             accepted,
             exit,
             note: note.into(),
+            same_files: None,
         }
     }
 
@@ -119,19 +130,23 @@ mod tests {
 
     #[test]
     fn table_has_one_line_per_variant() {
+        let mut base = row("base", true, Some(0), "ok");
+        base.same_files = Some(true);
+        let mut empty_id = row("ID=empty", true, Some(0), "fine");
+        empty_id.same_files = Some(false);
         let rows = [
-            row("base", true, Some(0), "ok"),
-            row("ID=empty", false, Some(3), "no"),
+            base,
+            empty_id,
             row("icon.bmp=present", false, None, "timed out after 600s"),
         ];
         let text = render(&header(), &rows, &RefDiff::default(), &[]);
         let lines = lines_of_rows(&text);
         assert_eq!(lines.len(), 3, "{text}");
-        assert_eq!(lines[0], "| base | accepted | 0 | ok |");
-        assert_eq!(lines[1], "| ID=empty | rejected | 3 | no |");
+        assert_eq!(lines[0], "| base | accepted | 0 | ok | yes |");
+        assert_eq!(lines[1], "| ID=empty | accepted | 0 | fine | no |");
         assert_eq!(
             lines[2],
-            "| icon.bmp=present | rejected | - | timed out after 600s |"
+            "| icon.bmp=present | rejected | - | timed out after 600s | - |"
         );
         assert!(text.contains("VIPM: vipm 1.2.3") && text.contains("LabVIEW: 26.3.0"));
     }
@@ -142,7 +157,7 @@ mod tests {
         let text = render(&header(), &rows, &RefDiff::default(), &[]);
         assert_eq!(
             lines_of_rows(&text),
-            ["| a\\|b | rejected | 1 | x \\| y\\nz\\nw |"]
+            ["| a\\|b | rejected | 1 | x \\| y\\nz\\nw | - |"]
         );
     }
 

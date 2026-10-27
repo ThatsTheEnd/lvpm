@@ -9,6 +9,8 @@
 // Removed with step 1.5, when the run uses everything the earlier steps built.
 #![allow(dead_code)]
 
+#[path = "vipm_probe/run.rs"]
+mod run;
 mod support;
 #[path = "vipm_probe/table.rs"]
 mod table;
