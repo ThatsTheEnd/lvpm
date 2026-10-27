@@ -1043,7 +1043,10 @@ mod tests {
     #[test]
     fn a_final_tree_difference_fails_the_run() {
         use crate::support::snapshot::Entry;
-        let entry = |size| Entry { size, mtime: None };
+        let entry = |size| Entry {
+            size: Some(size),
+            mtime: None,
+        };
         let before = Snapshot::from([
             (PathBuf::from("vi.lib/a.vi"), entry(1)),
             (PathBuf::from("vi.lib/b.vi"), entry(2)),

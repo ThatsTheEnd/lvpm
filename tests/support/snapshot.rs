@@ -1,21 +1,23 @@
-//! Snapshots of the files below some directories of a tree, and what changed
-//! between two. A snapshot holds `(path, size, mtime)` per file; only a file
-//! whose size or mtime moved is read, to hash it for the report. Plain
-//! functions over a `BTreeMap`, so any target can use them.
+//! Snapshots of the files and directories below some directories of a tree,
+//! and what changed between two. A snapshot holds `(path, size, mtime)` per
+//! file and the path of each directory; only a file whose size or mtime moved
+//! is read, to hash it for the report. Plain functions over a `BTreeMap`, so
+//! any target can use them.
 
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// What is looked at for a file.
+/// What is looked at for a file; a directory has neither size nor mtime
+/// (its mtime moves with its children, which have entries of their own).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
-    pub size: u64,
+    pub size: Option<u64>,
     pub mtime: Option<SystemTime>,
 }
 
-/// Files by path relative to the root they were read from.
+/// Files and directories by path relative to the root they were read from.
 pub type Snapshot = BTreeMap<PathBuf, Entry>;
 
 /// The files LabVIEW and VIPM rewrite on their own: settings, alias lists and caches.
@@ -30,9 +32,10 @@ fn skipped(path: &Path, skip_extensions: &[&str]) -> bool {
         .is_some_and(|ext| name_in(ext, skip_extensions))
 }
 
-/// Every file below the entries of `root` named in `dirs` (case ignored), or
-/// below all of `root` when `dirs` is `None`, except files with an extension
-/// in `skip_extensions`. A path that vanishes while being read is not there.
+/// Every file and directory below the entries of `root` named in `dirs` (case
+/// ignored), and those entries, or all of `root`'s when `dirs` is `None`,
+/// except files with an extension in `skip_extensions`. A path that vanishes
+/// while being read is not there; one that cannot be read is an error.
 pub fn scan(
     root: &Path,
     dirs: Option<&[&str]>,
@@ -40,7 +43,8 @@ pub fn scan(
 ) -> Result<Snapshot, String> {
     let mut found = Snapshot::new();
     let top = std::fs::read_dir(root).map_err(|e| format!("reading {}: {e}", root.display()))?;
-    for entry in top.flatten() {
+    for entry in top {
+        let entry = entry.map_err(|e| format!("reading {}: {e}", root.display()))?;
         let name = entry.file_name();
         if dirs.is_none_or(|dirs| name_in(&name, dirs)) {
             walk(root, &entry.path(), skip_extensions, &mut found)?;
@@ -55,20 +59,37 @@ fn walk(
     skip_extensions: &[&str],
     found: &mut Snapshot,
 ) -> Result<(), String> {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return Ok(());
+    let unreadable = |e: std::io::Error| format!("reading {}: {e}", path.display());
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(unreadable(e)),
     };
+    let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
     if meta.is_dir() {
-        let Ok(children) = std::fs::read_dir(path) else {
-            return Ok(());
+        let children = match std::fs::read_dir(path) {
+            Ok(children) => children,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(unreadable(e)),
         };
-        for child in children.flatten() {
-            walk(root, &child.path(), skip_extensions, found)?;
+        found.insert(
+            relative,
+            Entry {
+                size: None,
+                mtime: None,
+            },
+        );
+        for child in children {
+            walk(
+                root,
+                &child.map_err(unreadable)?.path(),
+                skip_extensions,
+                found,
+            )?;
         }
     } else if !skipped(path, skip_extensions) {
-        let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
         let entry = Entry {
-            size: meta.len(),
+            size: Some(meta.len()),
             mtime: meta.modified().ok(),
         };
         found.insert(relative, entry);
@@ -102,15 +123,21 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Change {
     pub path: PathBuf,
+    /// Whether the path is a directory.
+    pub dir: bool,
     pub kind: Kind,
     /// SHA-256 of a changed file as it is now.
     pub sha256: Option<String>,
 }
 
 impl Change {
-    /// `extra <path>`, `missing <path>` or `changed <path> (sha256 ...)`; `/` separators.
+    /// `extra <path>`, `missing <path>` or `changed <path> (sha256 ...)`; `/`
+    /// separators, and a `/` after a directory.
     pub fn describe(&self) -> String {
-        let path = self.path.to_string_lossy().replace('\\', "/");
+        let mut path = self.path.to_string_lossy().replace('\\', "/");
+        if self.dir {
+            path.push('/');
+        }
         match (self.kind, &self.sha256) {
             (Kind::Extra, _) => format!("extra {path}"),
             (Kind::Missing, _) => format!("missing {path}"),
@@ -129,11 +156,13 @@ pub fn diff(root: &Path, before: &Snapshot, after: &Snapshot) -> Vec<Change> {
         match before.get(path) {
             None => changes.push(Change {
                 path: path.clone(),
+                dir: entry.size.is_none(),
                 kind: Kind::Extra,
                 sha256: None,
             }),
             Some(was) if was != entry => changes.push(Change {
                 path: path.clone(),
+                dir: false,
                 kind: Kind::Changed,
                 sha256: std::fs::read(root.join(path))
                     .ok()
@@ -142,9 +171,10 @@ pub fn diff(root: &Path, before: &Snapshot, after: &Snapshot) -> Vec<Change> {
             Some(_) => {}
         }
     }
-    for path in before.keys().filter(|path| !after.contains_key(*path)) {
+    for (path, was) in before.iter().filter(|(path, _)| !after.contains_key(*path)) {
         changes.push(Change {
             path: path.clone(),
+            dir: was.size.is_none(),
             kind: Kind::Missing,
             sha256: None,
         });
@@ -241,14 +271,14 @@ mod tests {
         let before = all(dir.path());
         for noise in [
             "LabVIEW.ini",
-            "vi.lib/x/Cache.CACHE",
+            "vi.lib/a/Cache.CACHE",
             "resource/a.aliases",
-            "vi.lib/y/z.lvlps",
+            "vi.lib/a/z.lvlps",
         ] {
             put(dir.path(), noise, "noise");
         }
         assert_eq!(diff(dir.path(), &before, &all(dir.path())), []);
-        put(dir.path(), "vi.lib/y/z.vi", "not noise");
+        put(dir.path(), "vi.lib/a/z.vi", "not noise");
         assert_eq!(diff(dir.path(), &before, &all(dir.path())).len(), 1);
     }
 
@@ -262,7 +292,14 @@ mod tests {
             .collect();
         assert_eq!(
             paths,
-            ["resource/r.txt", "vi.lib/a/one.vi", "vi.lib/a/two.vi"]
+            [
+                "resource",
+                "resource/r.txt",
+                "vi.lib",
+                "vi.lib/a",
+                "vi.lib/a/one.vi",
+                "vi.lib/a/two.vi"
+            ]
         );
         assert_eq!(restrict(&all(dir.path()), &["vi.lib", "resource"]), scoped);
         assert!(!in_scope(Path::new("Help/h.txt"), &["vi.lib"]));
@@ -278,6 +315,46 @@ mod tests {
             added(&before, &after),
             BTreeSet::from([Path::new("vi.lib").join("a").join("new.vi")])
         );
+    }
+
+    #[test]
+    fn an_empty_directory_that_appears_or_goes_is_residue() {
+        let dir = tree();
+        std::fs::create_dir_all(dir.path().join("vi.lib/was_here")).unwrap();
+        let before = all(dir.path());
+        std::fs::create_dir_all(dir.path().join("vi.lib/leftover")).unwrap();
+        std::fs::remove_dir(dir.path().join("vi.lib/was_here")).unwrap();
+        let found: Vec<String> = diff(dir.path(), &before, &all(dir.path()))
+            .iter()
+            .map(Change::describe)
+            .collect();
+        assert_eq!(
+            found,
+            ["extra vi.lib/leftover/", "missing vi.lib/was_here/"]
+        );
+        assert_eq!(
+            added(&before, &all(dir.path())),
+            BTreeSet::from([Path::new("vi.lib").join("leftover")])
+        );
+    }
+
+    /// A directory that exists but cannot be listed, as a locked-down one is.
+    #[cfg(windows)]
+    #[test]
+    fn a_directory_that_cannot_be_read_is_an_error_naming_it() {
+        let dir = tree();
+        let locked = dir.path().join("vi.lib").join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        let acl = |args: &[&str]| {
+            let mut command = std::process::Command::new("icacls");
+            command.arg(&locked).args(args);
+            command.output().unwrap();
+        };
+        acl(&["/deny", "*S-1-1-0:(RD)"]);
+        let scanned = scan(dir.path(), None, &[]);
+        acl(&["/remove:d", "*S-1-1-0"]);
+        let why = scanned.unwrap_err();
+        assert!(why.contains("locked"), "{why}");
     }
 
     #[test]
