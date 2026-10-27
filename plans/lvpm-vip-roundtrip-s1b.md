@@ -125,7 +125,7 @@ Feature: VIPM probe runner (dev only)
     Then its line says rejected, reason "not listed by vipm info"
 
   Scenario: a vipm command that hangs is recorded
-    # Covered by: a_command_past_its_timeout_is_killed_and_rejected
+    # Covered by: a_command_past_its_timeout_is_killed_and_rejected; a_hung_install_is_rejected_then_cleaned_up_and_checked
     Given a vipm command that has not exited after its timeout
     When the probe runner runs the variant
     Then the command is killed, its line says rejected, reason "timed out after <n>s"
@@ -560,14 +560,14 @@ version in the table; patch bump in the gate; deviations in Risks
 
 #### Wave 1
 - [ ] Slice 1: the probe runner
-  - [ ] Step 1.1: `package_id`, probe-side
-  - [ ] Step 1.2: variants, reference diff and the table
-  - [ ] Step 1.3: drive vipm.exe, with timeouts and preflight
-  - [ ] Step 1.4: claim, state file, scoped snapshots
-  - [ ] Step 1.5: the `#[ignore]` run
+  - [x] Step 1.1: `package_id`, probe-side
+  - [x] Step 1.2: variants, reference diff and the table
+  - [x] Step 1.3: drive vipm.exe, with timeouts and preflight
+  - [x] Step 1.4: claim, state file, scoped snapshots
+  - [x] Step 1.5: the `#[ignore]` run
   - [ ] Step 1.6: run it (operator, nothing committed but the spec tick)
 - [ ] Slice 2: pilot B builds from its pinned checkout
-  - [ ] Step 2.1: `LVPM_TEST_PILOT_B`
+  - [x] Step 2.1: `LVPM_TEST_PILOT_B`
 
 #### Wave 2 (do not build until re-planned after step 1.6)
 - [ ] Slice 3 (PR 2, sketch): lvpm writes what VIPM needs
