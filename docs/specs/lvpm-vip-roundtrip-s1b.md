@@ -30,10 +30,10 @@ paragraph that says how `.vip` writing was verified.
 
 | Part | Where |
 |---|---|
-| `spec` and zip changes VIPM needs | `crates/lvpm-core/src/spec.rs` (`spec::write`), `crates/lvpm-core/src/ops/build.rs` |
+| `spec` and zip changes VIPM needs | none: the first probe run (2026-10-28) accepted lvpm's build unchanged |
 | Unit tests, one per VIPM requirement, named after it | next to the code they cover |
 | Probe runner (dev only, not shipped) | `tests/vipm_probe.rs`, `#[ignore]`, runs when `LVPM_TEST_VIPM` names `vipm.exe` |
-| Round-trip scenarios | `tests/features/build-slices/s1b-vip-in-vipm.feature`, tagged `@labview @vipm` (manual) |
+| Round-trip scenarios | `tests/features/build-slices/s1b-vip-in-vipm-roundtrip.feature`, tagged `@unsafe` (manual) |
 | Findings table (local only) | written by the probe runner to `target/vipm-probes/` (under `target/`, so already gitignored) |
 | Provenance | a ".vip writing" paragraph in PROVENANCE.md: method, VIPM version, and that the results are kept out of the repository like the install snapshots |
 
@@ -118,7 +118,7 @@ without. Making VIPM resolve dependencies from lvpm feeds.
    VIPM, and VIPM installs the dependencies its `Requires` names. Mass
    compile reports no broken VIs.
 6. **Recorded.** The steps of criteria 4 and 5 and the VIPM version are in
-   `s1b-vip-in-vipm.feature`, next to S0's feature file.
+   `s1b-vip-in-vipm-roundtrip.feature`, next to S0's feature file.
 7. **No residue.** After the probe runner finishes, the LabVIEW tree equals
    its snapshot from before the run.
 8. **lvpm still installs it.** S1's criterion 9 (`lvpm install` of the
@@ -158,6 +158,7 @@ Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 | CRUD sweep: packages installed by probes | `inferable` | inference | Created and deleted by each probe (criterion 7). |
 | Auth / audit | `inferable` | inference | `vipm install` of a local file needs no login. The Community edition's periodic login is the user's, not lvpm's. Not applicable otherwise. |
 | Error handling: VIPM not installed | `inferable` | inference | Probe runner is `#[ignore]` and gated by `LVPM_TEST_VIPM`; without it nothing runs. |
+| Deviations found while building (plan, 2026-10-28) | `inferable` | plan | The key census from VIPM's cache (probe step 1) is dropped: it is outside Q1's boundary, and the reference diff covers it. Pilot B has one direct dependency, which brings the palette (AC5). The round trips live in `s1b-vip-in-vipm-roundtrip.feature`, tagged `@unsafe`, so AC4–AC6 rest on its run lines, not on the harness (AC6). The residue check covers the scoped directories and ignores the files LabVIEW and VIPM rewrite on their own: settings, alias lists, caches, the compiled-object cache and VIPM's own Tools-menu VI (AC7). |
 
 ## Consistency Gate
 - [x] Intent is unambiguous

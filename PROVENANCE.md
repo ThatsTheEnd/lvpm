@@ -62,6 +62,16 @@ package installs and diffing the two states. lvpm's installer was then
 verified by comparing the filesystem state it produces against the state a
 reference VIPM install produces: identical files, identical places.
 
+## .vip writing
+
+`lvpm build` writes the `.vip` layout described above. That VIPM accepts it was
+checked only through documented `vipm` commands (`install -y`, `uninstall`,
+`info`, `--version`) against VIPM 26.3.0. lvpm's builds and variants of them
+were installed into our own licensed LabVIEW installation, and the installed
+files were compared with those of the published archive. No VIPM code, cache
+or configuration was read, decompiled or disassembled. The findings stay
+outside the repository, under `target/`.
+
 ## LabVIEW VI Server wire protocol
 
 The TCP protocol spoken by [crates/lvpm-core/src/viserver.rs](crates/lvpm-core/src/viserver.rs) belongs to NI's

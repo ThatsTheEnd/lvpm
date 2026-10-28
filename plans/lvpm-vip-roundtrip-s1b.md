@@ -482,7 +482,8 @@ round trips add none.
 writing" paragraph: lvpm's `.vip` layout was checked only through documented
 `vipm` commands (install, uninstall, info) against VIPM 26.3.0, with no VIPM
 code or cache read (AC1). README milestone "`.vip` output, verified by a
-round-trip install in VIPM" ticked (AC9); build-slices.md marks S1b done. The
+round-trip install in VIPM" ticked (AC9), only once 4.2's run lines say pass;
+S1b is closed on the board, not in build-slices.md (its convention). The
 spec logs the deviations from Risks, AC6's file name among them.
 **TEST**: PROVENANCE names "documented `vipm` commands" and "VIPM 26.3.0" and
 no VIPM message or variant; the README line reads `- [x]`; no spec text
@@ -636,6 +637,6 @@ already compares pilot A's install with the published archive's).
 #### Wave 2
 - [x] Slice 3: lvpm writes what VIPM needs (none needed)
 - [ ] Slice 4: round trips recorded, docs
-  - [ ] Step 4.1: the probe refuses a non-CLI `LVPM_TEST_VIPM`
-  - [ ] Step 4.2: round trips on both pilots (operator)
-  - [ ] Step 4.3: PROVENANCE, milestone, spec deviations
+  - [x] Step 4.1: the probe refuses a non-CLI `LVPM_TEST_VIPM`
+  - [ ] Step 4.2: round trips on both pilots (operator): file written, run lines not filled
+  - [ ] Step 4.3: PROVENANCE, milestone, spec deviations: PROVENANCE and spec done; README tick waits for 4.2's pass lines
