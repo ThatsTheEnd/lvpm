@@ -516,7 +516,9 @@ with S1's pilot scenarios in the run count (AC8, AC3).
   (deviation to log at 1.6): the tree check covers the scoped directories
   (after the full-tree discovery around the reference install) and excludes
   `*.ini`, `*.aliases`, `*.cache`, `*.lvlps`, which LabVIEW and VIPM rewrite
-  on their own; the `git status` check excludes `.claude/`, which this
+  on their own, and `*.vidb` (the compiled-object cache, found by the first
+  run at 1.6), and VIPM's own `project/VI Package Manager.vi`, which VIPM
+  rewrote during the second run at 1.6; the `git status` check excludes `.claude/`, which this
   repo's hooks write during any session. Any other change fails the run.
 - Tag names: pilot A is `@pilot-source`, pilot B `@pilot-b-source`;
   renaming pilot A's tag is out of scope.

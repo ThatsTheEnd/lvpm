@@ -132,7 +132,7 @@ Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 
 | Term | Definition | Status | Source |
 |------|------------|--------|--------|
-| accepted | `vipm install <file> -y` exits 0 and `vipm info <name>` lists the package as installed | `unverified` | inference from the CLI help |
+| accepted | `vipm install <file> -y` exits 0 and `vipm info <name>` lists the package as installed: its `Installed Version:` line holds the version | `verified` | the first probe run, 2026-10-28 (vipm 26.3.0): calibration passed |
 | variant | A `.vip` that differs from lvpm's build of pilot A in exactly one key, value or entry (the license row counts as one: the `license` entry and the `License Agreement` key that names it) | `unverified` | build-slices.md S1b, step 3 |
 | black-box | Learning only from VIPM's documented commands, its messages and the files it installs | `unverified` | PROVENANCE.md, build-slices.md S1b |
 | round trip | lvpm builds a pilot, VIPM installs and mass compiles it | `verified` | build-slices.md S1b |
@@ -151,7 +151,7 @@ Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 | Changing lvpm only where VIPM needs it | `inferable` | inference | S1's decision: no `ID`, icon or license until S1b shows VIPM needs them. Adding more would be unverified copying of VIPM's output. |
 | Global LabVIEW pollution | `inferable` | inference | VIPM has no venv; README principle 1 notes a global install shadows the venv copy. Uninstall and compare snapshots after each probe. |
 | Where the probe code lives | `inferable` | inference | Dev-only, like S1's `@pilot-source` scenarios gated by an env var; an `#[ignore]` test keeps it out of `cargo test`. |
-| What "accepted" means | `inferable` | inference | Exit code plus `vipm info`, both observable without reading VIPM files. Status `unverified` until the first probe confirms `info` shows installed packages. |
+| What "accepted" means | `inferable` | inference | Exit code plus `vipm info`, both observable without reading VIPM files. Confirmed by the first probe run on 2026-10-28. `info` exits 0 for any catalog package, so only its `Installed Version:` line tells installed from not installed. |
 | `ID` value if needed | `inferable` | inference | Content-derived keeps builds byte-identical (S1 criterion 2); random would break it. Probe decides whether VIPM needs it at all. |
 | Dependencies VIPM fetches for pilot B | `inferable` | inference | VIPM resolves `Requires` from its own feeds (vipm.io); both dependencies are public there. lvpm feeds are out of scope. |
 | CRUD sweep: findings table | `inferable` | inference | Created once, updated when VIPM changes; never deleted. |
