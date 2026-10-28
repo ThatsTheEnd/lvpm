@@ -133,10 +133,15 @@ impl<'a> Vipm<'a> {
         }
     }
 
+    /// The first line of `vipm --version`. It must start with `vipm `: the GUI
+    /// exe sits next to the CLI and is easy to pick for `LVPM_TEST_VIPM`.
     pub fn version(&self) -> Result<String, String> {
+        let not_cli = format!("is {VIPM_ENV_VAR} VIPM's CLI, `support\\vipm.exe`?");
         match self.exec(&["--version"], self.timeouts.other) {
-            Ran::Exited { code: 0, output } => Ok(first_line(&output)),
-            other => Err(format!("`vipm --version` gave {other:?}")),
+            Ran::Exited { code: 0, output } if first_line(&output).starts_with("vipm ") => {
+                Ok(first_line(&output))
+            }
+            other => Err(format!("`vipm --version` gave {other:?}; {not_cli}")),
         }
     }
 
@@ -499,12 +504,27 @@ mod tests {
     }
 
     #[test]
+    fn version_that_is_not_vipms_names_the_variable() {
+        for output in ["VI Package Manager 2026", ""] {
+            // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
+            let run = |_: &[String], _: Duration| exited(0, output);
+            let why = Vipm::new(&run, SHORT).version().unwrap_err();
+            assert!(
+                why.contains(VIPM_ENV_VAR) && why.contains("support\\vipm.exe"),
+                "{output:?}: {why}"
+            );
+        }
+    }
+
+    #[test]
     fn a_version_that_fails_says_what_vipm_gave() {
         // double-waiver: B1 — vipm.exe is a subprocess that drives LabVIEW and VIPM's own state
         let run = |_: &[String], _: Duration| exited(2, "no such flag");
         let why = Vipm::new(&run, SHORT).version().unwrap_err();
         assert!(
-            why.contains("vipm --version") && why.contains("no such flag"),
+            why.contains("vipm --version")
+                && why.contains("no such flag")
+                && why.contains(VIPM_ENV_VAR),
             "{why}"
         );
     }

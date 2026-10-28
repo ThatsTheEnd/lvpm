@@ -59,6 +59,8 @@ fn probe() -> Result<String, String> {
 
     let runner = vipm::real_runner(vipm_exe);
     let vipm = Vipm::new(&runner, Timeouts::REAL);
+    // Before the guard, so no `info` or `uninstall` runs against the wrong exe.
+    let vipm_version = vipm.version()?;
     let me = std::process::id();
     let start = global::process_start(me).ok_or("this run's own start time cannot be read")?;
     let ini = std::fs::read_to_string(labview.join("LabVIEW.ini")).unwrap_or_default();
@@ -76,7 +78,6 @@ fn probe() -> Result<String, String> {
     )?;
 
     let inputs = load_inputs(&pilot_a)?;
-    let vipm_version = vipm.version()?;
     let header = table::Header {
         vipm: vipm_version.clone(),
         labview: labview_file_version(&labview)?,
