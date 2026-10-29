@@ -549,9 +549,10 @@ graph TD
   - Note (build): the hosted-tamper scenario names the entry and "install demo_lib 1.2.3", not the file, because a sync reads the archive from the cache by hash. It drops "the lockfile is unchanged", because `lvpm install` locks before it opens an archive (as for any broken `.vip`). AC8 holds: the entry is named and nothing is written to the venv. Verifying before locking is a follow-up, not S7a.
 
 ### Wave 4
-- [ ] Slice 4: delete the writer, document
-  - [ ] Step 4.1: delete
-  - [ ] Step 4.2: document
+- [x] Slice 4: delete the writer, document
+  - [x] Step 4.1: delete
+  - [x] Step 4.2: document
+  - Note (build): the reference check also skips `metrics/` and `.claude/`; `metrics/verify-log.jsonl` is an append-only history log whose S1b entry names the probe. The GitHub-tidy items wait for the user at the PR.
 
 ## Plan Review Summary
 
