@@ -102,13 +102,24 @@ These are asserted word for word in the scenarios.
 | Case | Message |
 |---|---|
 | `formats` | `distribution.formats was removed (ADR 6, docs/adr/0006-lvpkg-only-vip-read-only.md): lvpm build always writes a .lvpkg. Delete the line.` |
-| `[distribution.vip]` | `[distribution.vip] was removed (ADR 6, docs/adr/0006-lvpkg-only-vip-read-only.md). Move vendor, display-name and install-dir into [distribution]; the package name is [project] name; icon and dependency-names are gone. Found: <every key in the table>` |
+| `[distribution.vip]` | `[distribution.vip] was removed (ADR 6, docs/adr/0006-lvpkg-only-vip-read-only.md). Move vendor, display-name and install-dir into [distribution]; the package name is [project] name; icon and dependency-names are gone. Found: <keys>` where `<keys>` is every key of the table, comma-separated in file order (a `dependency-names` subtable is listed as `dependency-names`), or `(empty table)` |
 | scoped `[project] name` | `project.name = "@scope/lib": scoped package names are not supported yet; use an unscoped name` |
 | entry changed | `<file>: entry "<path>" differs from RECORD (the package was altered or is corrupt); rebuild or download it again` |
-| entry not in `RECORD` | `<file>: entry "<path>" is not listed in RECORD …` (same tail) |
-| `RECORD` names a missing entry | `<file>: RECORD lists "<path>", which the archive lacks …` (same tail) |
+| entry not in `RECORD` | `<file>: entry "<path>" is not listed in RECORD (the package was altered or is corrupt); rebuild or download it again` |
+| `RECORD` names a missing entry | `<file>: RECORD lists "<path>", which the archive lacks (the package was altered or is corrupt); rebuild or download it again` |
 | no `RECORD` | `<file>: no RECORD; this is not a valid .lvpkg` |
-| unknown `format` | `<file>: package.toml format = 2 was written by a newer lvpm; update lvpm` |
+| `format` > 1 | `<file>: package.toml format = <value> was written by a newer lvpm; update lvpm` |
+| `format` missing, < 1 or not an integer | `<file>: package.toml format must be 1; this is not a valid .lvpkg` |
+
+Entry order (AC3): `RECORD`, then `package.toml`, then the payload sorted
+by path, byte-wise. The reader does not depend on order.
+
+AC12's reference check: `git grep -nE 'spec::write|vipm_probe|s1b-vip-in-vipm'`
+outside `docs/specs/`, `plans/` and `docs/adr/` returns nothing.
+
+Untrusted-input rules (path traversal, case duplicates, 1 MiB caps, bad
+`RECORD` lines) have no spec AC of their own; they are AC8's and are
+covered by slice 2's structural-refusal outline.
 
 `<file>` is added by the caller with `.context`. In user-facing text the
 folder feed is called a "package folder (`sources.local`)", and the install
