@@ -47,17 +47,9 @@ git -C hse-logger checkout f7cc16a391faa1e982b54ae22d2f43c9df1ef581
 LVPM_TEST_PILOT_A=<path to hse-logger> cargo test --test acceptance
 ```
 
-Pilot B's `@pilot-b-source` scenario works the same way with its own variable:
-
-```console
-git clone https://github.com/LabVIEW-Open-Source/Serializer
-git -C Serializer checkout 723d7a672b5f0eafa9f98ea63629ba5855d50227
-LVPM_TEST_PILOT_B=<path to Serializer> cargo test --test acceptance
-```
-
 Each scenario checks that its HEAD is the pinned commit and that the folder
 the build copies (`Source` or `source`) has no modified, untracked or ignored
-files; changes elsewhere in the checkout are accepted. Without the variable, the harness does not run that pilot's scenarios
+files; changes elsewhere in the checkout are accepted. Without the variable, the harness does not run those scenarios
 and says how many it left out.
 
 | Pilot | Repository | Tag | Commit |
