@@ -103,14 +103,20 @@ impl CliWorld {
         self.build.output.as_ref().expect("lvpm build ran")
     }
 
-    pub(super) fn succeeded(&self) {
-        let out = self.built();
-        assert_eq!(out.exit_code, 0, "lvpm build failed: {out:?}");
+    /// The command a scenario ran last, for the steps that read "it succeeds"
+    /// and "it fails" of a command that is not `lvpm build`.
+    pub(super) fn record_output(&mut self, output: Output) {
+        self.build.output = Some(output);
     }
 
-    fn failed(&self) -> String {
+    pub(super) fn succeeded(&self) {
         let out = self.built();
-        assert_ne!(out.exit_code, 0, "lvpm build succeeded: {out:?}");
+        assert_eq!(out.exit_code, 0, "the command failed: {out:?}");
+    }
+
+    pub(super) fn failed(&self) -> String {
+        let out = self.built();
+        assert_ne!(out.exit_code, 0, "the command succeeded: {out:?}");
         out.stderr.clone()
     }
 

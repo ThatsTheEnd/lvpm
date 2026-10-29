@@ -113,6 +113,8 @@ pub struct CliWorld {
     pub build: steps::build::BuildState,
     /// What an `lvpm publish` scenario has set up and seen.
     pub publish: steps::publish::PublishState,
+    /// What a `.lvpkg` scenario has set up and seen.
+    pub lvpkg: steps::sources::LvpkgState,
 }
 
 impl CliWorld {
@@ -140,6 +142,7 @@ impl CliWorld {
             pilots: Default::default(),
             build: Default::default(),
             publish: Default::default(),
+            lvpkg: Default::default(),
         }
     }
 
