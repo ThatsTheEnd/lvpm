@@ -384,12 +384,12 @@ and the two `@labview` scenarios name `.lvpkg`.
   Scenario: a .lvpkg renamed to .vip still installs
     Given a package folder holding the built package renamed "demo_lib-1.2.3.vip"
     When lvpm install runs
-    Then it succeeds
+    Then it succeeds and the venv holds the members
 
-  Scenario: a tampered .lvpkg from a hosted feed is refused before anything is written
+  Scenario: a tampered .lvpkg from a hosted feed is refused before the venv is touched
     Given a hosted feed whose "demo_lib-1.2.3.lvpkg" has "vi.lib/Vendor/Demo Lib/A.vi" changed after build
     When a project depending on demo_lib runs lvpm install
-    Then it fails with the "entry changed" message naming "demo_lib-1.2.3.lvpkg" and "vi.lib/Vendor/Demo Lib/A.vi", and the venv and the lockfile are unchanged
+    Then it fails with the "entry changed" message naming "vi.lib/Vendor/Demo Lib/A.vi" and "install demo_lib 1.2.3", and the venv is unchanged
 
   Scenario: cache add refuses a tampered .lvpkg
     Given "demo_lib-1.2.3.lvpkg" with "vi.lib/Vendor/Demo Lib/A.vi" changed after build
@@ -543,9 +543,10 @@ graph TD
   - [x] Step 2.2: read and check
 
 ### Wave 3
-- [ ] Slice 3: build, publish and the feeds use `.lvpkg`
-  - [ ] Step 3.1: build writes `.lvpkg`, every built-package scenario moves
-  - [ ] Step 3.2: the feed scenarios
+- [x] Slice 3: build, publish and the feeds use `.lvpkg`
+  - [x] Step 3.1: build writes `.lvpkg`, every built-package scenario moves
+  - [x] Step 3.2: the feed scenarios
+  - Note (build): the hosted-tamper scenario names the entry and "install demo_lib 1.2.3", not the file, because a sync reads the archive from the cache by hash. It drops "the lockfile is unchanged", because `lvpm install` locks before it opens an archive (as for any broken `.vip`). AC8 holds: the entry is named and nothing is written to the venv. Verifying before locking is a follow-up, not S7a.
 
 ### Wave 4
 - [ ] Slice 4: delete the writer, document

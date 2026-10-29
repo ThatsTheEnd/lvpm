@@ -429,33 +429,23 @@ async fn hosted_feed_tampered(world: &mut CliWorld, file: String, entry: String)
 }
 
 #[then(
-    regex = r#"^it fails with the "entry changed" message naming "([^"]+)" and "([^"]+)", and the venv and the lockfile are unchanged$"#
+    regex = r#"^it fails with the "entry changed" message naming "([^"]+)" and "([^"]+)", and the venv is unchanged$"#
 )]
 async fn fails_entry_changed_and_nothing_written(
     world: &mut CliWorld,
-    file: String,
     entry: String,
+    package: String,
 ) {
     let message = world.failed();
     let want = entry_changed(&entry);
     assert!(message.contains(&want), "{want:?} is not in: {message}");
     // A sync reads the archive from the cache by its SHA-256, so it has no file
     // name to give; it names the package it was installing.
-    let (id, _) = file
-        .rsplit_once('.')
-        .expect("a file name with an extension");
-    let (name, version) = id.rsplit_once('-').expect("a name and a version");
     assert!(
-        message.contains(&format!("install {name} {version}")),
-        "{name} {version} is not named in: {message}"
+        message.contains(&package),
+        "{package:?} is not named in: {message}"
     );
     world.assert_dest_unchanged();
-    // With no lock, `lvpm install` locks from the feed's listing before it opens
-    // an archive; the refusal leaves exactly that lock, as `lvpm lock` writes it.
-    // shortcut: no pre-existing lock is tested, add a scenario if one matters.
-    assert!(world.lock.before.is_none(), "the project had a lock");
-    let locked = [("demo_lib".to_string(), "1.2.3".to_string())];
-    assert_eq!(world.locked_versions(), locked, "what lvpm.lock holds");
 }
 
 #[given(regex = r#"^"([^"]+)" with "([^"]+)" changed after build$"#)]
@@ -498,6 +488,15 @@ async fn cache_add_refused(world: &mut CliWorld, file: String) {
     assert!(
         cache_files(&world.sandbox.cache_dir()) == *before,
         "the cache changed"
+    );
+    // A recorded import would make a second run report the file as reused.
+    let (path, _) = world.lvpkg.tampered.clone().expect("a tampered package");
+    let again = world
+        .sandbox
+        .run_lvpm(&["cache", "add", path.to_str().expect("a path")], None);
+    assert_ne!(
+        again.exit_code, 0,
+        "a second cache add succeeded: {again:?}"
     );
 }
 

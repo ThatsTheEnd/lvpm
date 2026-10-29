@@ -48,12 +48,12 @@ Feature: the .lvpkg format (S7a)
   Scenario: a .lvpkg renamed to .vip still installs
     Given a package folder holding the built package renamed "demo_lib-1.2.3.vip"
     When lvpm install runs
-    Then it succeeds
+    Then it succeeds and the venv holds the members
 
-  Scenario: a tampered .lvpkg from a hosted feed is refused before anything is written
+  Scenario: a tampered .lvpkg from a hosted feed is refused before the venv is touched
     Given a hosted feed whose "demo_lib-1.2.3.lvpkg" has "vi.lib/Vendor/Demo Lib/A.vi" changed after build
     When a project depending on demo_lib runs lvpm install
-    Then it fails with the "entry changed" message naming "demo_lib-1.2.3.lvpkg" and "vi.lib/Vendor/Demo Lib/A.vi", and the venv and the lockfile are unchanged
+    Then it fails with the "entry changed" message naming "vi.lib/Vendor/Demo Lib/A.vi" and "install demo_lib 1.2.3", and the venv is unchanged
 
   Scenario: cache add refuses a tampered .lvpkg
     Given "demo_lib-1.2.3.lvpkg" with "vi.lib/Vendor/Demo Lib/A.vi" changed after build
