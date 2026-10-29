@@ -6,6 +6,9 @@
 //! `cargo test --test vipm_probe -- --ignored --nocapture`, with
 //! `LVPM_TEST_VIPM` (vipm.exe) and `LVPM_TEST_PILOT_A` (pilot A's checkout).
 //! The findings go to `target/vipm-probes/<date>T<time>-vipm-<version>/`.
+//!
+//! "accepted" proves nothing at a version VIPM already has: VIPM then installs
+//! its cached copy, whatever the file holds (ADR 6). S1b closed on that.
 
 // Test code reads the test process's environment; the workspace-wide
 // `clippy.toml` bars that from `lvpm-core` only.

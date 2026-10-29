@@ -3,7 +3,7 @@
 
 **Format:** dev-team specs 14.0.1 · **Status:** closed 2026-10-29, VIPM refuses lvpm's `.vip` ([Outcome](#outcome), [ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)) · **Date:** 2026-10-27 ·
 **Slice:** [S1b in build-slices.md](../vision/build-slices.md#slice-s1b-vipm-installs-an-lvpm-built-vip), issue #60 ·
-**Builds on:** [S1 spec](lvpm-build-s1.md), [ADR 2](../adr/0002-vip-first-lvpkg-later.md), [PROVENANCE.md](../../PROVENANCE.md)
+**Builds on:** [S1 spec](lvpm-build-s1.md), [ADR 2](../adr/0002-vip-first-lvpkg-later.md) (superseded by [ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)), [PROVENANCE.md](../../PROVENANCE.md)
 
 ## Intent Description
 
@@ -33,7 +33,7 @@ paragraph that says how `.vip` writing was verified.
 | `spec` and zip changes VIPM needs | none possible: VIPM needs an `ID` lvpm cannot compute ([Outcome](#outcome)) |
 | Unit tests, one per VIPM requirement, named after it | next to the code they cover |
 | Probe runner (dev only, not shipped) | `tests/vipm_probe.rs`, `#[ignore]`, runs when `LVPM_TEST_VIPM` names `vipm.exe` |
-| Round-trip scenarios | `tests/features/build-slices/s1b-vip-in-vipm-roundtrip.feature`, tagged `@unsafe` (manual) |
+| Round-trip scenarios | none: removed when VIPM refused lvpm's `.vip` ([Outcome](#outcome)) |
 | Findings table (local only) | written by the probe runner to `target/vipm-probes/` (under `target/`, so already gitignored) |
 | Provenance | a ".vip writing" paragraph in PROVENANCE.md: method, VIPM version, and that the results are kept out of the repository like the install snapshots |
 
@@ -184,8 +184,8 @@ pilot B built from its pinned checkout (`LVPM_TEST_PILOT_B`), and AC8
 | Decision | Classification | Resolved By | Rationale / Answer |
 |----------|---------------|-------------|-------------------|
 | **Q1. Is the probing allowed under VIPM's license, and may the table be published?** | `requires-stakeholder-input` | human, 2026-10-27 | **(b): probe with documented commands, keep the table out of the repository.** Context given: the installed license (March 2020) allows use "for your own internal use and evaluation purposes" "in accordance with the documentation" (§1.1). It forbids attempts "to discover any portion of the object or source code or trade secrets" (§1.2(d)), and §3 counts "design and function specifications" as JKI's confidential information, except what is public or independently developed. The dev machine runs the **Free** edition; Appendix A (Community) limits use to non-commercial or OSI open-source work. Installing files and watching the result is what PROVENANCE already describes for install semantics, but whether that counts as "discovering" behaviour, and whether this use is commercial (Hexagon), is a legal question. Options: (a) probe with documented commands and publish the table; (b) probe, keep the table out of the repo; (c) ask JKI first, or skip step 3 and only do the round trips. |
-| **Q2. Probes scripted through `vipm.exe` or run by hand?** | `requires-stakeholder-input` | human, 2026-10-27 | **Scripted.** Depends on Q1. The CLI is documented and in the Free edition (`install`, `uninstall`, `info` are not marked Pro; unverified until plan step 1.6). Scripting makes the ~15 variants repeatable in minutes; by hand they take an afternoon and cannot be rerun on a new VIPM version. Recommendation: scripted, if Q1 allows. |
-| **Q3. What if VIPM rejects lvpm's `.vip` and no spec or zip change fixes it?** | `requires-stakeholder-input` | human, 2026-10-27 | **Deferred: assume VIPM accepts lvpm's packages; decide if it does not.** Options were: product direction. Slice's fallback: `.vip` stays lvpm-only, docs say so, and S7a (`.lvpkg`) moves up. Alternative: M2 stays blocked until VIPM accepts it. Recommendation: the slice's fallback. |
+| **Q2. Probes scripted through `vipm.exe` or run by hand?** | `requires-stakeholder-input` | human, 2026-10-27 | **Scripted.** Depends on Q1. The CLI is documented and in the Free edition (`install`, `uninstall`, `info` are not marked Pro; verified by the 2026-10-28 run). Scripting makes the ~15 variants repeatable in minutes; by hand they take an afternoon and cannot be rerun on a new VIPM version. Recommendation: scripted, if Q1 allows. |
+| **Q3. What if VIPM rejects lvpm's `.vip` and no spec or zip change fixes it?** | `requires-stakeholder-input` | human, 2026-10-27 | **Resolved 2026-10-29: VIPM refuses lvpm's `.vip`; the fallback applies ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).** Deferred until then: assume VIPM accepts lvpm's packages; decide if it does not. Options were: product direction. Slice's fallback: `.vip` stays lvpm-only, docs say so, and S7a (`.lvpkg`) moves up. Alternative: M2 stays blocked until VIPM accepts it. Recommendation: the slice's fallback. |
 | Rebuild pilot A with VIPM (slice step 2) | `inferable` | inference | `vipm build` needs a public repo (Free/Community) or Pro; pilot A's source is not public. The published archive in the fixtures was built by VIPM from that library, so it is the VIPM reference. Deviation from the slice text, to be noted on #60. |
 | Findings table location (slice says `docs/`) | `inferable` | from Q1 | Q1 keeps the table out of the repository, so it goes to `target/vipm-probes/`. Deviation from the slice text, to be noted on #60. |
 | Pilot B's source in tests | `inferable` | inference | Public, 0-BSD. Same mechanism as pilot A in S1 (`LVPM_TEST_PILOT_*`, pinned HEAD), so tests do not download. |
@@ -200,7 +200,7 @@ pilot B built from its pinned checkout (`LVPM_TEST_PILOT_B`), and AC8
 | CRUD sweep: packages installed by probes | `inferable` | inference | Created and deleted by each probe (criterion 7). |
 | Auth / audit | `inferable` | inference | `vipm install` of a local file needs no login. The Community edition's periodic login is the user's, not lvpm's. Not applicable otherwise. |
 | Error handling: VIPM not installed | `inferable` | inference | Probe runner is `#[ignore]` and gated by `LVPM_TEST_VIPM`; without it nothing runs. |
-| Deviations found while building (plan, 2026-10-28) | `inferable` | plan | The key census from VIPM's cache (probe step 1) is dropped: it is outside Q1's boundary, and the reference diff covers it. Pilot B has one direct dependency, which brings the palette (AC5). The round trips live in `s1b-vip-in-vipm-roundtrip.feature`, tagged `@unsafe`, so AC4–AC6 rest on its run lines, not on the harness (AC6). The residue check covers the scoped directories and ignores the files LabVIEW and VIPM rewrite on their own: settings, alias lists, caches, the compiled-object cache and VIPM's own Tools-menu VI (AC7). |
+| Deviations found while building (plan, 2026-10-28) | `inferable` | plan | The key census from VIPM's cache (probe step 1) is dropped: it is outside Q1's boundary, and the reference diff covers it. Pilot B has one direct dependency, which brings the palette (AC5). The round trips were to live in `s1b-vip-in-vipm-roundtrip.feature` (never committed, see Outcome), tagged `@unsafe`, so AC4–AC6 rest on its run lines, not on the harness (AC6). The residue check covers the scoped directories and ignores the files LabVIEW and VIPM rewrite on their own: settings, alias lists, caches, the compiled-object cache and VIPM's own Tools-menu VI (AC7). |
 
 ## Consistency Gate
 - [x] Intent is unambiguous

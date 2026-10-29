@@ -76,7 +76,7 @@ pub struct Judged {
 }
 
 /// The note of an install that exited 0 but that `vipm info` does not list.
-pub const NOT_LISTED_NOTE: &str = "not listed by vipm info";
+pub const NOT_LISTED_NOTE: &str = "not listed at this version by vipm info";
 
 pub fn timed_out_note(timeout: Duration) -> String {
     format!("timed out after {}s", timeout.as_secs_f64())

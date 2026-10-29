@@ -409,6 +409,9 @@ above; existing selection tests pass with `Env`.
 
 ### Slice 3: lvpm writes what VIPM needs (none needed)
 
+Refuted 2026-10-29 (spec Outcome, ADR 6): that run reused a version VIPM had
+cached, so its "accepted" was VIPM's own copy. The original text follows.
+
 Re-planned after step 1.6. The probe run accepted lvpm's base build and every
 variant, each installing the reference's files. lvpm-core needs no change.
 AC2 is vacuous: no change, so no requirement to test; the PR 2 gate checks
@@ -636,7 +639,7 @@ already compares pilot A's install with the published archive's).
 
 #### Wave 2
 - [x] Slice 3: lvpm writes what VIPM needs (none needed)
-- [ ] Slice 4: round trips recorded, docs
+- [x] Slice 4: round trips recorded, docs (closed by ADR 6)
   - [x] Step 4.1: the probe refuses a non-CLI `LVPM_TEST_VIPM`
-  - [ ] Step 4.2: round trips on both pilots (operator): file written, run lines not filled
-  - [ ] Step 4.3: PROVENANCE, milestone, spec deviations: PROVENANCE and spec done; README tick waits for 4.2's pass lines
+  - [x] Step 4.2: dropped (ADR 6): VIPM refuses lvpm's `.vip`; no round-trip file is kept
+  - [x] Step 4.3: PROVENANCE and spec done; the milestone was dropped instead of ticked (ADR 6)

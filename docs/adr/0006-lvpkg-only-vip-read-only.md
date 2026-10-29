@@ -4,7 +4,8 @@ Date: 2026-10-29
 
 ## Status
 
-Accepted. Supersedes [ADR 2](0002-vip-first-lvpkg-later.md).
+Accepted. Supersedes [ADR 2](0002-vip-first-lvpkg-later.md). Amends
+[ADR 1](0001-manifest-project-and-distribution.md) decisions 2 and 4.
 
 ## Context
 
@@ -67,7 +68,8 @@ with an error that says the file is broken.
   `.lvpkg` moves to S9, which adds it once its generator exists.
 - `lvpm publish` (S2) copies the `.lvpkg` once S7a lands. GitHub release
   lookup (S4) takes `*.lvpkg` first and `*.vip` as a fallback, so existing
-  VIPM releases stay installable.
+  VIPM releases stay installable. S4's CI template ships only once S7a has
+  merged, so it never uploads an lvpm-built `.vip`.
 - Until S7a merges, `lvpm build` still writes a `.vip`. It is for lvpm only
   and is not to be distributed. No lvpm-built `.vip` has been released, so
   nothing needs migrating.

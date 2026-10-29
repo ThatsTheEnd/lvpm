@@ -33,8 +33,8 @@ This folder is this fork's direction. The upstream author's plan stays in
    unless allowed by name. (Target: today hooks still run by default on a
    developer machine.)
 4. **Meet people where they are.** Read VIPM and NI indexes and install
-   `.vip`, import `.vipc` projects, check NIPM drivers. lvpm does not write
-   `.vip`: VIPM refuses packages it did not build itself ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
+   `.vip`, import `.vipc` projects, check NIPM drivers. lvpm stops writing
+   `.vip` with S7a: VIPM refuses packages it did not build itself ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
 5. **Standard infrastructure.** OCI registries, git, GitHub Releases,
    Sigstore — nothing lvpm-specific to run.
 

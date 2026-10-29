@@ -137,7 +137,7 @@ link. Checked 2026-10-26 from each repository's `.vipb`.
 |---|---|---|
 | 1 | S0 acceptance scenarios, S5 `lvpm check`, S10a–d project commands, S11 dependency groups, S12 hooks off by default, S13 first source wins | yes (S5, S10a–d, S11 and S12 touch `src/main.rs`; S5, S10a, S10b and S12 also touch `events.rs`; S5, S10a, S10b and S12 touch `src/render/mod.rs`; S10a, S11 and S12 touch `manifest_edit.rs`; S11 and S12 touch `ops/sync.rs`, `ops/uninstall.rs` and `project.rs`, so build them one after the other: merge one first, rebase the others; S11 and S13 touch `lockfile.rs`) |
 | 2 | S1 `lvpm build`, S7c pinned sources | yes (both touch `project.rs` and `src/main.rs`) |
-| 3 | S7a `.lvpkg`, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S7a, S5b and S9 touch `ops/build.rs`; S7a and S4 touch `index.rs`; S5b and S9 touch `src/main.rs`: merge one first, rebase the others) |
+| 3 | S7a `.lvpkg`, S4 GitHub Releases, S5b build gate, S9 app builds + SBOM | yes (S7a, S5b and S9 touch `ops/build.rs`; S7a and S4 touch `index.rs` and `project.rs`; S5b and S9 touch `src/main.rs`: merge one first, rebase the others) |
 | 4 | S6 attestations and policy | yes |
 | 5 | S7b OCI feeds, S8 community index | yes (both touch `project.rs`) |
 
@@ -320,9 +320,10 @@ Goal: the open-source loop without any registry of your own.
 In scope:
 - `libX = { github = "owner/repo", version = ">=1.2" }` in `lvpm.toml`: a direct
   source for that one package, never looked up in `[sources]` (ADR 4, decision 6).
-- Versions come from release tags; the release file is `*.lvpkg`, with `*.vip` as a fallback for releases VIPM built.
+- Versions come from release tags; the release file is `*.lvpkg` (once S7a reads it), with `*.vip` as a fallback for releases VIPM built.
 - The lock's `source` field names the GitHub feed; the file's SHA-256 is pinned on first lock.
-- A CI template that runs `lvpm build` on a tag and uploads with `gh release upload`.
+- A CI template that runs `lvpm build` on a tag and uploads the `.lvpkg` with `gh release upload`.
+  It ships with whichever of S4 and S7a merges second: until S7a, `lvpm build` writes a `.vip` that is not to be distributed (ADR 6).
 
 Out of scope: attestations (S6), the community index (S8).
 
@@ -416,7 +417,7 @@ In scope:
 - lvpm installs `.lvpkg` from every feed it reads `.vip` from, and checks `RECORD`.
 - `lvpm publish` copies the `.lvpkg`. S1's and S2's scenarios move to it.
 
-Out of scope: the SBOM inside the package (S9 adds it), `lvpm convert`.
+Out of scope: the SBOM inside the package (whichever of S7a and S9 merges second adds it), `lvpm convert`.
 
 Acceptance criteria:
 - [ ] `lvpm build` writes only `dist/<name>-<version>.lvpkg`; two builds are byte-identical.
@@ -517,7 +518,7 @@ SBOM. It reuses S1's `build` command.
 
 In scope:
 - `lvpm build` runs a named `.lvproj` build spec through LabVIEW in the project's venv.
-- A CycloneDX SBOM from `lvpm.lock`, shipped next to the build, and inside each `.lvpkg` `lvpm build` writes.
+- A CycloneDX SBOM from `lvpm.lock`, shipped next to the build, and inside each `.lvpkg` `lvpm build` writes (whichever of S7a and S9 merges second adds that part).
 - README milestone "`lvpm build`: `source` kind, `.lvpkg` format, SBOM" is ticked once S7a and S9 have both merged.
 
 Out of scope: PPL packages (not sliced yet).
@@ -641,7 +642,7 @@ In scope:
 - The project allowlist is `hooks = "run"` on the dependency line ([ADR 4](../adr/0004-sources-first-wins-and-pinning.md)); global installs use one in the user config.
 - Uninstall hooks run only if the install hook ran.
 
-Out of scope: running hooks in a venv (never); hooks in lvpm-built packages (ADR 2); pinning each allowed hook VI's hash in `lvpm.lock` (ADR 3).
+Out of scope: running hooks in a venv (never); hooks in lvpm-built packages (ADR 6, decision 4); pinning each allowed hook VI's hash in `lvpm.lock` (ADR 3).
 
 Acceptance criteria:
 - [ ] A global install of a package with a `PostInstall` hook does not run it, warns, and exits 0.

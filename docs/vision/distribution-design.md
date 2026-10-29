@@ -16,7 +16,7 @@ The workflow it serves:
 | Term | Meaning here |
 |---|---|
 | **kind** | what a package contains: `source` or `ppl` |
-| **format** | the container: `.lvpkg` (written and read) or `.vip` (read only) |
+| **format** | the container: `.lvpkg` (written from S7a, and read) or `.vip` (read; written until S7a for lvpm only) |
 | **feed** | any place packages are resolved from (folder, index, OCI registry, GitHub repo); the existing `[sources]` table and `sources.local` setting configure feeds |
 | `lvpm.toml` | the project manifest a developer edits; its `[project]` table names the package and its `[distribution]` table says what to ship |
 | `package.toml` | the metadata file `lvpm build` writes inside each `.lvpkg`, generated from `lvpm.toml` |
@@ -78,7 +78,8 @@ What `build` does, in order:
 
 ### No `.vip` output
 
-lvpm does not write `.vip` ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
+From S7a, lvpm does not write `.vip` ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md));
+until then `lvpm build` still writes one, for lvpm only.
 S1 wrote one, and lvpm installed it, but VIPM refuses it: VIPM checks a
 package `ID` in the `spec` that only its own builder writes, and how that
 `ID` is computed is not published. A `.vip` that VIPM refuses would only
