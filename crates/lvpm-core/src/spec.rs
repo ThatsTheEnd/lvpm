@@ -17,12 +17,16 @@ pub struct FileGroup {
     pub target_dir: String,
     pub replace_mode: String,
     pub files: Vec<String>,
+    /// Where the group's files sit in the archive: `File Group N/` in a `.vip`,
+    /// the archive root (empty) in a `.lvpkg`.
+    #[serde(skip)]
+    pub entry_prefix: String,
 }
 
 impl FileGroup {
     /// The zip entry that holds `file` of this group.
     pub fn entry(&self, file: &str) -> String {
-        format!("File Group {}/{}", self.index, file.replace('\\', "/"))
+        format!("{}{}", self.entry_prefix, file.replace('\\', "/"))
     }
 }
 
@@ -134,6 +138,7 @@ pub fn parse(text: &str) -> Result<Spec> {
                 .cloned()
                 .unwrap_or_else(|| "Always".into()),
             files,
+            entry_prefix: format!("File Group {i}/"),
         });
     }
 
@@ -276,6 +281,7 @@ File 0="functions_nfg.mnu"
         assert_eq!(s.file_groups[0].target_dir, "<application>");
         assert_eq!(s.file_groups[0].files.len(), 2);
         assert_eq!(s.file_groups[1].replace_mode, "If Newer");
+        assert_eq!(s.file_groups[1].entry(r"a\b.vi"), "File Group 1/a/b.vi");
         assert!(s.script_vis.is_empty(), "empty hooks must not be reported");
     }
 

@@ -153,7 +153,9 @@ pub fn open_archive(vip_bytes: Vec<u8>) -> Result<Archive> {
 /// out.
 const MAX_SPEC_BYTES: u64 = 1024 * 1024;
 
-/// The archive's `spec` member, read and parsed.
+/// The archive's spec, read and checked: by content, a root `package.toml`
+/// makes it a `.lvpkg` (its `RECORD` is checked), a root `spec` a `.vip` or
+/// `.ogp`. The file's extension plays no part.
 pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
     // Almost always literally "spec" at the archive root.
     let idx = (0..zip.len()).find(|i| {
@@ -161,8 +163,15 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
             .map(|f| f.name().eq_ignore_ascii_case("spec"))
             .unwrap_or(false)
     });
-    let Some(idx) = idx else {
-        bail!("no `spec` member in .vip archive");
+    let is_lvpkg = zip.file_names().any(|n| n == crate::lvpkg::PACKAGE_TOML);
+    let idx = match (is_lvpkg, idx) {
+        (true, None) => return crate::lvpkg::read(zip),
+        (true, Some(_)) => bail!(
+            "the archive holds both package.toml and spec; a .lvpkg has the first and a .vip the \
+             second, so it is refused as ambiguous"
+        ),
+        (false, Some(idx)) => idx,
+        (false, None) => bail!("the archive has neither package.toml (a .lvpkg) nor spec (a .vip)"),
     };
     let mut buf = Vec::new();
     zip.by_index(idx)?
@@ -576,14 +585,17 @@ mod tests {
     }
 
     #[test]
-    fn an_archive_with_no_spec_member_is_refused() {
+    fn an_archive_with_neither_package_toml_nor_spec_is_refused_naming_both() {
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer
-            .start_file("other", zip::write::SimpleFileOptions::default())
+            .start_file("a.vi", zip::write::SimpleFileOptions::default())
             .unwrap();
         let mut zip = open_archive(writer.finish().unwrap().into_inner()).unwrap();
         let why = read_spec(&mut zip).unwrap_err().to_string();
-        assert_eq!(why, "no `spec` member in .vip archive");
+        assert_eq!(
+            why,
+            "the archive has neither package.toml (a .lvpkg) nor spec (a .vip)"
+        );
     }
 
     /// A record for `files`, with the hook VIs it is given, installed nowhere.

@@ -176,6 +176,7 @@ impl Distribution {
                 target_dir: "<application>".into(),
                 replace_mode: "Always".into(),
                 files,
+                entry_prefix: "File Group 0/".into(),
             }],
             script_vis: Vec::new(),
             requires: (!self.requires.is_empty()).then(|| self.requires.join(",")),
