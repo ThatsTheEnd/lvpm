@@ -122,5 +122,10 @@ Feature: lvpm build writes a .lvpkg of a library's members
     Then it fails and that package is unchanged
 
   Scenario: the docs name lvpm build
-    Then docs/usage.md has a command-table line for lvpm build and documents the [distribution] keys
-    And README.md shows lvpm build
+    Then docs/usage.md has a command-table line for lvpm build, names the .lvpkg output, and documents vendor, display-name and install-dir under [distribution]
+    And docs/usage.md mentions [distribution.vip] only in its upgrade note
+    And README.md shows lvpm build writing a .lvpkg
+    And ADR 1's example has no formats and no [distribution.vip]
+
+  Scenario: nothing refers to the deleted writer
+    Then no tracked file outside the history names the .vip writer, the VIPM probe or the S1b feature
