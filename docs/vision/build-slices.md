@@ -207,6 +207,8 @@ committed as a trimmed fixture copy.
 
 ### Slice S1: `lvpm build` writes a `.vip`
 
+**Shipped.** S7a replaced its `.vip` writer with a `.lvpkg` one (ADR 6). The text below is as planned.
+
 **Depends-on:** S0
 **Files:** `src/main.rs`, `src/render/build.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/spec.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/ops/build.rs`, `tests/features/build-slices/`
 

@@ -214,7 +214,8 @@ fn clean_path(path: &str) -> bool {
 
 /// A path segment that is not empty, `.` or `..` (which a trailing dot or space
 /// would also make, as Windows drops them) and is not a Windows device: `CON`,
-/// `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, `CONIN$` and `CONOUT$`,
+/// `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9` (and their superscript
+/// `¹`, `²`, `³` forms), `CONIN$` and `CONOUT$`,
 /// whatever the case and with or without an extension.
 fn clean_segment(segment: &str) -> bool {
     if segment.is_empty() || segment.ends_with(['.', ' ']) {
@@ -223,8 +224,12 @@ fn clean_segment(segment: &str) -> bool {
     let stem = segment.split('.').next().unwrap_or_default();
     let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
     let numbered = |prefix: &str| {
-        stem.strip_prefix(prefix)
-            .is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']))
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            matches!(
+                n.chars().collect::<Vec<_>>()[..],
+                ['0'..='9' | '¹' | '²' | '³']
+            )
+        })
     };
     !(matches!(
         stem.as_str(),
@@ -1020,7 +1025,6 @@ mod tests {
             "a.vi",
             "console.vi",
             "COM10",
-            "COM0",
             "COM",
             "LPT",
             "com1x",
@@ -1047,6 +1051,10 @@ mod tests {
             "com9.vi",
             "LPT1",
             "lpt9.x",
+            "COM0",
+            "lpt0.vi",
+            "COM¹.vi",
+            "lpt³",
             "CONIN$",
             "conout$",
             "CON .txt",

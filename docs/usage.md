@@ -306,14 +306,14 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; this
 - `install-dir` is refused if it starts with `/`, has a `\` or a `:`, has an
   empty segment, a segment that is only dots, or a segment that ends in a dot
   or a space. It is refused too if a segment is a Windows device name
-  (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`, `CONIN$`
+  (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to `LPT9` and their `¹²³` forms, `CONIN$`
   or `CONOUT$`, in any case and with or without an extension). Windows
   would drop or reinterpret those, so the files would not land where the
-  package says. One trailing `/` is harmless.
+  package says. Trailing `/` characters are dropped.
 - The default `install-dir` goes through the same check. A `vendor` that ends
   in a dot, like `"Acme Inc."`, therefore needs an `install-dir` of its own:
   `install-dir = "vi.lib/Acme Inc/Lib"`.
-- The package name takes letters, digits, `_`, `-` and `.`. A quote or line
+- The package name takes letters, digits, `_`, `-` and `.`, but not `..`. A quote or line
   break in `vendor` or `display-name` is refused.
 
 ### Installing a .lvpkg
@@ -332,14 +332,15 @@ package came from:
 
 A package folder, `lvpm cache add` and a hosted `index.vipr` all take a
 `.lvpkg` beside a `.vip`. lvpm tells the format from what is inside the
-archive, not from its extension.
+archive, not from its extension; the extension only picks which files a
+package folder and `lvpm cache add` look at.
 
 ### Upgrading from [distribution.vip]
 
 `formats` and the `[distribution.vip]` table are gone: lvpm writes a
 `.lvpkg` only, and a manifest that still has either fails and names the key.
 `vendor`, `display-name` and `install-dir` moved up into `[distribution]`.
-The package name is `[project] name`; `name` and `dependency-names` in the
+The package name is `[project] name`; `name`, `icon` and `dependency-names` in the
 old table have no replacement, since a scoped name is refused for now.
 
 Before:
