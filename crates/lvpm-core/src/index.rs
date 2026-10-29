@@ -328,7 +328,7 @@ pub fn cache_add(cache_dir: &Path, source: &Path, refresh: bool) -> Result<Vec<I
     } else {
         anyhow::ensure!(
             source.is_file() && is_package(source),
-            "cache add expects a .vip/.ogp file or package directory: {}",
+            "cache add expects a .vip, .ogp or .lvpkg file or package directory: {}",
             source.display()
         );
         vec![source.to_path_buf()]

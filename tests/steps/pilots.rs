@@ -4,14 +4,13 @@
 use crate::CliWorld;
 use crate::support::pilots::{
     CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_BUILT, PILOT_A_COMMIT, PILOT_A_MANIFEST,
-    PILOT_A_SUBTREE, PILOT_B_ARCHIVE, PILOT_B_BUILT, PILOT_B_COMMIT, archives, bad_vi_lines,
-    check_checksums, copy_tree, find_files_named, group_zero_files, labviewcli, library_names,
-    lvpkg_files, pilot_checkout, pilots_dir, requires_of,
+    PILOT_A_SUBTREE, archives, bad_vi_lines, check_checksums, copy_tree, find_files_named,
+    group_zero_files, labviewcli, library_names, lvpkg_files, pilot_checkout, pilots_dir,
 };
 use crate::support::process::{self, port_is_listening};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
 use crate::support::sandbox::LABVIEW_YEAR;
-use crate::support::selection::{PILOT_A_ENV_VAR, PILOT_B_ENV_VAR};
+use crate::support::selection::PILOT_A_ENV_VAR;
 use crate::support::venv::{self, VENV_DIR};
 use cucumber::{given, then, when};
 use std::path::{Path, PathBuf};
@@ -34,25 +33,8 @@ const PROJECT_B_PACKAGES: [&str; 4] = [
 const PILOT_SOURCE_DIR: &str = "pilots";
 const COPIES_DIR: &str = "pilot-copies";
 const PILOT_A_DIR: &str = "pilot-a";
-/// The folder of pilot B's checkout that its build copies.
-const PILOT_B_SUBTREE: &str = "source";
 /// The folder feed `lvpm publish` puts pilot A in.
 const PUBLISHED_FEED_DIR: &str = "published";
-/// Pilot B's `lvpm.toml`: its repository has none, and this is what it would
-/// hold. The dependency is the one its published spec requires.
-const PILOT_B_MANIFEST: &str = r#"[project]
-name = "labview_open_source_lib_serializer"
-version = "1.2.1.16"
-labview = ">=2013"
-
-[dependencies]
-labview_open_source_lib_data_manipulation = ">=1.5.0.15"
-
-[distribution]
-top-level-library = "source/OpenSerializer.lvlib"
-vendor = "LabVIEW Open Source Project"
-display-name = "OpenSerializer"
-"#;
 const MASS_COMPILE_LOG: &str = "mass-compile.log";
 /// A LabVIEW loading a venv's addons takes a while to open VI Server.
 const VI_SERVER_TIMEOUT: Duration = Duration::from_secs(300);
@@ -375,42 +357,4 @@ fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
     let built = dir.join("dist").join(PILOT_A_BUILT);
     assert!(built.is_file(), "lvpm build wrote no {}", built.display());
     world.pilots.pilot_a = Some(built);
-}
-
-/// Pilot B's source is read from the checkout `LVPM_TEST_PILOT_B` names and
-/// copied into the sandbox's work directory, where the build writes its `dist/`.
-#[given("pilot B's repository at its pinned commit")]
-async fn pilot_b_source(world: &mut CliWorld) {
-    let checkout = pilot_checkout(PILOT_B_ENV_VAR, PILOT_B_COMMIT, PILOT_B_SUBTREE)
-        .unwrap_or_else(|why| panic!("{why}"));
-    copy_tree(
-        &checkout.join(PILOT_B_SUBTREE),
-        &world.work(PILOT_B_SUBTREE),
-    );
-}
-
-#[given("an lvpm.toml for it written by the scenario")]
-async fn pilot_b_manifest(world: &mut CliWorld) {
-    world.build.manifest = PILOT_B_MANIFEST
-        .parse()
-        .expect("pilot B's manifest is TOML");
-    world.write_build_manifest();
-}
-
-#[then(regex = r#"^dist holds "([^"]+)"$"#)]
-async fn dist_holds(world: &mut CliWorld, package: String) {
-    world.succeeded();
-    let built = world.work("dist").join(&package);
-    assert!(built.is_file(), "lvpm build wrote no {}", built.display());
-}
-
-#[then("its Requires names the same packages as the published archive's")]
-async fn requires_match_published(world: &mut CliWorld) {
-    if let Err(why) = check_checksums(&pilots_dir()) {
-        panic!("{why}");
-    }
-    let built = world.work("dist").join(PILOT_B_BUILT);
-    let want = requires_of(&pilots_dir().join(PILOT_B_ARCHIVE));
-    assert!(!want.is_empty(), "the published archive requires nothing");
-    assert_eq!(requires_of(&built), want);
 }

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 #[command(
     name = "lvpm",
     version,
-    about = "Open-source package manager for LabVIEW (.vip) packages — proof of concept"
+    about = "Open-source package manager for LabVIEW packages (.lvpkg; reads .vip and .ogp) — proof of concept"
 )]
 struct Cli {
     /// Install into this LabVIEW version, e.g. 2026. See `lvpm targets`.
