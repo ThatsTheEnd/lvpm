@@ -538,9 +538,9 @@ graph TD
   - [x] Step 1.1: move the keys, refuse the old ones, drop the probe
 
 ### Wave 2
-- [ ] Slice 2: `lvpkg.rs` writes and reads the archive
-  - [ ] Step 2.1: write
-  - [ ] Step 2.2: read and check
+- [x] Slice 2: `lvpkg.rs` writes and reads the archive
+  - [x] Step 2.1: write
+  - [x] Step 2.2: read and check
 
 ### Wave 3
 - [ ] Slice 3: build, publish and the feeds use `.lvpkg`
