@@ -525,8 +525,8 @@ graph TD
 ## Build Progress
 
 ### Wave 1
-- [ ] Slice 1: `[distribution]` takes vendor, display-name and install-dir
-  - [ ] Step 1.1: move the keys, refuse the old ones, drop the probe
+- [x] Slice 1: `[distribution]` takes vendor, display-name and install-dir
+  - [x] Step 1.1: move the keys, refuse the old ones, drop the probe
 
 ### Wave 2
 - [ ] Slice 2: `lvpkg.rs` writes and reads the archive

@@ -86,7 +86,8 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     if install_dir.is_empty()
         || install_dir.starts_with('/')
         || install_dir.contains(['\\', ':'])
-        || install_dir.split('/').any(|s| s == "..")
+        // Windows drops trailing dots and spaces, so ".. " is "..".
+        || install_dir.split('/').any(|s| s.trim_end_matches(['.', ' ']).is_empty())
     {
         bail!(
             "distribution.install-dir = {install_dir:?}: must be a relative path below the LabVIEW folder, \
@@ -95,7 +96,7 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     }
 
     let name = match &p.name {
-        Some(n) if n.contains('@') => bail!(
+        Some(n) if n.starts_with('@') => bail!(
             "project.name = {n:?}: scoped package names are not supported yet; use an unscoped name"
         ),
         Some(n) => n.clone(),
@@ -380,7 +381,10 @@ display-name = "Demo Lib"
     #[test]
     fn a_bad_install_dir_names_its_key() {
         let with = |d: &str| GOOD.replace("vendor =", &format!("install-dir = {d:?}\nvendor ="));
-        for dir in ["../x", "a/../x", "/", "/x", "C:/x", r"a\b", r"..\..\x"] {
+        for dir in [
+            "../x", "a/../x", "/", "/x", "C:/x", r"a\b", r"..\..\x", ".", "a/./b", "a//b",
+            "a/.. /x",
+        ] {
             let e = error(&with(dir));
             assert!(e.contains("distribution.install-dir"), "{dir}: {e}");
         }
@@ -461,5 +465,8 @@ display-name = "Demo Lib"
             ),
             "{e}"
         );
+        // an '@' inside a name is just a bad character, not a scope
+        let e = error(&GOOD.replace("\"demo_lib\"", "\"lib@2\""));
+        assert!(e.contains("a package name takes letters"), "{e}");
     }
 }
