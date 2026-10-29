@@ -160,6 +160,9 @@ hooks (ADR 6, decision 4).
    writes nothing to the target when an entry's hash disagrees with
    `RECORD`, when an entry is missing from `RECORD`, or when `RECORD` lists
    an entry the archive lacks. A `format` other than `1` fails naming it.
+   In a package folder (`sources.local`) the scan's existing rule applies:
+   the archive is ignored with a warning that names the entry, and the
+   install fails because the package is not found.
 9. **Feeds.** A `.lvpkg` in a package folder and one imported with
    `lvpm cache add` both resolve and install. A `.vip` from every feed still
    installs (S0's scenarios pass).
@@ -204,6 +207,7 @@ hooks (ADR 6, decision 4).
 | Hooks in a `.lvpkg` | `inferable` | inference | ADR 6, decision 4: `lvpm build` writes none, so the reader produces no `[Script VIs]`. |
 | Old `.vip` left in `dist/` | `inferable` | inference | S1's rule "nothing else in `dist/` is touched" stays; deleting user files was not asked for. |
 | A `package.toml` `format` lvpm does not know | `inferable` | inference | Fail and name it; guessing at a newer layout could install the wrong files. |
+| A tampered `.lvpkg` in a package folder | `inferable` | inference | The folder scan already ignores an unreadable archive with a warning and goes on (index.rs); a `.lvpkg` follows the same rule. Hosted feeds and `cache add` fail hard. Found in plan review. |
 | Lockfile changes | `inferable` | inference | None: the lock pins the archive's SHA-256, which covers either format. Keeps clear of S13. |
 | Display name and LabVIEW floor of a `.lvpkg` entry | `inferable` | inference | From `display-name` and the lower bound of `labview`, the fields the `.vip` path fills from `spec`. |
 | CRUD sweep: `.lvpkg` file | `inferable` | inference | Created and replaced by `build`, copied by `publish`, read by install. Never deleted by lvpm. |
