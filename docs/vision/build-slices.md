@@ -145,7 +145,7 @@ Almost every slice also appends a line to `tests/acceptance.rs` (`FEATURE_FILES`
 and to the command table in docs/usage.md; those are one-line conflicts, not
 collisions, and the notes above leave them out.
 
-S1b closed on 2026-10-29 without its round trips: VIPM refuses lvpm's `.vip`, so S7a moved up and
+S1b closed on 2026-10-29 without its round trips: VIPM refuses lvpm's `.vip`, so S7a moved up to wave 3 and
 replaces the `.vip` writer ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
 
 Pinned sources (S7c) land before OCI feeds (S7b) on purpose: no org registry

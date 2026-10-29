@@ -37,7 +37,7 @@ pure wheel rather than an sdist.
 | Format | Purpose | Carries signature/provenance |
 |---|---|---|
 | `.lvpkg` | native: deterministic zip, LVAddons layout, `package.toml`, `RECORD` (SHA-256 per file), CycloneDX SBOM | yes (OCI referrers or a Sigstore bundle) |
-| `.vip` | read only: packages from VIPM and NI indexes, folders and releases ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)) | only as a detached bundle next to the file |
+| `.vip` | read: packages from VIPM and NI indexes, folders and releases; written by `lvpm build` for lvpm only until S7a ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)) | only as a detached bundle next to the file |
 
 Rules for every package:
 

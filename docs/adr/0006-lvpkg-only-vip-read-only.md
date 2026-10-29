@@ -65,7 +65,7 @@ with an error that says the file is broken.
 - S1b closes without its round trips. Its milestone ("`.vip` output, verified
   by a round-trip install in VIPM") is dropped.
 - S7a is the next build slice. It depends only on S1. The SBOM inside a
-  `.lvpkg` moves to S9, which adds it once its generator exists.
+  `.lvpkg` moves to S9; whichever of S7a and S9 merges second adds it.
 - `lvpm publish` (S2) copies the `.lvpkg` once S7a lands. GitHub release
   lookup (S4) takes `*.lvpkg` first and `*.vip` as a fallback, so existing
   VIPM releases stay installable. S4's CI template ships only once S7a has
