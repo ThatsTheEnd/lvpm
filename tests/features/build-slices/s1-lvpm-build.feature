@@ -39,7 +39,7 @@ Feature: lvpm build writes a .vip of a library's members
     Then the file group holds "Data/d.txt"
 
   Scenario: install-dir places the members
-    Given [distribution.vip] install-dir = "vi.lib/Other/Place"
+    Given [distribution] install-dir = "vi.lib/Other/Place"
     When lvpm build runs
     Then the file group holds the members under "vi.lib/Other/Place"
 
@@ -64,9 +64,8 @@ Feature: lvpm build writes a .vip of a library's members
 
   Scenario: dependencies become Requires
     Given dependencies a = "1.0", b = ">=2.0", c = "*" and "@hexagon/lib-a" = "3.0"
-    And dependency-names maps "@hexagon/lib-a" to "hexagon_lib_a"
     When lvpm build runs
-    Then the spec's Requires is "a>=1.0,b>=2.0,c,hexagon_lib_a>=3.0"
+    Then the spec's Requires is "a>=1.0,b>=2.0,c,@hexagon/lib-a>=3.0"
 
   Scenario Outline: a manifest problem fails naming the key and writes nothing
     Given the manifest <change>
@@ -80,18 +79,24 @@ Feature: lvpm build writes a .vip of a library's members
       | names top-level-library "Missing.lvlib"                | distribution.top-level-library    |
       | names top-level-library "../Out.lvlib"                 | distribution.top-level-library    |
       | names top-level-library "C:/Abs.lvlib"                 | distribution.top-level-library    |
-      | has no vendor                                          | distribution.vip.vendor           |
-      | has no display-name                                    | distribution.vip.display-name     |
+      | has no vendor                                          | distribution.vendor               |
+      | has no display-name                                    | distribution.display-name         |
+      | sets install-dir = "../x"                              | distribution.install-dir          |
+      | sets install-dir = "a/../x"                            | distribution.install-dir          |
+      | sets install-dir = "C:/x"                              | distribution.install-dir          |
+      | sets install-dir = "/x"                                | distribution.install-dir          |
+      | sets install-dir = "a\\b"                              | distribution.install-dir          |
       | sets kinds = ["ppl"]                                   | distribution.kinds                |
       | sets kinds = ["source", "ppl"]                         | distribution.kinds                |
-      | sets formats = ["lvpkg"]                               | distribution.formats              |
       | sets [distribution] colour = "red"                     | distribution.colour               |
-      | sets [distribution.vip] icon                           | distribution.vip.icon             |
       | sets version = "1.2"                                   | project.version                   |
       | sets version = "1.2.3.4.5"                             | project.version                   |
       | sets version = "1.a.3"                                 | project.version                   |
-      | names the project "@scope/lib" with no vip name        | distribution.vip.name             |
-      | depends on "@scope/dep" with no dependency-names entry | distribution.vip.dependency-names |
+
+  Scenario: a scoped project name is refused
+    Given the manifest names the project "@scope/lib"
+    When lvpm build runs
+    Then it fails with the message `project.name = "@scope/lib": scoped package names are not supported yet; use an unscoped name`, and dist holds no .vip
 
   Scenario Outline: a member problem fails naming the member and writes nothing
     Given <problem>

@@ -50,8 +50,6 @@ labview_open_source_lib_data_manipulation = ">=1.5.0.15"
 
 [distribution]
 top-level-library = "source/OpenSerializer.lvlib"
-
-[distribution.vip]
 vendor = "LabVIEW Open Source Project"
 display-name = "OpenSerializer"
 "#;

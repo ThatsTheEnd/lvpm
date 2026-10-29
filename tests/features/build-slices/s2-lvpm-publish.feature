@@ -74,7 +74,7 @@ Feature: lvpm publish copies the current package into a folder feed
     Examples:
       | change                      | key                     |
       | has no [distribution] table | distribution            |
-      | has no vendor               | distribution.vip.vendor |
+      | has no vendor               | distribution.vendor     |
 
   Scenario: an older version's package stays behind
     Given lvpm build has run for version "1.2.2"

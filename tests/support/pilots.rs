@@ -144,8 +144,6 @@ labview = ">=2016"
 
 [distribution]
 top-level-library = "Source/HSE-Logger/hse-logger.lvlib"
-
-[distribution.vip]
 vendor = "Hampel Software Engineering"
 display-name = "HSE Logger"
 "#;

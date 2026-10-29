@@ -57,7 +57,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s0-pilot-loop.feature",
     "tests/features/build-slices/s1-lvpm-build.feature",
     "tests/features/build-slices/s2-lvpm-publish.feature",
-    "tests/features/build-slices/s1b-vip-in-vipm.feature",
+    "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/lvpm-venv-resave/slice-2-staged-install-with-resave.feature",
     "tests/features/sources/s13-first-source-wins.feature",
 ];

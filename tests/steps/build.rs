@@ -174,8 +174,19 @@ async fn project(world: &mut CliWorld, name: String, version: String, labview: S
 )]
 async fn distribution(world: &mut CliWorld, library: String, vendor: String, display: String) {
     world.set(&["distribution"], "top-level-library", library);
-    world.set(&["distribution", "vip"], "vendor", vendor);
-    world.set(&["distribution", "vip"], "display-name", display);
+    world.set(&["distribution"], "vendor", vendor);
+    world.set(&["distribution"], "display-name", display);
+}
+
+#[given(regex = r#"^library "Lib\.lvlib" holding "A\.vi"$"#)]
+async fn library_with_one_member(world: &mut CliWorld) {
+    world.put(
+        LIBRARY,
+        "<?xml version='1.0' encoding='UTF-8'?>\n<Library LVVersion=\"16008000\">\n\
+         \t<Item Name=\"A.vi\" Type=\"VI\" URL=\"../A.vi\"/>\n</Library>\n",
+    );
+    world.put("A.vi", "a vi");
+    world.build.members = vec![LIBRARY, "A.vi"];
 }
 
 #[given(
@@ -219,9 +230,9 @@ async fn auto_populating(world: &mut CliWorld) {
     world.put("Data/d.txt", "data");
 }
 
-#[given(regex = r#"^\[distribution\.vip\] install-dir = "([^"]+)"$"#)]
+#[given(regex = r#"^\[distribution\] install-dir = "([^"]+)"$"#)]
 async fn install_dir(world: &mut CliWorld, dir: String) {
-    world.set(&["distribution", "vip"], "install-dir", dir);
+    world.set(&["distribution"], "install-dir", dir);
 }
 
 #[given(regex = r#"^dist holds an older "([^"]+)" and "([^"]+)"$"#)]
@@ -249,13 +260,8 @@ async fn dependencies(world: &mut CliWorld) {
     }
 }
 
-#[given(regex = r#"^dependency-names maps "([^"]+)" to "([^"]+)"$"#)]
-async fn dependency_names(world: &mut CliWorld, scoped: String, vip: String) {
-    world.set(&["distribution", "vip", "dependency-names"], &scoped, vip);
-}
-
 #[given(
-    regex = r#"^the manifest ((?:has no (?:\[distribution\] table|top-level-library|vendor|display-name)|names|sets|depends on).*)$"#
+    regex = r#"^the manifest ((?:has (?:no (?:\[distribution\] table|top-level-library|vendor|display-name)|an empty|\[distribution\.vip)|names|sets).*)$"#
 )]
 async fn manifest_change(world: &mut CliWorld, change: String) {
     let quoted = |s: &str| s.split('"').nth(1).expect("a quoted value").to_string();
@@ -268,18 +274,32 @@ async fn manifest_change(world: &mut CliWorld, change: String) {
     match change.as_str() {
         "has no [distribution] table" => drop(world.build.manifest.remove("distribution")),
         "has no top-level-library" => drop(world.table(&dist).remove("top-level-library")),
-        "has no vendor" => drop(world.table(&vip).remove("vendor")),
-        "has no display-name" => drop(world.table(&vip).remove("display-name")),
+        "has no vendor" => drop(world.table(&dist).remove("vendor")),
+        "has no display-name" => drop(world.table(&dist).remove("display-name")),
+        "has an empty [distribution.vip] table" => drop(world.table(&vip)),
+        "has [distribution.vip] with vendor, display-name, name and icon" => {
+            for key in ["vendor", "display-name", "name", "icon"] {
+                world.set(&vip, key, "x");
+            }
+        }
+        c if c.starts_with("has [distribution.vip") => {
+            // `has [distribution.vip.dependency-names] a = "b"`: the table, then one key.
+            let (table, pair) = c["has [".len()..]
+                .split_once("] ")
+                .expect("a table and a pair");
+            let table: Vec<&str> = table.split('.').collect();
+            let (key, value) = pair.split_once(" = ").expect("a key and a value");
+            world.set(&table, key, value.trim_matches('"'));
+        }
         c if c.starts_with("names top-level-library") => {
             world.set(&dist, "top-level-library", quoted(c));
         }
         c if c.starts_with("sets kinds") => world.set(&dist, "kinds", array(c)),
         c if c.starts_with("sets formats") => world.set(&dist, "formats", array(c)),
         "sets [distribution] colour = \"red\"" => world.set(&dist, "colour", "red"),
-        "sets [distribution.vip] icon" => world.set(&vip, "icon", "icon.bmp"),
+        c if c.starts_with("sets install-dir") => world.set(&dist, "install-dir", quoted(c)),
         c if c.starts_with("sets version") => world.set(&["project"], "version", quoted(c)),
         c if c.starts_with("names the project") => world.set(&["project"], "name", quoted(c)),
-        c if c.starts_with("depends on") => world.set(&["dependencies"], &quoted(c), "1.0"),
         other => panic!("no such manifest change: {other}"),
     }
 }
@@ -499,7 +519,7 @@ async fn fails_naming_key(world: &mut CliWorld, key: String) {
 }
 
 /// `message` names `key` itself, not a longer one it begins: `distribution`
-/// must not be found only inside `distribution.vip`.
+/// must not be found only inside `distribution.vendor`.
 pub(super) fn names_key(message: &str, key: &str) -> bool {
     message.match_indices(key).any(|(at, _)| {
         message[at + key.len()..]
@@ -517,6 +537,47 @@ async fn fails_naming(world: &mut CliWorld, name: String) {
         "the message does not name {name}: {message}"
     );
     world.no_vip_in_dist();
+}
+
+#[then(regex = r#"^it fails with the message `(.+)`, and dist holds no \.vip$"#)]
+async fn fails_with_message(world: &mut CliWorld, text: String) {
+    let message = world.failed();
+    assert!(message.contains(&text), "{text:?} is not in: {message}");
+    world.no_vip_in_dist();
+}
+
+/// The first part of each removed-key message (S7a), asserted word for word.
+fn removed_key_message(case: &str) -> &'static str {
+    match case {
+        "formats" => {
+            "distribution.formats was removed (ADR 6, docs/adr/0006-lvpkg-only-vip-read-only.md): \
+             lvpm build always writes a .lvpkg. Delete the line."
+        }
+        "[distribution.vip]" => {
+            "[distribution.vip] was removed (ADR 6, docs/adr/0006-lvpkg-only-vip-read-only.md). \
+             Move vendor, display-name and install-dir into [distribution]; the package name is \
+             [project] name; icon and dependency-names are gone. Found: "
+        }
+        other => panic!("no such removed-key message: {other}"),
+    }
+}
+
+#[then(regex = r#"^it fails with the "([^"]+)" message, and dist is empty$"#)]
+async fn fails_with_removed_key_message(world: &mut CliWorld, case: String) {
+    let message = world.failed();
+    let want = removed_key_message(&case);
+    assert!(message.contains(want), "{want:?} is not in: {message}");
+    world.no_vip_in_dist();
+}
+
+#[then(regex = r#"^the message's "Found:" lists (.+)$"#)]
+async fn found_lists(world: &mut CliWorld, keys: String) {
+    let message = world.failed();
+    let found = format!("Found: {}", keys.replace(" and ", ", "));
+    assert!(
+        message.lines().any(|l| l.ends_with(&found)),
+        "no line ends with {found:?}: {message}"
+    );
 }
 
 #[then("it fails and that package is unchanged")]
