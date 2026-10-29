@@ -3,10 +3,10 @@
 
 use crate::CliWorld;
 use crate::support::pilots::{
-    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_COMMIT, PILOT_A_MANIFEST, PILOT_A_SUBTREE,
-    PILOT_B_ARCHIVE, PILOT_B_COMMIT, archives, bad_vi_lines, check_checksums, copy_tree,
-    find_files_named, group_zero_files, labviewcli, library_names, pilot_checkout, pilots_dir,
-    requires_of,
+    CHECKSUMS_FILE, PILOT_A_ARCHIVE, PILOT_A_BUILT, PILOT_A_COMMIT, PILOT_A_MANIFEST,
+    PILOT_A_SUBTREE, PILOT_B_ARCHIVE, PILOT_B_BUILT, PILOT_B_COMMIT, archives, bad_vi_lines,
+    check_checksums, copy_tree, find_files_named, group_zero_files, labviewcli, library_names,
+    lvpkg_files, pilot_checkout, pilots_dir, requires_of,
 };
 use crate::support::process::{self, port_is_listening};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
@@ -295,7 +295,7 @@ async fn pilot_a_files(world: &mut CliWorld, published: String, step: &cucumber:
         );
     }
     let want: Vec<&String> = published.iter().filter(|f| !left_out.contains(f)).collect();
-    let got = group_zero_files(built, "");
+    let got = lvpkg_files(built);
     let got: Vec<&String> = got.iter().collect();
     assert_eq!(
         got, want,
@@ -309,7 +309,7 @@ async fn pilot_a_files(world: &mut CliWorld, published: String, step: &cucumber:
 async fn project_b_with_built_pilot_a(world: &mut CliWorld) {
     let built = world.pilots.pilot_a.clone().expect("pilot A was built");
     let source = project_b_without_pilot_a_archive(world);
-    std::fs::copy(&built, source.join(PILOT_A_ARCHIVE)).expect("copy the built pilot A");
+    std::fs::copy(&built, source.join(PILOT_A_BUILT)).expect("copy the built pilot A");
 }
 
 #[given("lvpm publish has put it in an empty folder feed")]
@@ -325,8 +325,8 @@ async fn pilot_a_published(world: &mut CliWorld) {
         "lvpm publish failed in pilot A: {output:?}"
     );
     assert!(
-        feed.join(PILOT_A_ARCHIVE).is_file(),
-        "lvpm publish wrote no {PILOT_A_ARCHIVE}"
+        feed.join(PILOT_A_BUILT).is_file(),
+        "lvpm publish wrote no {PILOT_A_BUILT}"
     );
 }
 
@@ -372,7 +372,7 @@ fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
         output.exit_code, 0,
         "lvpm build failed in pilot A: {output:?}"
     );
-    let built = dir.join("dist").join(PILOT_A_ARCHIVE);
+    let built = dir.join("dist").join(PILOT_A_BUILT);
     assert!(built.is_file(), "lvpm build wrote no {}", built.display());
     world.pilots.pilot_a = Some(built);
 }
@@ -409,7 +409,7 @@ async fn requires_match_published(world: &mut CliWorld) {
     if let Err(why) = check_checksums(&pilots_dir()) {
         panic!("{why}");
     }
-    let built = world.work("dist").join(PILOT_B_ARCHIVE);
+    let built = world.work("dist").join(PILOT_B_BUILT);
     let want = requires_of(&pilots_dir().join(PILOT_B_ARCHIVE));
     assert!(!want.is_empty(), "the published archive requires nothing");
     assert_eq!(requires_of(&built), want);

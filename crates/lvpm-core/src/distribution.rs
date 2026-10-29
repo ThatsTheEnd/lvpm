@@ -11,9 +11,9 @@
 //!
 //! The package name is `[project] name`.
 
+use crate::lockfile::constraint_text;
 use crate::lvpkg;
 use crate::project::Project;
-use crate::spec::{FileGroup, Spec};
 use anyhow::{Result, bail};
 use std::path::{Component, Path, PathBuf};
 
@@ -24,7 +24,7 @@ pub struct Distribution {
     pub library: PathBuf,
     /// The package name: `[project] name`.
     pub name: String,
-    /// `[project] version` in four parts.
+    /// `[project] version`, as written: three or four numbers.
     pub version: String,
     pub vendor: String,
     pub display_name: String,
@@ -32,8 +32,8 @@ pub struct Distribution {
     pub install_dir: String,
     /// `[project] labview`'s year.
     pub labview: u32,
-    /// `[dependencies]` as `Requires` entries, in file order.
-    pub requires: Vec<String>,
+    /// `[dependencies]` as the manifest writes them, in file order: name, constraint.
+    pub dependencies: Vec<(String, String)>,
 }
 
 const DISTRIBUTION_KEYS: &[&str] = &[
@@ -97,17 +97,12 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     let Some(version) = &p.version else {
         bail!("project.version: lvpm build needs the package version");
     };
-    let version = four_parts(version)?;
+    check_version(version)?;
     let Some(labview) = &p.labview else {
         bail!("project.labview: lvpm build needs the oldest LabVIEW, like labview = \">=2016\"");
     };
     let labview = crate::project::labview_year(labview)?;
 
-    let requires: Vec<String> = p
-        .dependencies
-        .iter()
-        .map(|(dep, c)| lvpkg::requires_item(dep, c))
-        .collect();
     for (key, value) in [
         ("distribution.vendor", &vendor),
         ("distribution.display-name", &display_name),
@@ -115,48 +110,49 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     ] {
         spec_safe(key, value)?;
     }
-    for r in &requires {
-        spec_safe("dependencies", r)?;
-        if r.contains(',') {
-            bail!("dependencies: {r:?} holds a ',', which would split the package's Requires list");
+    for (dep, c) in &p.dependencies {
+        let item = lvpkg::requires_item(dep, c);
+        spec_safe("dependencies", &item)?;
+        if item.contains(',') {
+            bail!(
+                "dependencies: {item:?} holds a ',', which would split the package's Requires list"
+            );
         }
     }
+    let dependencies = p
+        .dependencies
+        .iter()
+        .map(|(dep, c)| (dep.clone(), constraint_text(c)))
+        .collect();
 
     Ok(Distribution {
         library,
         name,
-        version,
+        version: version.clone(),
         vendor,
         display_name,
         install_dir,
         labview,
-        requires,
+        dependencies,
     })
 }
 
 impl Distribution {
-    /// The package file's name, `<name>-<version>.vip`.
+    /// The package file's name, `<name>-<version>.lvpkg`.
     pub fn file_name(&self) -> String {
-        format!("{}-{}.vip", self.name, self.version)
+        format!("{}-{}.lvpkg", self.name, self.version)
     }
 
-    /// The spec for a package holding `files`, each below the LabVIEW folder.
-    pub fn spec(&self, files: Vec<String>) -> Spec {
-        Spec {
+    /// What goes into the package's `package.toml`.
+    pub fn meta(&self) -> lvpkg::Meta {
+        lvpkg::Meta {
             name: self.name.clone(),
             version: self.version.clone(),
-            display_name: Some(self.display_name.clone()),
-            description: Default::default(),
-            file_groups: vec![FileGroup {
-                index: 0,
-                target_dir: "<application>".into(),
-                replace_mode: "Always".into(),
-                files,
-                entry_prefix: "File Group 0/".into(),
-            }],
-            script_vis: Vec::new(),
-            requires: (!self.requires.is_empty()).then(|| self.requires.join(",")),
-            lv_gate: Some(lvpkg::lv_gate(self.labview)),
+            labview: format!(">={}", self.labview),
+            vendor: self.vendor.clone(),
+            display_name: self.display_name.clone(),
+            install_dir: self.install_dir.clone(),
+            dependencies: self.dependencies.clone(),
         }
     }
 }
@@ -232,15 +228,14 @@ fn top_level_library(dist: &toml::Table, root: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-/// `2.1.0` → `2.1.0.0`; four numeric parts stay as they are.
-fn four_parts(v: &str) -> Result<String> {
+/// Three or four numeric parts.
+fn check_version(v: &str) -> Result<()> {
     let parts: Vec<&str> = v.split('.').collect();
     let numeric = parts
         .iter()
         .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
     match parts.len() {
-        3 if numeric => Ok(format!("{v}.0")),
-        4 if numeric => Ok(v.to_string()),
+        3 | 4 if numeric => Ok(()),
         _ => bail!("project.version = {v:?}: a package version is 3 or 4 numbers, like \"1.2.3\""),
     }
 }
@@ -283,13 +278,36 @@ display-name = "Demo Lib"
     }
 
     #[test]
-    fn a_complete_manifest_gives_names_version_install_dir_and_requires() {
+    fn a_complete_manifest_gives_names_version_install_dir_and_dependencies_as_written() {
         let d = check(GOOD).unwrap();
-        assert_eq!(d.file_name(), "demo_lib-1.2.3.0.vip");
+        assert_eq!(d.file_name(), "demo_lib-1.2.3.lvpkg");
         assert_eq!(d.install_dir, "vi.lib/Vendor/Demo Lib");
-        // shortcut: a scoped dependency goes in as written until the .lvpkg writer replaces this.
-        assert_eq!(d.requires, ["a>=1.0", "b>=2.0", "c", "@hexagon/lib-a>=3.0"]);
+        let written = [
+            ("a", "1.0"),
+            ("b", ">=2.0"),
+            ("c", "*"),
+            ("@hexagon/lib-a", "3.0"),
+        ];
+        assert_eq!(
+            d.dependencies,
+            written.map(|(n, c)| (n.to_string(), c.to_string()))
+        );
         assert_eq!(d.library, Path::new("Lib.lvlib"));
+    }
+
+    #[test]
+    fn meta_is_what_package_toml_holds() {
+        let m = check(GOOD).unwrap().meta();
+        assert_eq!(
+            (m.name.as_str(), m.version.as_str(), m.labview.as_str()),
+            ("demo_lib", "1.2.3", ">=2016")
+        );
+        assert_eq!(
+            (m.vendor.as_str(), m.display_name.as_str()),
+            ("Vendor", "Demo Lib")
+        );
+        assert_eq!(m.install_dir, "vi.lib/Vendor/Demo Lib");
+        assert_eq!(m.dependencies.len(), 4);
     }
 
     #[test]
@@ -371,7 +389,7 @@ display-name = "Demo Lib"
     }
 
     #[test]
-    fn install_dir_overrides_and_four_parts_stay() {
+    fn install_dir_overrides_and_the_version_stays_as_written() {
         let d = check(
             &GOOD
                 .replace(

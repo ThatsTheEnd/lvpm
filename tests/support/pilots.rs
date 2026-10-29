@@ -134,6 +134,8 @@ pub fn labviewcli() -> PathBuf {
 pub const PILOT_A_COMMIT: &str = "f7cc16a391faa1e982b54ae22d2f43c9df1ef581";
 /// Pilot A as its vendor published it.
 pub const PILOT_A_ARCHIVE: &str = "hse_lib_hse_logger-2.2.2.114.vip";
+/// What `lvpm build` names pilot A's package.
+pub const PILOT_A_BUILT: &str = "hse_lib_hse_logger-2.2.2.114.lvpkg";
 /// The folder of pilot A's checkout that its build copies.
 pub const PILOT_A_SUBTREE: &str = "Source";
 /// Pilot A's `lvpm.toml`: its repository has none, and this is what it would hold.
@@ -152,6 +154,8 @@ display-name = "HSE Logger"
 pub const PILOT_B_COMMIT: &str = "723d7a672b5f0eafa9f98ea63629ba5855d50227";
 /// Pilot B as its vendor published it.
 pub const PILOT_B_ARCHIVE: &str = "labview_open_source_lib_serializer-1.2.1.16.vip";
+/// What `lvpm build` names pilot B's package.
+pub const PILOT_B_BUILT: &str = "labview_open_source_lib_serializer-1.2.1.16.lvpkg";
 
 /// The checkout the variable `env_var` names, once its HEAD is `commit` and
 /// nothing in its `subtree` (the folder a build copies) is modified or
@@ -267,6 +271,19 @@ pub fn group_zero_files(archive: &Path, under: &str) -> Vec<String> {
         .filter(|name| name.starts_with(under) && !name.ends_with('/'))
         .map(String::from)
         .collect();
+    files.sort();
+    files
+}
+
+/// The payload of a `.lvpkg`: every entry but `RECORD` and `package.toml`,
+/// each below its `install-dir`, sorted. `RECORD` is checked on the way.
+pub fn lvpkg_files(archive: &Path) -> Vec<String> {
+    let bytes =
+        std::fs::read(archive).unwrap_or_else(|e| panic!("reading {}: {e}", archive.display()));
+    let spec = lvpm_core::install::open_archive(bytes)
+        .and_then(|mut zip| lvpm_core::lvpkg::read(&mut zip))
+        .unwrap_or_else(|e| panic!("lvpm cannot read {}: {e:#}", archive.display()));
+    let mut files = spec.file_groups[0].files.clone();
     files.sort();
     files
 }

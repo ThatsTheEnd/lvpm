@@ -339,13 +339,13 @@ enum Cmd {
     /// Import package archives into the shared cache.
     #[command(subcommand)]
     Cache(CacheCmd),
-    /// Package the project's library as dist/<name>-<version>.vip.
+    /// Package the project's library as dist/<name>-<version>.lvpkg.
     ///
     /// Reads lvpm.toml's [distribution] and the library's member list, and
-    /// zips the members; LabVIEW is not needed. Building the same files twice
+    /// writes the members into a .lvpkg; LabVIEW is not needed. Building the same files twice
     /// gives the same bytes.
     Build,
-    /// Copy dist/<name>-<version>.vip into a folder feed.
+    /// Copy dist/<name>-<version>.lvpkg into a folder feed.
     ///
     /// Publishes the package lvpm build wrote for the current manifest. A
     /// published file is never replaced: publishing a version the folder
@@ -431,9 +431,9 @@ enum VenvCmd {
 
 #[derive(Subcommand)]
 enum CacheCmd {
-    /// Import a .vip/.ogp file or the packages directly inside a directory.
+    /// Import a .vip/.ogp/.lvpkg file or the packages directly inside a directory.
     Add {
-        /// A `.vip` or `.ogp` file, or a directory holding them.
+        /// A `.vip`, `.ogp` or `.lvpkg` file, or a directory holding them.
         path: PathBuf,
     },
 }
