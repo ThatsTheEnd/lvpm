@@ -184,6 +184,20 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
     crate::spec::parse(&String::from_utf8_lossy(&buf))
 }
 
+/// A package entry's content, at most `cap` bytes. The size in the
+/// entry's header is the archive's claim, so nothing is allocated from it.
+fn read_entry(src: zip::read::ZipFile<'_, std::io::Cursor<Vec<u8>>>, cap: u64) -> Result<Vec<u8>> {
+    let name = src.name().to_string();
+    let mut buf = Vec::new();
+    src.take(cap + 1)
+        .read_to_end(&mut buf)
+        .with_context(|| format!("reading entry {name:?}"))?;
+    if buf.len() as u64 > cap {
+        bail!("entry {name:?} is larger than {cap} bytes");
+    }
+    Ok(buf)
+}
+
 /// Work out every file this package would write, without touching disk.
 pub fn plan(roots: &Roots, spec: &Spec, zip: &mut Archive) -> Result<Plan> {
     // Zip entry names are case-sensitive; index once, tolerate case drift
@@ -320,9 +334,7 @@ pub(crate) fn unpack_to(
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let mut src = zip.by_index(w.zip_index)?;
-        let mut buf = Vec::with_capacity(src.size() as usize);
-        src.read_to_end(&mut buf)?;
+        let buf = read_entry(zip.by_index(w.zip_index)?, crate::lvpkg::MAX_ENTRY_BYTES)?;
         std::fs::write(&dest, &buf).with_context(|| format!("writing {}", dest.display()))?;
         written.push(w.dest.to_string_lossy().replace('\\', "/"));
     }
@@ -407,14 +419,13 @@ pub fn extract_hook(
     zip: &mut Archive,
     member: &str,
 ) -> Result<Option<PathBuf>> {
-    let Ok(mut src) = zip.by_name(member) else {
+    let Ok(src) = zip.by_name(member) else {
         return Ok(None);
     };
     let dir = roots.hooks_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let dest = dir.join(format!("{package}-{member}"));
-    let mut buf = Vec::with_capacity(src.size() as usize);
-    src.read_to_end(&mut buf)?;
+    let buf = read_entry(src, crate::lvpkg::MAX_ENTRY_BYTES)?;
     std::fs::write(&dest, &buf).with_context(|| format!("writing {}", dest.display()))?;
     Ok(Some(dest))
 }
@@ -582,6 +593,19 @@ mod tests {
         let mut zip = archive_with_spec(&padded_spec(MAX_SPEC_BYTES + 1));
         let why = read_spec(&mut zip).unwrap_err().to_string();
         assert!(why.contains("larger than"), "{why}");
+    }
+
+    #[test]
+    fn an_entry_is_read_up_to_its_cap_and_no_further() {
+        let mut zip = archive_with_spec(&[b'x'; 10]);
+        assert_eq!(
+            read_entry(zip.by_name("spec").unwrap(), 10).unwrap().len(),
+            10
+        );
+        let why = read_entry(zip.by_name("spec").unwrap(), 9)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(why, "entry \"spec\" is larger than 9 bytes");
     }
 
     #[test]

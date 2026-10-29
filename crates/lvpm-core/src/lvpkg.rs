@@ -6,7 +6,7 @@
 //! `lvpm.toml`'s table and key names; `RECORD` lists every other entry with its
 //! SHA-256, one `<sha256 hex>  <path>` line each.
 
-use crate::project::{Constraint, labview_year};
+use crate::project::{Constraint, labview_minimum};
 use crate::spec::{FileGroup, Spec};
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, Serializer};
@@ -24,9 +24,11 @@ pub const PACKAGE_TOML: &str = "package.toml";
 /// The most of `RECORD` or `package.toml` that is read: real ones are a few
 /// KiB, and an archive from a feed must not inflate one until memory runs out.
 const MAX_META_BYTES: u64 = 1024 * 1024;
-/// The most of any other entry that is hashed. It is streamed, so this bounds
-/// time, not memory: a Deflate bomb stops here.
-const MAX_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
+/// The most of any other entry that is read. A read is streamed, so this
+/// bounds time: a Deflate bomb stops here.
+pub(crate) const MAX_ENTRY_BYTES: u64 = 1024 * 1024 * 1024;
+/// The most that all the entries of one archive may unpack to.
+const MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// What every message about an archive that disagrees with its `RECORD` ends in.
 const ALTERED: &str = "(the package was altered or is corrupt); rebuild or download it again";
@@ -108,9 +110,22 @@ impl Meta {
 /// timestamps, one Deflate level, the zip crate's default permissions and no
 /// extra fields.
 ///
-/// shortcut: panics on a member of 4 GiB or more (a zip without zip64 cannot
-/// hold it); no LabVIEW library comes near, upgrade when one does.
-pub fn write(meta: &Meta, files: &[(String, Vec<u8>)]) -> Vec<u8> {
+/// Fails, as [`read`] would, on an `install-dir` or a member path that may not
+/// go into a package, and on two members that are one file on Windows. A
+/// member of 4 GiB or more fails too: a zip without zip64 cannot hold it.
+pub fn write(meta: &Meta, files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+    check_install_dir(&meta.install_dir)?;
+    let mut lower: HashMap<String, &str> = HashMap::new();
+    for (rel, _) in files {
+        if !clean_path(rel) {
+            bail!("member {rel:?} cannot go into a package: {BAD_PATH}");
+        }
+        match lower.insert(rel.to_lowercase(), rel) {
+            Some(first) if first == rel => bail!("member {rel:?} is listed twice"),
+            Some(first) => bail!("members {first:?} and {rel:?} differ only in letter case"),
+            None => {}
+        }
+    }
     let toml = meta.to_toml();
     let mut payload: Vec<(String, &[u8])> = files
         .iter()
@@ -130,19 +145,40 @@ pub fn write(meta: &Meta, files: &[(String, Vec<u8>)]) -> Vec<u8> {
         .compression_level(Some(6))
         .last_modified_time(zip::DateTime::default());
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let mut put = |path: &str, bytes: &[u8]| {
-        zip.start_file(path, options).expect("a zip in memory");
-        zip.write_all(bytes).expect("a zip in memory");
+    let mut put = |path: &str, bytes: &[u8]| -> Result<()> {
+        zip.start_file(path, options)
+            .and_then(|()| Ok(zip.write_all(bytes)?))
+            .with_context(|| format!("writing entry {path:?}"))
     };
-    put(RECORD, record.as_bytes());
+    put(RECORD, record.as_bytes())?;
     for (path, bytes) in &entries {
-        put(path, bytes);
+        put(path, bytes)?;
     }
-    zip.finish().expect("a zip in memory").into_inner()
+    Ok(zip.finish()?.into_inner())
+}
+
+/// What may not go into a package, for messages.
+const BAD_PATH: &str = "use a relative path with forward slashes, and no segment that is empty, \
+     `.`, `..`, ends in a dot or a space, or names a Windows device (CON, NUL, COM1, ...)";
+
+/// The LabVIEW gate of a package that needs LabVIEW `year` or later: `2016` is
+/// `LabVIEW>=16.0`.
+pub(crate) fn lv_gate(year: u32) -> String {
+    format!("LabVIEW>={}.0", year - 2000)
+}
+
+/// A dependency as a `Requires` item. An exact version is written as a minimum,
+/// like the published pilots do: a library pinning exact versions makes
+/// consumers unsolvable. `*` is the bare name.
+pub(crate) fn requires_item(dep: &str, c: &Constraint) -> String {
+    match c {
+        Constraint::Exact(v) | Constraint::AtLeast(v) => format!("{dep}>={}", v.raw),
+        Constraint::Any => dep.to_string(),
+    }
 }
 
 /// Whether `dir` may be a package's `install-dir`: a path below the LabVIEW
-/// folder, with forward slashes, and no segment that is empty, `.` or `..`.
+/// folder that [`clean_path`] accepts.
 pub fn check_install_dir(dir: &str) -> Result<()> {
     if !clean_path(dir) {
         bail!(
@@ -170,14 +206,31 @@ pub fn check_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// A relative path that stays where it starts: forward slashes only, no drive,
-/// no segment that is empty, `.` or `..`. Windows drops trailing dots and
-/// spaces, so a segment of `.. ` is `..`.
+/// A relative path that stays where it starts and that Windows keeps as
+/// written: forward slashes only, no drive, and every segment [`clean_segment`].
 fn clean_path(path: &str) -> bool {
-    !path.contains(['\\', ':'])
-        && path
-            .split('/')
-            .all(|s| !s.trim_end_matches(['.', ' ']).is_empty())
+    !path.contains(['\\', ':']) && path.split('/').all(clean_segment)
+}
+
+/// A path segment that is not empty, `.` or `..` (which a trailing dot or space
+/// would also make, as Windows drops them) and is not a Windows device: `CON`,
+/// `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, `CONIN$` and `CONOUT$`,
+/// whatever the case and with or without an extension.
+fn clean_segment(segment: &str) -> bool {
+    if segment.is_empty() || segment.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = segment.split('.').next().unwrap_or_default();
+    let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|n| matches!(n.as_bytes(), [b'1'..=b'9']))
+    };
+    !(matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || numbered("COM")
+        || numbered("LPT"))
 }
 
 /// Hashes what is written to it, and keeps it when asked to.
@@ -201,14 +254,17 @@ impl Write for Sink {
 }
 
 /// Entry `i`, streamed through SHA-256 (lower-case hex) under `cap` decompressed
-/// bytes; its content too when `keep`.
+/// bytes and what is left of the archive's `budget`; its content too when
+/// `keep`. Nothing is allocated from the size the entry's header claims.
 fn scan<R: Read + Seek>(
     zip: &mut ZipArchive<R>,
     i: usize,
     name: &str,
     cap: u64,
     keep: bool,
+    budget: &mut u64,
 ) -> Result<(String, Vec<u8>)> {
+    let limit = cap.min(*budget);
     let mut sink = Sink {
         hash: Sha256::new(),
         kept: keep.then(Vec::new),
@@ -216,18 +272,19 @@ fn scan<R: Read + Seek>(
     let mut entry = zip
         .by_index(i)
         .with_context(|| format!("opening entry {name:?}"))?;
-    let read = std::io::copy(&mut (&mut entry).take(cap + 1), &mut sink)
+    let read = std::io::copy(&mut (&mut entry).take(limit + 1), &mut sink)
         .with_context(|| format!("reading entry {name:?}"))?;
-    if read > cap {
+    if read > limit && limit == cap {
         bail!("entry {name:?} is larger than {cap} bytes");
     }
-    let hex = sink
-        .hash
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    Ok((hex, sink.kept.unwrap_or_default()))
+    if read > limit {
+        bail!("entry {name:?} takes the archive past the total size a package may unpack to");
+    }
+    *budget -= read;
+    Ok((
+        crate::cache::finish_hex(sink.hash),
+        sink.kept.unwrap_or_default(),
+    ))
 }
 
 /// `RECORD`'s lines: hash, path.
@@ -260,13 +317,21 @@ fn parse_record(bytes: &[u8]) -> Result<Vec<(String, String)>> {
 /// is listed in it with its hash, every line of it names an entry, and every
 /// entry sits where a package may put it.
 pub fn read<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Spec> {
+    read_within(zip, MAX_TOTAL_BYTES)
+}
+
+/// [`read`], with the archive allowed to unpack to `total` bytes at most.
+fn read_within<R: Read + Seek>(zip: &mut ZipArchive<R>, total: u64) -> Result<Spec> {
     let names: Vec<String> = (0..zip.len())
         .map(|i| zip.name_for_index(i).unwrap_or_default().to_string())
         .collect();
+    // The zip crate keeps one entry per name, so what is hashed below is what
+    // `install` extracts: a second `RECORD` or `package.toml` cannot hide.
+    let mut budget = total;
     let Some(record_at) = names.iter().position(|n| n == RECORD) else {
         bail!("no RECORD; this is not a valid .lvpkg");
     };
-    let (_, record) = scan(zip, record_at, RECORD, MAX_META_BYTES, true)?;
+    let (_, record) = scan(zip, record_at, RECORD, MAX_META_BYTES, true, &mut budget)?;
     let record = parse_record(&record)?;
 
     let listed: HashMap<&str, &str> = record
@@ -292,7 +357,7 @@ pub fn read<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Spec> {
         } else {
             MAX_ENTRY_BYTES
         };
-        let (hex, content) = scan(zip, i, name, cap, is_meta)?;
+        let (hex, content) = scan(zip, i, name, cap, is_meta, &mut budget)?;
         if hex != listed[name.as_str()] {
             bail!("entry {name:?} differs from RECORD {ALTERED}");
         }
@@ -326,14 +391,13 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
     check_name(name)?;
     let version = text_of(project, "project", "version")?;
     let labview = text_of(project, "project", "labview")?;
-    let year = labview
-        .strip_prefix(">=")
-        .and_then(|y| labview_year(y.trim()).ok())
-        .with_context(|| {
-            format!("project.labview = {labview:?}: expected a minimum like \">=2016\"")
-        })?;
+    let year: u32 = labview_minimum(labview)?.parse()?;
 
     let dist = table(&toml, "distribution")?;
+    let kind = text_of(dist, "distribution", "kind")?;
+    if kind != "source" {
+        bail!("package.toml distribution.kind = {kind:?}: this version reads only \"source\"");
+    }
     text_of(dist, "distribution", "vendor")?;
     let display_name = text_of(dist, "distribution", "display-name")?;
     let install_dir = text_of(dist, "distribution", "install-dir")?;
@@ -348,12 +412,11 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
             let Some(constraint) = value.as_str() else {
                 bail!("package.toml dependencies.{dep} must be a string");
             };
-            let item = match Constraint::parse(constraint)
-                .with_context(|| format!("package.toml dependencies.{dep}"))?
-            {
-                Constraint::Exact(v) | Constraint::AtLeast(v) => format!("{dep}>={}", v.raw),
-                Constraint::Any => dep.clone(),
-            };
+            let item = requires_item(
+                dep,
+                &Constraint::parse(constraint)
+                    .with_context(|| format!("package.toml dependencies.{dep}"))?,
+            );
             if item.contains(',') {
                 bail!(
                     "package.toml dependencies.{dep}: {item:?} holds a ',', which would split the Requires list"
@@ -375,10 +438,10 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
             bail!("entry {entry:?} is not below install-dir {install_dir:?}");
         };
         if !clean_path(rel) {
-            bail!("entry {entry:?} has a path that cannot be installed");
+            bail!("entry {entry:?} cannot be installed: {BAD_PATH}");
         }
         if let Some(first) = lower.insert(entry.to_lowercase(), entry) {
-            bail!("entry {entry:?} repeats {first:?} in another letter case");
+            bail!("entries {first:?} and {entry:?} differ only in letter case");
         }
         files.push(entry.clone());
     }
@@ -396,7 +459,7 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
         }],
         script_vis: Vec::new(),
         requires: (!requires.is_empty()).then(|| requires.join(",")),
-        lv_gate: Some(format!("LabVIEW>={}.0", year - 2000)),
+        lv_gate: Some(lv_gate(year)),
         description: Default::default(),
     })
 }
@@ -458,7 +521,7 @@ mod tests {
 
     #[test]
     fn entries_are_sorted_with_record_and_package_toml_first() {
-        let bytes = write(&meta(), &files(&["b.vi", "a.vi"]));
+        let bytes = write(&meta(), &files(&["b.vi", "a.vi"])).unwrap();
         assert_eq!(
             names(&bytes),
             [
@@ -474,15 +537,16 @@ mod tests {
     fn payload_is_sorted_byte_wise_not_by_locale() {
         let bytes = write(
             &meta(),
-            &files(&["b.vi", "B.vi", "a.vi", "sub/c.vi", "_x.vi"]),
-        );
+            &files(&["d.vi", "B.vi", "a.vi", "sub/c.vi", "_x.vi"]),
+        )
+        .unwrap();
         assert_eq!(
             names(&bytes)[2..],
             [
                 "vi.lib/V/D/B.vi",
                 "vi.lib/V/D/_x.vi",
                 "vi.lib/V/D/a.vi",
-                "vi.lib/V/D/b.vi",
+                "vi.lib/V/D/d.vi",
                 "vi.lib/V/D/sub/c.vi"
             ]
         );
@@ -490,8 +554,8 @@ mod tests {
 
     #[test]
     fn writing_is_deterministic_and_every_entry_is_dated_1980() {
-        let a = write(&meta(), &files(&["b.vi", "a.vi"]));
-        let b = write(&meta(), &files(&["a.vi", "b.vi"]));
+        let a = write(&meta(), &files(&["b.vi", "a.vi"])).unwrap();
+        let b = write(&meta(), &files(&["a.vi", "b.vi"])).unwrap();
         assert_eq!(a, b, "the order the files are given in does not matter");
         for (name, time, _) in read_all(&a) {
             assert_eq!(
@@ -543,7 +607,7 @@ mod tests {
     fn record_lists_every_entry_but_itself_in_entry_order_with_lower_case_sha256() {
         let mut f = files(&["b.vi"]);
         f.push(("a.vi".into(), b"abc".to_vec()));
-        let bytes = write(&meta(), &f);
+        let bytes = write(&meta(), &f).unwrap();
         let all = read_all(&bytes);
         let record = String::from_utf8(all[0].2.clone()).unwrap();
         let lines: Vec<&str> = record.lines().collect();
@@ -568,7 +632,7 @@ mod tests {
 
     /// A written archive's entries, in archive order.
     fn written() -> Entries {
-        let bytes = write(&meta(), &files(&["a.vi", "b.vi"]));
+        let bytes = write(&meta(), &files(&["a.vi", "b.vi"])).unwrap();
         read_all(&bytes)
             .into_iter()
             .map(|(name, _, content)| (name, content))
@@ -634,7 +698,7 @@ mod tests {
             ("b".into(), "*".into()),
             ("@o/c".into(), ">=2.0".into()),
         ];
-        let s = read_bytes(write(&m, &files(&["b.vi", "a.vi"]))).unwrap();
+        let s = read_bytes(write(&m, &files(&["b.vi", "a.vi"])).unwrap()).unwrap();
         assert_eq!((s.name.as_str(), s.version.as_str()), ("demo_lib", "1.2.3"));
         assert_eq!(s.lv_gate.as_deref(), Some("LabVIEW>=16.0"));
         assert_eq!(s.display_name.as_deref(), Some("D"));
@@ -651,7 +715,7 @@ mod tests {
 
     #[test]
     fn a_package_without_dependencies_has_no_requires() {
-        let s = read_bytes(write(&meta(), &files(&["a.vi"]))).unwrap();
+        let s = read_bytes(write(&meta(), &files(&["a.vi"])).unwrap()).unwrap();
         assert_eq!(s.requires, None);
     }
 
@@ -661,7 +725,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let roots = crate::target::Roots::scratch(&dir);
         let mut archive =
-            crate::install::open_archive(write(&meta(), &files(&["a.vi", "b.vi"]))).unwrap();
+            crate::install::open_archive(write(&meta(), &files(&["a.vi", "b.vi"])).unwrap())
+                .unwrap();
         let spec = read(&mut archive).unwrap();
         let plan = crate::install::plan(&roots, &spec, &mut archive).unwrap();
         assert!(plan.missing_from_archive.is_empty(), "{plan:?}");
@@ -722,14 +787,14 @@ mod tests {
     #[test]
     fn a_structurally_bad_archive_is_refused_naming_what_is_wrong() {
         type Change = fn(&mut Entries);
-        let cases: [(&str, Change, &str); 10] = [
+        let cases: [(&str, Change, &str); 16] = [
             (
                 "install-dir = ../x",
                 |e| {
                     let text = toml_of(e).replace("vi.lib/V/D\"", "../x\"");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "install-dir",
+                "distribution.install-dir = \"../x\": must be a relative path",
             ),
             (
                 "install-dir = C:/x",
@@ -737,7 +802,7 @@ mod tests {
                     let text = toml_of(e).replace("vi.lib/V/D\"", "C:/x\"");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "install-dir",
+                "distribution.install-dir = \"C:/x\": must be a relative path",
             ),
             (
                 "name = a/b",
@@ -745,7 +810,7 @@ mod tests {
                     let text = toml_of(e).replace("demo_lib", "a/b");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "project.name",
+                "project.name = \"a/b\": a package name takes letters",
             ),
             (
                 "no version",
@@ -753,7 +818,7 @@ mod tests {
                     let text = toml_of(e).replace("version = \"1.2.3\"\n", "");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "project.version",
+                "package.toml project.version must be a non-empty string",
             ),
             (
                 "format = 2",
@@ -761,32 +826,74 @@ mod tests {
                     let text = toml_of(e).replace("format = 1", "format = 2");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "format",
+                "package.toml format = 2 was written by a newer lvpm",
             ),
             (
                 "not TOML",
                 |e| set(e, PACKAGE_TOML, b"this is = = not toml"),
-                "package.toml",
+                "package.toml is not valid TOML",
             ),
             (
                 "an entry outside install-dir",
                 |e| e.push(("other/x.vi".into(), b"x".to_vec())),
-                "other/x.vi",
+                "entry \"other/x.vi\" is not below install-dir \"vi.lib/V/D\"",
             ),
             (
                 "a path with ..",
                 |e| e.push(("vi.lib/V/D/../x.vi".into(), b"x".to_vec())),
-                "vi.lib/V/D/../x.vi",
+                "entry \"vi.lib/V/D/../x.vi\" cannot be installed",
+            ),
+            (
+                "a Windows device name",
+                |e| e.push(("vi.lib/V/D/con.txt".into(), b"x".to_vec())),
+                "entry \"vi.lib/V/D/con.txt\" cannot be installed",
+            ),
+            (
+                "a name that ends in a dot",
+                |e| e.push(("vi.lib/V/D/x.".into(), b"x".to_vec())),
+                "entry \"vi.lib/V/D/x.\" cannot be installed",
             ),
             (
                 "a directory",
                 |e| e.push(("vi.lib/V/D/sub/".into(), Vec::new())),
-                "vi.lib/V/D/sub/",
+                "entry \"vi.lib/V/D/sub/\" is a directory",
             ),
             (
                 "names that differ in letter case",
                 |e| e.push(("vi.lib/V/D/A.vi".into(), b"x".to_vec())),
-                "vi.lib/V/D/A.vi",
+                "entries \"vi.lib/V/D/a.vi\" and \"vi.lib/V/D/A.vi\" differ only in letter case",
+            ),
+            (
+                "a kind that is not source",
+                |e| {
+                    let text = toml_of(e).replace("kind = \"source\"", "kind = \"ppl\"");
+                    set(e, PACKAGE_TOML, text.as_bytes());
+                },
+                "package.toml distribution.kind = \"ppl\": this version reads only \"source\"",
+            ),
+            (
+                "no kind",
+                |e| {
+                    let text = toml_of(e).replace("kind = \"source\"\n", "");
+                    set(e, PACKAGE_TOML, text.as_bytes());
+                },
+                "package.toml distribution.kind must be a non-empty string",
+            ),
+            (
+                "labview without a >=",
+                |e| {
+                    let text = toml_of(e).replace(">=2016", "2016");
+                    set(e, PACKAGE_TOML, text.as_bytes());
+                },
+                "project.labview = \"2016\" is a minimum",
+            ),
+            (
+                "labview that is no year",
+                |e| {
+                    let text = toml_of(e).replace(">=2016", ">=soon");
+                    set(e, PACKAGE_TOML, text.as_bytes());
+                },
+                "project.labview = \">=soon\" is not a minimum LabVIEW year",
             ),
         ];
         for (change, edit, what) in cases {
@@ -829,7 +936,7 @@ mod tests {
             set(&mut entries, RECORD, text.as_bytes());
             refusal(&entries)
         };
-        assert!(record_with("vi.lib/V/D/a.vi\n").contains("RECORD"));
+        assert!(record_with("vi.lib/V/D/a.vi\n").contains("RECORD line 1"));
         let entries = written();
         let record = String::from_utf8(entries[0].1.clone()).unwrap();
         let a_line = record.lines().find(|l| l.ends_with("a.vi")).unwrap();
@@ -838,7 +945,8 @@ mod tests {
         // a hash with a non-hex digit or of the wrong length is not a hash
         let bad_digit = format!("G{}", &record[1..]);
         assert!(record_with(&bad_digit).contains("RECORD line 1"));
-        assert!(record_with(&record.replacen(&record[..64], &record[..63], 1)).contains("RECORD"));
+        let short = record.replacen(&record[..64], &record[..63], 1);
+        assert!(record_with(&short).contains("RECORD line 1"));
     }
 
     #[test]
@@ -901,13 +1009,172 @@ mod tests {
             "", "/", "/x", "../x", "a/../x", "C:/x", r"a\b", ".", "a/./b", "a//b", "a/", "a/.. /x",
         ] {
             let why = check_install_dir(bad).unwrap_err().to_string();
-            assert!(why.contains("distribution.install-dir"), "{bad:?}: {why}");
+            let start = format!("distribution.install-dir = {bad:?}: must be a relative path");
+            assert!(why.starts_with(&start), "{bad:?}: {why}");
         }
     }
 
     #[test]
+    fn a_path_may_not_end_in_a_dot_or_space_or_name_a_windows_device() {
+        for ok in [
+            "a.vi",
+            "console.vi",
+            "COM10",
+            "COM0",
+            "COM",
+            "LPT",
+            "com1x",
+            "NULL",
+            "a.b.c",
+            "CON-1",
+            "Acme Inc",
+        ] {
+            assert!(clean_segment(ok), "{ok:?} is fine");
+        }
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a.",
+            "a ",
+            "a. ",
+            "CON",
+            "con",
+            "Prn",
+            "AUX.txt",
+            "nul.tar.gz",
+            "COM1",
+            "com9.vi",
+            "LPT1",
+            "lpt9.x",
+            "CONIN$",
+            "conout$",
+            "CON .txt",
+        ] {
+            assert!(!clean_segment(bad), "{bad:?} is refused");
+        }
+        for bad in ["vi.lib/CON/x", "vi.lib/V/Aux.vi.", "x/COM3"] {
+            assert!(!clean_path(bad), "{bad:?}");
+        }
+        assert!(check_install_dir("vi.lib/CON/x").is_err());
+        assert!(check_install_dir("vi.lib/Acme Inc./x").is_err());
+    }
+
+    #[test]
+    fn write_refuses_what_read_would_and_never_panics_on_it() {
+        let write_with = |names: &[&str]| write(&meta(), &files(names));
+        for (names, why) in [
+            (
+                &["../x.vi"][..],
+                "member \"../x.vi\" cannot go into a package",
+            ),
+            (
+                &["a\\b.vi"],
+                "member \"a\\\\b.vi\" cannot go into a package",
+            ),
+            (
+                &["sub/NUL.txt"],
+                "member \"sub/NUL.txt\" cannot go into a package",
+            ),
+            (&["x."], "member \"x.\" cannot go into a package"),
+            (&["a.vi", "a.vi"], "member \"a.vi\" is listed twice"),
+            (
+                &["a.vi", "A.vi"],
+                "members \"a.vi\" and \"A.vi\" differ only in letter case",
+            ),
+            (
+                &["A.vi", "a.vi"],
+                "members \"A.vi\" and \"a.vi\" differ only in letter case",
+            ),
+        ] {
+            let err = write_with(names).unwrap_err().to_string();
+            assert!(err.starts_with(why), "{names:?}: {err}");
+        }
+        let mut m = meta();
+        m.install_dir = "../x".into();
+        let err = write(&m, &files(&["a.vi"])).unwrap_err().to_string();
+        assert!(err.starts_with("distribution.install-dir"), "{err}");
+    }
+
+    #[test]
+    fn letter_case_duplicates_name_both_entries_whatever_the_order() {
+        for order in [
+            ["vi.lib/V/D/a.vi", "vi.lib/V/D/A.vi"],
+            ["vi.lib/V/D/A.vi", "vi.lib/V/D/a.vi"],
+        ] {
+            let mut entries = written();
+            entries.retain(|(n, _)| n.ends_with("package.toml"));
+            for name in order {
+                entries.push((name.into(), b"x".to_vec()));
+            }
+            assert_eq!(
+                refusal(&with_record(entries)),
+                format!(
+                    "entries {:?} and {:?} differ only in letter case",
+                    order[0], order[1]
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn two_entries_of_one_name_are_one_entry_to_the_zip_crate_so_read_checks_what_install_extracts()
+    {
+        // The zip writer refuses two entries of one name, so make them: a twin
+        // is written under a name one character off, then renamed in both of
+        // its headers.
+        for name in [PACKAGE_TOML, RECORD, "vi.lib/V/D/a.vi"] {
+            let mut entries = written();
+            let original = entries.iter().find(|(n, _)| n == name).unwrap().1.clone();
+            let mut twin = name.to_string();
+            twin.pop();
+            twin.push('~');
+            entries.push((twin.clone(), b"other bytes".to_vec()));
+            let mut bytes = zip_of(&entries);
+            let (from, to) = (twin.as_bytes(), name.as_bytes());
+            let mut found = 0;
+            for i in 0..bytes.len() - from.len() {
+                if bytes[i..i + from.len()] == *from {
+                    bytes[i..i + from.len()].copy_from_slice(to);
+                    found += 1;
+                }
+            }
+            assert_eq!(found, 2, "a local header and a central one");
+            let mut zip = ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+            assert_eq!(zip.len(), written().len(), "{name}: one entry per name");
+            let mut extracted = Vec::new();
+            zip.by_name(name)
+                .unwrap()
+                .read_to_end(&mut extracted)
+                .unwrap();
+            // read hashes the entry that by_name, and so install, extracts
+            assert_eq!(read_bytes(bytes).is_ok(), extracted == original, "{name}");
+        }
+    }
+
+    #[test]
+    fn an_archive_may_unpack_to_its_total_cap_and_no_more() {
+        let entries = written();
+        let total: u64 = entries.iter().map(|(_, c)| c.len() as u64).sum();
+        let zipped = zip_of(&entries);
+        let read_with = |cap| {
+            read_within(
+                &mut ZipArchive::new(Cursor::new(zipped.clone())).unwrap(),
+                cap,
+            )
+        };
+        read_with(total).unwrap();
+        let why = read_with(total - 1).unwrap_err().to_string();
+        assert!(
+            why.contains("past the total size a package may unpack to"),
+            "{why}"
+        );
+    }
+
+    #[test]
     fn read_spec_reads_by_content_a_package_toml_as_a_lvpkg() {
-        let mut archive = crate::install::open_archive(write(&meta(), &files(&["a.vi"]))).unwrap();
+        let mut archive =
+            crate::install::open_archive(write(&meta(), &files(&["a.vi"])).unwrap()).unwrap();
         let s = crate::install::read_spec(&mut archive).unwrap();
         assert_eq!(s.name, "demo_lib");
         // and checks its RECORD on the way

@@ -11,7 +11,8 @@
 //!
 //! The package name is `[project] name`.
 
-use crate::project::{Constraint, Project};
+use crate::lvpkg;
+use crate::project::Project;
 use crate::spec::{FileGroup, Spec};
 use anyhow::{Result, bail};
 use std::path::{Component, Path, PathBuf};
@@ -83,17 +84,7 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     };
     // A trailing slash is harmless; anything else that leaves the LabVIEW folder is not.
     let install_dir = install_dir.trim_end_matches('/').to_string();
-    if install_dir.is_empty()
-        || install_dir.starts_with('/')
-        || install_dir.contains(['\\', ':'])
-        // Windows drops trailing dots and spaces, so ".. " is "..".
-        || install_dir.split('/').any(|s| s.trim_end_matches(['.', ' ']).is_empty())
-    {
-        bail!(
-            "distribution.install-dir = {install_dir:?}: must be a relative path below the LabVIEW folder, \
-             with forward slashes, like \"vi.lib/Vendor/Lib\""
-        );
-    }
+    lvpkg::check_install_dir(&install_dir)?;
 
     let name = match &p.name {
         Some(n) if n.starts_with('@') => bail!(
@@ -102,17 +93,7 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
         Some(n) => n.clone(),
         None => bail!("project.name: lvpm build needs the package name"),
     };
-    // The name becomes the file name in dist/: nothing that leaves the folder.
-    if name.contains("..")
-        || !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c))
-    {
-        bail!(
-            "project.name = {name:?}: a package name takes letters, digits, '_', '-' and '.', \
-             like \"vendor_lib_name\""
-        );
-    }
+    lvpkg::check_name(&name)?;
     let Some(version) = &p.version else {
         bail!("project.version: lvpm build needs the package version");
     };
@@ -122,15 +103,10 @@ pub fn validate(p: &Project, root: &Path) -> Result<Distribution> {
     };
     let labview = crate::project::labview_year(labview)?;
 
-    // An exact version is written as a minimum, like the published
-    // pilots: a library pinning exact versions makes consumers unsolvable.
     let requires: Vec<String> = p
         .dependencies
         .iter()
-        .map(|(dep, c)| match c {
-            Constraint::Exact(v) | Constraint::AtLeast(v) => format!("{dep}>={}", v.raw),
-            Constraint::Any => dep.clone(),
-        })
+        .map(|(dep, c)| lvpkg::requires_item(dep, c))
         .collect();
     for (key, value) in [
         ("distribution.vendor", &vendor),
@@ -180,7 +156,7 @@ impl Distribution {
             }],
             script_vis: Vec::new(),
             requires: (!self.requires.is_empty()).then(|| self.requires.join(",")),
-            lv_gate: Some(format!("LabVIEW>={}.0", self.labview - 2000)),
+            lv_gate: Some(lvpkg::lv_gate(self.labview)),
         }
     }
 }
