@@ -64,13 +64,17 @@ reference VIPM install produces: identical files, identical places.
 
 ## .vip writing
 
-`lvpm build` writes the `.vip` layout described above. That VIPM accepts it was
-checked only through documented `vipm` commands (`install -y`, `uninstall`,
-`info`, `--version`) against VIPM 26.3.0. lvpm's builds and variants of them
-were installed into our own licensed LabVIEW installation, and the installed
-files were compared with those of the published archive. No VIPM code, cache
-or configuration was read, decompiled or disassembled. The findings stay
-outside the repository, under `target/`.
+lvpm does not write `.vip` for VIPM ([ADR 6](docs/adr/0006-lvpkg-only-vip-read-only.md)).
+Whether VIPM installs the `.vip` that S1's `lvpm build` writes was tested only
+through documented `vipm` commands (`install -y`, `uninstall`, `info`,
+`--version`) and VIPM's own package builder, against VIPM 26.3.0. lvpm's builds,
+re-versioned published archives and one VIPM build were installed into our own
+licensed LabVIEW installation, and the installed files were compared. VIPM
+refuses lvpm's file because it checks a package `ID` whose computation is not
+published. No VIPM code, cache or configuration was read, decompiled or
+disassembled to find it, and none will be. The conclusions are in the
+[S1b spec](docs/specs/lvpm-vip-roundtrip-s1b.md#outcome); the per-variant
+table stays outside the repository, under `target/`.
 
 ## LabVIEW VI Server wire protocol
 

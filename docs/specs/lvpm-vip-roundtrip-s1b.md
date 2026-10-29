@@ -1,7 +1,7 @@
 <!-- spec-version: 14.0.1 -->
 # Spec: VIPM installs an lvpm-built `.vip` (slice S1b)
 
-**Format:** dev-team specs 14.0.1 · **Status:** gate passed · **Date:** 2026-10-27 ·
+**Format:** dev-team specs 14.0.1 · **Status:** closed 2026-10-29, VIPM refuses lvpm's `.vip` ([Outcome](#outcome), [ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)) · **Date:** 2026-10-27 ·
 **Slice:** [S1b in build-slices.md](../vision/build-slices.md#slice-s1b-vipm-installs-an-lvpm-built-vip), issue #60 ·
 **Builds on:** [S1 spec](lvpm-build-s1.md), [ADR 2](../adr/0002-vip-first-lvpkg-later.md), [PROVENANCE.md](../../PROVENANCE.md)
 
@@ -30,7 +30,7 @@ paragraph that says how `.vip` writing was verified.
 
 | Part | Where |
 |---|---|
-| `spec` and zip changes VIPM needs | none: the first probe run (2026-10-28) accepted lvpm's build unchanged |
+| `spec` and zip changes VIPM needs | none possible: VIPM needs an `ID` lvpm cannot compute ([Outcome](#outcome)) |
 | Unit tests, one per VIPM requirement, named after it | next to the code they cover |
 | Probe runner (dev only, not shipped) | `tests/vipm_probe.rs`, `#[ignore]`, runs when `LVPM_TEST_VIPM` names `vipm.exe` |
 | Round-trip scenarios | `tests/features/build-slices/s1b-vip-in-vipm-roundtrip.feature`, tagged `@unsafe` (manual) |
@@ -128,11 +128,53 @@ without. Making VIPM resolve dependencies from lvpm feeds.
 
 Demo: install pilot B's lvpm-built `.vip` in VIPM on a clean machine.
 
+## Outcome
+
+Closed on 2026-10-29 without AC2 and AC4–AC6, AC9 dropped. VIPM 26.3.0,
+LabVIEW 2026 64-bit. lvpm writes `.lvpkg` only from now on
+([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
+
+What was found, so nobody repeats it:
+
+1. **The first probe run proved nothing.** Every variant, and lvpm's own
+   build, kept pilot A's published version 2.2.2.114. VIPM had that version
+   in its library and installed its cached copy: the installed tree had the
+   published package's 109 files, not the 92 lvpm packs. The 14 "accepted"
+   rows of 2026-10-28 say nothing about lvpm's file.
+2. **At a version VIPM has not seen, VIPM refuses lvpm's build.** It shows
+   "file format is not valid", then "No Package Info found", and the CLI
+   gives up after 60 s while the dialog waits for a click.
+3. **The cause is the `spec`'s `ID`.** Controls, each a published archive
+   with only its version changed: the published `ID` kept, the `ID` removed,
+   empty, and a random 32-digit hex value. VIPM refused all four. A package
+   VIPM's own builder made (pilot A at 2.1.2.120) installed and uninstalled
+   cleanly.
+4. **The `ID` cannot be derived.** MD5, SHA-1 and SHA-256 over the spec
+   without `ID` (CRLF and LF), the entries in zip and sorted order, per-file
+   MD5 lists and CRCs, with and without name and version, reproduced none of
+   five known IDs. Going further means reading VIPM's code, which
+   PROVENANCE.md rules out. JKI's public issue tracker reports the same
+   error for hand-edited packages and gives no scheme.
+5. **`vipm build` is no way round.** It builds only in public repositories
+   with the Community edition, or with Pro. Pilot A's own `.vipb` also needs
+   a `builds` folder its repository does not have.
+
+How to test VIPM acceptance, if it is ever tried again: use a version VIPM
+has never seen, answer or watch for VIPM's dialogs (the CLI cannot), and
+compare the installed files with the package's own entries, not only the
+exit code and `vipm info`.
+
+The per-variant table stays on the machine that made it, as Q1 decided.
+
+What stays from this slice: the probe runner (dev only, `#[ignore]`),
+pilot B built from its pinned checkout (`LVPM_TEST_PILOT_B`), and AC8
+(`lvpm install` of the built pilot A still passes, 2026-10-29).
+
 ## Glossary
 
 | Term | Definition | Status | Source |
 |------|------------|--------|--------|
-| accepted | `vipm install <file> -y` exits 0 and `vipm info <name>` lists the package as installed: its `Installed Version:` line holds the version | `verified` | the first probe run, 2026-10-28 (vipm 26.3.0): calibration passed |
+| accepted | `vipm install <file> -y` exits 0 and `vipm info <name>` lists the package as installed: its `Installed Version:` line holds the version | `refuted` | not enough: when VIPM already knows the name and version, it installs its cached copy and both checks pass whatever the file holds ([Outcome](#outcome)) |
 | variant | A `.vip` that differs from lvpm's build of pilot A in exactly one key, value or entry (the license row counts as one: the `license` entry and the `License Agreement` key that names it) | `unverified` | build-slices.md S1b, step 3 |
 | black-box | Learning only from VIPM's documented commands, its messages and the files it installs | `unverified` | PROVENANCE.md, build-slices.md S1b |
 | round trip | lvpm builds a pilot, VIPM installs and mass compiles it | `verified` | build-slices.md S1b |

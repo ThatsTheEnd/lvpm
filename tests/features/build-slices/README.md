@@ -81,11 +81,12 @@ The findings table and VIPM's output for each variant go to
 `target/vipm-probes/<timestamp>/`, which is never committed. If a run is
 interrupted, the next one names the packages it left installed.
 
-`s1b-vip-in-vipm-roundtrip.feature` holds the round trips for both pilots
-through VIPM. They are tagged `@unsafe`, so the harness counts them and never
-runs them. An operator follows their steps by hand with VIPM's CLI and GUI,
-then replaces each scenario's `Run` line with the date, the versions and
-`pass` or `fail`. Those lines are the evidence.
+Its "accepted" proves nothing for a name and version VIPM already has: VIPM
+then installs its cached copy. Every variant keeps pilot A's published
+version, so a run only tells whether VIPM's cache works. VIPM refuses lvpm's
+`.vip` at a new version, and lvpm no longer aims to write one VIPM accepts
+([ADR 6](../../../docs/adr/0006-lvpkg-only-vip-read-only.md)). The round-trip
+scenarios were removed for that reason.
 
 ## Running them
 

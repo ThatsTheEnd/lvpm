@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-27 · **Revised**: 2026-10-28 (plan review round 3, PR 2)
 **Branch**: claude/s1b-vipm-roundtrip-spec (build continues on it)
-**Status**: PR 1 merged (#80); step 1.6 run 2026-10-28; PR 2 (slice 4) planned, reviewed round 3
+**Status**: closed 2026-10-29. PR 1 merged (#80). PR 2's round trips failed: VIPM refuses lvpm's `.vip` at a new version, and the 2026-10-28 run had only installed VIPM's cached copy. See the spec's [Outcome](../docs/specs/lvpm-vip-roundtrip-s1b.md#outcome) and [ADR 6](../docs/adr/0006-lvpkg-only-vip-read-only.md). PR 2 ships the probe fixes and these docs only
 **Gherkin persistence**: plan-file-only (steps write the feature file themselves, as S1 did)
 **Spec**: [docs/specs/lvpm-vip-roundtrip-s1b.md](../docs/specs/lvpm-vip-roundtrip-s1b.md) · issue #60
 
@@ -14,9 +14,9 @@ on both pilots. The work ships as **two PRs** with a checkpoint between:
 
 - **PR 1 (this plan, in detail):** slice 1, the probe runner, and slice 2,
   pilot B built from its pinned checkout. Ends with one probe run (step 1.6).
-- **PR 2 (slices 3–4, re-planned after step 1.6):** the probe found lvpm's
-  build needs no change, so PR 2 is the probe fixes, the round trips and the
-  docs.
+- **PR 2 (slices 3–4, re-planned after step 1.6):** planned as the probe
+  fixes, the round trips and the docs. The round trips failed (see Status),
+  so it ships the probe fixes and the closing docs.
 
 ## Acceptance Criteria
 
