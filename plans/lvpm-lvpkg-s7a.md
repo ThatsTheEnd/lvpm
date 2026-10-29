@@ -466,6 +466,15 @@ build-slices README.
 start; ADR 1's example. ADR 6's Consequences ("until S7a merges…"), ADR 2's
 status line and build-slices.md's S7a/S4/S9 notes say S7a has landed. The
 repo has no CHANGELOG; the PR body carries the breaking change.
+Keep the GitHub project tidy (`gh -R ThatsTheEnd/lvpm`, board
+[lvpm mission](https://github.com/users/ThatsTheEnd/projects/2)): the PR
+says `Closes #66`; #66 gets the `deviation` label and a comment naming how
+the build differs from build-slices.md (a tampered `.lvpkg` in a package
+folder warns, it does not fail; `install-dir` now refuses `/x`, `a\b` and
+dot-only segments); the S1b issue is closed as superseded by ADR 6 if still
+open; the "blocked by" links of S4 and S9 still name #66; #66 sits in the
+board's in-review column. Anything outward (labels, comments, closing) is
+listed in the PR handoff and done only after the user's go-ahead.
 **TEST**: the docs scenario.
 **Files**: as the slice, without `spec.rs`
 **Commit**: `docs(s7a): lvpm build writes a .lvpkg`
