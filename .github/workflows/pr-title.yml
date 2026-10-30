@@ -8,7 +8,8 @@ on:
     branches: [main]
     types: [opened, edited, synchronize, reopened]
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   title:
@@ -16,11 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Check the title is a conventional commit
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          re='^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style)(\([^)]+\))?!?: .+'
-          [[ "$TITLE" =~ $re ]] && { echo "ok: $TITLE"; exit 0; }
-          echo "::error::PR title '$TITLE' is not a conventional commit, e.g. 'feat(sources): ...' or 'fix: ...'."
-          exit 1
+        run: bash ci/pr-title.sh "$TITLE"

@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - name: Check the version is not released yet
+      - name: Decide whether this merge releases
         id: check
         run: |
           version=$(bash ci/version-check.sh --print-version)
@@ -80,7 +80,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-      pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -115,20 +114,40 @@ jobs:
         run: gh release upload "$TAG" dist/*
       - name: Publish the release
         run: gh release edit "$TAG" --draft=false
-      # release-please (skip-github-release) refuses to open the next release
-      # PR while a merged one is still labelled pending.
-      - name: Mark the release PR as tagged
+
+  # release-please (skip-github-release) refuses to open the next release PR
+  # while a merged one is still labelled pending. Its own job, so a failure
+  # here is re-run alone, after the release is already public.
+  label-release-pr:
+    name: label release PR
+    needs: [publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PENDING: 'autorelease: pending'
+      TAGGED: 'autorelease: tagged'
+    steps:
+      - name: Mark the merged release PR as tagged
         run: |
-          gh label create "autorelease: tagged" --force
-          prs=$(gh pr list --state merged --label "autorelease: pending" --json number -q '.[].number')
-          for pr in $prs; do gh pr edit "$pr" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; done
+          gh label create "$TAGGED" --force
+          # REST, not `gh pr edit`: its GraphQL query fails on some gh versions.
+          prs=$(gh pr list --state merged --label "$PENDING" --json number -q '.[].number')
+          for pr in $prs; do
+            gh api -X POST "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=$TAGGED" >/dev/null
+            gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/$(jq -rn --arg l "$PENDING" '$l|@uri')" >/dev/null
+          done
 
   # Reusable-workflow caller jobs cannot add steps, so this one job reports a
   # failed or cancelled job anywhere in the run.
   release-report:
     name: release report
     if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
-    needs: [guard, build, package, publish]
+    needs: [guard, build, package, publish, label-release-pr]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -138,7 +157,9 @@ jobs:
           VERSION: ${{ needs.guard.outputs.version }}
         run: |
           job=$(jq -r 'to_entries | map(select(.value.result == "failure" or .value.result == "cancelled")) | .[0].key // "unknown"' <<<"$NEEDS")
-          if [ "$job" = guard ]; then
+          if [ "$job" = label-release-pr ]; then
+            next="v${VERSION} is published; only the release PR's label failed. Re-run the failed jobs, or move the merged release PR from 'autorelease: pending' to 'autorelease: tagged' by hand."
+          elif [ "$job" = guard ]; then
             next="the version is below the highest tag (see guard's summary); fix the release PR's version."
           else
             next="if publish failed at \"Check the version is still not released\", a newer version is already released: merge the next release PR. Otherwise re-run the failed jobs; a leftover draft release is replaced. See the \"Release failed\" runbook in CONTRIBUTING.md."

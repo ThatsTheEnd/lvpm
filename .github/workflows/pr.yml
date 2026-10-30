@@ -176,8 +176,10 @@ jobs:
           done
           exit $status
 
-  # Branch protection should require only ci-ok (an admin sets it; see the
-  # spec), so adding a job or a matrix row never changes the required checks.
+  # Branch protection requires ci-ok and pr-title.yml's conventional title
+  # (an admin sets it; see CONTRIBUTING.md). ci-ok aggregates this workflow, so
+  # adding a job or a matrix row never changes the required checks; the title
+  # check stays apart so a title edit does not re-run this workflow.
   ci-ok:
     name: ci-ok
     if: always()
