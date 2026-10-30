@@ -147,8 +147,8 @@ change to them is a breaking change and gets a major version.
 
 ## Learn more
 
-The documentation site, <https://thatstheend.github.io/lvpm/>, holds all of
-the below as one book, starting with a tutorial.
+The documentation site, <https://thatstheend.github.io/lvpm/>, holds the docs
+below as one book, starting with a tutorial; CONTRIBUTING.md stays in the repo.
 
 | Document | What is in it |
 | --- | --- |
