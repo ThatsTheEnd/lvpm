@@ -132,7 +132,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PENDING: 'autorelease: pending'
       TAGGED: 'autorelease: tagged'
-      TITLE: chore(main): release ${{ needs.guard.outputs.version }}
+      TITLE: 'chore(main): release ${{ needs.guard.outputs.version }}'
     steps:
       - name: Mark the merged release PR as tagged
         run: |
@@ -143,6 +143,7 @@ jobs:
             gh api -X POST "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=$TAGGED" >/dev/null
             gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/$(jq -rn --arg l "$PENDING" '$l|@uri')" >/dev/null
           done
+          [ -n "$prs" ] || echo "::warning::No merged PR titled '$TITLE' carries '$PENDING'. If one is still pending, move its label by hand, or release-please opens no next release PR."
 
   # Reusable-workflow caller jobs cannot add steps, so this one job reports a
   # failed or cancelled job anywhere in the run.
