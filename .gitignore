@@ -4,5 +4,11 @@
 *.log
 *.pcapng
 /*.json
+!/release-please-config.json
+!/.release-please-manifest.json
 
 __pycache__/
+
+# mdbook-mermaid install . writes these for the docs site
+/mermaid.min.js
+/mermaid-init.js
