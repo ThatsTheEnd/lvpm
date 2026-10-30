@@ -145,7 +145,8 @@ opens or updates one release PR, `chore(main): release <version>`, which
 raises the version in `Cargo.toml` and `Cargo.lock` and adds the merged
 titles to `CHANGELOG.md`. Merging that PR publishes the version as release
 `v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`;
-any other merge stops at release.yml's guard and releases nothing.
+once the version is tagged, every other merge stops at release.yml's guard
+and releases nothing.
 
 release-please needs a repository secret `RELEASE_PLEASE_TOKEN`: a token with
 contents and pull-requests write. The default token will not do, because a PR
@@ -159,7 +160,8 @@ release PR itself (`Cargo.toml`, `Cargo.lock` and
 
 Releases run one at a time. A merge that lands while the release PR's run is
 still waiting replaces that run; the newer run releases the same version from
-the newer commit, so the release also contains that merge. The
+the newer commit, so the release also contains that merge, but its title is
+not in that version's `CHANGELOG.md` entry and does not raise the version. The
 workflow is [release.yml](.github/workflows/release.yml); the design is in
 [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 
@@ -177,9 +179,9 @@ list, uninstall) inside NI's LabVIEW images:
 | `nationalinstruments/labview:2026q3-linux` | Linux | 2026 | |
 | `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
 
-Branch protection on `main` must require the `ci-ok` check, which passes only
-when every other job passed, and the `conventional title` check, and must
-require branches to be up to date before merging. An admin sets this in the repository settings. Adding a job or an
+Branch protection on `main` must require two checks: `ci-ok`, which passes
+only when every other job in `pr.yml` passed, and `conventional title`.
+Branches must also be up to date before merging. An admin sets this in the repository settings. Adding a job or an
 image row never changes the required checks.
 The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).
 
@@ -194,7 +196,7 @@ Failed runs show as red **Release** runs on `main` under
    [Releases](https://github.com/ThatsTheEnd/lvpm/releases) list first. A
    published `v<version>` with 3 assets means the release is done and there
    is nothing to fix. Otherwise the version is taken: fix the version in the
-   release PR. (A merge that is not the release PR never shows this; guard
+   next release PR (a `Release-As: X.Y.Z` footer sets it). (A merge that is not the release PR never shows this; guard
    stops it quietly. It appears on a manual run of an already released
    version.)
 3. If **publish** failed at "Check the version is still not released", a
@@ -203,7 +205,9 @@ Failed runs show as red **Release** runs on `main` under
 4. If only **label release PR** failed, the release is out, but release-please
    opens no new release PR until the merged one is labelled
    `autorelease: tagged`. Re-run the failed jobs, or swap its
-   `autorelease: pending` label for `autorelease: tagged` by hand.
+   `autorelease: pending` label for `autorelease: tagged` by hand. Use
+   **Re-run failed jobs**, not **Re-run all jobs**: a full re-run stops at
+   guard, because the tag now exists, and skips the label job.
 5. For any other job, re-run the failed jobs, but not while another Release
    run is in progress. A draft release left by the failed run is deleted and
    created again, and the installer never picks a draft.

@@ -2,7 +2,8 @@ name: Release
 
 # A merge to main releases the version in Cargo.toml if it is not tagged yet,
 # which is the case after merging release-please's release PR
-# (release-please.yml); any other merge stops at guard. The release is a
+# (release-please.yml); a merge whose version is already
+# tagged stops at guard. The release is a
 # draft until every asset is uploaded, so a failed run leaves at most a draft,
 # which install.ps1 skips and a re-run replaces. No tests run here: the PR's
 # required ci-ok check already ran them on this exact tree.
@@ -120,7 +121,7 @@ jobs:
   # here is re-run alone, after the release is already public.
   label-release-pr:
     name: label release PR
-    needs: [publish]
+    needs: [guard, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -131,12 +132,13 @@ jobs:
       GH_REPO: ${{ github.repository }}
       PENDING: 'autorelease: pending'
       TAGGED: 'autorelease: tagged'
+      TITLE: chore(main): release ${{ needs.guard.outputs.version }}
     steps:
       - name: Mark the merged release PR as tagged
         run: |
           gh label create "$TAGGED" --force
           # REST, not `gh pr edit`: its GraphQL query fails on some gh versions.
-          prs=$(gh pr list --state merged --label "$PENDING" --json number -q '.[].number')
+          prs=$(gh pr list --state merged --label "$PENDING" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number")
           for pr in $prs; do
             gh api -X POST "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=$TAGGED" >/dev/null
             gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/$(jq -rn --arg l "$PENDING" '$l|@uri')" >/dev/null
