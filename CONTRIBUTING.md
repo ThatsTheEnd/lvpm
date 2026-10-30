@@ -181,6 +181,8 @@ list, uninstall) inside NI's LabVIEW images:
 
 Branch protection on `main` must require two checks: `ci-ok`, which passes
 only when every other job in `pr.yml` passed, and `conventional title`.
+A PR that changes only `docs/` and top-level Markdown skips those jobs, and
+`ci-ok` passes without them.
 Branches must also be up to date before merging. An admin sets this in the repository settings. Adding a job or an
 image row never changes the required checks.
 The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).

@@ -12,8 +12,36 @@ permissions:
   contents: read
 
 jobs:
+  # Whether the PR changes anything but docs/ and top-level Markdown; a
+  # docs-only PR skips every job below, and ci-ok still reports.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Look for changes outside the docs
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Read the list once: grep -q on a pipe can end git with SIGPIPE, which pipefail reports.
+          files=$(git diff --name-only "$BASE...HEAD")
+          # An empty list also counts as code, so nothing is skipped by mistake.
+          if grep -qvE '^docs/|^[^/]+\.md$' <<<"$files"; then code=true; else code=false; fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "changes outside the docs: $code" >> "$GITHUB_STEP_SUMMARY"
+
   test:
     name: test (${{ matrix.os }})
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -49,6 +77,8 @@ jobs:
 
   # The same build and packaging main releases with.
   build:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
@@ -156,6 +186,8 @@ jobs:
 
   lint:
     name: lint
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -179,20 +211,24 @@ jobs:
   # Branch protection requires ci-ok and pr-title.yml's conventional title
   # (an admin sets it; see CONTRIBUTING.md). ci-ok aggregates this workflow, so
   # adding a job or a matrix row never changes the required checks; the title
-  # check stays apart so a title edit does not re-run this workflow.
+  # check stays apart so a title edit does not re-run this workflow. On a
+  # docs-only PR the skipped jobs count as passed.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [test, build, package, e2e, lint]
+    needs: [changes, test, build, package, e2e, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
+          DOCS_ONLY: ${{ needs.changes.result == 'success' && needs.changes.outputs.code == 'false' }}
         run: |
           # Root causes (failure, cancelled) first, then jobs skipped because of them.
-          bad=$(jq -r 'to_entries | map(select(.value.result != "success")) | sort_by(.value.result == "skipped") | .[]
+          bad=$(jq -r --argjson docs "$DOCS_ONLY" 'to_entries
+            | map(select(.value.result != "success" and (($docs and .value.result == "skipped") | not)))
+            | sort_by(.value.result == "skipped") | .[]
             | "::error::\(.key): \(if .value.result == "skipped" then "skipped (downstream)" else .value.result end)"' <<<"$NEEDS")
           [ -z "$bad" ] || { echo "$bad"; exit 1; }
-          echo "every PR job passed"
+          [ "$DOCS_ONLY" = true ] && echo "docs-only PR: the other jobs were skipped" || echo "every PR job passed"
