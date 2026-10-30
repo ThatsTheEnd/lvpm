@@ -266,8 +266,12 @@ pub fn create(
     let target =
         target::select_for_project(targets, labview_version, min_year)?.ok_or_else(|| {
             anyhow!(
-                "which LabVIEW? pass --labview-version <YYYY>, or set labview in {}\n\
+                "which LabVIEW? pass --labview-version <YYYY>, or set {} in {}\n\
                  hint: `lvpm targets` lists what is installed",
+                match crate::vipm_interop::is_toml(&manifest_path) {
+                    true => "labview-version",
+                    false => "labview",
+                },
                 manifest_path.display()
             )
         })?;

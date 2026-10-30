@@ -60,7 +60,7 @@ wins over the overlay; `LVAddons.AdditionalLocations` needs LabVIEW 2024 Q1.
     packages (dev-dependencies) than copied from one developer's machine.
 - **The venv keeps its own ini — done.** A venv LabVIEW writes its options
   back to `.lvpm/labview.ini` when it closes (measured on 2026), so that file
-  — copied from the target's ini by `venv create` — is now the base of every
+  — copied from the target's ini at the venv's first LabVIEW start — is now the base of every
   launch; only lvpm's keys are reapplied. Deleting it inherits the target's
   settings afresh at the next launch.
 - **Install hooks in a venv.** Today none run. `ni_lib_advanced_http_client_api`
@@ -364,7 +364,7 @@ test scripts as today.
 
 ## macOS
 
-Not supported, and a macOS build stops with a `compile_error!` in `main.rs`.
+Not supported, and a macOS build stops with a `compile_error!` in `crates/lvpm-core/src/lib.rs`.
 What is a fact about LabVIEW on Linux is `cfg(target_os = "linux")`; what is
 true of any POSIX system is `cfg(not(windows))` or `cfg(unix)` and needs no
 new branch.

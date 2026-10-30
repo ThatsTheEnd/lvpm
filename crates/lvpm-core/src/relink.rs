@@ -120,11 +120,7 @@ pub fn locate_vi(dir: &Path) -> Result<PathBuf> {
     Ok(p)
 }
 
-/// Drop any folder an already-kept folder contains, since the walk covers it.
-///
-/// Separators are normalised on the way through: a `Target Dir` carries its own
-/// forward slashes, which survive `join` and would otherwise reach LabVIEW —
-/// and the print-out — as `...\LabVIEW 2026\examples/10X Engineering`.
+/// Whether `dir` has a `resource` folder on the way to `Framework/Providers`.
 fn overlaps_providers(dir: &Path) -> bool {
     let parts: Vec<_> = dir.components().collect();
     parts.iter().enumerate().any(|(index, part)| {
@@ -146,6 +142,11 @@ fn overlaps_providers(dir: &Path) -> bool {
     })
 }
 
+/// Drop any folder an already-kept folder contains, since the walk covers it.
+///
+/// Separators are normalised on the way through: a `Target Dir` carries its own
+/// forward slashes, which survive `join` and would otherwise reach LabVIEW —
+/// and the print-out — as `...\LabVIEW 2026\examples/10X Engineering`.
 fn collapse(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = dirs
         .iter()

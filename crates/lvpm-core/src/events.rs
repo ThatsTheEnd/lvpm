@@ -81,6 +81,7 @@ pub enum Event {
     /// installation itself is used. `repo` is the project's directory.
     HeadlessInstallationChosen { repo: PathBuf, labview: String },
 
+    // ---- vipm_interop ----
     /// A `vipm.toml` was read and converted. `unused` names the fields lvpm
     /// has no use for; `labview` is VIPM's pinned year, read as a minimum.
     VipmManifestConverted {

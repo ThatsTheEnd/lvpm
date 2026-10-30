@@ -364,7 +364,16 @@ pub(crate) fn within(root: &Path, p: &Path) -> bool {
 }
 
 fn env_path(key: &str, fallback: &str) -> PathBuf {
-    PathBuf::from(std::env::var(key).unwrap_or_else(|_| fallback.to_string()))
+    root_or(std::env::var(key).ok(), fallback)
+}
+
+/// `value` unless it is empty, relative or a filesystem root: a machine root
+/// of `/` would make every path a write root and disable `check_contained`.
+fn root_or(value: Option<String>, fallback: &str) -> PathBuf {
+    value
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.parent().is_some())
+        .unwrap_or_else(|| PathBuf::from(fallback))
 }
 
 impl Roots {
@@ -622,6 +631,18 @@ impl Roots {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_relative_or_root_env_value_falls_back() {
+        let (root, home) = match cfg!(windows) {
+            true => ("C:\\", "C:\\Users\\me"),
+            false => ("/", "/home/me"),
+        };
+        for bad in [None, Some(""), Some("rel"), Some(root)] {
+            assert_eq!(root_or(bad.map(String::from), "fb"), PathBuf::from("fb"));
+        }
+        assert_eq!(root_or(Some(home.into()), "fb"), PathBuf::from(home));
+    }
 
     fn lv(year: u32) -> LvTarget {
         LvTarget {

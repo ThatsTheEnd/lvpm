@@ -5,8 +5,8 @@ the Windows IDE: files copied, then relinked and hooks run over VI Server.
 Everything below was measured on 2026-09-26 against NI's container image
 `nationalinstruments/labview:2026q3-linux` (LabVIEW 2026 Q3, Ubuntu 22.04).
 The end-to-end runner in [e2e/](../e2e/src/main.rs) repeats every check in a
-throwaway container in about two and a half minutes, and [CI](#ci) runs it,
-on Windows as well.
+throwaway container in about two and a half minutes. In this fork CI does
+not run it yet (see [CI](#ci)).
 
 ## Building
 
@@ -116,39 +116,20 @@ root.
 
 ## CI
 
-[.github/workflows/build.yml](../.github/workflows/build.yml), on every push
-to any branch, on every pull request (which tests the merge with its base),
-and by hand. A newer push to a branch other than `main` cancels its run still
-in progress.
+> **This fork (2026-10-30).** Upstream runs `lvpm-e2e` from its `build.yml`;
+> this fork kept its own workflows, which do not run it yet.
 
-- **build** — one job per platform on its own runner: `windows-latest`
-  (`x86_64-pc-windows-msvc`) and `ubuntu-latest` (static
-  `x86_64-unknown-linux-musl`). Each runs `cargo test` and a release build,
-  and uploads its executable and the end-to-end runner, `lvpm-e2e`.
-- **collect** — puts both executables in one artifact,
-  `lvpm-<version>-<commit>`, for handing to testers.
-- **e2e (linux-x64)**, **e2e (windows-x64)** — one job, the same steps on
-  each platform: `lvpm-e2e` with that platform's executable, in
-  `nationalinstruments/labview:2026q3-linux` or `2026q3-windows` (pinned),
-  each of its two suites in a fresh container:
-  - **local** — the checks under [Verified](#verified), with two packages
-    made from the VIs in `tools/`.
-  - **public** — LUnit and G-Image from the public indexes: a headless
-    `install --hooks` (G-Image needs its PostInstall) in which every hook
-    must run and every recorded file must be on disk, `relink --all`, an
-    uninstall after which no file in the LabVIEW tree is added, gone or
-    changed, and the same set relinked in a venv, which must leave the
-    LabVIEW tree alone.
+- [pr.yml](../.github/workflows/pr.yml), on pull requests to `main`:
+  `cargo test` on `windows-2022` and `ubuntu-22.04` (through the reusable
+  [build.yml](../.github/workflows/build.yml)), then the smoke flow and the
+  `@labview` acceptance scenarios from `ci/e2e/` in NI's images, and lint.
+- [release.yml](../.github/workflows/release.yml), on pushes to `main`: the
+  same build, then packaging.
 
-  Windows runs on `windows-2022`, whose Server 2022 matches the image and
-  runs it with process isolation. The pull is most of that job: 10 to 16
-  minutes for 19.7 GB on disk, so it runs on pull requests, on `main` and by
-  hand, and a push to another branch tests Linux only.
-
-  There is no mass compile. A bad VI in a third-party package (LUnit ships
-  one on purpose) or in LabVIEW's own templates says nothing about lvpm, and
-  the compile writes project files into the tree the uninstall check
-  compares.
+Running `lvpm-e2e` in CI (its `local` and `public` suites, on both
+platforms) is still to do. There is no mass compile: a bad VI in a
+third-party package (LUnit ships one on purpose) or in LabVIEW's own
+templates says nothing about lvpm.
 
 ## Not done
 
@@ -183,3 +164,7 @@ What Linux still needs, most important first.
    started is reparented to PID 1, and `sleep infinity` never reaps it. The
    TIME_WAIT rule applies to anything that restarts LabVIEW on a port within a
    minute, LabVIEWCLI included.
+7. **A LabVIEW still starting.** `launch::is_live_labview` is a stub that
+   returns `false` off Windows, so on Linux a venv's LabVIEW counts as
+   running only once its VI Server port listens. A second `lvpm launch` in
+   that window can start another instance on the same cache.

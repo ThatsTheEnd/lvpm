@@ -5,6 +5,7 @@ use lvpm_core::events::Event;
 use lvpm_core::ops::venv_cmd::VenvStatus;
 use lvpm_core::project;
 use lvpm_core::venv::Venv;
+use lvpm_core::vipm_interop;
 use std::path::Path;
 
 /// The lines about what a venv is bound to, shared by `create` and `status`.
@@ -20,17 +21,21 @@ fn binding(v: &Venv) -> String {
 /// What `lvpm venv create` prints.
 /// `manifest` is the one `--manifest` named, if any.
 pub fn created(v: &Venv, manifest: Option<&Path>) -> String {
-    let install = match manifest {
-        Some(p) => format!("`lvpm install --manifest {}`", p.display()),
-        None => format!(
-            "`lvpm install` puts {}'s [dependencies]",
+    let next = match manifest.is_some_and(vipm_interop::is_toml) {
+        // shortcut: lock and sync read only lvpm.toml; say how once a vipm.toml can be locked.
+        true => format!(
+            "`lvpm launch` starts LabVIEW on it (a vipm.toml's packages cannot be installed yet: `lvpm install` reads {})",
+            project::FILE_NAME
+        ),
+        false => format!(
+            "`lvpm install` puts {}'s [dependencies] into it, `lvpm launch` starts LabVIEW on it",
             project::FILE_NAME
         ),
     };
     format!(
-        "created {}\n{}\nnext: {install} into it, `lvpm launch` starts LabVIEW on it\n",
+        "created {}\n{}\nnext: {next}\n",
         v.dir.display(),
-        binding(v),
+        binding(v)
     )
 }
 
@@ -102,6 +107,13 @@ mod tests {
                 v.dir.display()
             )
         );
+    }
+
+    #[test]
+    fn a_venv_made_from_a_vipm_toml_offers_no_install_step() {
+        let text = created(&venv(), Some(Path::new("proj/vipm.toml")));
+        assert!(text.contains("next: `lvpm launch` starts LabVIEW on it (a vipm.toml's"));
+        assert!(!text.contains("--manifest"));
     }
 
     #[test]

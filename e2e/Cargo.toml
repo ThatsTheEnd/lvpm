@@ -1,9 +1,9 @@
 [package]
 name = "lvpm-e2e"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "End-to-end checks of lvpm against LabVIEW in NI's container images"
-license = "MIT OR Apache-2.0"
+license.workspace = true
 publish = false
 
 [dependencies]

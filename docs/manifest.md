@@ -10,7 +10,7 @@ This document is the reference for the format as implemented in
 [`crates/lvpm-core/src/vipm_interop.rs`](../crates/lvpm-core/src/vipm_interop.rs)), how commands find and use
 it, and how it relates to VIPM's `vipm.toml`. Planned extensions are listed
 at the end and in
-[roadmap.md](roadmap.md#the-manifest-and-the-lockfile---wip).
+[roadmap.md](roadmap.md#the-manifest-and-the-lockfile).
 
 > **This fork (2026-10-30).** This file came in with the upstream merge
 > (Flydroid/lvpm). Named dependency groups (`[dependencies.<name>]`,
@@ -55,8 +55,9 @@ venv was bound to, and an empty `[dependencies]`.
 A project is wherever its manifest is, the way cargo finds `Cargo.toml`. The
 manifest a command uses is chosen in this order, first match wins:
 
-1. `install --manifest <FILE>` / `venv create --manifest <FILE>`: that file,
-   whatever its name.
+1. `venv create --manifest <FILE>`: that file, whatever its name.
+   (`install --manifest` is refused in this fork: in a project `install` is
+   `sync` from `lvpm.lock`, and the lock is made from `lvpm.toml` only.)
 2. The repository of the venv in effect: `<repo>/lvpm.toml`, if it exists.
 3. `--project <DIR>`: `<DIR>/lvpm.toml`, if it exists.
 4. The nearest `lvpm.toml` at or above the working directory.
@@ -67,14 +68,11 @@ manifest is found, its `[sources]` apply to every command that reads indexes
 manifest-driven install.
 
 Only the file name `lvpm.toml` is discovered. A `vipm.toml` is read only
-when named with `--manifest`, and is converted first (see
+when named with `venv create --manifest`, and is converted first (see
 [Compatibility with `vipm.toml`](#compatibility-with-vipmtoml)).
 
-`--manifest` chooses *what* to install, not *where*. The venv an `install`
-writes into is still the nearest one at or above the working directory (or
-`--project`'s), wherever the named manifest lives; `venv create --manifest`
-puts the venv beside the manifest, so running from that folder lines the two
-up.
+`venv create --manifest` puts the venv beside the manifest and binds it to
+the manifest's `labview`.
 
 ## `[project]`
 
@@ -92,7 +90,7 @@ up.
 - On a headless machine (`LV_RTE_HEADLESS` set) with no venv beside the
   manifest, `lvpm install` targets the LabVIEW `labview` names, or a newer
   installed one, instead of refusing (see the README's
-  [CI in a container](../README.md#ci-in-a-container-docker)).
+  [CI in a container](ci-docker.md)).
 - A global install still takes its target from `--labview-version`.
 
 ## `[sources]`
@@ -155,12 +153,12 @@ pass:
   and skipped.
 - An empty selection is an error for a manifest-driven install.
 
-`lvpm install <name>[@<version>]` inside a project installs that one package
-using the project's `[sources]`, but does not add it to the manifest yet.
-
-`lvpm install` is additive: it never removes a package that is installed but
-no longer listed. Use `lvpm uninstall <name>`, or `lvpm uninstall --all`
-followed by `lvpm install`, until `lvpm sync` exists (see [To do](#to-do)).
+In this fork, `lvpm install <name>[@<version>]` inside a project is `lvpm add`:
+it writes the package into `lvpm.toml`, locks and syncs. `--global`,
+`--prefix` or `--labview-version` install it without touching the manifest.
+A bare `lvpm install` in a project is `lvpm sync`: the venv is made to match
+`lvpm.lock`, and what the lock does not list is uninstalled. Outside a
+project, `install` stays additive. See [usage.md](usage.md#the-lock-file).
 
 ## Named dependency groups
 
@@ -262,8 +260,11 @@ only when the file sets `labview-version` or `[dev-dependencies]`.
 
 ```console
 $ lvpm venv create --manifest vipm.toml        # venv beside it, bound to labview-version or newer
-$ lvpm install --manifest vipm.toml            # its [dependencies] and [dev-dependencies], into that venv
 ```
+
+In this fork a `vipm.toml`'s packages cannot be installed yet: `install
+--manifest` is refused, and `lock` and `sync` read only `lvpm.toml`. Upstream
+installs them with `lvpm install --manifest vipm.toml`.
 
 `venv create --manifest` writes no `lvpm.toml` skeleton: a skeleton is
 written only when `venv create` has no manifest to read.
@@ -355,28 +356,10 @@ unaffected.
 
 ## To do
 
-Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile---wip):
+Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
 
-- **`lvpm.lock`**, next to `lvpm.toml`: the resolved closure (name, version,
-  source, checksum) so `lvpm install` reproduces a venv exactly and only
-  `lvpm update` re-resolves. The format of `vipm.lock` is a reference point.
-- **`lvpm sync`**, after `lvpm.lock`: make the venv match the lock exactly.
-  Install what is missing or out of date, as `install` does, and uninstall
-  every package the lock does not list (running its uninstall hooks).
-  `--dry-run` shows both lists. Not the same as VIPM's `vipm sync`, which
-  updates `vipm.toml` from a `.lvproj`.
-  - Why after the lock: the resolver does not produce the full set of
-    needed packages today. A dependency already installed at a satisfying
-    version is not followed further, so its own dependencies would look
-    unneeded and be removed. The lock records the whole closure.
-  - Pieces already there: `install::list_installed` and the uninstall
-    sequence (`uninstall_one`: PreUninstall, recorded files, PostUninstall,
-    one palette refresh). Still inline in `cmd_install`: the resolver and
-    the install sequence, to be extracted so `install` and `sync` share them.
-  - Proposed scope: venvs and `--prefix` only, refused with `--global`;
-    remove extras first, once resolution has succeeded.
-- **`lvpm add` / `lvpm remove`**, editing the manifest while preserving
-  comments and formatting.
+- `lvpm.lock`, `lvpm sync` and `lvpm add` / `lvpm remove` are built in this
+  fork (see [usage.md](usage.md#the-lock-file)); upstream still lists them here.
 - **Future constraint grammar (Cargo)**, one for every dependency table:
 
   | Written           | Meaning                                    | Example range                       |
