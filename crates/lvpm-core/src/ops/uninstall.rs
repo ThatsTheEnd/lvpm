@@ -109,7 +109,7 @@ fn say_if_still_listed(env: &OpEnv, package: &str) {
 }
 
 /// Where the PostUninstall hook is copied to run from: a file directly in the
-/// temp directory, whatever the record's package name holds. The name comes
+/// `dir` (`OpEnv::work_dir`), whatever the record's package name holds. The name comes
 /// from a file on disk, so anything but letters, digits, `_`, `-` and `.` (a
 /// separator, a drive or stream colon) is replaced.
 fn staged_hook_path(dir: &Path, package: &str) -> PathBuf {
