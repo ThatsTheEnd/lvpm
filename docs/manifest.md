@@ -302,8 +302,8 @@ written only when `venv create` has no manifest to read.
   per-developer is written next to the manifest besides the gitignored venv.
 - **Constraints.** VIPM records exact versions in `vipm.toml` and resolves
   "latest" at `vipm add` time. lvpm lets the manifest carry floors and `*`
-  and resolves them at install time; reproducibility is the job of the
-  planned `lvpm.lock`, as `vipm.lock` is for VIPM. With the planned Cargo
+  and resolves them at install time; reproducibility is the job of
+  `lvpm.lock`, as `vipm.lock` is for VIPM. With the planned Cargo
   grammar a bare version would be a caret in lvpm but exact in VIPM; the
   compatibility layer already turns VIPM's bare versions into exact pins, so
   it keeps VIPM's meaning either way.
@@ -384,12 +384,13 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
     `lvpm add`), as in `cargo add`; it is not written in the manifest.
     `lvpm add` writes `=x` when given a version and a caret on the resolved
     version otherwise, as `cargo add` does.
-- **Dependency groups, remaining** (groups and `--with` / `--without` /
-  `--only` are done, see [named dependency groups](#named-dependency-groups)):
+- **Dependency groups** (S11, not built in this fork; upstream has groups and
+  `--with` / `--without` / `--only`, see [named dependency groups](#named-dependency-groups)):
   - **Open decision: default groups.** Only `main` installs by default.
     Whether a `dev` group (or a `[project] default-groups` list) should be
     installed by default, as uv does, is undecided. VIPM installs its dev
-    dependencies only with `--dev`, which matches today's behaviour.
+    dependencies only with `--dev`; this fork syncs `[dev-dependencies]` by
+    default (`--no-dev` skips them).
   - `lvpm add <pkg> --group <g>` writes into that group's table.
   - `lvpm.lock` records every group's packages, each tagged with its groups,
     so changing the selection never re-resolves. `lvpm sync` uninstalls
@@ -401,11 +402,11 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
   `lvpm.toml` from the converted result (a one-off migration command) is a
   possible follow-up.
 - **Open decision: should lvpm discover `vipm.toml`?** Today it does not; a
-  `vipm.toml` is converted only when named with `--manifest`. Options:
+  `vipm.toml` is converted only when named with `venv create --manifest`. Options:
 
   | Option                                              | For                                                                                   | Against                                                                                                           |
   | --------------------------------------------------- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-  | Explicit only (today)                               | Never surprising; a VIPM project is used by lvpm only when someone asks for it.       | `--manifest` on `venv create` and every `install`; `search` and the headless target never see the file.          |
+  | Explicit only (today)                               | Never surprising; a VIPM project is used by lvpm only when someone asks for it.       | In this fork a vipm.toml's packages cannot be installed at all; only `venv create --manifest` reads it.            |
   | Fall back to `vipm.toml` when no `lvpm.toml` exists | VIPM projects work with lvpm unchanged.                                               | `venv create` and `install` would act on a file VIPM owns; a team using both tools gets two readings of one file. |
   | Fall back, but say so on every command              | Same as above, and the conversion note makes the source visible.                      | Noise for projects that use lvpm through VIPM's file on purpose.                                                  |
 
@@ -414,6 +415,6 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
     `vipm.toml` is being ignored?
   - VIPM's `labview-version` is a pin; lvpm reads it as a minimum. Should a
     converted project refuse a newer LabVIEW instead?
-  - Should `install --manifest <FILE>` look for the venv from the manifest's
-    folder instead of the working directory, so *what* and *where* always
-    agree? (See [Finding the manifest](#finding-the-manifest).)
+  - (Upstream only, where `install --manifest` is accepted.) Should it look
+    for the venv from the manifest's folder instead of the working directory,
+    so *what* and *where* always agree?

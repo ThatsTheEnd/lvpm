@@ -120,11 +120,13 @@ root.
 > this fork kept its own workflows, which do not run it yet.
 
 - [pr.yml](../.github/workflows/pr.yml), on pull requests to `main`:
-  `cargo test` on `windows-2022` and `ubuntu-22.04` (through the reusable
-  [build.yml](../.github/workflows/build.yml)), then the smoke flow and the
-  `@labview` acceptance scenarios from `ci/e2e/` in NI's images, and lint.
-- [release.yml](../.github/workflows/release.yml), on pushes to `main`: the
-  same build, then packaging.
+  `cargo test --workspace` on `windows-2022` and `ubuntu-latest`; the release
+  build ([build.yml](../.github/workflows/build.yml), `windows-2022` /
+  `ubuntu-22.04`) and packaging; the smoke flow from `ci/e2e/` in NI's Linux
+  and Windows images; the `@labview` acceptance scenarios in the Windows image
+  only; lint.
+- [release.yml](../.github/workflows/release.yml), on pushes to `main`: when
+  the version is not tagged yet, the same build, packaging and publishing.
 
 Running `lvpm-e2e` in CI (its `local` and `public` suites, on both
 platforms) is still to do. There is no mass compile: a bad VI in a
@@ -151,8 +153,9 @@ What Linux still needs, most important first.
    case-insensitively but written in the spec's case. `venv::port_for`
    lowercases the path, so two repos that differ only in case share a port.
    And a VI that links a subVI in a different case does not load on Linux.
-4. **Releases.** CI builds both executables; a tagged release still carries
-   only Windows, and there is no `install.sh` to match `install.ps1`.
+4. **Releases.** A release carries a Linux tarball, built against Ubuntu
+   22.04's glibc rather than the static musl build above, and there is no
+   `install.sh` to match `install.ps1`.
 5. **Not measured.** LabVIEW for Linux before 2026 (the `.conf` directory
    name, `readme/UNINSTALL`, `LVAddons.AdditionalLocations` from 2024 Q1 on);
    other distributions (RHEL, openSUSE); Community edition; an interactive IDE

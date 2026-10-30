@@ -62,7 +62,9 @@ impl LvTarget {
         }
         #[cfg(target_os = "linux")]
         {
-            env_path("HOME", "/root")
+            // Raw HOME, not `env_path`: this is the file the LabVIEW lvpm starts
+            // reads, and it inherits HOME as it is, even `/`.
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".into()))
                 .join("natinst/.config")
                 .join(format!("LabVIEW-{}", self.year()))
                 .join(format!("{EXE}.conf"))

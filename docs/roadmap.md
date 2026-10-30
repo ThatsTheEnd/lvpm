@@ -107,8 +107,8 @@ Done:
 - **`[dev-dependencies]`** — test and CI tooling, synced by default and
   skipped with `--no-dev`.
 - Headless machines act as `--locked`: a missing or stale lock fails the job.
-- **`vipm.toml` conversion** — for `--manifest vipm.toml` (`lvpm install`,
-  `lvpm venv create`): `labview-version`, exact `[dependencies]`,
+- **`vipm.toml` conversion** — for `lvpm venv create --manifest vipm.toml`
+  (installing its packages is still to do: lock and sync read only `lvpm.toml`): `labview-version`, exact `[dependencies]`,
   `[dev-dependencies]` as lvpm's `[dev-dependencies]`, `[nipm.dependencies]`,
   and an event naming what was not used. Not discovered. Mapping in
   [manifest.md](manifest.md#reading-a-vipmtoml-with-lvpm).
