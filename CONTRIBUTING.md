@@ -142,7 +142,7 @@ collide, so nothing else needs to change.
 
 After every merge to `main`, [release-please.yml](.github/workflows/release-please.yml)
 opens or updates one release PR, `chore(main): release <version>`, which
-raises the version in `Cargo.toml` and `Cargo.lock` and adds the merged
+raises the version in `Cargo.toml` (and, through a later step, `Cargo.lock`) and adds the merged
 titles to `CHANGELOG.md`. Merging that PR publishes the version as release
 `v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`;
 once the version is tagged, every other merge stops at release.yml's guard
@@ -160,7 +160,8 @@ release PR by hand also works (`Cargo.toml` and
 
 release-please itself raises only `Cargo.toml`; release-please.yml then
 refreshes `Cargo.lock` on the release branch with `cargo update --workspace`.
-A new crate needs only `version.workspace = true` in its `Cargo.toml`. If a
+A new crate needs only an entry in the root `[workspace] members` and
+`version.workspace = true` in its own `Cargo.toml`. If a
 release PR's `ci-ok` fails on `--locked`, the lock push failed: re-run the
 Release PR workflow.
 

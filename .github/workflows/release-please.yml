@@ -49,8 +49,12 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
       - name: Refresh Cargo.lock on the release branch
         run: |
-          branch=release-please--branches--main  # release-please's branch for main
-          git fetch --depth 1 origin "$branch" || exit 0  # no release PR open
+          # release-please's branch for target main; a component or
+          # target-branch in release-please-config.json would change it.
+          branch=release-please--branches--main
+          # Exit 2 means no release PR is open; any other failure fails the run.
+          git ls-remote --exit-code --heads origin "$branch" >/dev/null || { [ $? -eq 2 ] && exit 0; exit 1; }
+          git fetch --depth 1 origin "$branch"
           git checkout -B "$branch" FETCH_HEAD
           cargo update --workspace
           git diff --quiet Cargo.lock && exit 0
