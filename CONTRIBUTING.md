@@ -155,8 +155,9 @@ it opens runs no CI.
 To release a different version than release-please picked, add a
 `Release-As: X.Y.Z` footer to a merged commit, or edit the version in the
 release PR itself (`Cargo.toml`, `Cargo.lock` and
-`.release-please-manifest.json` together). A new crate must be added to
-`extra-files` in `release-please-config.json`, or its version is not raised.
+`.release-please-manifest.json` together). A new crate needs nothing extra:
+it inherits the workspace version, and release-please.yml refreshes
+`Cargo.lock` on the release branch with `cargo update --workspace`.
 
 Releases run one at a time. A merge that lands while the release PR's run is
 still waiting replaces that run; the newer run releases the same version from
