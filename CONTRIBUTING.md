@@ -179,10 +179,13 @@ list, uninstall) inside NI's LabVIEW images:
 | `nationalinstruments/labview:2026q3-linux` | Linux | 2026 | |
 | `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
 
+A PR that changes only `docs/` and top-level Markdown runs `cargo test`
+(the suite reads `README.md` and `docs/`) and skips the build, packaging,
+lint and LabVIEW image jobs.
+
 Branch protection on `main` must require two checks: `ci-ok`, which passes
-only when every other job in `pr.yml` passed, and `conventional title`.
-A PR that changes only `docs/` and top-level Markdown skips those jobs, and
-`ci-ok` passes without them.
+only when every other job in `pr.yml` passed (or, on a docs-only PR, was
+skipped), and `conventional title`.
 Branches must also be up to date before merging. An admin sets this in the repository settings. Adding a job or an
 image row never changes the required checks.
 The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).

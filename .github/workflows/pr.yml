@@ -12,14 +12,15 @@ permissions:
   contents: read
 
 jobs:
-  # Whether the PR changes anything but docs/ and top-level Markdown; a
-  # docs-only PR skips every job below, and ci-ok still reports.
+  # Whether the PR changes only docs/ and top-level Markdown. A docs-only PR
+  # skips build, package, e2e and lint, and ci-ok still reports. test still
+  # runs: the suite reads README.md and docs/.
   changes:
     name: changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.diff.outputs.code }}
+      docs_only: ${{ steps.diff.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,17 +32,14 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Read the list once: grep -q on a pipe can end git with SIGPIPE, which pipefail reports.
-          files=$(git diff --name-only "$BASE...HEAD")
-          # An empty list also counts as code, so nothing is skipped by mistake.
-          if grep -qvE '^docs/|^[^/]+\.md$' <<<"$files"; then code=true; else code=false; fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "changes outside the docs: $code" >> "$GITHUB_STEP_SUMMARY"
+          # --no-renames: a file moved into docs/ also counts as deleted from where it was.
+          files=$(git diff --no-renames --name-only "$BASE...HEAD")
+          docs_only=$(bash ci/docs-only.sh <<<"$files")
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "docs-only PR: $docs_only" >> "$GITHUB_STEP_SUMMARY"
 
   test:
     name: test (${{ matrix.os }})
-    needs: [changes]
-    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
@@ -78,7 +76,7 @@ jobs:
   # The same build and packaging main releases with.
   build:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.docs_only == 'false'
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
@@ -187,7 +185,7 @@ jobs:
   lint:
     name: lint
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -220,15 +218,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - name: Require every job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
-          DOCS_ONLY: ${{ needs.changes.result == 'success' && needs.changes.outputs.code == 'false' }}
-        run: |
-          # Root causes (failure, cancelled) first, then jobs skipped because of them.
-          bad=$(jq -r --argjson docs "$DOCS_ONLY" 'to_entries
-            | map(select(.value.result != "success" and (($docs and .value.result == "skipped") | not)))
-            | sort_by(.value.result == "skipped") | .[]
-            | "::error::\(.key): \(if .value.result == "skipped" then "skipped (downstream)" else .value.result end)"' <<<"$NEEDS")
-          [ -z "$bad" ] || { echo "$bad"; exit 1; }
-          [ "$DOCS_ONLY" = true ] && echo "docs-only PR: the other jobs were skipped" || echo "every PR job passed"
+          DOCS_ONLY: ${{ needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'true' }}
+        run: bash ci/ci-ok.sh "$DOCS_ONLY" <<<"$NEEDS"
