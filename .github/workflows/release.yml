@@ -1,6 +1,8 @@
 name: Release
 
-# Every merge to main releases the version in Cargo.toml. The release is a
+# A merge to main releases the version in Cargo.toml if it is not tagged yet,
+# which is the case after merging release-please's release PR
+# (release-please.yml); any other merge stops at guard. The release is a
 # draft until every asset is uploaded, so a failed run leaves at most a draft,
 # which install.ps1 skips and a re-run replaces. No tests run here: the PR's
 # required ci-ok check already ran them on this exact tree.
@@ -34,6 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      release: ${{ steps.check.outputs.release }}
       version: ${{ steps.check.outputs.version }}
       prerelease: ${{ steps.check.outputs.prerelease }}
     steps:
@@ -45,8 +48,15 @@ jobs:
       - name: Check the version is not released yet
         id: check
         run: |
-          bash ci/version-check.sh --release
           version=$(bash ci/version-check.sh --print-version)
+          # Only a merged release PR raises the version; every other merge stops here.
+          if [ "$GITHUB_EVENT_NAME" = push ] && git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v$version is already released; nothing to release until the release PR is merged." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          bash ci/version-check.sh --release
+          echo "release=true" >> "$GITHUB_OUTPUT"
           prerelease=$(bash ci/version-check.sh --print-prerelease "$version")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
@@ -54,6 +64,7 @@ jobs:
 
   build:
     needs: [guard]
+    if: needs.guard.outputs.release == 'true'
     uses: ./.github/workflows/build.yml
 
   package:
@@ -69,6 +80,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+      pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -103,6 +115,13 @@ jobs:
         run: gh release upload "$TAG" dist/*
       - name: Publish the release
         run: gh release edit "$TAG" --draft=false
+      # release-please (skip-github-release) refuses to open the next release
+      # PR while a merged one is still labelled pending.
+      - name: Mark the release PR as tagged
+        run: |
+          gh label create "autorelease: tagged" --force
+          prs=$(gh pr list --state merged --label "autorelease: pending" --json number -q '.[].number')
+          for pr in $prs; do gh pr edit "$pr" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; done
 
   # Reusable-workflow caller jobs cannot add steps, so this one job reports a
   # failed or cancelled job anywhere in the run.
@@ -120,9 +139,9 @@ jobs:
         run: |
           job=$(jq -r 'to_entries | map(select(.value.result == "failure" or .value.result == "cancelled")) | .[0].key // "unknown"' <<<"$NEEDS")
           if [ "$job" = guard ]; then
-            next="the version is already released or below the highest tag; raise the version in a new PR (see guard's summary)."
+            next="the version is below the highest tag (see guard's summary); fix the release PR's version."
           else
-            next="if publish failed at \"Check the version is still not released\", a newer version is already released: raise the version in a new PR. Otherwise re-run the failed jobs; a leftover draft release is replaced. See the \"Release failed\" runbook in CONTRIBUTING.md."
+            next="if publish failed at \"Check the version is still not released\", a newer version is already released: merge the next release PR. Otherwise re-run the failed jobs; a leftover draft release is replaced. See the \"Release failed\" runbook in CONTRIBUTING.md."
           fi
           echo "Release v${VERSION:-<unknown>} failed in $job: $next" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "::error::Release v${VERSION:-<unknown>} failed in $job"

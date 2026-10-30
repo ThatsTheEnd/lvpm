@@ -111,44 +111,44 @@ Only PRs that followed the agentic dev-team workflow (`/specs`, then
 A PR without them is closed without review. CI does not check this rule;
 maintainers apply it when they review.
 
-### Raise the version in every PR
+### Give the PR a conventional-commit title
 
-Every merge to `main` publishes a release, so every PR must raise
-`[workspace.package] version` in `Cargo.toml` above `main`'s, and
-`Cargo.lock` must agree. The PR's `version` check fails otherwise.
+Do not touch the version in `Cargo.toml`. PRs are squash-merged, and
+[release-please](https://github.com/googleapis/release-please) reads the
+squashed titles to pick the next version. The `PR title` check fails on a
+title it cannot read; fixing the title re-runs only that check.
 
-- **patch** (0.4.0 → 0.4.1): fixes, docs, CI and anything else that does not
-  change what lvpm does.
-- **minor** (0.4.0 → 0.5.0): new behavior, commands or flags.
-- **major** (0.4.0 → 1.0.0): a breaking change to commands, `lvpm.toml` or
-  `lvpm.lock`. While the major version is 0, breaking changes raise the
+- `fix: ...`, and `docs:`, `test:`, `ci:`, `chore:`, `refactor:`, `perf:`
+  (anything that does not change what lvpm does): patch (0.4.0 → 0.4.1) for
+  `fix` and `perf`; the others release nothing on their own.
+- `feat: ...`: new behavior, commands or flags, minor (0.4.0 → 0.5.0).
+- `feat!: ...` or a `BREAKING CHANGE:` footer: a breaking change to commands,
+  `lvpm.toml` or `lvpm.lock`. While the major version is 0, this raises the
   minor version.
 
-Edit the version in `Cargo.toml`, then update the lock file:
-
-```sh
-cargo update -w
-```
+A scope is optional: `feat(sources): ...`.
 
 ### Main moved while my PR was open
 
-Branch protection should require only the `ci-ok` check, and branches must be
-up to date with `main` before they merge (an admin sets this in the repository
-settings). When another PR merges first:
-
-1. Rebase on `main` (or press **Update branch** on the PR).
-2. If `main`'s version is now equal to or above yours, the `version` check
-   fails with `version <yours> is not above origin/main's <main's>`. Raise
-   your version above it and run `cargo update -w` again.
-3. Push. CI runs again on the updated branch.
+Branch protection should require the `ci-ok` and `conventional title` checks,
+and branches must be up to date with `main` before they merge (an admin sets
+this in the repository settings). When another PR merges first, rebase on
+`main` (or press **Update branch** on the PR) and push. Versions no longer
+collide, so nothing else needs to change.
 
 ## Releases
 
 ### How releases are made
 
-Every merge to `main` publishes the version in `Cargo.toml` as release
-`v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`.
-Each PR must raise the version (see [Raise the version in every PR](#raise-the-version-in-every-pr)).
+After every merge to `main`, [release-please.yml](.github/workflows/release-please.yml)
+opens or updates one release PR, `chore(main): release <version>`, which
+raises the version in `Cargo.toml` and `Cargo.lock` and adds the merged
+titles to `CHANGELOG.md`. Merging that PR publishes the version as release
+`v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`;
+any other merge stops at release.yml's guard and releases nothing.
+release-please needs a repository secret `RELEASE_PLEASE_TOKEN`, a token with
+contents and pull-requests write, because a PR opened with the default token
+runs no CI.
 Releases run one at a time. If merges land faster than releases finish, a
 waiting release can be replaced by a newer one, so a version in between is
 never released; the next release has the higher version. A replaced run
@@ -159,7 +159,8 @@ workflow is [release.yml](.github/workflows/release.yml); the design is in
 
 ### Continuous integration
 
-Every PR runs [pr.yml](.github/workflows/pr.yml): the version check, `cargo
+Every PR runs [pr-title.yml](.github/workflows/pr-title.yml) and
+[pr.yml](.github/workflows/pr.yml): `cargo
 test` on Windows and Linux, the release build and packaging, the CI lint
 checks, and the CLI smoke flow (targets, search, `lock --check`, install,
 list, uninstall) inside NI's LabVIEW images:
@@ -186,10 +187,11 @@ Failed runs show as red **Release** runs on `main` under
 2. If **guard** says `tag v<version> already exists`, open the
    [Releases](https://github.com/ThatsTheEnd/lvpm/releases) list first. A
    published `v<version>` with 3 assets means the release is done and there
-   is nothing to fix. Otherwise the version is taken: raise it in a new PR.
+   is nothing to fix. Otherwise the version is taken: fix the version in the
+   release PR.
 3. If **publish** failed at "Check the version is still not released", a
-   newer version was released after this run started: raise the version in a
-   new PR.
+   newer version was released after this run started: merge the next release
+   PR.
 4. For any other job, re-run the failed jobs, but not while another Release
    run is in progress. A draft release left by the failed run is deleted and
    created again, and the installer never picks a draft.

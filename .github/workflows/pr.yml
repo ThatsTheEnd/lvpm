@@ -12,22 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  version:
-    name: version
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          fetch-tags: true
-          persist-credentials: false
-      - name: Self-test the version check
-        run: bash ci/version-check.test.sh
-      - name: Check the version is raised
-        run: bash ci/version-check.sh origin/main
-
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -197,7 +181,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [version, test, build, package, e2e, lint]
+    needs: [test, build, package, e2e, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
