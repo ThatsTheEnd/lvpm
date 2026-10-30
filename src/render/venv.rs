@@ -18,12 +18,19 @@ fn binding(v: &Venv) -> String {
 }
 
 /// What `lvpm venv create` prints.
-pub fn created(v: &Venv) -> String {
+/// `manifest` is the one `--manifest` named, if any.
+pub fn created(v: &Venv, manifest: Option<&Path>) -> String {
+    let install = match manifest {
+        Some(p) => format!("`lvpm install --manifest {}`", p.display()),
+        None => format!(
+            "`lvpm install` puts {}'s [dependencies]",
+            project::FILE_NAME
+        ),
+    };
     format!(
-        "created {}\n{}\nnext: `lvpm install` puts {}'s [dependencies] into it, `lvpm launch` starts LabVIEW on it\n",
+        "created {}\n{}\nnext: {install} into it, `lvpm launch` starts LabVIEW on it\n",
         v.dir.display(),
         binding(v),
-        project::FILE_NAME
     )
 }
 
@@ -36,9 +43,10 @@ pub fn status(status: Option<&VenvStatus>, searched_from: &Path) -> String {
         );
     };
     let v = &status.venv;
-    let running = match status.running {
-        true => "running on this venv",
-        false => "not running on this venv",
+    let running = match (status.running, status.starting) {
+        (true, _) => "running on this venv",
+        (false, true) => "starting on this venv",
+        (false, false) => "not running on this venv",
     };
     format!(
         "{}\n  project        {}\n{}  packages       {} installed, {} not yet relinked\n  LabVIEW        {running}\n",
@@ -88,7 +96,7 @@ mod tests {
     fn a_created_venv_says_what_it_is_bound_to_and_what_to_do_next() {
         let v = venv();
         assert_eq!(
-            created(&v),
+            created(&v, None),
             format!(
                 "created {}\n  bound to       LabVIEW 2026 (64-bit)  v26.3  (LabVIEW 2026)\n  VI Server port 3412\n\nnext: `lvpm install` puts lvpm.toml's [dependencies] into it, `lvpm launch` starts LabVIEW on it\n",
                 v.dir.display()
@@ -104,6 +112,7 @@ mod tests {
             installed: 3,
             not_relinked: 1,
             running: true,
+            starting: false,
         };
         assert_eq!(
             status(Some(&found), Path::new("proj")),
