@@ -12,6 +12,32 @@ permissions:
   contents: read
 
 jobs:
+  # Whether the PR changes only docs/ and top-level Markdown. A docs-only PR
+  # skips build, package, e2e and lint, and ci-ok still reports. test still
+  # runs: the suite reads README.md and docs/.
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Look for changes outside the docs
+        id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # --no-renames: a file moved into docs/ also counts as deleted from where it was.
+          files=$(git diff --no-renames --name-only "$BASE...HEAD")
+          docs_only=$(bash ci/docs-only.sh <<<"$files")
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          echo "docs-only PR: $docs_only" >> "$GITHUB_STEP_SUMMARY"
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -49,6 +75,8 @@ jobs:
 
   # The same build and packaging main releases with.
   build:
+    needs: [changes]
+    if: needs.changes.outputs.docs_only == 'false'
     uses: ./.github/workflows/build.yml
     with:
       ref: ${{ github.event.pull_request.head.sha }}
@@ -156,6 +184,8 @@ jobs:
 
   lint:
     name: lint
+    needs: [changes]
+    if: needs.changes.outputs.docs_only == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -179,20 +209,21 @@ jobs:
   # Branch protection requires ci-ok and pr-title.yml's conventional title
   # (an admin sets it; see CONTRIBUTING.md). ci-ok aggregates this workflow, so
   # adding a job or a matrix row never changes the required checks; the title
-  # check stays apart so a title edit does not re-run this workflow.
+  # check stays apart so a title edit does not re-run this workflow. On a
+  # docs-only PR the skipped jobs count as passed.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [test, build, package, e2e, lint]
+    needs: [changes, test, build, package, e2e, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - name: Require every job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: |
-          # Root causes (failure, cancelled) first, then jobs skipped because of them.
-          bad=$(jq -r 'to_entries | map(select(.value.result != "success")) | sort_by(.value.result == "skipped") | .[]
-            | "::error::\(.key): \(if .value.result == "skipped" then "skipped (downstream)" else .value.result end)"' <<<"$NEEDS")
-          [ -z "$bad" ] || { echo "$bad"; exit 1; }
-          echo "every PR job passed"
+          DOCS_ONLY: ${{ needs.changes.result == 'success' && needs.changes.outputs.docs_only == 'true' }}
+        run: bash ci/ci-ok.sh "$DOCS_ONLY" <<<"$NEEDS"
