@@ -13,6 +13,7 @@ expect 0 "every job passed" false "$pass"
 expect 0 "every job passed on a docs-only PR" true "$pass"
 expect 0 "a docs-only PR with skipped jobs" true "$docs"
 expect 1 "skipped jobs on a code PR" false "$docs"
+expect 1 "a skipped test job on a docs-only PR" true '{"changes":{"result":"success"},"test":{"result":"skipped"},"build":{"result":"skipped"}}'
 expect 1 "a failed job on a docs-only PR" true '{"changes":{"result":"success"},"test":{"result":"failure"},"build":{"result":"skipped"}}'
 expect 1 "a cancelled job" false '{"changes":{"result":"success"},"test":{"result":"cancelled"}}'
 expect 1 "a failed changes job" false '{"changes":{"result":"failure"},"test":{"result":"success"},"build":{"result":"skipped"}}'
