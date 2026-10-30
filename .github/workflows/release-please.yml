@@ -32,26 +32,29 @@ jobs:
       # A PR opened with GITHUB_TOKEN triggers no workflows, so its ci-ok would
       # never run: the token must be a PAT or app token with contents and
       # pull-requests write.
-      - id: release
-        uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4.4.1
+      - uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4.4.1
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           skip-github-release: true
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      # release-please cannot edit Cargo.lock's [[package]] entries, so the
-      # lock is refreshed on the release branch; CI's --locked fails without it.
-      # Pushed with the same token, so the push runs CI on the release PR.
-      - if: steps.release.outputs.pr
-        uses: actions/checkout@v4
+      # release-please's extra-files left Cargo.lock's [[package]] entries
+      # unchanged, so the lock is refreshed on the release branch whenever it
+      # exists; CI's --locked fails without it. Every run does this, not only
+      # one that rewrote the branch, so re-running the workflow repairs a
+      # failed push. Pushed with the same token, so the push runs CI on the
+      # release PR.
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-      - if: steps.release.outputs.pr
+      - name: Refresh Cargo.lock on the release branch
         run: |
+          branch=release-please--branches--main  # release-please's branch for main
+          git fetch --depth 1 origin "$branch" || exit 0  # no release PR open
+          git checkout -B "$branch" FETCH_HEAD
           cargo update --workspace
           git diff --quiet Cargo.lock && exit 0
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: refresh Cargo.lock" Cargo.lock
-          git push
+          git push origin "$branch"

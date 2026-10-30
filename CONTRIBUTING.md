@@ -153,11 +153,16 @@ contents and pull-requests write. The default token will not do, because a PR
 it opens runs no CI.
 
 To release a different version than release-please picked, add a
-`Release-As: X.Y.Z` footer to a merged commit, or edit the version in the
-release PR itself (`Cargo.toml`, `Cargo.lock` and
-`.release-please-manifest.json` together). A new crate needs nothing extra:
-it inherits the workspace version, and release-please.yml refreshes
-`Cargo.lock` on the release branch with `cargo update --workspace`.
+`Release-As: X.Y.Z` footer to a merged commit. Editing the version in the
+release PR by hand also works (`Cargo.toml` and
+`.release-please-manifest.json`, then `cargo update --workspace` and commit
+`Cargo.lock`), but the next merge to `main` regenerates the PR and drops it.
+
+release-please itself raises only `Cargo.toml`; release-please.yml then
+refreshes `Cargo.lock` on the release branch with `cargo update --workspace`.
+A new crate needs only `version.workspace = true` in its `Cargo.toml`. If a
+release PR's `ci-ok` fails on `--locked`, the lock push failed: re-run the
+Release PR workflow.
 
 Releases run one at a time. A merge that lands while the release PR's run is
 still waiting replaces that run; the newer run releases the same version from
