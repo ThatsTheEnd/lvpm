@@ -489,8 +489,14 @@ pub fn ensure_instance(
         labview: v.target.label(),
         port: v.port,
     });
-    let child = spawn(v, &ini, None, sink)?;
-    wait_ready(v.port, wait, headless)?;
+    let mut child = spawn(v, &ini, None, sink)?;
+    if let Err(why) = wait_ready(v.port, wait, headless) {
+        // Left running, a LabVIEW that never answered holds the venv, and its
+        // pid makes the next command take it for one still starting.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(why);
+    }
     Ok(Instance {
         port: v.port,
         child: Some(child),
