@@ -158,6 +158,15 @@ impl CliWorld {
             .collect()
     }
 
+    /// The SHA-256 of the archive `name` was installed from, as its install
+    /// manifest records it.
+    pub(super) fn installed_archive_sha256(&self, name: &str) -> Option<String> {
+        installed_in(&self.dest_dir())
+            .into_iter()
+            .find(|package| package.name == name)
+            .and_then(|package| package.archive_sha256)
+    }
+
     pub(super) fn is_installed(&self, name: &str) -> bool {
         self.installed()
             .iter()

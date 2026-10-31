@@ -4,6 +4,7 @@
 //! one asked for cannot hide in a parsed view of the manifest.
 
 use crate::CliWorld;
+use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::project::MANIFEST_FILE;
 use cucumber::{given, then, when};
 use lvpm_core::manifest_edit::{self, DependencyTable};
@@ -313,4 +314,93 @@ async fn reading_failed(world: &mut CliWorld) {
             assert!(why.contains("~1.0"), "{why}");
         }
     }
+}
+
+// ---- the table form of a dependency line, run through the CLI ----
+
+/// The LabVIEW the table-form scenarios' project is meant for.
+const TABLE_PROJECT_LABVIEW: &str = "2024";
+
+impl CliWorld {
+    /// A project that reads nothing, with `line` as the only entry of `[table]`.
+    fn write_dependency_line(&self, table: &str, line: &str) {
+        self.sandbox.use_local_project(Some(TABLE_PROJECT_LABVIEW));
+        let mut text = self.manifest_text();
+        text.push_str(&format!("\n[{table}]\n{line}\n"));
+        std::fs::write(self.manifest_path(), text).expect("write the manifest");
+    }
+}
+
+#[given(regex = r"^a project whose lvpm\.toml has the dependency line (.+)$")]
+async fn a_project_with_a_dependency_line(world: &mut CliWorld, line: String) {
+    world.write_dependency_line("dependencies", &line);
+}
+
+#[given(regex = r"^a project whose lvpm\.toml has the dev dependency line (.+)$")]
+async fn a_project_with_a_dev_dependency_line(world: &mut CliWorld, line: String) {
+    world.write_dependency_line("dev-dependencies", &line);
+}
+
+#[given(
+    regex = r#"^a project whose lvpm\.toml depends on "([^"]+)" "([^"]*)" with a feed that lists pkg 1\.2$"#
+)]
+async fn a_project_with_a_feed_that_lists_pkg(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+) {
+    assert_eq!(name, "pkg", "the feed lists pkg 1.2 and nothing else");
+    world.sandbox.serve_feed(&[FixturePackage {
+        name: "pkg",
+        version: "1.2",
+        display_name: "pkg",
+        requires: &[],
+        lv_min: "20.0",
+        payload: Payload::Text,
+        post_install_hook: None,
+    }]);
+    world
+        .sandbox
+        .use_loopback_project_for_labview(TABLE_PROJECT_LABVIEW);
+    world.depend(DependencyTable::Dependencies, &name, &constraint);
+}
+
+#[then(regex = r#"^the command fails naming "(\[[a-z-]+\] [^"]+)"$"#)]
+async fn the_command_fails_naming_a_manifest_line(world: &mut CliWorld, line: String) {
+    world.assert_failed();
+    let report = world.printed();
+    assert!(report.contains(&line), "{line:?} is not in:\n{report}");
+}
+
+/// `said` is a quoted phrase as a table cell writes it, `\"` for each quote
+/// inside it.
+#[then(regex = r#"^the command fails naming "(\[[a-z-]+\] [^"]+)" and "(.+)"$"#)]
+async fn the_command_fails_naming_a_manifest_line_and_saying(
+    world: &mut CliWorld,
+    line: String,
+    said: String,
+) {
+    world.assert_failed();
+    let report = world.printed();
+    let said = said.replace("\\\"", "\"");
+    for part in [&line, &said] {
+        assert!(report.contains(part), "{part:?} is not in:\n{report}");
+    }
+}
+
+#[then("lvpm.lock has no [inputs.github] table")]
+async fn the_lock_has_no_github_inputs(world: &mut CliWorld) {
+    let text = String::from_utf8(world.lock_bytes().expect("lvpm.lock exists"))
+        .expect("lvpm.lock is text");
+    let lock: toml::Table = text.parse().expect("lvpm.lock is valid TOML");
+    assert!(
+        lock.get("inputs")
+            .is_none_or(|inputs| inputs.get("github").is_none()),
+        "{text}"
+    );
+    // An empty lock would pass the check above.
+    assert!(
+        !world.locked_versions().is_empty(),
+        "nothing is locked:\n{text}"
+    );
 }

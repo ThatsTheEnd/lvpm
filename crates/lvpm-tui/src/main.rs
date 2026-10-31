@@ -5,6 +5,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use clap::Parser;
+use lvpm_core::github::{GitHub, gh_auth_token};
 use lvpm_core::{config, target};
 use lvpm_tui::app::{self, App};
 use lvpm_tui::destination::EnvBuilder;
@@ -22,7 +23,8 @@ const TICK: Duration = Duration::from_millis(100);
 fn main() -> anyhow::Result<()> {
     Cli::parse();
     // Read before the terminal is taken, so an error prints as usual.
-    let builder = EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
+    let mut builder = EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
+    builder.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token);
     let mut app = App::new(builder);
     let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
     app.log_file = local_app_data.as_deref().map(log::path);

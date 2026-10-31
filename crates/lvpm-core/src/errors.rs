@@ -1,13 +1,18 @@
 //! Errors that carry what went wrong as data.
 //!
-//! The message of each is neutral: it says what failed and names no command; it
-//! names a flag only when that flag's value is what is wrong. A front end words
-//! the hint that follows, because only it knows what the user can type.
+//! The message of each is neutral: it says what failed and names no lvpm
+//! command; it names a flag only when that flag's value is what is wrong. A
+//! front end words the hint that follows, because only it knows what the user
+//! can type. The GitHub faults are the exception: their texts carry the hint,
+//! because it names `gh` and `GH_TOKEN`, not an lvpm command, so every front
+//! end would word it the same.
 
 use crate::events::SyncStep;
+use crate::github::TokenSource;
 use crate::lockfile::StaleReason;
 use crate::manifest_edit::DependencyTable;
 use crate::solve::Conflict;
+use crate::timefmt::{rfc3339, time_until};
 use std::path::PathBuf;
 
 /// The operation's [`CancelToken`](crate::cancel::CancelToken) was cancelled
@@ -246,6 +251,114 @@ pub enum LockIncompatible {
     Manifest,
 }
 
+/// Why a GitHub repo's releases could not be had, in the words a user reads:
+/// every text starts with the package and its repo.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{name} (github.com/{repo}): {fault}")]
+pub struct GitHubError {
+    pub name: String,
+    /// `owner/repo`.
+    pub repo: String,
+    pub fault: GitHubFault,
+}
+
+/// What went wrong with a GitHub repo, without the package it was asked for.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum GitHubFault {
+    /// Two releases hold the same version of the package.
+    #[error(
+        "version {version} is in two releases, {first_tag} and {second_tag}; delete one of the files"
+    )]
+    TwoReleases {
+        version: String,
+        first_tag: String,
+        second_tag: String,
+    },
+    /// The rate limit is used up. `token_source` is where the token that was
+    /// sent came from, if one was; `reset` is when the limit resets, in Unix
+    /// seconds, and `now` is when the answer came, so the text can say how long.
+    #[error("{}", rate_limited(*.token_source, *.reset, *.now))]
+    RateLimited {
+        token_source: Option<TokenSource>,
+        reset: Option<i64>,
+        now: i64,
+    },
+    /// The repo is not there, or not visible to the caller.
+    #[error("{}", not_found(*.token_source))]
+    NotFound { token_source: Option<TokenSource> },
+    /// GitHub did not accept the token that was sent.
+    #[error("GitHub rejected the token from {token_source}; unset it or run gh auth login")]
+    TokenRejected { token_source: TokenSource },
+    /// A 401 or 403 that is not a rate limit; `message` is GitHub's own.
+    #[error("GitHub refused access ({message})")]
+    Refused { message: String },
+    /// Releases hold the package, none at a version the constraint admits.
+    /// `newest` is the newest version a release holds; `skipped` counts the
+    /// drafts and pre-releases left out.
+    #[error("no release has a version {constraint}; the newest is {newest}{}", skipped_note(*.skipped))]
+    NoFittingVersion {
+        constraint: String,
+        newest: String,
+        skipped: usize,
+    },
+    /// No release holds a file named for the package, `name`-<version>.lvpkg
+    /// or .vip; `skipped` counts the drafts and pre-releases left out.
+    #[error("no release holds {name}-<version>.lvpkg or .vip{}", skipped_note(*.skipped))]
+    NoReleaseFile { name: String, skipped: usize },
+    /// The file holds another package than its name says: `expected` is
+    /// `<name> <version>` as the file name gives them, `found` the same as the
+    /// package inside gives them.
+    #[error(
+        "{file} holds {found}, not {expected}; the file name must be <name>-<version> of the package inside"
+    )]
+    ContentsDiffer {
+        // Boxed, so that a fault stays small enough for a `Result` (clippy's
+        // `result_large_err`).
+        file: Box<str>,
+        expected: Box<str>,
+        found: Box<str>,
+    },
+    /// The releases could not be read: the network, any other failing status,
+    /// or a body that is not what the API sends. `cause` is the failure's own
+    /// words.
+    #[error("cannot read the releases; check your network and try again: {cause}")]
+    Unreadable { cause: String },
+}
+
+/// What to do when GitHub does not know who is asking.
+const SIGN_IN: &str = "run gh auth login or set GH_TOKEN";
+
+fn rate_limited(token_source: Option<TokenSource>, reset: Option<i64>, now: i64) -> String {
+    let until = reset.map_or(String::new(), |reset| {
+        format!(
+            " until {} ({})",
+            rfc3339(reset),
+            time_until(reset.saturating_sub(now))
+        )
+    });
+    match token_source {
+        Some(source) => {
+            format!("GitHub's rate limit for the token from {source} is used up{until}")
+        }
+        None => format!("GitHub's rate limit is used up{until}; {SIGN_IN}"),
+    }
+}
+
+/// What follows a "no release" text when drafts and pre-releases were left out.
+fn skipped_note(skipped: usize) -> String {
+    match skipped {
+        0 => String::new(),
+        n => format!(" ({n} pre-releases and drafts skipped)"),
+    }
+}
+
+fn not_found(token_source: Option<TokenSource>) -> String {
+    match token_source {
+        Some(source) => format!("not found, or the token from {source} cannot see it"),
+        None => format!("not found. If it is private, {SIGN_IN}"),
+    }
+}
+
 /// A locked archive that sync could not get as the lock has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedArchiveProblem {
@@ -262,6 +375,9 @@ pub enum ArchiveFault {
     /// Neither the cache nor any source has an archive with the locked
     /// SHA-256.
     NotFound,
+    /// A source lists it and could not be read or fetched from, in the cause's
+    /// own words: sync tells the user this instead of "not found".
+    Unfetched { reason: String },
     /// An archive of that name and version was found, and its bytes are not
     /// the locked ones: it is never installed.
     DiffersFromLock { found_sha256: String },
@@ -297,6 +413,123 @@ mod tests {
             EditError::Cancelled.to_string(),
         ] {
             assert_eq!(text, "cancelled");
+        }
+    }
+
+    fn github(fault: GitHubFault) -> String {
+        GitHubError {
+            name: "pkg".into(),
+            repo: "o/r".into(),
+            fault,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn every_github_text_starts_with_the_package_and_its_repo_and_says_what_to_do() {
+        let (reset, now) = (Some(1_793_455_500), 1_793_455_500 - 720);
+        let table = [
+            (
+                GitHubFault::RateLimited {
+                    token_source: None,
+                    reset,
+                    now,
+                },
+                "GitHub's rate limit is used up until 2026-10-31T14:05:00Z (in 12 min); run gh auth login or set GH_TOKEN",
+            ),
+            (
+                GitHubFault::RateLimited {
+                    token_source: Some(TokenSource::GhToken),
+                    reset,
+                    now,
+                },
+                "GitHub's rate limit for the token from GH_TOKEN is used up until 2026-10-31T14:05:00Z (in 12 min)",
+            ),
+            (
+                GitHubFault::RateLimited {
+                    token_source: None,
+                    reset: None,
+                    now,
+                },
+                "GitHub's rate limit is used up; run gh auth login or set GH_TOKEN",
+            ),
+            (
+                GitHubFault::RateLimited {
+                    token_source: Some(TokenSource::GhAuthToken),
+                    reset: None,
+                    now,
+                },
+                "GitHub's rate limit for the token from gh auth token is used up",
+            ),
+            (
+                GitHubFault::NotFound { token_source: None },
+                "not found. If it is private, run gh auth login or set GH_TOKEN",
+            ),
+            (
+                GitHubFault::NotFound {
+                    token_source: Some(TokenSource::GitHubToken),
+                },
+                "not found, or the token from GITHUB_TOKEN cannot see it",
+            ),
+            (
+                GitHubFault::TokenRejected {
+                    token_source: TokenSource::GhToken,
+                },
+                "GitHub rejected the token from GH_TOKEN; unset it or run gh auth login",
+            ),
+            (
+                GitHubFault::Refused {
+                    message: "Resource not accessible".into(),
+                },
+                "GitHub refused access (Resource not accessible)",
+            ),
+            (
+                GitHubFault::NoFittingVersion {
+                    constraint: ">=1.2.2".into(),
+                    newest: "1.2.1.16".into(),
+                    skipped: 0,
+                },
+                "no release has a version >=1.2.2; the newest is 1.2.1.16",
+            ),
+            (
+                GitHubFault::NoFittingVersion {
+                    constraint: "*".into(),
+                    newest: "1.0".into(),
+                    skipped: 2,
+                },
+                "no release has a version *; the newest is 1.0 (2 pre-releases and drafts skipped)",
+            ),
+            (
+                GitHubFault::NoReleaseFile {
+                    name: "pkg".into(),
+                    skipped: 0,
+                },
+                "no release holds pkg-<version>.lvpkg or .vip",
+            ),
+            (
+                GitHubFault::NoReleaseFile {
+                    name: "pkg".into(),
+                    skipped: 1,
+                },
+                "no release holds pkg-<version>.lvpkg or .vip (1 pre-releases and drafts skipped)",
+            ),
+            (
+                GitHubFault::ContentsDiffer {
+                    file: "pkg-1.0.lvpkg".into(),
+                    expected: "pkg 1.0".into(),
+                    found: "other 1.1".into(),
+                },
+                "pkg-1.0.lvpkg holds other 1.1, not pkg 1.0; the file name must be <name>-<version> of the package inside",
+            ),
+            (
+                GitHubFault::Unreadable {
+                    cause: "HTTP 502".into(),
+                },
+                "cannot read the releases; check your network and try again: HTTP 502",
+            ),
+        ];
+        for (fault, text) in table {
+            assert_eq!(github(fault), format!("pkg (github.com/o/r): {text}"));
         }
     }
 

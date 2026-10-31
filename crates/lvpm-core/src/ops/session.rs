@@ -15,7 +15,8 @@ use super::staging::Staging;
 use crate::cache::{Cache, Stored};
 use crate::cancel::CancelToken;
 use crate::fetch;
-use crate::index::Entry;
+use crate::github::{self, GitHubAuth};
+use crate::index::{self, Entry};
 use crate::target::{LvTarget, Roots};
 use crate::venv::Venv;
 use crate::viserver::Connection;
@@ -30,6 +31,7 @@ pub(super) struct Downloads {
     client: Client,
     cache: Cache,
     cancel: CancelToken,
+    github: GitHubAuth,
 }
 
 impl Downloads {
@@ -40,13 +42,36 @@ impl Downloads {
                 .build()?,
             cache: Cache::open(&env.config.cache)?,
             cancel: env.cancel.clone(),
+            github: env.github.auth.clone(),
         })
     }
 
     /// The archive's bytes, from the cache, a local file or the entry's feed.
-    /// [`Cancelled`](crate::errors::Cancelled) when the environment's token is.
+    /// A GitHub entry is sent the GitHub token; no other entry is. When the
+    /// environment's token is cancelled, [`Cancelled`](crate::errors::Cancelled).
     pub(super) fn fetch(&self, entry: &Entry) -> Result<Vec<u8>> {
-        fetch::package(&self.cache, &self.client, entry, &self.cancel)
+        let repo = index::github_repo(entry);
+        let token = || repo.and_then(|_| self.github.token());
+        let bytes = fetch::package(&self.cache, &self.client, entry, token, &self.cancel);
+        match repo {
+            Some(repo) => {
+                bytes.map_err(|why| github::download_error(why, &entry.name, repo, &self.github))
+            }
+            None => bytes,
+        }
+    }
+
+    /// The releases of a GitHub dependency's repo, from the cache unless
+    /// `refresh` says to ask GitHub; see [`github::releases_cached`].
+    pub(super) fn releases(
+        &self,
+        api: &str,
+        repo: &str,
+        name: &str,
+        refresh: bool,
+    ) -> Result<github::Listing> {
+        let (cache, client, auth) = (&self.cache, &self.client, &self.github);
+        github::releases_cached(cache, client, api, repo, name, auth, refresh)
     }
 
     /// What the cache holds under this SHA-256, without removing anything.
@@ -151,5 +176,136 @@ impl InstallSession {
         if let Some(connection) = self.hook_connection.take() {
             connection.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::NullSink;
+    use crate::github::GitHubAuth;
+    use crate::version::Version;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// The head of the one request a server answered with `bytes`, as `status`.
+    fn serve_once(
+        status: &'static str,
+        bytes: &'static [u8],
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/package.vip", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let reply = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+            stream.write_all(bytes).unwrap();
+            String::from_utf8_lossy(&head).to_lowercase()
+        });
+        (url, thread)
+    }
+
+    fn entry(url: String, source: String) -> Entry {
+        Entry {
+            name: "pkg".into(),
+            version: Version::parse("1.0.0"),
+            url,
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: None,
+            source,
+        }
+    }
+
+    #[test]
+    fn the_github_token_is_sent_for_a_github_entry_and_for_no_other() {
+        let cache = std::env::temp_dir().join(format!("lvpm-session-{}", std::process::id()));
+        let mut env = OpEnv::new(
+            &NullSink,
+            crate::config::Config {
+                cache: cache.clone(),
+                local_sources: Vec::new(),
+                venv_dir: "venv".into(),
+            },
+            Vec::new(),
+            PathBuf::from("."),
+        );
+        env.github.auth = GitHubAuth::new(
+            |name| (name == "GH_TOKEN").then(|| "tok".to_string()),
+            || None,
+        );
+        let downloads = Downloads::open(&env).unwrap();
+
+        for (source, sent) in [
+            ("github:o/r", true),
+            ("http://feed.example/index.json", false),
+        ] {
+            let (url, server) = serve_once("200 OK", b"bytes");
+            downloads.fetch(&entry(url, source.into())).unwrap();
+            let head = server.join().unwrap();
+            assert_eq!(
+                head.contains("authorization: bearer tok"),
+                sent,
+                "{source}: {head}"
+            );
+            assert_eq!(
+                head.contains("accept: application/octet-stream"),
+                sent,
+                "{source}: {head}"
+            );
+        }
+        std::fs::remove_dir_all(cache).ok();
+    }
+
+    #[test]
+    fn a_github_file_that_cannot_be_downloaded_fails_in_githubs_words_and_a_feed_file_in_its_own() {
+        let cache = std::env::temp_dir().join(format!("lvpm-session-fail-{}", std::process::id()));
+        let config = crate::config::Config {
+            cache: cache.clone(),
+            local_sources: Vec::new(),
+            venv_dir: "venv".into(),
+        };
+        let env = OpEnv::new(&NullSink, config, Vec::new(), PathBuf::from("."));
+        let downloads = Downloads::open(&env).unwrap();
+        let table = [
+            (
+                "404 Not Found",
+                "not found. If it is private, run gh auth login or set GH_TOKEN",
+            ),
+            (
+                "401 Unauthorized",
+                "GitHub refused access (401 Unauthorized)",
+            ),
+            (
+                "502 Bad Gateway",
+                "cannot read the releases; check your network and try again: HTTP 502",
+            ),
+        ];
+        for (status, said) in table {
+            let (url, server) = serve_once(status, b"");
+            let why = downloads
+                .fetch(&entry(url.clone(), "github:o/r".into()))
+                .unwrap_err();
+            server.join().unwrap();
+            assert_eq!(format!("{why:#}"), format!("pkg (github.com/o/r): {said}"));
+
+            let (url, server) = serve_once(status, b"");
+            let why = downloads
+                .fetch(&entry(url, "http://feed.example/index.json".into()))
+                .unwrap_err();
+            server.join().unwrap();
+            assert!(!format!("{why:#}").contains("github.com"), "{why:#}");
+        }
+        std::fs::remove_dir_all(cache).ok();
     }
 }

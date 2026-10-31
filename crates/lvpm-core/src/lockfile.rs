@@ -19,6 +19,9 @@
 //! [inputs.dependencies]
 //! beta = ">=1.0"
 //!
+//! [inputs.github]                      # only when a dependency names a repo
+//! beta = "owner/repo"
+//!
 //! [[package]]
 //! name = "alpha"
 //! version = "2.0"
@@ -87,6 +90,10 @@ pub struct Inputs {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub dev_dependencies: BTreeMap<String, String>,
+    /// The `github = "owner/repo"` of each dependency that has one, by the
+    /// name its line is written under.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub github: BTreeMap<String, String>,
 }
 
 impl Inputs {
@@ -103,6 +110,7 @@ impl Inputs {
             sources: project.sources.iter().map(|(_, url)| url.clone()).collect(),
             dependencies: constraints(&project.dependencies),
             dev_dependencies: constraints(&project.dev_dependencies),
+            github: project.github.clone(),
         }
     }
 }
@@ -153,8 +161,8 @@ pub enum StaleReason {
     FormatOutdated,
     /// The manifest's `labview` is not the one the lock was resolved for.
     LabviewChanged,
-    /// The hosted `[sources]` or `defaults` are not the ones the lock was
-    /// resolved from.
+    /// The hosted `[sources]` or `defaults`, or a dependency's GitHub repo,
+    /// are not the ones the lock was resolved from.
     SourcesChanged,
     /// The manifest lists a dependency the lock was not resolved for.
     DependencyAdded { name: String, dev: bool },
@@ -195,10 +203,13 @@ impl Lockfile {
     }
 
     /// The hosted sources are a list: the first that lists a name is where it
-    /// comes from, so another order asks for something else.
+    /// comes from, so another order asks for something else. A dependency's
+    /// GitHub repo is where it comes from too.
     fn sources_changed(&self, project: &Project) -> Option<StaleReason> {
         let now = Inputs::of(project);
-        let changed = now.defaults != self.inputs.defaults || now.sources != self.inputs.sources;
+        let changed = now.defaults != self.inputs.defaults
+            || now.sources != self.inputs.sources
+            || now.github != self.inputs.github;
         changed.then_some(StaleReason::SourcesChanged)
     }
 
@@ -338,6 +349,7 @@ mod tests {
                 sources: vec!["http://127.0.0.1:8090/feed".to_string()],
                 dependencies: BTreeMap::from([("beta".to_string(), ">=1.0".to_string())]),
                 dev_dependencies: BTreeMap::from([("caraya".to_string(), "*".to_string())]),
+                github: BTreeMap::new(),
             },
             packages: vec![package("alpha", "2.0"), beta, caraya],
             unresolved: vec![LockedUnresolved {
@@ -413,6 +425,49 @@ mod tests {
             ]
         );
         assert_eq!(inputs.dev_dependencies["caraya"], "*");
+    }
+
+    #[test]
+    fn inputs_hold_the_github_repo_of_each_dependency_in_either_table() {
+        let project = crate::project::parse(
+            "[dependencies]
+beta = { github = \"o/beta\", version = \">=1.0\" }
+alpha = \"2.0\"
+
+             [dev-dependencies]
+Caraya = { github = \"o/caraya\", version = \"*\" }
+",
+        )
+        .unwrap();
+        assert_eq!(
+            Inputs::of(&project).github.into_iter().collect::<Vec<_>>(),
+            [
+                ("Caraya".to_string(), "o/caraya".to_string()),
+                ("beta".to_string(), "o/beta".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn github_inputs_survive_being_written_and_read() {
+        let mut with_github = lock();
+        with_github.inputs.github = BTreeMap::from([("beta".to_string(), "o/beta".to_string())]);
+        let text = with_github.to_toml().unwrap();
+        assert!(
+            text.contains(
+                "[inputs.github]
+beta = \"o/beta\"
+"
+            ),
+            "{text}"
+        );
+        assert_eq!(Lockfile::parse(&text).unwrap(), with_github);
+    }
+
+    #[test]
+    fn an_empty_github_table_is_not_written() {
+        let text = lock().to_toml().unwrap();
+        assert!(!text.contains("github"), "{text}");
     }
 
     #[test]
@@ -543,6 +598,38 @@ mod tests {
         ] {
             assert_eq!(staleness_after(change), Some(StaleReason::SourcesChanged));
         }
+    }
+
+    /// `lock()` as resolved from `MANIFEST` with beta's line naming `repo`.
+    fn lock_with_github(repo: &str) -> Lockfile {
+        let mut lock = lock();
+        lock.inputs.github = BTreeMap::from([("beta".to_string(), repo.to_string())]);
+        lock
+    }
+
+    fn manifest_with_github(repo: Option<&str>) -> Project {
+        let line = match repo {
+            Some(repo) => format!("beta = {{ github = \"{repo}\", version = \">=1.0\" }}"),
+            None => "beta = \">=1.0\"".to_string(),
+        };
+        crate::project::parse(&MANIFEST.replace("beta = \">=1.0\"", &line)).unwrap()
+    }
+
+    #[test]
+    fn a_github_repo_the_lock_was_made_from_does_not_make_it_stale() {
+        let project = manifest_with_github(Some("o/beta"));
+        assert_eq!(lock_with_github("o/beta").staleness(&project), None);
+    }
+
+    #[test]
+    fn a_changed_removed_or_added_github_repo_makes_the_lock_stale() {
+        let stale = Some(StaleReason::SourcesChanged);
+        let changed = lock_with_github("o/beta").staleness(&manifest_with_github(Some("x/beta")));
+        assert_eq!(changed, stale, "changed");
+        let removed = lock_with_github("o/beta").staleness(&manifest_with_github(None));
+        assert_eq!(removed, stale, "removed");
+        let added = lock().staleness(&manifest_with_github(Some("o/beta")));
+        assert_eq!(added, stale, "added");
     }
 
     #[test]
