@@ -147,9 +147,9 @@ fn run(command: &mut Command, limit: Duration) -> Option<String> {
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => {
-                // A grandchild that kept the pipe open must not hold us past the limit.
-                let left = deadline.saturating_duration_since(Instant::now());
-                return output.recv_timeout(left).ok().flatten();
+                // gh has exited; the grace covers the reader seeing EOF, and stops a
+                // grandchild that kept the pipe open from holding us.
+                return output.recv_timeout(Duration::from_secs(1)).ok().flatten();
             }
             Ok(Some(_)) => return None,
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),

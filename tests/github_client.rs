@@ -597,7 +597,12 @@ fn a_private_file_needs_the_token_to_download() {
         download(&entry, Some(PRIVATE_TOKEN)).unwrap(),
         b"the package"
     );
-    assert!(download(&entry, None).is_err());
+    let failed = download(&entry, None).unwrap_err();
+    let shown = download_error(failed, "pkg", REPO, &GitHubAuth::anonymous());
+    assert_eq!(
+        shown.to_string(),
+        "pkg (github.com/o/r): not found. If it is private, run gh auth login or set GH_TOKEN"
+    );
 }
 
 #[test]

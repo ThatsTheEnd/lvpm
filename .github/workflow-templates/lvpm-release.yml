@@ -15,6 +15,11 @@ on:
 permissions:
   contents: write
 
+# A second run for the same tag waits, then finds the release the first one made.
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
 env:
   # The lvpm that builds. Raise it to build with a newer one.
   LVPM_VERSION: "0.15.0"

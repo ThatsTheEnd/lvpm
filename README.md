@@ -28,7 +28,7 @@ Not affiliated with JKI or NI. Working, in active development; see
 
 ```mermaid
 flowchart LR
-  S["Package sources<br/>VIPM / NI indexes · your indexes · local folders"] --> L["lvpm<br/>resolve · download · verify · unpack"]
+  S["Package sources<br/>VIPM / NI indexes · GitHub releases · your indexes · local folders"] --> L["lvpm<br/>resolve · download · verify · unpack"]
   P["lvpm.toml + lvpm.lock<br/>(optional, per project)"] -.-> L
   L --> T["LabVIEW installation<br/>or project .lv-venv"]
   L -- "VI Server" --> LV["LabVIEW<br/>relink VIs · run install hooks"]
@@ -80,12 +80,12 @@ is its default setting (Tools » Options » VI Server). lvpm starts LabVIEW
 itself when it is not running, and says so.
 
 For a project, start with `lvpm init` ([Starting a project](docs/usage.md#starting-a-project)).
-It writes an `lvpm.toml`, makes a git repository and binds a venv to your LabVIEW;
+It writes an `lvpm.toml` and a `.gitignore`, makes a git repository and binds a venv to your LabVIEW;
 `lvpm init --from <file.vipc>` or `--from vipm.toml` takes the dependencies over from VIPM:
 
 ```console
 $ cd C:\Git\MyProject
-$ lvpm init --labview-version 2026         # lvpm.toml, git and .lv-venv/ in one go
+$ lvpm init --labview-version 2026         # lvpm.toml, .gitignore, git and .lv-venv/ in one go
 $ lvpm install                              # locks lvpm.toml into lvpm.lock, installs exactly that into .lv-venv
 $ lvpm add oglib_error                      # one more dependency: lvpm.toml, lvpm.lock and .lv-venv together
 $ lvpm launch MyProject.lvproj              # a LabVIEW that sees the venv

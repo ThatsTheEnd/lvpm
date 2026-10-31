@@ -87,7 +87,7 @@ mod tests {
             ("pkg-1.0 beta.lvpkg", "pkg", None),
             ("pkg-1.0/../x.lvpkg", "pkg", None),
             // Multi-byte text where the name ends is no panic.
-            ("päckage-1.0.lvpkg", "pack", None),
+            ("päckage-1.0.lvpkg", "pa", None),
             ("", "pkg", None),
         ];
         for (file, name, want) in table {

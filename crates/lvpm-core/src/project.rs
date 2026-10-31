@@ -324,7 +324,7 @@ fn parse_dependencies(
                 // One name, one repo: the other table may have set it.
                 let other = (github.iter()).find_map(|(key, other)| same_name(key, &name).then_some(other));
                 match other {
-                    Some(other) if *other != repo => bail!(
+                    Some(other) if !other.eq_ignore_ascii_case(&repo) => bail!(
                         "[{table}] {name}: github = {repo:?} differs from {other:?} in the other dependency table"
                     ),
                     Some(_) => {}

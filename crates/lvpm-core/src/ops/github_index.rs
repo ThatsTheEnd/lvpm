@@ -135,7 +135,11 @@ fn entries_of(
     {
         let file = format!("{}-{version}", dependency.name);
         let url = format!("cache:{sha256}");
-        return Ok(vec![entry_of(dependency, &bytes, &url, &file, version)?]);
+        let entry = entry_of(dependency, &bytes, &url, &file, version)?;
+        // A pin that no longer runs on the project's LabVIEW is looked for anew.
+        if entry.fits_labview(gate) {
+            return Ok(vec![entry]);
+        }
     }
 
     let list = |refresh| {
@@ -225,17 +229,20 @@ fn from_listing(
         return Err(dependency.fail(fault));
     }
 
-    // The locked file is not in the cache: it is the one to read, if it is
-    // still in a release.
-    let locked_file = locked
-        .as_ref()
-        .and_then(|(version, _)| admitted.iter().find(|file| file.version == *version))
-        .copied();
-    let wanted = match locked_file {
-        Some(file) => vec![file],
-        None => admitted,
-    };
+    let wanted = pin_first(admitted, locked.as_ref().map(|(version, _)| version));
     walk(&wanted, gate, |file| download(downloads, dependency, file))
+}
+
+/// `admitted` (newest first) with the locked file, when a release still holds
+/// it, moved to the front: the walk then stops at the pin while it runs on the
+/// project's LabVIEW, and goes on to the newest that does when it no longer does.
+fn pin_first<'a>(admitted: Vec<&'a ReleaseFile>, locked: Option<&Version>) -> Vec<&'a ReleaseFile> {
+    let (mut pinned, rest): (Vec<_>, Vec<_>) = admitted
+        .into_iter()
+        .partition(|file| locked == Some(&file.version));
+    pinned.truncate(1);
+    pinned.extend(rest);
+    pinned
 }
 
 /// The entries of `files`, newest first, each made by `entry_of`, until one
@@ -354,8 +361,14 @@ mod tests {
     /// LabVIEW in `needs`, for a project on LabVIEW 24: the versions it made
     /// entries for.
     fn walked(versions: &[&str], needs: &[f64]) -> Vec<String> {
+        walked_with_pin(versions, None, needs)
+    }
+
+    /// `walked`, with the lock pinning `pin`; `needs` is in walk order.
+    fn walked_with_pin(versions: &[&str], pin: Option<&str>, needs: &[f64]) -> Vec<String> {
         let files: Vec<ReleaseFile> = versions.iter().map(|version| file(version)).collect();
-        let refs: Vec<&ReleaseFile> = files.iter().collect();
+        let pin = pin.map(Version::parse);
+        let refs = pin_first(files.iter().collect(), pin.as_ref());
         let asked = RefCell::new(0);
         let entries = walk(&refs, 24.0, |file| {
             let at = *asked.borrow();
@@ -452,6 +465,22 @@ mod tests {
         );
         // None fits: every one read is kept.
         assert_eq!(walked(&["2", "1"], &[25.0, 25.0]), ["2", "1"]);
+    }
+
+    #[test]
+    fn a_pin_that_runs_on_the_projects_labview_is_the_only_file_read() {
+        assert_eq!(
+            walked_with_pin(&["2.0", "1.0"], Some("1.0"), &[24.0]),
+            ["1.0"]
+        );
+    }
+
+    #[test]
+    fn a_pin_that_no_longer_runs_on_the_projects_labview_gives_way_to_the_newest_that_does() {
+        assert_eq!(
+            walked_with_pin(&["3.0", "2.0", "1.0"], Some("1.0"), &[25.0, 26.0, 24.0]),
+            ["1.0", "3.0", "2.0"]
+        );
     }
 
     #[test]

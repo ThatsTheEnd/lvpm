@@ -27,7 +27,7 @@
 //! version = "2.0"
 //! sha256 = "..."
 //! md5 = "..."                          # only when the feed lists one
-//! source = "local"                     # or the feed's index URL
+//! source = "local"                     # or the feed's index URL, or https://github.com/owner/repo
 //! requires = ["beta"]                  # the locked packages it needs
 //! dev = true                           # only when nothing but dev dependencies need it
 //!
@@ -124,7 +124,8 @@ pub struct LockedPackage {
     /// The MD5 the feed lists for the archive, when it lists one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub md5: Option<String>,
-    /// The feed's index URL, or [`LOCAL_SOURCE`].
+    /// The feed's index URL, `https://github.com/{repo}` for a GitHub dependency,
+    /// or [`LOCAL_SOURCE`].
     pub source: String,
     /// The locked packages this one requires, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

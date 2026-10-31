@@ -793,6 +793,18 @@ async fn the_fake_saw_no_token_on_the_redirect(world: &mut CliWorld, host: Strin
 // ---- where a token must not be ----
 
 /// Whether `secret` is in `path`, or in any file under it.
+/// Whether `secret` is in the file or directory at `path`, which must exist and,
+/// as a directory, hold something: a search of nothing would pass vacuously.
+fn is_in_place(path: &Path, secret: &str) -> bool {
+    let empty = path.is_dir() && std::fs::read_dir(path).map_or(true, |mut e| e.next().is_none());
+    assert!(
+        path.exists() && !empty,
+        "cannot check {}: it does not exist or is empty",
+        path.display()
+    );
+    is_in(path, secret)
+}
+
 fn is_in(path: &Path, secret: &str) -> bool {
     if path.is_dir() {
         let Ok(entries) = std::fs::read_dir(path) else {
@@ -813,10 +825,10 @@ async fn a_secret_appears_in_none_of(world: &mut CliWorld, secret: String, place
     let output = world.output();
     for place in places.split(", ").flat_map(|part| part.split(" and ")) {
         let found = match place {
-            "lvpm.toml" => is_in(&work.join(MANIFEST_FILE), &secret),
-            "lvpm.lock" => is_in(&work.join("lvpm.lock"), &secret),
-            "the cache directory" => is_in(&world.sandbox.cache_dir(), &secret),
-            "dest" => is_in(&work.join("dest"), &secret),
+            "lvpm.toml" => is_in_place(&work.join(MANIFEST_FILE), &secret),
+            "lvpm.lock" => is_in_place(&work.join("lvpm.lock"), &secret),
+            "the cache directory" => is_in_place(&world.sandbox.cache_dir(), &secret),
+            "dest" => is_in_place(&work.join("dest"), &secret),
             "stdout" => output.stdout.contains(&secret),
             "stderr" => output.stderr.contains(&secret),
             other => panic!("do not know where {other:?} is"),
