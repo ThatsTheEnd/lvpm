@@ -52,7 +52,8 @@ fn to_line(value: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lvpm_core::events::Phase;
+    use lvpm_core::events::{AddedDependency, Phase, Retarget, SourceKind};
+    use lvpm_core::git::GitOutcome;
     use lvpm_core::ops::venv_cmd::VenvStatus;
     use lvpm_core::target::LvTarget;
     use lvpm_core::venv::Venv;
@@ -129,6 +130,115 @@ mod tests {
                 "running": false,
                 "starting": false
             })
+        );
+    }
+
+    #[test]
+    fn the_manifest_init_wrote_keeps_its_field_names_and_a_missing_labview_is_null() {
+        let written = |labview, retarget| {
+            serde_json::json!(Event::InitManifestWritten {
+                path: "proj/lvpm.toml".into(),
+                labview,
+                installed: vec!["2023 (64-bit)".into(), "2022 (64-bit)".into()],
+                retarget,
+                source_labview: Some(2013),
+                source_kind: Some(SourceKind::Vipc),
+            })
+        };
+        assert_eq!(
+            written(Some(2023), Some(Retarget::Year(2022))),
+            serde_json::json!({"event": "init_manifest_written", "data":
+                {"path": "proj/lvpm.toml", "labview": 2023,
+                 "installed": ["2023 (64-bit)", "2022 (64-bit)"],
+                 "retarget": {"by": "year", "value": 2022},
+                 "source_labview": 2013, "source_kind": "vipc"}})
+        );
+        assert_eq!(
+            written(None, Some(Retarget::Path("lv32".into())))["data"]["retarget"],
+            serde_json::json!({"by": "path", "value": "lv32"})
+        );
+        let none = written(None, None);
+        assert_eq!(none["data"]["labview"], serde_json::Value::Null);
+        assert_eq!(none["data"]["retarget"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn the_dependencies_init_added_keep_their_field_names() {
+        assert_eq!(
+            serde_json::json!(Event::InitDependenciesAdded {
+                from: "p.vipc".into(),
+                added: vec![AddedDependency {
+                    name: "demo_lib".into(),
+                    constraint: ">=1.0.0.1".into()
+                }],
+                skipped: 2,
+            }),
+            serde_json::json!({"event": "init_dependencies_added", "data":
+                {"from": "p.vipc", "skipped": 2,
+                 "added": [{"name": "demo_lib", "constraint": ">=1.0.0.1"}]}})
+        );
+    }
+
+    #[test]
+    fn the_package_events_init_sends_keep_their_field_names() {
+        let (name, version, from) = ("demo_lib".to_string(), "1.0.0".to_string(), "p.vipc");
+        assert_eq!(
+            serde_json::json!(Event::InitPackageImported {
+                name: name.clone(),
+                version: version.clone(),
+                from: from.into(),
+            }),
+            serde_json::json!({"event": "init_package_imported", "data":
+                {"name": "demo_lib", "version": "1.0.0", "from": "p.vipc"}})
+        );
+        assert_eq!(
+            serde_json::json!(Event::InitPackageNotEmbedded {
+                name: name.clone(),
+                version: version.clone(),
+                from: from.into(),
+            }),
+            serde_json::json!({"event": "init_package_not_embedded", "data":
+                {"name": "demo_lib", "version": "1.0.0", "from": "p.vipc"}})
+        );
+        assert_eq!(
+            serde_json::json!(Event::InitPackageImportFailed {
+                name,
+                version,
+                why: "disk full".into(),
+            }),
+            serde_json::json!({"event": "init_package_import_failed", "data":
+                {"name": "demo_lib", "version": "1.0.0", "why": "disk full"}})
+        );
+    }
+
+    #[test]
+    fn no_labview_is_an_event_with_no_data() {
+        assert_eq!(
+            serde_json::json!(Event::InitNoLabview),
+            serde_json::json!({"event": "init_no_labview"})
+        );
+    }
+
+    #[test]
+    fn the_git_outcome_is_tagged_by_kind_and_carries_only_its_own_data() {
+        let git = |outcome| serde_json::json!(Event::InitGit { outcome });
+        assert_eq!(
+            git(GitOutcome::Initialized),
+            serde_json::json!({"event": "init_git", "data": {"outcome": {"kind": "initialized"}}})
+        );
+        assert_eq!(
+            git(GitOutcome::InsideWorkTree { top: "repo".into() })["data"]["outcome"],
+            serde_json::json!({"kind": "inside_work_tree", "top": "repo"})
+        );
+        assert_eq!(
+            git(GitOutcome::GitMissing)["data"]["outcome"],
+            serde_json::json!({"kind": "git_missing"})
+        );
+        assert_eq!(
+            git(GitOutcome::Failed {
+                why: "denied".into()
+            })["data"]["outcome"],
+            serde_json::json!({"kind": "failed", "why": "denied"})
         );
     }
 

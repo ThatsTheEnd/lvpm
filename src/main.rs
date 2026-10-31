@@ -12,7 +12,7 @@ use lvpm_core::ops::relink::RelinkOptions;
 use lvpm_core::ops::route::{self, InstallMode, InstallRequest};
 use lvpm_core::ops::sync::{LockFlags, SyncOptions, strictness};
 use lvpm_core::ops::{self, Destination, DestinationFlags, OpEnv};
-use lvpm_core::{config, launch, target, venv, viserver};
+use lvpm_core::{config, git, launch, target, venv, viserver};
 
 mod render;
 
@@ -41,7 +41,8 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "project")]
     global: bool,
 
-    /// The project whose venv to use, instead of looking upwards from the
+    /// The project to act on: its venv for venv commands, or the folder `init`
+    /// writes a project into. Without it, commands look upwards from the
     /// current directory.
     #[arg(long, global = true, value_name = "DIR", conflicts_with = "prefix")]
     project: Option<PathBuf>,
@@ -172,6 +173,19 @@ enum Cmd {
         /// Seconds to wait for the VI Server to come up.
         #[arg(long, default_value_t = 120)]
         wait: u64,
+    },
+    /// Start a project here: write an lvpm.toml named after the folder, or after a
+    /// --from vipm.toml's [project] name.
+    ///
+    /// `labview` is --labview-version, else the newest installed LabVIEW. Then make a git
+    /// repository (left alone inside one) and bind a venv to that LabVIEW when it can. An
+    /// existing lvpm.toml is never replaced, and nothing is written unless every check passes.
+    Init {
+        /// Add the packages a VIPM .vipc or vipm.toml chose as dependencies, and import the
+        /// package archives a .vipc holds into the cache. Its own LabVIEW is only reported.
+        /// Relative to the working directory. A .dragon file is refused.
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
     },
     /// Install a package by name, or name@version. In a project, a bare
     /// install is `lvpm sync` and a named install is `lvpm add`, unless
@@ -575,6 +589,11 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Start { wait } => {
             let started = ops::start::start(&env, *wait)?;
             Ok(Report::said(render::viserver::started(&started), "start"))
+        }
+        Cmd::Init { from } => {
+            let done = ops::init::run(&env, from.as_deref(), &git::spawn)
+                .map_err(|why| anyhow!(render::init::error(&why)))?;
+            Report::new(render::init::initialized(&done), &done)
         }
         Cmd::Install {
             package,

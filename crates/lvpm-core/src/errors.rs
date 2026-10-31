@@ -1,8 +1,8 @@
 //! Errors that carry what went wrong as data.
 //!
-//! The message of each is neutral: it says what failed and names no command or
-//! flag. A front end words the hint that follows, because only it knows what
-//! the user can type.
+//! The message of each is neutral: it says what failed and names no command; it
+//! names a flag only when that flag's value is what is wrong. A front end words
+//! the hint that follows, because only it knows what the user can type.
 
 use crate::events::SyncStep;
 use crate::lockfile::StaleReason;
@@ -185,6 +185,33 @@ pub enum EditError {
         name: String,
         found_in: DependencyTable,
     },
+    /// Anything else that went wrong: its own text.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// Why `init` wrote nothing.
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    /// The folder `--project` names is not there.
+    #[error("{} does not exist", .dir.display())]
+    ProjectMissing { dir: PathBuf },
+    /// The folder already has an `lvpm.toml`, which init never replaces.
+    #[error("{} already exists", .path.display())]
+    ManifestExists { path: PathBuf },
+    /// `--labview-version` is not a LabVIEW year.
+    #[error("--labview-version {value} is not a LabVIEW year (expected e.g. 2025)")]
+    BadLabview { value: String },
+    /// `--from` names a `.dragon` file; the file is not opened. `file` is as typed.
+    #[error(
+        "{file}: .dragon files are not supported and not planned (VIPM discontinued the format); \
+         export a .vipc from VIPM instead"
+    )]
+    DragonFile { file: String },
+    /// The `--from` file cannot be read or is not a usable `.vipc` or `vipm.toml`;
+    /// `why` leads with the file as typed.
+    #[error("{why}")]
+    BadSource { why: String },
     /// Anything else that went wrong: its own text.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

@@ -8,6 +8,7 @@
 //! enumerated values. Work that prints a line in two parts is a begin event and
 //! an end event, so the front end owns the half-written line.
 
+use crate::git::GitOutcome;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -83,7 +84,8 @@ pub enum Event {
 
     // ---- vipm_interop ----
     /// A `vipm.toml` was read and converted. `unused` names the fields lvpm
-    /// has no use for; `labview` is VIPM's pinned year, read as a minimum.
+    /// has no use for; `labview` is VIPM's pinned year, read as a minimum
+    /// (`None` from `init`, which reports the year in `InitManifestWritten`).
     VipmManifestConverted {
         path: PathBuf,
         unused: Vec<String>,
@@ -391,9 +393,84 @@ pub enum Event {
     /// The destination already holds exactly what the lock lists.
     SyncNothingToDo,
 
+    // ---- ops::init ----
+    /// `init` wrote the project's manifest. `labview` is the year its `labview`
+    /// states, if it has one. `installed` labels every LabVIEW installation,
+    /// newest first (`2026 (64-bit)`), and `retarget` is how to choose another
+    /// one: `None` when at most one installation was found. `source_kind` is the
+    /// kind of file `--from` read, and `source_labview` the year of the LabVIEW
+    /// it targets: reported, never what `labview` says.
+    InitManifestWritten {
+        path: PathBuf,
+        labview: Option<u32>,
+        installed: Vec<String>,
+        retarget: Option<Retarget>,
+        source_labview: Option<u32>,
+        source_kind: Option<SourceKind>,
+    },
+    /// No LabVIEW is installed and `--labview-version` was not given, so the
+    /// manifest has no `labview`.
+    InitNoLabview,
+    /// `init` put the packages `from` (as typed) names in `[dependencies]`, and
+    /// left out `skipped` that VIPM only lists for another package's sake.
+    InitDependenciesAdded {
+        from: String,
+        added: Vec<AddedDependency>,
+        skipped: usize,
+    },
+    /// `init` put the archive of `name` `version` that `from` (as typed) carries
+    /// into the cache.
+    InitPackageImported {
+        name: String,
+        version: String,
+        from: String,
+    },
+    /// `from` marks `name` `version` as included and holds no archive for it.
+    /// The dependency is added all the same.
+    InitPackageNotEmbedded {
+        name: String,
+        version: String,
+        from: String,
+    },
+    /// The archive of `name` `version` could not be put into the cache, for
+    /// `why`, once the manifest was written.
+    InitPackageImportFailed {
+        name: String,
+        version: String,
+        why: String,
+    },
+    /// What `init` did about a git repository.
+    InitGit { outcome: GitOutcome },
+
     // ---- ops::query ----
     /// A package's archive is not cached and is about to be downloaded.
     ArchiveFetching { name: String, version: String },
+}
+
+/// What kind of file `init --from` read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Vipc,
+    VipmToml,
+}
+
+/// A dependency `init` wrote, with its constraint as the manifest writes it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AddedDependency {
+    pub name: String,
+    pub constraint: String,
+}
+
+/// What `--labview-version` takes to name another installation than the one
+/// `init` chose, as `target::select` reads it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "by", content = "value", rename_all = "snake_case")]
+pub enum Retarget {
+    /// The other installation's year, when it differs from the chosen one's.
+    Year(u32),
+    /// An installation's path, for the other bitness of the chosen year.
+    Path(PathBuf),
 }
 
 /// A package at a version, as a plan lists it.

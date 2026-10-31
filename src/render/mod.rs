@@ -5,7 +5,7 @@
 //! any other output starts on a line of its own. One file per core module holds
 //! the wording of that module's events; this file routes events to them and
 //! owns the two streams. `query` words what a query returns instead, and the
-//! `launch`, `venv` and `viserver` files also word what their commands return.
+//! `init`, `launch`, `venv` and `viserver` files also word what their commands return.
 
 pub mod build;
 pub mod edit;
@@ -13,6 +13,7 @@ mod env;
 mod headless;
 mod hooks;
 mod index;
+pub mod init;
 mod install;
 pub mod json;
 pub mod launch;
@@ -155,6 +156,13 @@ impl Renderer {
             Event::HeadlessInstallationChosen { .. } | Event::HeadlessImpliesLocked => {
                 headless::render(self, event)
             }
+            Event::InitManifestWritten { .. }
+            | Event::InitNoLabview
+            | Event::InitDependenciesAdded { .. }
+            | Event::InitPackageImported { .. }
+            | Event::InitPackageNotEmbedded { .. }
+            | Event::InitPackageImportFailed { .. }
+            | Event::InitGit { .. } => init::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
         }
     }
@@ -278,6 +286,14 @@ mod tests {
         let (out, err) = (Capture::default(), Capture::default());
         let renderer = Renderer::new(Box::new(out.clone()), Box::new(err.clone()));
         (renderer, out, err)
+    }
+
+    #[test]
+    fn printable_shows_control_characters_but_the_line_end_as_a_question_mark() {
+        assert_eq!(
+            printable("a\u{1b}[31mb\tc\r\nd\u{7}".to_string()),
+            "a?[31mb?c?\nd?"
+        );
     }
 
     #[test]

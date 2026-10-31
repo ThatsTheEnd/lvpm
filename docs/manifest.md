@@ -46,9 +46,11 @@ ni-daqmx-labview-support = "26.0"
 ```
 
 Every table is optional. A file containing only `[project]` is a valid
-manifest with no dependencies. When no manifest exists, `lvpm venv create`
-writes a skeleton: `name` from the directory, `labview` set to the year the
-venv was bound to, and an empty `[dependencies]`.
+manifest with no dependencies. `lvpm init` writes the first one:
+`name` from the directory, `version` `0.1.0`, `labview` and an empty
+`[dependencies]`; with `--from` the `name` and `version` come from the source
+instead ([usage.md](usage.md#starting-a-project)). `lvpm venv create`
+writes the same skeleton, without `version`, only when it finds no manifest.
 
 ## Finding the manifest
 
@@ -68,7 +70,7 @@ manifest is found, its `[sources]` apply to every command that reads indexes
 manifest-driven install.
 
 Only the file name `lvpm.toml` is discovered. A `vipm.toml` is read only
-when named with `venv create --manifest`, and is converted first (see
+when named with `venv create --manifest` or `init --from`, and is converted first (see
 [Compatibility with `vipm.toml`](#compatibility-with-vipmtoml)).
 
 `venv create --manifest` puts the venv beside the manifest and binds it to
@@ -80,7 +82,7 @@ the manifest's `labview`.
 | --------- | ------ | ---------------------------------------------------------------------------------------------- |
 | `name`    | string | Shown in the install banner. Optional.                                                         |
 | `version` | string | Recorded, not acted on. Optional.                                                              |
-| `labview` | string | The **minimum** LabVIEW year the project supports, e.g. `"2025"`. Optional but recommended. |
+| `labview` | string | The **minimum** LabVIEW year the project supports, written `">=YYYY"`, for example `">=2025"`. Optional but recommended. |
 
 `labview` is a floor, not a pin:
 
@@ -244,7 +246,7 @@ there is marked as unknown.
 
 ### Reading a `vipm.toml` with lvpm
 
-lvpm never discovers `vipm.toml`. Named with `--manifest`, it is converted
+lvpm never discovers `vipm.toml`. Named with `--manifest` (or `init --from`), it is converted
 into lvpm's model first (`crates/lvpm-core/src/vipm_interop.rs`) and then used exactly like
 an `lvpm.toml`. Every command that reads one says so:
 
@@ -264,15 +266,24 @@ $ lvpm venv create --manifest vipm.toml        # venv beside it, bound to labvie
 
 In this fork a `vipm.toml`'s packages cannot be installed yet: `install
 --manifest` is refused, and `lock` and `sync` read only `lvpm.toml`. Upstream
-installs them with `lvpm install --manifest vipm.toml`.
+installs them with `lvpm install --manifest vipm.toml`. `lvpm init --from
+vipm.toml` copies them into an `lvpm.toml`, after which `sync` installs them
+(below).
 
 `venv create --manifest` writes no `lvpm.toml` skeleton: a skeleton is
 written only when `venv create` has no manifest to read.
 
+To move a `vipm.toml` project over instead, `lvpm init --from vipm.toml`
+writes an `lvpm.toml` from it ([usage.md](usage.md#from-a-vipmtoml)) and leaves
+the `vipm.toml` as it is: `name`, `version`, `[dependencies]` and
+`[dev-dependencies]` are kept (exact versions stay exact), `[nipm.dependencies]`
+is copied as written, `labview-version` is reported and not used for `labview`,
+and the rest is named as not used, as above.
+
 | `vipm.toml` content                                  | lvpm                                                                                             |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `[project] name`, `version`                          | Read.                                                                                            |
-| `[project] labview-version = "2024"`                 | Read as `labview`: VIPM's pinned year becomes lvpm's minimum.                                   |
+| `[project] labview-version = "2024"`                 | `venv create --manifest` reads it as `labview`: VIPM's pinned year becomes lvpm's minimum. `init --from` only reports it. |
 | `[project] labview-bitness`                          | Not used. lvpm takes bitness from the selected LabVIEW installation.                            |
 | `[project] description`, `authors`, `license`, ...   | Not used.                                                                                        |
 | `[dependencies] name = "1.2.3.4"`                    | Read as an exact pin. Empty versions and operators (`>=`, `*`, ...) are rejected: VIPM documents exact versions only. |

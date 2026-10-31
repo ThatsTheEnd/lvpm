@@ -58,15 +58,17 @@ a check fails.
    `venv::create` writes today moves into one function both use, so there is
    one manifest template.
 5. With `--from`: add each dependency with `manifest_edit::set`. From a
-   `.vipc`, also import each package it embeds into the cache, the same
+   `.vipc`, also import each embedded package init adds into the cache, the same
    import `lvpm cache add` does. From a `vipm.toml`, also write its
    `[dev-dependencies]` and copy its `[nipm.dependencies]` table unchanged.
-6. `git init`, unless the folder is already inside a git work tree
-   (`git rev-parse --is-inside-work-tree`) or `git` is not on `PATH`. Either
+6. `git init`, unless the folder is already inside a git work tree (a `.git`
+   folder or file in it or a parent; git is not asked, so a repository git
+   refuses for ownership still counts and is not nested) or `git` is not on
+   `PATH`. Either
    way init goes on; it says which happened. No commit is made.
 7. Create the venv with `venv::create`. If that is not possible (no LabVIEW,
    older than 2024 Q1, a venv already there), init still succeeds: it says
-   why and prints `lvpm venv create --labview-version <YYYY>` to do it later.
+   why and prints `lvpm venv create` to do it later.
 
 **What it prints** (human output; `--json` emits the same facts as events):
 
@@ -119,13 +121,13 @@ the `.vipc`'s LabVIEW differs from the chosen one.
 | `Dependency = true` | VIPM pulled it in for another package: **skipped**. The solver brings it back as a transitive dependency |
 | `Pinned = true` | Exact constraint: `name = "1.5.0.15"` |
 | `Pinned = false` | Floor: `name = ">=1.5.0.15"` |
-| `Included = true` | The `.vip` is inside the `.vipc`: imported into the cache, so `sync` finds it with no feed |
+| `Included = true` | The `.vip` is inside the `.vipc`: for a package init adds (not `Dependency`), imported into the cache, so `sync` finds it with no feed |
 | `Target/Version` | Only reported (the "the .vipc targets" line). It does not set `labview` |
 
 The XML is small and flat; read it with the `zip` crate lvpm already has and
 a minimal tag reader. No XML dependency for a handful of tags.
 
-**Reading a `vipm.toml`.** `vipm_interop::read_toml` (from #89) converts it
+**Reading a `vipm.toml`.** `vipm_interop::parse_toml` (from #89) converts it
 into a `Project` and reports the fields it did not use
 (`Event::VipmManifestConverted`). Init writes that `Project` out:
 
@@ -142,10 +144,11 @@ into a `Project` and reports the fields it did not use
 |---|---|
 | CLI `init` subcommand | `src/main.rs` |
 | Operation | `crates/lvpm-core/src/ops/init.rs` (new), `ops/mod.rs` |
-| `.vipc` reader | `crates/lvpm-core/src/ops/init.rs`, or `vipc.rs` if it grows |
+| `.vipc` reader | `crates/lvpm-core/src/vipc.rs` (new) |
+| Git | `crates/lvpm-core/src/git.rs` (new) |
 | Shared manifest skeleton | `crates/lvpm-core/src/manifest_edit.rs`, used by `venv::create` and init |
 | Events | `crates/lvpm-core/src/events.rs` |
-| Rendering | `src/render/edit.rs`, `src/render/mod.rs` |
+| Rendering | `src/render/init.rs` (new), `src/render/mod.rs` |
 | Scenarios | `tests/features/build-slices/s10a-lvpm-init.feature` (new), in `tests/acceptance.rs` `FEATURE_FILES`. Venv steps run only with `LVPM_TEST_LABVIEW`, as other venv scenarios do |
 | `vipm.toml` reader | `crates/lvpm-core/src/vipm_interop.rs` (#89), used as is |
 | Unit tests | `.vipc` parsing on a zip built in the test, `vipm.toml` → `lvpm.toml` on the converter's documented example, LabVIEW choice on fake targets through `OpEnv::new` |
@@ -195,9 +198,14 @@ no citation are inferences and are in the Ambiguity Log.
    skip rule: user)*
 9. **Pinned is exact, the rest is a floor.** `Pinned = true` writes the exact
    version; `Pinned = false` writes `>=` that version. *(user)*
-10. **Embedded packages.** A package with `Included = true` is imported into
-    the cache, so `lvpm sync` installs it with no source listing it.
-    *(inference)*
+10. **Embedded packages.** A package init adds (AC8) with `Included = true`
+    is imported into the cache, so `lvpm sync` installs it with no source
+    listing it. A `Dependency = true` one is not imported, its archive inside
+    or not: an import shadows the feeds for every project on the machine. An archive whose spec names another package or version
+    than its `<Package>` is refused, with nothing written. One init adds and
+    marks `Included` whose archive is not inside is a warning, and it is still added
+    or skipped as AC8 says. A name listed twice follows its last listing, for
+    both the constraint and the import. *(inference)*
 11. **Sync installs them.** After `init --from`, `lvpm sync` locks and installs
     every added package into the venv. *(#71 AC2, demo)*
 12. **The `.vipc`'s LabVIEW is reported, not used.** When the `.vipc` targets
@@ -255,7 +263,8 @@ The same from a `vipm.toml`. *(user)*
 | Venv cannot be created | `inferable` | inference | Init still succeeds, with the command to run later. The user said "if possible". |
 | No LabVIEW detected | `inferable` | inference | Write the manifest without `labview` and warn. A build machine without LabVIEW can still start a project; `lock` already refuses a manifest without `labview` with its own message. |
 | A manifest in a parent folder | `inferable` | inference | Does not block. #71 says "refuses to overwrite one", and a parent's file is not overwritten. |
-| `Included = true` packages | `inferable` | inference | Import into the cache, as `lvpm cache add`. Otherwise `sync` fails for a package that ships only inside the `.vipc`. No sample with an embedded package was available; the archive's name inside the zip is checked when implementing. |
+| `Included = true` packages | `inferable` | inference | Import into the cache, as `lvpm cache add`, only for a package init adds. Otherwise `sync` fails for a package that ships only inside the `.vipc`. A `Dependency = true` one is left to the feeds (user, 2026-10-31): an imported entry shadows every feed's versions of that name machine-wide, and one not in `[dependencies]` would be planted unseen. A dependency that ships only inside the `.vipc` is then not installed, and `sync` still succeeds: the first sync, which makes the lock, warns "<name>, required by <pkg>, is in no source: it is recorded as unresolved and not locked"; later ones warn "<name>, required by <pkg>, is not installed: no source listed it when lvpm.lock was made". No sample with an embedded package was available; the archive is found as `<Name>-<Version>.vip` at any depth (amended 2026-10-31 in review). |
+| An embedded archive that is another package | `inferable` | inference, review 2026-10-31 | Refused. The cache files an import under its spec's name for every project, so an unchecked archive could stand in for any package. |
 | Project `name` and `version` | `inferable` | inference | Folder name and `0.1.0`, as `venv::create`'s skeleton and the usage.md example. |
 | Whether init locks or syncs | `inferable` | inference | Neither. #71's demo runs `lvpm sync` as a second step, and sync locks when there is no lock. |
 | Name and version split | `inferable` | inference | At the last `-`. VIPM names use `_`, never `-`; versions have no `-`. |
@@ -263,6 +272,8 @@ The same from a `vipm.toml`. *(user)*
 | CRUD sweep: project | `inferable` | inference | Created by init; read by every command; changed by `add`/`remove`/editing; deleted by the user. Init adds no delete path. |
 | Authentication / authorization | `inferable` | inference | None: init reads a local file and writes local files. |
 | Audit / logging | `inferable` | inference | The printed report (and `--json` events) is the record; no log asked for. |
+| A name listed twice in a `.vipc` | `inferable` | inference, review 2026-10-31 | The last listing wins, for the constraint and the import, as a TOML table keeps one key. |
+| Size limits on a `.vipc` | `inferable` | inference, review 2026-10-31 | `config.xml` at most 1 MiB, one embedded archive at most 256 MiB, all of them at most 1 GiB; beyond that the file is refused with nothing written, so a crafted zip cannot exhaust memory. |
 | Error handling | `inferable` | inference | Every check runs before the first write (AC2, AC13). Steps after the manifest (git, venv) only warn, so a written manifest is never rolled back by an optional step. |
 
 ## Consistency Gate

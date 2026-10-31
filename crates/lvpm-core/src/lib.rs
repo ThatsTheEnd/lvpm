@@ -13,6 +13,7 @@ pub mod config;
 pub mod distribution;
 pub mod errors;
 pub mod fetch;
+pub mod git;
 pub mod index;
 pub mod install;
 pub mod launch;
@@ -26,6 +27,7 @@ pub mod spec;
 pub mod target;
 pub mod venv;
 pub mod version;
+pub mod vipc;
 pub mod vipm_interop;
 pub mod viserver;
 

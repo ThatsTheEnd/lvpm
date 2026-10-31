@@ -4,6 +4,9 @@
 
 | Command                                              | What it does                                                                                                                                 |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lvpm init`                                          | Start a project here: write an `lvpm.toml`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
+| `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
+| `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
@@ -30,7 +33,7 @@ Flags that apply to every command:
 | Flag                       | Meaning                                                                                                   |
 | -------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `--labview-version <YYYY>` | Install into this LabVIEW version (see `lvpm targets`)                                                    |
-| `--project <DIR>`          | Use that project's venv instead of looking upwards from the current directory                             |
+| `--project <DIR>`          | Use that project's venv instead of looking upwards from the current directory; for `init`, the folder to write the project into |
 | `--global`                 | Use the LabVIEW installation itself, even from inside a project that has a venv                           |
 | `--prefix <DIR>`           | Install into a scratch directory instead of LabVIEW (file copy only; nothing to relink or run hooks with) |
 | `--refresh`                | Ask each index whether it changed (a conditional request) instead of trusting the cache in `%LOCALAPPDATA%\lvpm\cache` |
@@ -48,10 +51,108 @@ see [CI in a container](ci-docker.md)). `--relink-timeout <SECS>`
 started for a venv relink running. `sync`, `add` and `remove` take `--dry-run`
 and the relink and hook flags as well.
 
+## Starting a project
+
+`lvpm init` starts a project in the current folder (`--project <DIR>` names
+another one, which must exist). It reads no package feed and starts no
+LabVIEW.
+
+```console
+$ mkdir Serializer
+$ cd Serializer
+$ lvpm init
+wrote C:\Git\Serializer\lvpm.toml
+  labview = ">=2026"
+initialized a git repository
+  add a remote:  git remote add origin <url>
+  first push:    git add -A && git commit -m "lvpm init" && git push -u origin HEAD
+created C:\Git\Serializer\.lv-venv
+  bound to       LabVIEW 2026 (64-bit)  v26.3
+next: lvpm sync
+```
+
+- `lvpm.toml` is named after the folder, at version `0.1.0`, with an empty
+  `[dependencies]`. `labview` is `>=` the year of `--labview-version`, else of
+  the newest installed LabVIEW; with none installed it is left out and init
+  warns. An existing `lvpm.toml` is never replaced, and a `--labview-version`
+  that is not a year writes nothing. A `lvpm.toml` in a parent folder does not
+  count.
+- Git: `git init`, unless the folder is already inside a repository, which is
+  left as it is. A missing `git` is a warning.
+- Venv: bound to the chosen LabVIEW, as `lvpm venv create` would. When it
+  cannot be made (no such LabVIEW, or one before 2024 Q1) init says `no venv:`
+  and why, and still succeeds; run `lvpm venv create` once you can.
+- With several LabVIEWs installed, init lists them. To use another one, delete
+  the venv and bind a new one (edit `labview` in `lvpm.toml` too, if it is
+  higher than the version you pick):
+
+  ```console
+  $ lvpm venv remove
+  $ lvpm venv create --labview-version 2025
+  ```
+
+  For the other bitness of the same year, give its installation path, which
+  init prints: `lvpm venv create --labview-version "<path>"`.
+
+### From a .vipc
+
+`lvpm init --from <file.vipc>` also turns a VIPM configuration into
+dependencies. The path is read from the working directory, not from
+`--project`. Each package in the `.vipc` is handled by its VIPM flags:
+
+| In the `.vipc`                      | In `lvpm.toml`                                                       |
+| ----------------------------------- | -------------------------------------------------------------------- |
+| Dependency (of another package)     | Skipped, and counted: the package that needs it brings it            |
+| Pinned                              | An exact version: `demo_lib = "1.5.0.15"`                            |
+| Anything else                       | A floor: `demo_lib = ">=1.5.0.15"`                                   |
+| Included (the archive is inside)    | Imported into the cache, like `lvpm cache add`, unless it is a Dependency; still added or skipped as above |
+
+A package init adds and marks Included whose archive is not in the `.vipc` is a warning,
+and one whose archive is not a package, or is another package or version than
+the `.vipc` lists, fails. A name listed twice follows its last listing. A
+`config.xml` over 1 MiB, an archive over 256 MiB or archives over 1 GiB in
+all are refused. The `.vipc`'s own LabVIEW is only
+reported (`the .vipc targets LabVIEW 2013; lvpm.toml says >=2026`); `labview`
+comes from `--labview-version` or the installed LabVIEW, as above. Run
+`lvpm sync` next. A `.vipc` that cannot be read fails and writes nothing. A
+`.dragon` file is refused: it is not supported and not planned.
+
+### From a vipm.toml
+
+`lvpm init --from vipm.toml` starts from VIPM 2026's project file (any file named
+`vipm.toml`, read from the working directory like a `.vipc`). It is read, never
+changed.
+
+```console
+$ lvpm init --from vipm.toml
+wrote C:\Git\daq-tool\lvpm.toml
+  labview = ">=2026"
+  the vipm.toml targets LabVIEW 2021; lvpm.toml says >=2026
+added 1 dependency from vipm.toml
+  labview_open_source_lib_serializer 1.2.1.16
+manifest: vipm.toml (VIPM format, converted)
+  not used: tool
+  [dev-dependencies] read as lvpm's [dev-dependencies]
+initialized a git repository
+  ...
+```
+
+- `[project]` `name` and `version` are kept (the folder's name and `0.1.0` when
+  the file has none). `labview-version` is only reported, as a `.vipc`'s LabVIEW
+  is: `labview` comes from `--labview-version` or the installed LabVIEW.
+- `[dependencies]` and `[dev-dependencies]` keep their exact versions.
+  `[nipm.dependencies]` is copied as written; `lvpm sync` reports those packages
+  and does not install them.
+- What lvpm has no use for is listed on the `not used:` line, as for
+  `venv create --manifest` ([the table](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#compatibility-with-vipmtoml)).
+  A `vipm.toml` that cannot be converted (a floor such as `">=1.0"` where VIPM
+  takes only exact versions, or text that is not TOML) fails and writes nothing.
+
 ## The project manifest
 
 `lvpm.toml` at the repo root says what a project depends on and which hosted
-indexes to use. Local package folders are configured globally instead. Any
+indexes to use; `lvpm init` writes the first one ([Starting a project](#starting-a-project)).
+Local package folders are configured globally instead. Any
 `lvpm` command run at or below it picks it up; hosted `[sources]` apply to
 `search` and to a single-package `install` as much as to a full one.
 
@@ -183,7 +284,9 @@ There is no separate `update` command.
 
 A project can keep its packages to itself, the way a Python virtualenv or
 `node_modules` does, instead of sharing one `vi.lib` with every other project
-on the machine.
+on the machine. [`lvpm init`](#starting-a-project) makes one when it can;
+`lvpm venv create` is for a project that has none (a hand-written `lvpm.toml`,
+or init said `no venv:`) or after `lvpm venv remove`.
 
 ```console
 $ cd C:\Git\MyProject
