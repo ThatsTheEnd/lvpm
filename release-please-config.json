@@ -6,11 +6,7 @@
   "packages": {
     ".": {
       "extra-files": [
-        { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" },
-        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='lvpm')].version" },
-        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='lvpm-core')].version" },
-        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='lvpm-testkit')].version" },
-        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='lvpm-tui')].version" }
+        { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" }
       ]
     }
   }

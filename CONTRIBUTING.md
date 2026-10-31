@@ -142,7 +142,7 @@ collide, so nothing else needs to change.
 
 After every merge to `main`, [release-please.yml](.github/workflows/release-please.yml)
 opens or updates one release PR, `chore(main): release <version>`, which
-raises the version in `Cargo.toml` and `Cargo.lock` and adds the merged
+raises the version in `Cargo.toml` (and, through a later step, `Cargo.lock`) and adds the merged
 titles to `CHANGELOG.md`. Merging that PR publishes the version as release
 `v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`;
 once the version is tagged, every other merge stops at release.yml's guard
@@ -153,10 +153,17 @@ contents and pull-requests write. The default token will not do, because a PR
 it opens runs no CI.
 
 To release a different version than release-please picked, add a
-`Release-As: X.Y.Z` footer to a merged commit, or edit the version in the
-release PR itself (`Cargo.toml`, `Cargo.lock` and
-`.release-please-manifest.json` together). A new crate must be added to
-`extra-files` in `release-please-config.json`, or its version is not raised.
+`Release-As: X.Y.Z` footer to a merged commit. Editing the version in the
+release PR by hand also works (`Cargo.toml` and
+`.release-please-manifest.json`, then `cargo update --workspace` and commit
+`Cargo.lock`), but the next merge to `main` regenerates the PR and drops it.
+
+release-please itself raises only `Cargo.toml`; release-please.yml then
+refreshes `Cargo.lock` on the release branch with `cargo update --workspace`.
+A new crate needs only an entry in the root `[workspace] members` and
+`version.workspace = true` in its own `Cargo.toml`. If a
+release PR's `ci-ok` fails on `--locked`, the lock push failed: re-run the
+Release PR workflow.
 
 Releases run one at a time. A merge that lands while the release PR's run is
 still waiting replaces that run; the newer run releases the same version from
@@ -179,8 +186,13 @@ list, uninstall) inside NI's LabVIEW images:
 | `nationalinstruments/labview:2026q3-linux` | Linux | 2026 | |
 | `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
 
+A PR that changes only `docs/` and top-level Markdown runs `cargo test`
+(the suite reads `README.md` and `docs/`) and skips the build, packaging,
+lint and LabVIEW image jobs.
+
 Branch protection on `main` must require two checks: `ci-ok`, which passes
-only when every other job in `pr.yml` passed, and `conventional title`.
+only when every other job in `pr.yml` passed (or, on a docs-only PR, was
+skipped), and `conventional title`.
 Branches must also be up to date before merging. An admin sets this in the repository settings. Adding a job or an
 image row never changes the required checks.
 The design is in [the CI spec](docs/specs/lvpm-ci-pipeline.md).
