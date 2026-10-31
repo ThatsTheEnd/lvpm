@@ -163,6 +163,7 @@ impl Renderer {
             | Event::InitPackageImported { .. }
             | Event::InitPackageNotEmbedded { .. }
             | Event::InitPackageImportFailed { .. }
+            | Event::InitGitignore { .. }
             | Event::InitGit { .. } => init::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
         }

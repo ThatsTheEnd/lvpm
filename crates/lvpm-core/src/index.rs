@@ -781,6 +781,15 @@ fn parse_requires(s: &str) -> Vec<Requirement> {
 
 /// `LabVIEW>=20.0` -> 20.0
 fn parse_lv_gate(s: &str) -> Option<f64> {
+    // The version follows the first operator: "LabVIEW x64>=20.0" must not read
+    // the 64. Of ">=16.0,<=20.0" (either order) the floor is 16; "<=20.0" has none.
+    let s = s
+        .split(',')
+        .find_map(|clause| match clause.find(['=', '>', '<']) {
+            Some(i) if clause[i..].starts_with('<') => None,
+            Some(i) => Some(&clause[i..]),
+            None => Some(clause),
+        })?;
     let idx = s.find(|c: char| c.is_ascii_digit())?;
     let num: String = s[idx..]
         .chars()
@@ -1294,6 +1303,18 @@ Package.Display Name=A Thing
         let idx = Index { entries: out };
         assert!(idx.best("abcdef_thing", None, Some(20.0)).is_some());
         assert!(idx.best("abcdef_thing", None, Some(10.0)).is_none());
+    }
+
+    #[test]
+    fn a_bitness_in_the_lv_gate_is_not_read_as_the_version() {
+        assert_eq!(parse_lv_gate("LabVIEW x64>=20.0"), Some(20.0));
+        assert_eq!(parse_lv_gate("LabVIEW x86>=16.0"), Some(16.0));
+        assert_eq!(parse_lv_gate("LabVIEW x64=26.3"), Some(26.3));
+        assert_eq!(parse_lv_gate("LabVIEW>=8.6"), Some(8.6));
+        assert_eq!(parse_lv_gate("LabVIEW>=16.0,<=20.0"), Some(16.0));
+        assert_eq!(parse_lv_gate("LabVIEW>="), None);
+        assert_eq!(parse_lv_gate("LabVIEW<=20.0"), None);
+        assert_eq!(parse_lv_gate("LabVIEW<=20.0,>=16.0"), Some(16.0));
     }
 
     fn entry_requiring(requires: &str) -> Entry {

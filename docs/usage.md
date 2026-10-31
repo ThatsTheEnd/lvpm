@@ -4,7 +4,7 @@
 
 | Command                                              | What it does                                                                                                                                 |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lvpm init`                                          | Start a project here: write an `lvpm.toml`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
+| `lvpm init`                                          | Start a project here: write an `lvpm.toml` and a `.gitignore`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
 | `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
@@ -18,6 +18,7 @@
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
+| `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; takes no options                                                                   |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Rerun a package's PostInstall hook, for one that failed during install                                                                       |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
@@ -63,6 +64,7 @@ $ cd Serializer
 $ lvpm init
 wrote C:\Git\Serializer\lvpm.toml
   labview = ">=2026"
+wrote C:\Git\Serializer\.gitignore for LabVIEW
 initialized a git repository
   add a remote:  git remote add origin <url>
   first push:    git add -A && git commit -m "lvpm init" && git push -u origin HEAD
@@ -79,6 +81,10 @@ next: lvpm sync
   count.
 - Git: `git init`, unless the folder is already inside a repository, which is
   left as it is. A missing `git` is a warning.
+- `.gitignore`: [GitHub's LabVIEW template](https://github.com/github/gitignore/blob/main/LabVIEW.gitignore)
+  (built libraries, `.exe` and `.dll`, `.lvlps` and other metadata) plus the
+  venv folder when it is inside the project. An existing `.gitignore` is left
+  as it is.
 - Venv: bound to the chosen LabVIEW, as `lvpm venv create` would. When it
   cannot be made (no such LabVIEW, or one before 2024 Q1) init says `no venv:`
   and why, and still succeeds; run `lvpm venv create` once you can.

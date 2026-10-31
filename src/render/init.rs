@@ -113,6 +113,17 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                  add it later with lvpm cache add <archive>"
             ),
         ),
+        Event::InitGitignore { path, failed: None } => r.line(
+            Stream::Out,
+            &format!("wrote {} for LabVIEW", path.display()),
+        ),
+        Event::InitGitignore {
+            path,
+            failed: Some(why),
+        } => r.line(
+            Stream::Err,
+            &format!("warning: could not write {}: {why}", path.display()),
+        ),
         Event::InitGit { outcome } => git(r, outcome),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
@@ -477,6 +488,31 @@ mod tests {
             err.text(),
             "warning: git not found on PATH; no repository made\n\
              warning: git init failed: fatal: permission denied; no repository made\n"
+        );
+    }
+
+    #[test]
+    fn the_gitignore_is_said_on_stdout_and_a_failure_on_stderr() {
+        let (mut renderer, out, err) = renderer();
+        let path = PathBuf::from("proj").join(".gitignore");
+        renderer.render(&Event::InitGitignore {
+            path: path.clone(),
+            failed: None,
+        });
+        renderer.render(&Event::InitGitignore {
+            path: path.clone(),
+            failed: Some("access denied".into()),
+        });
+        assert_eq!(
+            out.text(),
+            format!("wrote {} for LabVIEW\n", path.display())
+        );
+        assert_eq!(
+            err.text(),
+            format!(
+                "warning: could not write {}: access denied\n",
+                path.display()
+            )
         );
     }
 

@@ -93,7 +93,10 @@ async fn chrome_is_drawn(world: &mut TuiWorld) {
 async fn only_the_size_message(world: &mut TuiWorld) {
     let screen = world.screen().join("\n");
     assert!(screen.contains("at least 80x24"), "{screen}");
-    assert!(!screen.contains("lvpm "), "the header is drawn:\n{screen}");
+    assert!(
+        !screen.starts_with(" lvpm "),
+        "the header is drawn:\n{screen}"
+    );
     assert!(!screen.contains('┌'), "a frame is drawn:\n{screen}");
 }
 

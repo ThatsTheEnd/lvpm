@@ -53,7 +53,8 @@ This records the split as built.
   2026-10-26, and `crates/lvpm-tui` now exists. It depends on `lvpm-core`
   only, which `tests/workspace.rs` checks. `crates/lvpm-testkit`
   (`publish = false`) holds the shared test fixtures and is only ever a
-  dev-dependency.
+  dev-dependency. `lvpm` links `lvpm-tui` as a library and runs it as
+  `lvpm tui`; `lvpm-core` still depends on neither front end.
 - **For the 2026-10-30 alignment:** upstream's `refactor-main.md` and this
   ADR agree that the library never parses arguments or prints. They differ in
   shape (a crate versus a `cmd/` folder) and in timing (events already built

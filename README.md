@@ -72,6 +72,8 @@ $ lvpm list                                 # what lvpm has installed there
 $ lvpm uninstall oglib_error
 ```
 
+Or browse and install in a terminal UI: `lvpm tui`.
+
 `--labview-version` picks the target when more than one LabVIEW is
 installed. Relinking and hooks need LabVIEW's VI Server (TCP) enabled, which
 is its default setting (Tools » Options » VI Server). lvpm starts LabVIEW

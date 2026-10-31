@@ -119,13 +119,13 @@ pub fn fields(detail: &Detail, info: Option<&Result<PackageInfo, String>>) -> St
     text
 }
 
-/// The spec's fields as `lvpm info` names them, then the file groups and the
-/// release notes.
+/// The spec's fields as `lvpm info` names them, then the file groups, the
+/// description and the release notes. The last two are paragraphs, so each
+/// gets its own heading rather than a label column it would wrap out of.
 fn details(info: &PackageInfo) -> String {
     let d = &info.spec.description;
     let fields = [
         ("summary", &d.summary),
-        ("description", &d.description),
         ("vendor", &d.vendor),
         ("packager", &d.packager),
         ("license", &d.license),
@@ -140,6 +140,9 @@ fn details(info: &PackageInfo) -> String {
     for group in &info.spec.file_groups {
         let files = group.files.len();
         text.push_str(&format!("{:<14}{files} to {}\n", "files", group.target_dir));
+    }
+    if let Some(description) = &d.description {
+        text.push_str(&format!("\nDescription\n{description}\n"));
     }
     if let Some(notes) = &d.release_notes {
         text.push_str(&format!("\nRelease notes\n{notes}\n"));
