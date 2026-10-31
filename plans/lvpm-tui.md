@@ -16,9 +16,9 @@ plan delivers what comes after it. First, three core capabilities that both
 front ends use: an uncapped catalog listing, package details (`lvpm info`),
 and `--json` output from the CLI. Then `lvpm-tui`, a ratatui front end on
 `lvpm-core` that follows the mock's layout, built in small slices from the
-browse list up to project mode, maintenance and configuration. The release
-zip ships `lvpm-tui.exe` next to `lvpm.exe` from the slice where the TUI can
-first install a package.
+browse list up to project mode, maintenance and configuration. The TUI
+ships inside `lvpm.exe` as `lvpm tui` from the slice where it can first
+install a package; the release zip holds one binary.
 
 ## Approach stances (decision-defaults axes)
 

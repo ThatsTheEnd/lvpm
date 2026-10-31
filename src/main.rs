@@ -546,6 +546,17 @@ impl Report {
 }
 
 /// Exit codes: 0 done, 1 the command failed, 2 the arguments are wrong (clap's).
+/// Whether `lvpm tui` was given one of lvpm's global options, which it refuses:
+/// an ignored --prefix would send installs into LabVIEW instead.
+fn tui_gets_options(cli: &Cli) -> bool {
+    cli.labview_version.is_some()
+        || cli.prefix.is_some()
+        || cli.global
+        || cli.project.is_some()
+        || cli.refresh
+        || cli.json
+}
+
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     let cli = Cli::parse();
@@ -558,14 +569,7 @@ fn main() -> std::process::ExitCode {
             .exit();
     }
     if let Cmd::Tui = cli.cmd {
-        // An ignored --prefix would send installs into LabVIEW instead.
-        let flagged = cli.labview_version.is_some()
-            || cli.prefix.is_some()
-            || cli.global
-            || cli.project.is_some()
-            || cli.refresh
-            || cli.json;
-        if flagged {
+        if tui_gets_options(&cli) {
             Cli::command()
                 .error(
                     clap::error::ErrorKind::ArgumentConflict,
@@ -1208,6 +1212,33 @@ fn cmd_vi_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lvpm_tui_refuses_every_global_option() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(["lvpm", "tui"].into_iter().chain(args.iter().copied())).unwrap()
+        };
+        assert!(!tui_gets_options(&parse(&[])));
+        let globals: Vec<_> = Cli::command()
+            .get_arguments()
+            .filter(|a| a.is_global_set())
+            .map(|a| {
+                (
+                    a.get_long().unwrap().to_string(),
+                    a.get_action().takes_values(),
+                )
+            })
+            .collect();
+        for (long, takes_value) in globals {
+            let flag = format!("--{long}");
+            let args: Vec<&str> = if takes_value {
+                vec![&flag, "2026"]
+            } else {
+                vec![&flag]
+            };
+            assert!(tui_gets_options(&parse(&args)), "{flag} is let through");
+        }
+    }
 
     fn lock_args(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(["lvpm", "lock"].into_iter().chain(args.iter().copied()))

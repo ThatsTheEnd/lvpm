@@ -170,13 +170,15 @@ pub fn parse(text: &str) -> Result<Spec> {
         let value = sections.get("Description").and_then(|s| non_empty(s, k))?;
         Some(unescape(&value))
     };
+    // A line break in a one-line field would draw as a field of its own.
+    let line = |k: &str| field(k).map(|v| v.replace('\n', " "));
     let description = Description {
         description: field("Description"),
-        summary: field("Summary"),
-        vendor: field("Vendor"),
-        packager: field("Packager"),
-        license: field("License"),
-        url: field("URL"),
+        summary: line("Summary"),
+        vendor: line("Vendor"),
+        packager: line("Packager"),
+        license: line("License"),
+        url: line("URL"),
         release_notes: field("Release Notes"),
     };
 
@@ -194,31 +196,39 @@ pub fn parse(text: &str) -> Result<Spec> {
 
 /// A description value as VIPM writes it, read back: `\0A` is a byte in hex,
 /// `\\` a backslash. Carriage returns go, so `\0D\0A` is one line break.
+/// The bytes are read as UTF-8; one that is not shows as `�`.
 fn unescape(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(at) = rest.find('\\') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at + 1..];
-        let byte = rest
-            .get(..2)
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match byte {
-            Some(byte) => {
+    let mut out = Vec::with_capacity(value.len());
+    let mut rest = value.as_bytes();
+    while let Some((&first, tail)) = rest.split_first() {
+        rest = tail;
+        if first != b'\\' {
+            out.push(first);
+            continue;
+        }
+        match rest {
+            [hi, lo, tail @ ..] if hi.is_ascii_hexdigit() && lo.is_ascii_hexdigit() => {
+                let byte = (hex_digit(*hi) << 4) | hex_digit(*lo);
                 if byte != b'\r' {
-                    out.push(char::from(byte));
+                    out.push(byte);
                 }
-                rest = &rest[2..];
+                rest = tail;
             }
-            None if rest.starts_with('\\') => {
-                out.push('\\');
-                rest = &rest[1..];
+            [b'\\', tail @ ..] => {
+                out.push(b'\\');
+                rest = tail;
             }
-            None => out.push('\\'),
+            _ => out.push(b'\\'),
         }
     }
-    out.push_str(rest);
-    out
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        _ => (b | 0x20) - b'a' + 10,
+    }
 }
 
 #[cfg(test)]
@@ -331,11 +341,36 @@ File 0="JKI Toolkits.mnu"
     }
 
     #[test]
+    fn only_the_paragraph_fields_keep_their_line_breaks() {
+        let text = format!(
+            "{SAMPLE}\n[Description]\nDescription=\"a\\0Ab\"\nSummary=\"a\\0Aurl: x\"\n\
+             Release Notes=\"a\\0D\\0Ab\"\n"
+        );
+        let d = parse(&text).unwrap().description;
+        assert_eq!(d.description.as_deref(), Some("a\nb"));
+        assert_eq!(d.summary.as_deref(), Some("a url: x"));
+        assert_eq!(d.release_notes.as_deref(), Some("a\nb"));
+    }
+
+    #[test]
     fn a_description_reads_its_escapes() {
         assert_eq!(
             unescape(r"One.\0D\0A\0ATwo in C:\\Program Files, \x stays"),
             "One.\n\nTwo in C:\\Program Files, \\x stays"
         );
+    }
+
+    #[test]
+    fn only_two_hex_digits_make_an_escape() {
+        assert_eq!(unescape(r"C:\+Abc"), r"C:\+Abc");
+        assert_eq!(unescape(r"end\0"), r"end\0");
+        assert_eq!(unescape(r"end\"), r"end\");
+    }
+
+    #[test]
+    fn escaped_bytes_are_read_as_utf8() {
+        assert_eq!(unescape(r"caf\C3\A9"), "café");
+        assert_eq!(unescape(r"it\92s"), "it\u{FFFD}s");
     }
 
     #[test]

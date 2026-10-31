@@ -64,7 +64,7 @@ $ cd Serializer
 $ lvpm init
 wrote C:\Git\Serializer\lvpm.toml
   labview = ">=2026"
-wrote C:\Git\Serializer\.gitignore for LabVIEW and the venv
+wrote C:\Git\Serializer\.gitignore for LabVIEW
 initialized a git repository
   add a remote:  git remote add origin <url>
   first push:    git add -A && git commit -m "lvpm init" && git push -u origin HEAD
@@ -83,7 +83,8 @@ next: lvpm sync
   left as it is. A missing `git` is a warning.
 - `.gitignore`: [GitHub's LabVIEW template](https://github.com/github/gitignore/blob/main/LabVIEW.gitignore)
   (built libraries, `.exe` and `.dll`, `.lvlps` and other metadata) plus the
-  venv folder. An existing `.gitignore` is left as it is.
+  venv folder when it is inside the project. An existing `.gitignore` is left
+  as it is.
 - Venv: bound to the chosen LabVIEW, as `lvpm venv create` would. When it
   cannot be made (no such LabVIEW, or one before 2024 Q1) init says `no venv:`
   and why, and still succeeds; run `lvpm venv create` once you can.

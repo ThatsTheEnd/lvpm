@@ -419,18 +419,31 @@ const LABVIEW_GITIGNORE: &str = "\
 /// and the venv out of git. One that is there already is the user's, and stays.
 fn write_gitignore(env: &OpEnv, root: &Path) {
     let path = root.join(".gitignore");
-    let mut text = LABVIEW_GITIGNORE.to_string();
-    // An absolute venv folder is outside the repository.
-    if env.config.venv_dir.is_relative() {
-        let dir = env.config.venv_dir.to_string_lossy().replace('\\', "/");
-        text.push_str(&format!("\n# lvpm's venv\n/{}/\n", dir.trim_matches('/')));
-    }
-    let failed = match manifest_edit::create_file(&path, &text) {
+    let failed = match manifest_edit::create_file(&path, &gitignore_text(&env.config.venv_dir)) {
         Err(why) if why.kind() == ErrorKind::AlreadyExists => return,
         Err(why) => Some(why.to_string()),
         Ok(()) => None,
     };
     env.sink.emit(Event::InitGitignore { path, failed });
+}
+
+/// The template, and the venv folder when it is inside the project: only
+/// plain folder names, so `/x`, `C:\x` and `..\x` (outside) get no line.
+fn gitignore_text(venv_dir: &Path) -> String {
+    use std::path::Component;
+    let mut text = LABVIEW_GITIGNORE.to_string();
+    let parts: Option<Vec<_>> = venv_dir
+        .components()
+        .filter(|c| *c != Component::CurDir)
+        .map(|c| match c {
+            Component::Normal(name) => Some(name.to_string_lossy()),
+            _ => None,
+        })
+        .collect();
+    if let Some(parts) = parts.filter(|p| !p.is_empty()) {
+        text.push_str(&format!("\n# lvpm's venv\n/{}/\n", parts.join("/")));
+    }
+    text
 }
 
 /// `text` as the file at `path`, which must not be there.
@@ -1371,6 +1384,27 @@ mod tests {
             "{said:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn the_gitignore_lists_a_venv_inside_the_project_only() {
+        let venv_line = |dir: &str| {
+            gitignore_text(Path::new(dir))
+                .strip_prefix(LABVIEW_GITIGNORE)
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(venv_line(".lv-venv"), "\n# lvpm's venv\n/.lv-venv/\n");
+        assert_eq!(venv_line("./sub/.venv"), "\n# lvpm's venv\n/sub/.venv/\n");
+        assert_eq!(venv_line("/venvs"), "");
+        assert_eq!(venv_line("../venvs"), "");
+        assert_eq!(venv_line(""), "");
+        #[cfg(windows)]
+        {
+            assert_eq!(venv_line(r"sub\.venv"), "\n# lvpm's venv\n/sub/.venv/\n");
+            assert_eq!(venv_line(r"\venvs"), "");
+            assert_eq!(venv_line(r"C:\venvs"), "");
+        }
     }
 
     #[test]

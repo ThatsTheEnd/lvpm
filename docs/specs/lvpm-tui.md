@@ -174,7 +174,6 @@ Decisions already made with the stakeholder:
 - Windows 10/11 is the target platform, as for lvpm.
 - The TUI ships inside `lvpm.exe` and starts with `lvpm tui`, so the CLI and
   the TUI cannot drift apart and the release zip holds one binary.
-  (Changed from a separate `lvpm-tui.exe`: one file to ship and install.)
 - The refactor moves code; it does not change behavior. Existing unit tests
   keep passing, moved to the crate that holds the code they test.
 - Out of scope: VIPM-installed (non-lvpm) packages, package building,
@@ -344,7 +343,7 @@ Decisions already made with the stakeholder:
 |------|------------|--------|--------|
 | TUI | Full-screen, keyboard-driven terminal application (`ratatui`), not a desktop window | `verified` | Stakeholder |
 | Core | `lvpm-core`, the library holding all domain logic, with no terminal I/O | `verified` | Stakeholder (core/CLI/TUI split) |
-| Front end | A binary on top of core: the `lvpm` CLI or `lvpm-tui` | `verified` | Stakeholder |
+| Front end | A user interface on top of core: the `lvpm` CLI, or the TUI that `lvpm tui` runs from the `lvpm-tui` library | `verified` | Stakeholder |
 | Destination | What an action applies to: one LabVIEW installation (global target) or one project venv | `unverified` | `Destination` enum in `crates/lvpm-core/src/ops/env.rs` |
 | Venv | Project-scoped LVAddons overlay at `.lv-venv/`, bound to one LabVIEW version | `unverified` | README, `crates/lvpm-core/src/venv.rs` |
 | Manifest | The project's `lvpm.toml` | `unverified` | README |
@@ -369,7 +368,7 @@ so each is classified `inferable` (see the log).
 |----------|---------------|-------------|-------------------|
 | Terminal UI or desktop GUI | `requires-stakeholder-input` | human | Terminal UI (TUI) |
 | Primary user | `requires-stakeholder-input` | human | Developer replacing VIPM's GUI |
-| Entry point / binaries | `requires-stakeholder-input` | human | Separate executable; reconfirmed after the core split: two executables |
+| Entry point / binaries | `requires-stakeholder-input` | human | Separate executable; reconfirmed after the core split: two executables. **Superseded** by stakeholder on 2026-10-31: the TUI ships inside `lvpm.exe` as `lvpm tui` |
 | Meaning of "prototype" | `requires-stakeholder-input` | human | Mock UI on fake data; real work after sign-off |
 | Feature scope | `requires-stakeholder-input` | human | Browse/search; install/uninstall/upgrade; target and venv switching; manifest editing; plus maintenance, feed refresh, config view, launch |
 | Package details source | `requires-stakeholder-input` | human | Fetch the spec on demand |
@@ -380,7 +379,7 @@ so each is classified `inferable` (see the log).
 | Refactor timing | `requires-stakeholder-input` | human | First answer: only after prototype go. **Superseded**: the core extraction and the lockfile are built first, independently of the mock gate; the gate blocks TUI-specific code only |
 | Mock fate / sign-off / home | `requires-stakeholder-input` | human | Throwaway; stakeholder runs it and approves; own branch, never merged |
 | Stack / repo | `requires-stakeholder-input` | human | Rust + ratatui, this repo |
-| Locating lvpm / version check | `requires-stakeholder-input` | human | Answered for the shell-out design (own folder then PATH; exact match). **Obsolete** after the split: both binaries are built from one workspace version (AC-T3) |
+| Locating lvpm / version check | `requires-stakeholder-input` | human | Answered for the shell-out design (own folder then PATH; exact match). **Obsolete** after the split: the TUI ships inside `lvpm.exe`, so there is one binary (AC-T3) |
 | Multi-select | `requires-stakeholder-input` | human | Sequential operations |
 | Confirm before action | `requires-stakeholder-input` | human | Dry-run plan preview + confirm |
 | Busy behaviour | `requires-stakeholder-input` | human | Progress view only |

@@ -143,7 +143,7 @@ Planned:
 
 - **`lvpm-tui`** — a full-screen terminal UI over the same operations, in
   progress (`plans/lvpm-tui.md`): browse, details, reload and install in
-  global mode work and ship as `lvpm tui`; venv mode is next.
+  global mode and into a venv work and ship as `lvpm tui`; project mode is next.
 - **`--json`** output for the new commands, package details and an uncapped
   catalog listing, which both front ends share.
 - Plans as data (not only as events) and a dry run for `lock --upgrade`, which

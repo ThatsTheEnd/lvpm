@@ -197,6 +197,9 @@ pub const NOWHERE_FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &RELOAD, &QUIT];
 /// The keys the detail view's footer shows, in order.
 pub const DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &INSTALL, &PAGE_DOWN, &BACK, &QUIT];
 
+/// The detail view's footer when there is nowhere to install.
+pub const NOWHERE_DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &PAGE_DOWN, &BACK, &QUIT];
+
 pub const PLANNING_FOOTER: &[&Binding] = &[&ABORT, &QUIT];
 pub const PLAN_FAILED_FOOTER: &[&Binding] = &[&BACK, &QUIT];
 pub const PREVIEW_FOOTER: &[&Binding] = &[&CONFIRM, &ABORT];

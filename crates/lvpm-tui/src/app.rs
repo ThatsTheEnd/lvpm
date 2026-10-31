@@ -775,6 +775,12 @@ mod tests {
         let selected = browse(&app).selected().map(|p| p.name.as_str());
         assert_eq!(selected, Some("gamma"));
         assert!(browse(&app).searching, "the search box keeps the keys");
+        // "m" leaves gamma alone, so Up has no match above it to go to.
+        press(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        let selected = browse(&app).selected().map(|p| p.name.as_str());
+        assert_eq!(selected, Some("gamma"), "alpha does not match");
+        assert_eq!(browse(&app).search, "am");
     }
 
     #[test]
@@ -871,6 +877,45 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let footer: String = (0..80).map(|x| buffer[(x, 23)].symbol()).collect();
         assert!(footer.starts_with(note), "{footer}");
+    }
+
+    #[test]
+    fn the_footers_offer_install_only_with_somewhere_to_install() {
+        let footer = |app: &mut App| {
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..80)
+                .map(|x| buffer[(x, 23)].symbol())
+                .collect::<String>()
+        };
+        let mut app = listing();
+        // A job that never ends, so opening the details reads nothing.
+        let (_send, receive) = std::sync::mpsc::channel();
+        app.pending = Some((Job::Load { refresh: false }, receive));
+        let list = footer(&mut app);
+        assert!(!list.contains("i install"), "{list}");
+        assert!(
+            list.contains("install needs a LabVIEW or --prefix"),
+            "{list}"
+        );
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let detail = footer(&mut app);
+        assert!(!detail.contains("i install"), "{detail}");
+
+        let labview_2025 = LvTarget {
+            version: 25.0,
+            bitness: 64,
+            path: "LabVIEW 2025".into(),
+        };
+        app.destination = Ok(Destination::Global(lvpm_core::target::Roots::labview(
+            &labview_2025,
+        )));
+        let detail = footer(&mut app);
+        assert!(detail.contains("i install"), "{detail}");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let list = footer(&mut app);
+        assert!(list.contains("i install"), "{list}");
     }
 
     fn catalog(names: &[&str]) -> Catalog {
