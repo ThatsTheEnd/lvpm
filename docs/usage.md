@@ -144,7 +144,7 @@ initialized a git repository
   `[nipm.dependencies]` is copied as written; `lvpm sync` reports those packages
   and does not install them.
 - What lvpm has no use for is listed on the `not used:` line, as for
-  `venv create --manifest` ([the table](manifest.md#compatibility-with-vipmtoml)).
+  `venv create --manifest` ([the table](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#compatibility-with-vipmtoml)).
   A `vipm.toml` that cannot be converted (a floor such as `">=1.0"` where VIPM
   takes only exact versions, or text that is not TOML) fails and writes nothing.
 
