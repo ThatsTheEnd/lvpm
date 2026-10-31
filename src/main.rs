@@ -545,7 +545,6 @@ impl Report {
     }
 }
 
-/// Exit codes: 0 done, 1 the command failed, 2 the arguments are wrong (clap's).
 /// Whether `lvpm tui` was given one of lvpm's global options, which it refuses:
 /// an ignored --prefix would send installs into LabVIEW instead.
 fn tui_gets_options(cli: &Cli) -> bool {
@@ -557,6 +556,7 @@ fn tui_gets_options(cli: &Cli) -> bool {
         || cli.json
 }
 
+/// Exit codes: 0 done, 1 the command failed, 2 the arguments are wrong (clap's).
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     let cli = Cli::parse();

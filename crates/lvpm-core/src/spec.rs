@@ -168,7 +168,8 @@ pub fn parse(text: &str) -> Result<Spec> {
         .and_then(|s| non_empty(s, "Exclusive_LabVIEW_Version"));
     let field = |k: &str| {
         let value = sections.get("Description").and_then(|s| non_empty(s, k))?;
-        Some(unescape(&value))
+        // Escaped line breaks only show up as whitespace once unescaped.
+        Some(unescape(&value).trim().to_string()).filter(|v| !v.is_empty())
     };
     // A line break in a one-line field would draw as a field of its own.
     let line = |k: &str| field(k).map(|v| v.replace('\n', " "));
@@ -344,9 +345,10 @@ File 0="JKI Toolkits.mnu"
     fn only_the_paragraph_fields_keep_their_line_breaks() {
         let text = format!(
             "{SAMPLE}\n[Description]\nDescription=\"a\\0Ab\"\nSummary=\"a\\0Aurl: x\"\n\
-             Release Notes=\"a\\0D\\0Ab\"\n"
+             Release Notes=\"a\\0D\\0Ab\\0D\\0A\"\nVendor=\"\\0D\\0A\"\n"
         );
         let d = parse(&text).unwrap().description;
+        assert_eq!(d.vendor, None);
         assert_eq!(d.description.as_deref(), Some("a\nb"));
         assert_eq!(d.summary.as_deref(), Some("a url: x"));
         assert_eq!(d.release_notes.as_deref(), Some("a\nb"));
