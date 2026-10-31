@@ -70,6 +70,17 @@ Feature: lvpm locks a package from its GitHub repo
     When I run "lvpm lock"
     Then lvpm.lock takes "pkg" at version "1.0"
 
+  Scenario: a locked release that no longer runs on the project's LabVIEW gives way to one that does
+    Given the repo "o/r" has release "v1.0" with "pkg-1.0.lvpkg"
+    And the repo "o/r" has release "v2.0" with "pkg-2.0.lvpkg" that needs LabVIEW 2024
+    And a project depending on "pkg" with github "o/r" and version "*"
+    When I run "lvpm lock"
+    Then lvpm.lock takes "pkg" at version "2.0"
+    When I change labview to "2023"
+    And I run "lvpm lock"
+    Then the command succeeds
+    And lvpm.lock takes "pkg" at version "1.0"
+
   Scenario: a release with both files installs the .lvpkg
     Given the repo "o/r" has release "v1.0" with "pkg-1.0.lvpkg" and "pkg-1.0.vip" holding different bytes
     And a project depending on "pkg" with github "o/r" and version "*"

@@ -160,6 +160,16 @@ async fn the_pilot_b_project_with_a_closed_port(world: &mut CliWorld) {
 /// What a file called `file` holds when no scenario says: a package named by
 /// the file (`<name>-<version>.<ext>`), or its own name when it is not one.
 fn package_bytes(file: &str, inner: Option<(&str, &str)>, display_name: &str) -> Vec<u8> {
+    package_bytes_needing(file, inner, display_name, "20.0")
+}
+
+/// As [`package_bytes`], for a package that needs LabVIEW `lv_min` (24.0 is 2024).
+fn package_bytes_needing(
+    file: &str,
+    inner: Option<(&str, &str)>,
+    display_name: &str,
+    lv_min: &str,
+) -> Vec<u8> {
     let parsed = file
         .rsplit_once('.')
         .and_then(|(id, _)| id.rsplit_once('-'));
@@ -173,7 +183,7 @@ fn package_bytes(file: &str, inner: Option<(&str, &str)>, display_name: &str) ->
         version: leak(version),
         display_name: leak(display_name),
         requires: &[],
-        lv_min: "20.0",
+        lv_min: leak(lv_min),
         payload: Payload::Text,
         post_install_hook: None,
     }
@@ -222,6 +232,21 @@ async fn a_release_file_holds(
     version: String,
 ) {
     let bytes = package_bytes(&file, Some((&name, &version)), "pkg");
+    world.serve(&repo, &tag, &[(&file, bytes)], false);
+}
+
+#[given(
+    regex = r#"^the repo "([^"]+)" has release "([^"]+)" with "([^"]+)" that needs LabVIEW (\d+)$"#
+)]
+async fn a_release_needs_labview(
+    world: &mut CliWorld,
+    repo: String,
+    tag: String,
+    file: String,
+    year: u32,
+) {
+    let lv_min = format!("{}.0", year - 2000);
+    let bytes = package_bytes_needing(&file, None, "pkg", &lv_min);
     world.serve(&repo, &tag, &[(&file, bytes)], false);
 }
 
@@ -792,31 +817,34 @@ async fn the_fake_saw_no_token_on_the_redirect(world: &mut CliWorld, host: Strin
 
 // ---- where a token must not be ----
 
-/// Whether `secret` is in `path`, or in any file under it.
-/// Whether `secret` is in the file or directory at `path`, which must exist and,
-/// as a directory, hold something: a search of nothing would pass vacuously.
+/// Whether `secret` is in the file or directory at `path`, which must hold at
+/// least one byte: a search of nothing would pass vacuously.
 fn is_in_place(path: &Path, secret: &str) -> bool {
-    let empty = path.is_dir() && std::fs::read_dir(path).map_or(true, |mut e| e.next().is_none());
+    let mut read = 0;
+    let found = is_in(path, secret, &mut read);
     assert!(
-        path.exists() && !empty,
-        "cannot check {}: it does not exist or is empty",
+        read > 0,
+        "cannot check {}: it holds nothing",
         path.display()
     );
-    is_in(path, secret)
+    found
 }
 
-fn is_in(path: &Path, secret: &str) -> bool {
+/// Whether `secret` is in `path`, or in any file under it; `read` counts the
+/// bytes searched. A file that cannot be read fails the step.
+fn is_in(path: &Path, secret: &str, read: &mut usize) -> bool {
+    let unreadable = |e: std::io::Error| -> ! { panic!("cannot read {}: {e}", path.display()) };
     if path.is_dir() {
-        let Ok(entries) = std::fs::read_dir(path) else {
-            return false;
-        };
-        return entries.flatten().any(|entry| is_in(&entry.path(), secret));
+        let entries = std::fs::read_dir(path).unwrap_or_else(|e| unreadable(e));
+        return entries
+            .map(|entry| entry.unwrap_or_else(|e| unreadable(e)).path())
+            .any(|entry| is_in(&entry, secret, read));
     }
-    std::fs::read(path).is_ok_and(|bytes| {
-        bytes
-            .windows(secret.len())
-            .any(|window| window == secret.as_bytes())
-    })
+    let bytes = std::fs::read(path).unwrap_or_else(|e| unreadable(e));
+    *read += bytes.len();
+    bytes
+        .windows(secret.len())
+        .any(|window| window == secret.as_bytes())
 }
 
 #[then(regex = r#"^"([^"]+)" appears in none of (.+)$"#)]
