@@ -3,6 +3,7 @@
 use crate::worker::Park;
 use lvpm_core::config::Config;
 use lvpm_core::events::EventSink;
+use lvpm_core::github::GitHub;
 use lvpm_core::ops::{Destination, OpEnv};
 use lvpm_core::target::LvTarget;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,9 @@ pub struct EnvBuilder {
     pub prefix: Option<PathBuf>,
     /// Holds an install at a phase: only a test sets it.
     pub park: Option<Arc<Park>>,
+    /// See [`OpEnv::github`]: the front end sets it from the process, and every
+    /// job's environment shares its token.
+    pub github: GitHub,
 }
 
 impl EnvBuilder {
@@ -33,6 +37,7 @@ impl EnvBuilder {
             machine: None,
             prefix: None,
             park: None,
+            github: GitHub::default(),
         }
     }
 
@@ -50,6 +55,7 @@ impl EnvBuilder {
         env.flags.prefix = self.prefix.clone();
         env.refresh = refresh;
         env.machine = self.machine.clone();
+        env.github = self.github.clone();
         env
     }
 

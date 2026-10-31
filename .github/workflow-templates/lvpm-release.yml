@@ -1,0 +1,55 @@
+name: Publish the package
+
+# A file to copy, not an org template: put it in .github/workflows/ of the
+# repository that holds your package (docs/usage.md, "GitHub dependencies").
+# Pushing a tag builds dist/<name>-<version>.lvpkg with `lvpm build`, which needs
+# no LabVIEW, and attaches it to that tag's release. Another project then
+# depends on it with
+#   <name> = { github = "owner/repo", version = ">=1.0" }
+# The repository needs an lvpm.toml with [project] and [distribution].
+on:
+  push:
+    tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
+
+# Creating the release and uploading to it need write access to contents.
+permissions:
+  contents: write
+
+# A second run for the same tag waits, then finds the release the first one made.
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # The lvpm that builds. Raise it to build with a newer one.
+  LVPM_VERSION: "0.15.0"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install lvpm
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
+          base="https://github.com/ThatsTheEnd/lvpm/releases/download/v${LVPM_VERSION}"
+          curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
+          grep -F "  $archive" SHA256SUMS | sha256sum --check
+          mkdir lvpm-bin
+          tar -xzf "$archive" -C lvpm-bin lvpm
+          echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
+      - name: Build the package
+        run: lvpm build
+      - name: Attach it to the tag's release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A release made by hand before the tag push is kept; otherwise make one.
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+          # --clobber: pushing the tag again replaces the file instead of failing.
+          gh release upload "$TAG" dist/*.lvpkg --clobber

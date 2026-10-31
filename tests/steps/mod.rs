@@ -8,6 +8,7 @@ pub mod cancel;
 pub mod core_io;
 pub mod destination;
 pub mod docs;
+pub mod github;
 pub mod headless;
 pub mod in_process;
 pub mod init;

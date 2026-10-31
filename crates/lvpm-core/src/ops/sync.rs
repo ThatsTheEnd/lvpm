@@ -8,6 +8,7 @@
 //! and a removal carries the reason for it.
 
 use super::env::OpEnv;
+use super::github_index;
 use super::install::{
     Applied, InstallOptions, InstallPlan, PlannedPackage, announce_target, apply, finish,
     order_dependencies_first,
@@ -21,7 +22,7 @@ use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
 use crate::install::{self, Manifest};
 use crate::lockfile::{self, LockedPackage, Lockfile};
-use crate::project::{Project, name_key};
+use crate::project::{Project, name_key, same_name};
 use crate::version::Version;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -466,10 +467,28 @@ pub fn fetch_locked(
         if env.cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
-        let Some(index) = source.index(env) else {
+        // A repo is listed only for a package of its own that missed the cache.
+        let asking: Vec<&mut Search> = searches
+            .iter_mut()
+            .filter(|search| !search.found && source.answers_for(project, &search.locked.name))
+            .collect();
+        if asking.is_empty() {
             continue;
+        }
+        let index = match source.index(env, &downloads) {
+            Ok(index) => index,
+            // A repo that cannot be read says why; a folder that is gone and a
+            // feed that is down hold nothing.
+            Err(why) => {
+                if matches!(source, Source::GitHub(..)) {
+                    for search in asking {
+                        search.unfetched = Some(format!("{why:#}"));
+                    }
+                }
+                continue;
+            }
         };
-        for search in searches.iter_mut().filter(|search| !search.found) {
+        for search in asking {
             search.look_in(&downloads, &index)?;
         }
     }
@@ -478,7 +497,8 @@ pub fn fetch_locked(
         return Err(Cancelled.into());
     }
 
-    let problems: Vec<LockedArchiveProblem> = searches.iter().filter_map(Search::problem).collect();
+    let problems: Vec<LockedArchiveProblem> =
+        searches.iter().filter_map(Search::reported).collect();
     match problems.is_empty() {
         true => Ok(searches.iter().map(Search::planned).collect()),
         false => Err(SyncError::Archives(problems)),
@@ -566,6 +586,18 @@ impl<'a> Search<'a> {
         })
     }
 
+    /// [`problem`](Search::problem), saying why when the archive was listed and
+    /// could not be fetched, which a sync tells the user instead of "not found".
+    fn reported(&self) -> Option<LockedArchiveProblem> {
+        let mut problem = self.problem()?;
+        if let (ArchiveFault::NotFound, Some(reason)) = (&problem.fault, &self.unfetched) {
+            problem.fault = ArchiveFault::Unfetched {
+                reason: reason.clone(),
+            };
+        }
+        Some(problem)
+    }
+
     /// The package as a plan carries it: read from the cache, and checked
     /// against the locked SHA-256 again when it is installed.
     fn planned(&self) -> PlannedPackage {
@@ -585,10 +617,14 @@ impl<'a> Search<'a> {
     }
 }
 
-/// A place an archive may be: whatever was imported, each local folder, the
-/// public feeds and each hosted source of the project. They are asked one at a
-/// time, so that one that is gone does not hide what another holds.
+/// A place an archive may be: the repo of each GitHub dependency, whatever was
+/// imported, each local folder, the public feeds and each hosted source of the
+/// project. They are asked one at a time, so that one that is gone does not hide
+/// what another holds.
 enum Source {
+    /// A package's own repo (name, `owner/repo`): the only source of that
+    /// package, and of no other.
+    GitHub(String, String),
     Imported,
     Folder(PathBuf),
     PublicFeeds,
@@ -597,7 +633,10 @@ enum Source {
 
 impl Source {
     fn all(env: &OpEnv, project: &Project) -> anyhow::Result<Vec<Source>> {
-        let mut sources = vec![Source::Imported];
+        let mut sources: Vec<Source> = (project.github.iter())
+            .map(|(name, repo)| Source::GitHub(name.clone(), repo.clone()))
+            .collect();
+        sources.push(Source::Imported);
         sources.extend(env.local_sources().into_iter().map(Source::Folder));
         if project.default_sources {
             sources.push(Source::PublicFeeds);
@@ -606,10 +645,20 @@ impl Source {
         Ok(sources)
     }
 
-    /// The source's index, or none when it cannot be read: a folder that is
-    /// gone and a feed that is down hold nothing.
-    fn index(&self, env: &OpEnv) -> Option<Index> {
+    /// Whether this source may hold the package `name`: a package with a
+    /// `github` line is in that repo's releases and nowhere else.
+    fn answers_for(&self, project: &Project, name: &str) -> bool {
+        match self {
+            Source::GitHub(own, _) => same_name(own, name),
+            _ => !project.github.keys().any(|own| same_name(own, name)),
+        }
+    }
+
+    /// The source's index. A repo's is made from a fresh listing, never the
+    /// cached one: a file uploaded again with `--clobber` has a new asset id.
+    fn index(&self, env: &OpEnv, downloads: &Downloads) -> anyhow::Result<Index> {
         let (feeds, folders, defaults) = match self {
+            Source::GitHub(name, repo) => return github_entries(env, downloads, name, repo),
             Source::Imported => (Vec::new(), Vec::new(), false),
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
@@ -624,8 +673,21 @@ impl Source {
             env.sink,
             &env.cancel,
         )
-        .ok()
     }
+}
+
+/// The index of `name`'s files in the releases of `repo` that GitHub lists now.
+fn github_entries(
+    env: &OpEnv,
+    downloads: &Downloads,
+    name: &str,
+    repo: &str,
+) -> anyhow::Result<Index> {
+    let listing = downloads.releases(&env.github.api, repo, name, true)?;
+    let entries = (listing.files.iter())
+        .map(|file| github_index::listed(name, repo, file))
+        .collect();
+    Ok(Index { entries })
 }
 
 #[cfg(test)]
@@ -655,6 +717,7 @@ mod tests {
                 sources: Vec::new(),
                 dependencies: BTreeMap::new(),
                 dev_dependencies: BTreeMap::new(),
+                github: BTreeMap::new(),
             },
             packages,
             unresolved: Vec::new(),
@@ -1192,6 +1255,75 @@ mod tests {
         let why = fetch_locked(&env, &project, &[lock]).unwrap_err();
         assert_eq!(sink.answered(), Some(true), "the cancel was not accepted");
         assert!(matches!(why, SyncError::Cancelled), "{why:?}");
+    }
+
+    /// A project whose `alpha` comes from `o/r`, read on an API nobody serves.
+    fn github_project(scratch: &Scratch) -> (OpEnv<'static>, Project) {
+        let project = crate::project::parse(
+            "[project]\nlabview = \">=2024\"\n\n[sources]\ndefaults = false\n\n\
+             [dependencies]\nalpha = { github = \"o/r\", version = \"*\" }\n",
+        )
+        .unwrap();
+        let mut env = scratch.env(&NullSink, vec![scratch.folder()]);
+        env.github.api = "http://127.0.0.1:1".to_string();
+        (env, project)
+    }
+
+    #[test]
+    fn a_repo_that_cannot_be_read_says_why_for_its_own_package_only() {
+        let scratch = Scratch::new("github-down");
+        let (env, project) = github_project(&scratch);
+        let locks = [
+            locked_as("alpha", "2.0", b"in a release"),
+            locked_as("beta", "1.0", b"nobody has these bytes"),
+        ];
+
+        let found = problems(fetch_locked(&env, &project, &locks).unwrap_err());
+        let faults: Vec<_> = found.iter().map(|problem| &problem.fault).collect();
+        assert!(
+            matches!(faults[0], ArchiveFault::Unfetched { reason }
+                if reason.starts_with("alpha (github.com/o/r): cannot read the releases")),
+            "{faults:?}"
+        );
+        assert_eq!(faults[1], &ArchiveFault::NotFound, "beta is not alpha's");
+    }
+
+    #[test]
+    fn a_repo_is_not_listed_for_an_archive_the_cache_holds() {
+        let scratch = Scratch::new("github-not-asked");
+        let (env, project) = github_project(&scratch);
+        let bytes = vip("alpha", "2.0", "");
+        scratch.cache().store(&bytes).unwrap();
+        let lock = locked_as("alpha", "2.0", &bytes);
+
+        let planned = fetch_locked(&env, &project, &[lock]).unwrap();
+        assert_eq!(planned.len(), 1, "the closed API was never asked");
+    }
+
+    #[test]
+    fn a_repo_answers_for_its_own_package_whatever_its_case_and_no_other_source_does() {
+        let (_, project) = github_project(&Scratch::new("github-answers"));
+        let repo = Source::GitHub("Alpha".into(), "o/r".into());
+        assert!(repo.answers_for(&project, "alpha"));
+        assert!(!repo.answers_for(&project, "beta"));
+        assert!(Source::Imported.answers_for(&project, "beta"));
+        assert!(!Source::Imported.answers_for(&project, "ALPHA"));
+    }
+
+    #[test]
+    fn a_package_of_a_repo_is_not_taken_from_a_folder_when_the_repo_cannot_be_read() {
+        let scratch = Scratch::new("github-only");
+        let (env, project) = github_project(&scratch);
+        let bytes = vip("alpha", "2.0", "");
+        put(&scratch.folder(), "alpha", "2.0", &bytes);
+
+        let found = problems(
+            fetch_locked(&env, &project, &[locked_as("alpha", "2.0", &bytes)]).unwrap_err(),
+        );
+        assert!(
+            matches!(&found[0].fault, ArchiveFault::Unfetched { .. }),
+            "{found:?}"
+        );
     }
 
     #[test]

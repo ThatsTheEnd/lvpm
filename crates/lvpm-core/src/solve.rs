@@ -10,7 +10,7 @@
 //! Package keys are lowercased, as everywhere else in lvpm.
 
 use crate::cancel::CancelToken;
-use crate::index::{Entry, Floor, Index};
+use crate::index::{Entry, Floor, Index, github_repo};
 use crate::project::{Constraint, name_key as key};
 use crate::version::Version;
 use pubgrub::{
@@ -478,7 +478,8 @@ impl fmt::Display for Fact {
                 project_year,
             } => write!(
                 f,
-                "{package} {versions} from {from} needs LabVIEW {needs_year}, and the project's is {project_year}"
+                "{package} {versions} from {from} needs LabVIEW {needs_year}, and the project's is {project_year}{}",
+                github_note(from)
             ),
             Fact::NoVersion {
                 package,
@@ -486,10 +487,23 @@ impl fmt::Display for Fact {
                 from,
             } => write!(
                 f,
-                "no version of {package} {wanted} is available from {from}"
+                "no version of {package} {wanted} is available from {from}{}",
+                github_note(from)
             ),
             Fact::NotListed { package } => write!(f, "{package} is in no configured source"),
         }
+    }
+}
+
+/// What a conflict adds when the package it is about comes from GitHub, whose
+/// releases are read for the newest fitting file and the locked one only.
+/// shortcut: see `ops::github_index`; upgrade to lazy per-version downloads.
+fn github_note(from: &str) -> &'static str {
+    match from.starts_with("github.com/") {
+        true => {
+            " (only the locked release, or else the newest one that fits, is read, so an older release that would solve this is not tried)"
+        }
+        false => "",
     }
 }
 
@@ -532,7 +546,10 @@ impl Names<'_> {
             return String::new();
         };
         let first = self.catalog.versions(key).first();
-        first.map_or_else(String::new, |entry| entry.source.clone())
+        first.map_or_else(String::new, |entry| match github_repo(entry) {
+            Some(repo) => format!("github.com/{repo}"),
+            None => entry.source.clone(),
+        })
     }
 }
 
@@ -936,6 +953,25 @@ mod tests {
                 .contains("no version of alpha >= 2.0 is available from http://h/first/index.vipr"),
             "{conflict}"
         );
+    }
+
+    #[test]
+    fn a_conflict_over_a_github_package_names_the_repo_and_says_only_two_versions_are_read() {
+        let mut listed = entry("alpha", "1.0", &[]);
+        listed.source = crate::index::github_source("o/r");
+        let index = Index {
+            entries: vec![listed],
+        };
+        let Err(SolveError::Conflict(conflict)) = run(&[("alpha", ">=2.0")], &index, &[], None)
+        else {
+            panic!("expected a conflict");
+        };
+        let text = conflict.to_string();
+        assert!(
+            text.contains("no version of alpha >= 2.0 is available from github.com/o/r (only the locked release, or else the newest one that fits, is read"),
+            "{text}"
+        );
+        assert!(!text.contains("github:"), "{text}");
     }
 
     #[test]

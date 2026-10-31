@@ -216,8 +216,9 @@ unresolved and reported as a warning; a direct dependency that cannot be found
 fails. Constraints are exact (`7.1.2.1547`), `>=` or `*`.
 
 **Out of date.** A lock is out of date when a dependency was added or removed,
-a constraint no longer admits the locked version, `labview` changed, or the
-hosted `[sources]` changed, including their order. New releases upstream do not make it so, and
+a constraint no longer admits the locked version, `labview` changed, the
+hosted `[sources]` changed, including their order, or a dependency's `github`
+repo was added, removed or changed. New releases upstream do not make it so, and
 neither does the per-user `sources.local`. `lvpm lock --check` writes nothing:
 it exits 0 if `lvpm.lock` exists and is current, and otherwise exits non-zero
 with the reason on one line. It reads no source, so it is cheap.
@@ -285,6 +286,62 @@ unless they cannot. If the manifest's constraint excludes the version asked
 for, lvpm rewrites it and keeps its kind: an exact pin becomes the new
 version, `>=1.0` becomes `>=` the new version. A `*` is never rewritten.
 There is no separate `update` command.
+
+## GitHub dependencies
+
+A project can take one package straight from a GitHub repo's releases:
+
+```toml
+[dependencies]
+labview_open_source_lib_serializer = { github = "LabVIEW-Open-Source/Serializer", version = ">=1.2" }
+```
+
+That package comes from that repo and never from `[sources]`. Which release
+file lvpm picks, how its version is read and what the manifest refuses are in
+[manifest.md](manifest.md#a-dependency-from-github). Edit the line by hand;
+`lvpm add` does not write `github`, and on a table line it changes only
+`version`.
+
+**Which commands call GitHub.** `lvpm lock`, `lvpm add`, `lvpm remove`,
+`lvpm lock --upgrade` and `--upgrade-package` list the repo's releases and
+download the file. `lvpm sync` does when the cache lacks the file or it has to
+lock first. `lvpm lock --check`, `search`, `info` and `lvpm install <name>`
+outside a project never call GitHub.
+
+**The token.** lvpm uses the first of these, and calls the API without one if
+none exists:
+
+1. `GH_TOKEN`
+2. `GITHUB_TOKEN`
+3. the output of `gh auth token`
+
+An empty variable counts as unset. A private repo needs a token that can see
+it. lvpm sends the token only to GitHub's API, not to the storage host a
+download redirects to, and never writes it to `lvpm.toml`, `lvpm.lock`, the
+cache or any message. The API address is `https://api.github.com`, or
+`GITHUB_API_URL` when that is set; GitHub Actions sets it.
+
+In GitHub Actions the workflow's token is not in the environment by itself;
+pass it with `env: { GITHUB_TOKEN: "${{ github.token }}" }`. It sees only the
+workflow's own repository.
+
+**Rate limits.** Without a token GitHub allows 60 requests an hour. When the
+rate limit is used up, lvpm fails at once, names the repo, and gives the time
+the limit resets when GitHub sends one. Without a token it also says to run
+`gh auth login` or set `GH_TOKEN`. It never waits and
+retries. A repo's list of releases is cached like a feed index; `--refresh`
+and an upgrade of that package list it again.
+
+**Publishing from a tag.** Copy
+[`.github/workflow-templates/lvpm-release.yml`](https://github.com/ThatsTheEnd/lvpm/blob/main/.github/workflow-templates/lvpm-release.yml)
+from lvpm's repository into `.github/workflows/` of the repository that holds
+your package. The repository needs an `lvpm.toml` with `[project]` and
+`[distribution]` ([Building a package](#building-a-package)). Pushing a tag
+then runs `lvpm build` and attaches `dist/<name>-<version>.lvpkg` to the tag's
+release, creating the release if there is none, and replacing the file if the
+tag is pushed again. The template names the lvpm release it builds with in
+`LVPM_VERSION`; raise it to use a newer one. Projects depend on the package
+under its `[project]` `name`.
 
 ## Per-project dependencies (venvs)
 
