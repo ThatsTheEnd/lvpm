@@ -545,8 +545,11 @@ impl App {
 }
 
 /// A key while the search box has the keys: Enter keeps the search, Esc
-/// drops it.
+/// drops it, and the moves still move through what it matches.
 fn search_key(browse: &mut Browse, key: KeyEvent) {
+    if let Some(by) = moves(key, browse.page_size()) {
+        return browse.step(by);
+    }
     match key.code {
         KeyCode::Esc => browse.clear_search(),
         KeyCode::Enter => browse.searching = false,
@@ -761,6 +764,17 @@ mod tests {
         press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
         press(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(!app.is_running());
+    }
+
+    #[test]
+    fn the_arrows_move_through_the_matches_while_searching() {
+        let mut app = listing();
+        press(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let selected = browse(&app).selected().map(|p| p.name.as_str());
+        assert_eq!(selected, Some("gamma"));
+        assert!(browse(&app).searching, "the search box keeps the keys");
     }
 
     #[test]

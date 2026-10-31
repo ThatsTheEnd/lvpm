@@ -113,6 +113,17 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                  add it later with lvpm cache add <archive>"
             ),
         ),
+        Event::InitGitignore { path, failed: None } => r.line(
+            Stream::Out,
+            &format!("wrote {} for LabVIEW and the venv", path.display()),
+        ),
+        Event::InitGitignore {
+            path,
+            failed: Some(why),
+        } => r.line(
+            Stream::Err,
+            &format!("warning: could not write {}: {why}", path.display()),
+        ),
         Event::InitGit { outcome } => git(r, outcome),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }

@@ -764,6 +764,10 @@ fn parse_requires(s: &str) -> Vec<Requirement> {
 
 /// `LabVIEW>=20.0` -> 20.0
 fn parse_lv_gate(s: &str) -> Option<f64> {
+    // The version follows the operator: "LabVIEW x64>=20.0" must not read the 64.
+    let s = s
+        .rsplit_once(['=', '>', '<'])
+        .map_or(s, |(_, version)| version);
     let idx = s.find(|c: char| c.is_ascii_digit())?;
     let num: String = s[idx..]
         .chars()
@@ -1257,6 +1261,14 @@ Package.Display Name=A Thing
         let idx = Index { entries: out };
         assert!(idx.best("abcdef_thing", None, Some(20.0)).is_some());
         assert!(idx.best("abcdef_thing", None, Some(10.0)).is_none());
+    }
+
+    #[test]
+    fn a_bitness_in_the_lv_gate_is_not_read_as_the_version() {
+        assert_eq!(parse_lv_gate("LabVIEW x64>=20.0"), Some(20.0));
+        assert_eq!(parse_lv_gate("LabVIEW x86>=16.0"), Some(16.0));
+        assert_eq!(parse_lv_gate("LabVIEW x64=26.3"), Some(26.3));
+        assert_eq!(parse_lv_gate("LabVIEW>=8.6"), Some(8.6));
     }
 
     fn entry_requiring(requires: &str) -> Entry {

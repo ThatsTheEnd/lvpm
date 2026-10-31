@@ -186,12 +186,16 @@ pub const END: Binding = Binding {
     presses: &[(KeyCode::End, KeyModifiers::NONE)],
 };
 
-/// The keys the list's footer shows, in order. Enter is left out: with it,
-/// why nothing can be installed no longer fits 80 columns.
-pub const FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &RELOAD, &QUIT];
+/// The keys the list's footer shows, in order. Enter is left out to fit 80
+/// columns.
+pub const FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &INSTALL, &RELOAD, &QUIT];
+
+/// The list's footer when there is nowhere to install: why takes the place
+/// of `i`, so it still fits 80 columns.
+pub const NOWHERE_FOOTER: &[&Binding] = &[&SEARCH, &FILTER, &RELOAD, &QUIT];
 
 /// The keys the detail view's footer shows, in order.
-pub const DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &PAGE_DOWN, &BACK, &QUIT];
+pub const DETAIL_FOOTER: &[&Binding] = &[&FOCUS, &INSTALL, &PAGE_DOWN, &BACK, &QUIT];
 
 pub const PLANNING_FOOTER: &[&Binding] = &[&ABORT, &QUIT];
 pub const PLAN_FAILED_FOOTER: &[&Binding] = &[&BACK, &QUIT];

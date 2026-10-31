@@ -3,7 +3,7 @@
 //! and the selected row, so they read the same in conhost and with `NO_COLOR`.
 
 use crate::app::{App, Details, Listing, Op, Stage};
-use crate::browse::Browse;
+use crate::browse::{Browse, Filter};
 use crate::destination;
 use crate::detail::{self, Detail, Focus};
 use crate::keys::{self, Binding};
@@ -82,12 +82,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         (keys::FOOTER, true)
     };
+    let nowhere = app.destination.as_ref().err().filter(|_| on_list);
+    let bindings = match nowhere {
+        Some(_) => keys::NOWHERE_FOOTER,
+        None => bindings,
+    };
     // What a key could not do lasts one key, so it comes first and whole.
     // Why nothing can be installed lasts, so the hints go before it.
     let mut line = hints(bindings);
     if let Some(note) = &app.note {
         line.spans.insert(0, Span::raw(format!("{note}  ")));
-    } else if let Some(error) = app.destination.as_ref().err().filter(|_| on_list) {
+    } else if let Some(error) = nowhere {
         line.spans.push(Span::raw(
             error.lines().next().unwrap_or_default().to_string(),
         ));
@@ -280,7 +285,10 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
                 browse.sources.join("\n")
             )
         } else if browse.search.is_empty() {
-            format!("No package is {}.", browse.filter.label())
+            match browse.filter {
+                Filter::Updates => "No installed package has an update.".to_string(),
+                _ => "No package is installed.".to_string(),
+            }
         } else {
             format!("No package matches \"{}\".", browse.search)
         };

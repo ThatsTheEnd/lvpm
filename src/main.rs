@@ -165,6 +165,11 @@ impl SyncArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Browse the catalog and install packages in a terminal user interface.
+    ///
+    /// Installs go into the project's venv when run inside one, else into the
+    /// newest LabVIEW. It takes no options.
+    Tui,
     /// List detected LabVIEW installations.
     Targets,
     /// Start the selected LabVIEW and wait until its VI Server answers.
@@ -552,6 +557,30 @@ fn main() -> std::process::ExitCode {
             )
             .exit();
     }
+    if let Cmd::Tui = cli.cmd {
+        // An ignored --prefix would send installs into LabVIEW instead.
+        let flagged = cli.labview_version.is_some()
+            || cli.prefix.is_some()
+            || cli.global
+            || cli.project.is_some()
+            || cli.refresh
+            || cli.json;
+        if flagged {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "`lvpm tui` takes no options: it picks the destination itself",
+                )
+                .exit();
+        }
+        return match lvpm_tui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {}", render::printable(format!("{error:?}")));
+                ExitCode::FAILURE
+            }
+        };
+    }
     match (run(&cli), cli.json) {
         (Ok(report), false) => {
             eprint!("{}", report.warning);
@@ -582,6 +611,7 @@ fn run(cli: &Cli) -> Result<Report> {
     };
     let env = op_env(cli, sink.as_ref())?;
     match &cli.cmd {
+        Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::Targets => {
             let targets = ops::query::targets(&env);
             Report::new(render::query::targets(targets), targets)

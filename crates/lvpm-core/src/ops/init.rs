@@ -198,6 +198,7 @@ pub fn run(env: &OpEnv, from: Option<&Path>, runner: Runner) -> Result<Initializ
         }
         import_embedded(env, &from, seed.embedded, seed.not_embedded);
     }
+    write_gitignore(env, &root);
     env.sink.emit(Event::InitGit {
         outcome: git::init(&root, runner),
     });
@@ -391,6 +392,47 @@ fn make_venv(
     .map_err(|why| skip(format!("{why:#}")))
 }
 
+/// GitHub's LabVIEW.gitignore (CC0), github.com/github/gitignore.
+const LABVIEW_GITIGNORE: &str = "\
+# Libraries
+*.lvlibp
+*.llb
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+
+# Metadata
+*.aliases
+*.lvlps
+*.lvprojstate
+.cache/
+*.UserState
+";
+
+/// A `.gitignore` in `root` that keeps LabVIEW's build output and metadata
+/// and the venv out of git. One that is there already is the user's, and stays.
+fn write_gitignore(env: &OpEnv, root: &Path) {
+    let path = root.join(".gitignore");
+    let mut text = LABVIEW_GITIGNORE.to_string();
+    // An absolute venv folder is outside the repository.
+    if env.config.venv_dir.is_relative() {
+        let dir = env.config.venv_dir.to_string_lossy().replace('\\', "/");
+        text.push_str(&format!("\n# lvpm's venv\n/{}/\n", dir.trim_matches('/')));
+    }
+    let failed = match manifest_edit::create_file(&path, &text) {
+        Err(why) if why.kind() == ErrorKind::AlreadyExists => return,
+        Err(why) => Some(why.to_string()),
+        Ok(()) => None,
+    };
+    env.sink.emit(Event::InitGitignore { path, failed });
+}
+
 /// `text` as the file at `path`, which must not be there.
 fn write_new(path: &Path, text: &str) -> Result<(), InitError> {
     manifest_edit::create_file(path, text).map_err(|why| match why.kind() {
@@ -513,10 +555,32 @@ mod tests {
                     source_labview: None,
                     source_kind: None,
                 },
+                Event::InitGitignore {
+                    path: root.join(".gitignore"),
+                    failed: None,
+                },
                 Event::InitGit {
                     outcome: GitOutcome::Initialized
                 }
             ]
+        );
+        let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(
+            gitignore.starts_with(
+                "# Libraries
+*.lvlibp
+"
+            ),
+            "{gitignore}"
+        );
+        assert!(
+            gitignore.ends_with(
+                "
+# lvpm's venv
+/.lv-venv/
+"
+            ),
+            "{gitignore}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -819,6 +883,10 @@ mod tests {
             ran.events[1..],
             [
                 Event::InitNoLabview,
+                Event::InitGitignore {
+                    path: ran.root().join(".gitignore"),
+                    failed: None,
+                },
                 Event::InitGit {
                     outcome: GitOutcome::Initialized
                 }
@@ -1091,8 +1159,9 @@ mod tests {
                 from: "p.vipc".into(),
             }
         );
-        assert_eq!(events.len(), 4, "{events:?}");
-        assert!(matches!(events[3], Event::InitGit { .. }));
+        assert_eq!(events.len(), 5, "{events:?}");
+        assert!(matches!(events[3], Event::InitGitignore { .. }));
+        assert!(matches!(events[4], Event::InitGit { .. }));
         let cache = crate::cache::Cache::open(&scratch.join("cache")).unwrap();
         let imported = cache.imported_packages().unwrap();
         assert_eq!(
@@ -1272,10 +1341,34 @@ mod tests {
                     ],
                     skipped: 1,
                 },
+                Event::InitGitignore {
+                    path: root.join(".gitignore"),
+                    failed: None,
+                },
                 Event::InitGit {
                     outcome: GitOutcome::Initialized
                 }
             ]
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_gitignore_that_is_there_is_left_alone_and_unsaid() {
+        let (scratch, root) = folder("init-gitignore-kept", "App");
+        std::fs::write(root.join(".gitignore"), "mine\n").unwrap();
+        let sink = Recorded::default();
+        run(&env_on(&sink, &root), None, &git_ok).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+            "mine\n"
+        );
+        let said = sink.events();
+        assert!(
+            !said
+                .iter()
+                .any(|e| matches!(e, Event::InitGitignore { .. })),
+            "{said:?}"
         );
         let _ = std::fs::remove_dir_all(&scratch);
     }

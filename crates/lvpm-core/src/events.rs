@@ -439,6 +439,12 @@ pub enum Event {
         version: String,
         why: String,
     },
+    /// `init` wrote a `.gitignore` at `path`, or `failed` to; one that was
+    /// already there is left alone and says nothing.
+    InitGitignore {
+        path: PathBuf,
+        failed: Option<String>,
+    },
     /// What `init` did about a git repository.
     InitGit { outcome: GitOutcome },
 

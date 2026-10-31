@@ -166,7 +166,10 @@ pub fn parse(text: &str) -> Result<Spec> {
     let lv_gate = sections
         .get("Platform")
         .and_then(|s| non_empty(s, "Exclusive_LabVIEW_Version"));
-    let field = |k: &str| sections.get("Description").and_then(|s| non_empty(s, k));
+    let field = |k: &str| {
+        let value = sections.get("Description").and_then(|s| non_empty(s, k))?;
+        Some(unescape(&value))
+    };
     let description = Description {
         description: field("Description"),
         summary: field("Summary"),
@@ -187,6 +190,35 @@ pub fn parse(text: &str) -> Result<Spec> {
         lv_gate,
         description,
     })
+}
+
+/// A description value as VIPM writes it, read back: `\0A` is a byte in hex,
+/// `\\` a backslash. Carriage returns go, so `\0D\0A` is one line break.
+fn unescape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(at) = rest.find('\\') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        let byte = rest
+            .get(..2)
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match byte {
+            Some(byte) => {
+                if byte != b'\r' {
+                    out.push(char::from(byte));
+                }
+                rest = &rest[2..];
+            }
+            None if rest.starts_with('\\') => {
+                out.push('\\');
+                rest = &rest[1..];
+            }
+            None => out.push('\\'),
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -295,6 +327,14 @@ File 0="JKI Toolkits.mnu"
                 url: Some("http://nfg.example".into()),
                 release_notes: Some("First.".into()),
             }
+        );
+    }
+
+    #[test]
+    fn a_description_reads_its_escapes() {
+        assert_eq!(
+            unescape(r"One.\0D\0A\0ATwo in C:\\Program Files, \x stays"),
+            "One.\n\nTwo in C:\\Program Files, \\x stays"
         );
     }
 

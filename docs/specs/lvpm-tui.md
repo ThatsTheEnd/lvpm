@@ -55,11 +55,11 @@ lockfile work.
 |---|---|---|
 | `lvpm-core` (new) | library crate, workspace member | All domain logic that is in `src/` today: targets, index/catalog, cache, fetch, spec, install/uninstall planning and execution, relink, hooks, refresh, venv, launch, project manifest (incl. editing), config, VI Server client. No terminal I/O. |
 | `lvpm` (existing, becomes a thin front end) | binary crate, workspace member | Argument parsing (clap), confirmation prompts, rendering core events as today's text, and `--json`. Produces `lvpm.exe`. |
-| `lvpm-tui` (new) | binary crate, workspace member | Rust + `ratatui` (`crossterm` backend). Screens, input, TUI state, logging. Produces `lvpm-tui.exe`. Depends on `lvpm-core` only, never on the `lvpm` crate. |
+| `lvpm-tui` (new) | library crate (with a development binary), workspace member | Rust + `ratatui` (`crossterm` backend). Screens, input, TUI state, logging. `lvpm.exe` links it and runs it as `lvpm tui`. Depends on `lvpm-core` only, never on the `lvpm` crate. |
 | Mock prototype (new, throwaway) | binary crate on its own branch | Same UI stack on fake in-memory data, no `lvpm-core`. Never merged to `main`; the branch is deleted after sign-off. |
 
-Dependency direction: `lvpm` → `lvpm-core` ← `lvpm-tui`. The core depends on
-neither front end.
+Dependency direction: `lvpm` → `lvpm-core` ← `lvpm-tui`, and `lvpm` → `lvpm-tui`
+for `lvpm tui`. The core depends on neither front end.
 
 ### Core API constraints
 
@@ -172,9 +172,9 @@ Decisions already made with the stakeholder:
 ### Constraints
 
 - Windows 10/11 is the target platform, as for lvpm.
-- The release zip ships `lvpm.exe` and `lvpm-tui.exe`, built from one
-  workspace version, so the two binaries cannot drift apart. No runtime
-  version check is needed.
+- The TUI ships inside `lvpm.exe` and starts with `lvpm tui`, so the CLI and
+  the TUI cannot drift apart and the release zip holds one binary.
+  (Changed from a separate `lvpm-tui.exe`: one file to ship and install.)
 - The refactor moves code; it does not change behavior. Existing unit tests
   keep passing, moved to the crate that holds the code they test.
 - Out of scope: VIPM-installed (non-lvpm) packages, package building,
@@ -219,8 +219,8 @@ Decisions already made with the stakeholder:
 **Core split**
 
 - AC-K1: The repository is a Cargo workspace with the crates `lvpm-core`
-  (library), `lvpm` (binary `lvpm.exe`) and `lvpm-tui` (binary
-  `lvpm-tui.exe`). `lvpm-core` depends on neither binary crate, and
+  (library), `lvpm` (binary `lvpm.exe`) and `lvpm-tui` (library, run as
+  `lvpm tui`). `lvpm-core` depends on neither front end, and
   `lvpm-tui` does not depend on the `lvpm` crate.
 - AC-K2: `lvpm-core` contains no `print!`, `println!`, `eprint!`,
   `eprintln!`, `std::io::stdout`, `std::io::stderr` or `std::io::stdin`
@@ -260,8 +260,8 @@ Decisions already made with the stakeholder:
   *create venv*. Elsewhere, it selects a LabVIEW target.
 - AC-T2: The TUI renders without overlapping or cut-off controls at 80×24 in
   Windows Terminal and conhost, and every action is reachable by keyboard.
-- AC-T3: The release zip contains `lvpm.exe` and `lvpm-tui.exe` with the same
-  version string.
+- AC-T3: `lvpm tui` in the released `lvpm.exe` starts the TUI; with any of
+  lvpm's global options it refuses to start and says it takes none.
 
 **TUI: browse and details**
 
