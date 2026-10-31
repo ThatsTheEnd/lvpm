@@ -165,6 +165,11 @@ impl SyncArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Browse the catalog and install packages in a terminal user interface.
+    ///
+    /// Installs go into the project's venv when run inside one, else into the
+    /// newest LabVIEW. It takes no options.
+    Tui,
     /// List detected LabVIEW installations.
     Targets,
     /// Start the selected LabVIEW and wait until its VI Server answers.
@@ -540,6 +545,17 @@ impl Report {
     }
 }
 
+/// Whether `lvpm tui` was given one of lvpm's global options, which it refuses:
+/// an ignored --prefix would send installs into LabVIEW instead.
+fn tui_gets_options(cli: &Cli) -> bool {
+    cli.labview_version.is_some()
+        || cli.prefix.is_some()
+        || cli.global
+        || cli.project.is_some()
+        || cli.refresh
+        || cli.json
+}
+
 /// Exit codes: 0 done, 1 the command failed, 2 the arguments are wrong (clap's).
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
@@ -551,6 +567,23 @@ fn main() -> std::process::ExitCode {
                 "--json is not taken by app-probe, vi-probe, vi-save or vi-run",
             )
             .exit();
+    }
+    if let Cmd::Tui = cli.cmd {
+        if tui_gets_options(&cli) {
+            Cli::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "`lvpm tui` takes no options: it picks the destination itself",
+                )
+                .exit();
+        }
+        return match lvpm_tui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("Error: {}", render::printable(format!("{error:?}")));
+                ExitCode::FAILURE
+            }
+        };
     }
     match (run(&cli), cli.json) {
         (Ok(report), false) => {
@@ -582,6 +615,7 @@ fn run(cli: &Cli) -> Result<Report> {
     };
     let env = op_env(cli, sink.as_ref())?;
     match &cli.cmd {
+        Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::Targets => {
             let targets = ops::query::targets(&env);
             Report::new(render::query::targets(targets), targets)
@@ -1178,6 +1212,33 @@ fn cmd_vi_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lvpm_tui_refuses_every_global_option() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(["lvpm", "tui"].into_iter().chain(args.iter().copied())).unwrap()
+        };
+        assert!(!tui_gets_options(&parse(&[])));
+        let globals: Vec<_> = Cli::command()
+            .get_arguments()
+            .filter(|a| a.is_global_set())
+            .map(|a| {
+                (
+                    a.get_long().unwrap().to_string(),
+                    a.get_action().takes_values(),
+                )
+            })
+            .collect();
+        for (long, takes_value) in globals {
+            let flag = format!("--{long}");
+            let args: Vec<&str> = if takes_value {
+                vec![&flag, "2026"]
+            } else {
+                vec![&flag]
+            };
+            assert!(tui_gets_options(&parse(&args)), "{flag} is let through");
+        }
+    }
 
     fn lock_args(args: &[&str]) -> Result<Cli, clap::Error> {
         Cli::try_parse_from(["lvpm", "lock"].into_iter().chain(args.iter().copied()))

@@ -3,7 +3,7 @@
 //! and the selected row, so they read the same in conhost and with `NO_COLOR`.
 
 use crate::app::{App, Details, Listing, Op, Stage};
-use crate::browse::Browse;
+use crate::browse::{Browse, Filter};
 use crate::destination;
 use crate::detail::{self, Detail, Focus};
 use crate::keys::{self, Binding};
@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         let message = format!(
-            "The terminal is {}x{}; lvpm-tui needs at least {MIN_WIDTH}x{MIN_HEIGHT}.",
+            "The terminal is {}x{}; lvpm tui needs at least {MIN_WIDTH}x{MIN_HEIGHT}.",
             area.width, area.height
         );
         frame.render_widget(Paragraph::new(message).wrap(Wrap { trim: true }), area);
@@ -51,15 +51,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     frame.render_widget(Paragraph::new(title), header);
 
-    let (bindings, on_list) = if app.showing_log {
+    // The second footer is the one without `i`, for when there is nowhere to install.
+    let (bindings, nowhere_bindings) = if app.showing_log {
         draw_log(frame, &app.log, body);
-        (keys::LOG_FOOTER, false)
+        (keys::LOG_FOOTER, None)
     } else if let Some(op) = &app.op {
         draw_op(frame, op, body);
-        (op_footer(op), false)
+        (op_footer(op), None)
     } else if let Some(detail) = &mut app.detail {
         draw_detail(frame, detail, &app.details, body);
-        (keys::DETAIL_FOOTER, false)
+        (keys::DETAIL_FOOTER, Some(keys::NOWHERE_DETAIL_FOOTER))
     } else {
         let block = Block::bordered();
         let inner = block.inner(body);
@@ -80,14 +81,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ),
             Listing::Loaded(browse) => draw_list(frame, browse, inner),
         }
-        (keys::FOOTER, true)
+        (keys::FOOTER, Some(keys::NOWHERE_FOOTER))
     };
+    let nowhere = app.destination.as_ref().err().zip(nowhere_bindings);
+    let bindings = nowhere.map_or(bindings, |(_, without_install)| without_install);
     // What a key could not do lasts one key, so it comes first and whole.
     // Why nothing can be installed lasts, so the hints go before it.
     let mut line = hints(bindings);
     if let Some(note) = &app.note {
         line.spans.insert(0, Span::raw(format!("{note}  ")));
-    } else if let Some(error) = app.destination.as_ref().err().filter(|_| on_list) {
+    } else if let Some((error, _)) = nowhere {
         line.spans.push(Span::raw(
             error.lines().next().unwrap_or_default().to_string(),
         ));
@@ -280,7 +283,10 @@ fn draw_list(frame: &mut Frame, browse: &mut Browse, area: Rect) {
                 browse.sources.join("\n")
             )
         } else if browse.search.is_empty() {
-            format!("No package is {}.", browse.filter.label())
+            match browse.filter {
+                Filter::Updates => "No installed package has an update.".to_string(),
+                _ => "No package is installed.".to_string(),
+            }
         } else {
             format!("No package matches \"{}\".", browse.search)
         };

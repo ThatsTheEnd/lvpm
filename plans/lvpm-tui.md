@@ -16,9 +16,9 @@ plan delivers what comes after it. First, three core capabilities that both
 front ends use: an uncapped catalog listing, package details (`lvpm info`),
 and `--json` output from the CLI. Then `lvpm-tui`, a ratatui front end on
 `lvpm-core` that follows the mock's layout, built in small slices from the
-browse list up to project mode, maintenance and configuration. The release
-zip ships `lvpm-tui.exe` next to `lvpm.exe` from the slice where the TUI can
-first install a package.
+browse list up to project mode, maintenance and configuration. The TUI
+ships inside `lvpm.exe` as `lvpm tui` from the slice where it can first
+install a package; the release zip holds one binary.
 
 ## Approach stances (decision-defaults axes)
 
@@ -982,14 +982,12 @@ Feature: Install with a preview, progress and a log
 **Files**: `crates/lvpm-tui/src/log.rs`, `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/tests/steps.rs`
 **Commit**: `feat(tui): operation log and tui.log`
 
-#### Step 7.4: Build and ship `lvpm-tui.exe`
+#### Step 7.4: Ship the TUI as `lvpm tui`
 
 **Complexity**: standard
-**IMPLEMENT**: `build.yml` builds the workspace and uploads both binaries; `package.sh` puts `lvpm-tui.exe` in the Windows zip; `install.ps1` installs it and names it in its output; the packaging job checks both versions; the README says how to start it. Run the manual checklist with an install on screen.
-**TEST**: `ci/package.test.sh` asserts both binaries and one version are in the zip; a root-harness scenario: the Windows release zip holds `lvpm.exe` and `lvpm-tui.exe` with the same version string, and `install.ps1` installs both and its output names lvpm-tui. (It is not in the slice's feature: that feature's background starts the TUI.)
-**REFACTOR**: One list of shipped binaries in `package.sh`.
-**Files**: `.github/workflows/build.yml`, `.github/workflows/package.yml`, `ci/package.sh`, `ci/package.test.sh`, `scripts/install.ps1`, `README.md`, `tests/steps/workspace.rs`, `docs/manual/tui-terminals.md`
-**Commit**: `ci: ship lvpm-tui.exe in the release zip`
+**IMPLEMENT**: Changed from a separate `lvpm-tui.exe`: the `lvpm` crate links the `lvpm-tui` library, and `lvpm tui` runs it, so the release zip, `build.yml` and `install.ps1` stay as they are. `lvpm tui` refuses lvpm's global options rather than ignore them.
+**Files**: `Cargo.toml`, `src/main.rs`, `crates/lvpm-tui/src/lib.rs`, `crates/lvpm-tui/src/main.rs`, `docs/specs/lvpm-tui.md`, `docs/manual/tui-terminals.md`, `README.md`
+**Commit**: `feat(tui): ship the TUI as lvpm tui`
 
 ### Slice 8: Uninstall, multi-select and upgrade all in global mode
 
@@ -1622,7 +1620,7 @@ None.
   - [x] Step 7.1: Preview from a dry run, confirm, run
   - [x] Step 7.2: Busy mode, progress and cancel
   - [x] Step 7.3: In-session log and `tui.log`
-  - [ ] Step 7.4: Build and ship `lvpm-tui.exe` (deferred: PR #45 changes the CI workflows)
+  - [x] Step 7.4: Ship the TUI as `lvpm tui`
 
 ### Wave 8
 - [ ] Slice 8: Uninstall, multi-select and upgrade all in global mode

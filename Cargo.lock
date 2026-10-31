@@ -1704,6 +1704,7 @@ dependencies = [
  "futures",
  "lvpm-core",
  "lvpm-testkit",
+ "lvpm-tui",
  "md-5",
  "regex",
  "serde",
