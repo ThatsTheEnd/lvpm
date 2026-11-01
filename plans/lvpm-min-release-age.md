@@ -38,7 +38,7 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
   nothing printed when nothing is held back or the key is absent/0, never for
   an exact pin), on stderr like the existing `warning: … unresolved` advisory:
   `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible 2026-11-11); using 1.0`
-- **JSON event**: `{"event": "held_back", "name": "alpha", "version": "1.1", "chosen": "1.0", "released": "2026-10-28T11:46:49Z", "eligible": "2026-11-11T11:46:49Z", "min_age_days": 14}`
+- **JSON event** (nested under `data` like every event): `{"event": "held_back", "data": {"name": "alpha", "version": "1.1", "chosen": "1.0", "released": "2026-10-28T11:46:49Z", "eligible": "2026-11-11T11:46:49Z", "min_age_days": 14}}`
 - **No eligible version** (the error lists every version the constraint admits
   that was held back, newest first, and no version the constraint excludes):
   ```text
@@ -536,7 +536,7 @@ graph TD
 
 #### Wave 2
 - [ ] Slice 2: Report held-back versions, and the docs
-  - [ ] Step 2.1: Report a held-back newer version
+  - [x] Step 2.1: Report a held-back newer version
   - [ ] Step 2.2: Document `min-age-days`
 
 ## Plan Review Summary

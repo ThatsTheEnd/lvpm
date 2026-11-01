@@ -32,6 +32,9 @@ pub struct Resolution {
     /// Requirements of the chosen packages that no source lists, by name then
     /// requirer. They are not a failure: the package is simply not locked.
     pub unresolved: Vec<Unresolved>,
+    /// For each chosen package, the newest version the age limit alone kept
+    /// out, by name.
+    pub held_back: Vec<HeldBack>,
 }
 
 /// A requirement that no source lists, and the package that has it.
@@ -39,6 +42,16 @@ pub struct Resolution {
 pub struct Unresolved {
     pub name: String,
     pub required_by: String,
+}
+
+/// A version newer than the one chosen that the age limit kept out: `name`
+/// `version`, released at `released` (Unix seconds), while `chosen` was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBack {
+    pub name: String,
+    pub version: String,
+    pub chosen: String,
+    pub released: i64,
 }
 
 /// Why `solve` returned no resolution.
@@ -106,9 +119,11 @@ pub fn solve(
                 })
                 .collect();
             let unresolved = provider.unresolved_in(&packages);
+            let held_back = provider.held_back_in(&packages);
             Ok(Resolution {
                 packages,
                 unresolved,
+                held_back,
             })
         }
         Err(PubGrubError::NoSolution(tree)) => Err(SolveError::Conflict(Conflict::explain(
@@ -316,6 +331,54 @@ impl Provider<'_> {
         // spelling in file order stays.
         unresolved.dedup_by_key(|u| (key(&u.name), key(&u.required_by)));
         unresolved
+    }
+
+    /// For each chosen package, the newest version above the chosen one that
+    /// the manifest and the chosen packages' requirements admit and that only
+    /// its age keeps out. A version a LabVIEW gate or a lock preference keeps
+    /// out is not held back by age.
+    ///
+    /// shortcut: a too-new version whose own requirements would also have
+    /// conflicted is still reported; check them too if that over-reports.
+    fn held_back_in(&self, chosen: &BTreeMap<String, Entry>) -> Vec<HeldBack> {
+        chosen
+            .iter()
+            .filter_map(|(key, picked)| {
+                let admitted = self.admitted(key, chosen);
+                self.catalog
+                    .versions(key)
+                    .iter()
+                    .take_while(|newer| newer.version > picked.version)
+                    .filter(|newer| admitted.contains(&newer.version))
+                    .find_map(|newer| match self.unavailable(newer) {
+                        Some(Unavailable::TooNew { released, .. }) => Some(HeldBack {
+                            name: newer.name.clone(),
+                            version: newer.version.to_string(),
+                            chosen: picked.version.to_string(),
+                            released,
+                        }),
+                        Some(Unavailable::Labview(_)) | None => None,
+                    })
+            })
+            .collect()
+    }
+
+    /// The versions of `key` the manifest's lines and the requirements of the
+    /// `chosen` packages all admit.
+    fn admitted(&self, key: &str, chosen: &BTreeMap<String, Entry>) -> Ranges<Version> {
+        let asked = self
+            .direct
+            .iter()
+            .filter(|(name, _)| name == key)
+            .map(|(_, range)| range.clone());
+        let required = chosen
+            .values()
+            .flat_map(|entry| &entry.requires)
+            .filter(|requirement| self::key(&requirement.name) == key)
+            .map(|requirement| floor_range(requirement.floor().as_ref()));
+        asked
+            .chain(required)
+            .fold(Ranges::full(), |all, range| all.intersection(&range))
     }
 
     fn is_unlisted(&self, name: &str) -> bool {
@@ -1882,6 +1945,141 @@ mod tests {
                 project_year: 2024,
             }),
             "{conflict}"
+        );
+    }
+
+    // ---- what the age limit held back ----
+
+    /// The `HeldBack` of `name` `version` released `days_ago` days before
+    /// `NOW`, with `chosen` taken instead.
+    fn held(name: &str, version: &str, chosen: &str, days_ago: i64) -> HeldBack {
+        HeldBack {
+            name: name.into(),
+            version: version.into(),
+            chosen: chosen.into(),
+            released: NOW - days_ago * DAY,
+        }
+    }
+
+    fn held_back_by(
+        lines: &[(&str, &str)],
+        index: &Index,
+        prefs: &[(String, Version)],
+        lv_gate: Option<f64>,
+    ) -> Vec<HeldBack> {
+        run_aged(lines, index, prefs, lv_gate, LIMIT)
+            .expect("solves")
+            .held_back
+    }
+
+    #[test]
+    fn a_newer_version_the_age_limit_kept_out_is_reported_with_the_one_chosen() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3)],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.1", "1.0", 3)]
+        );
+    }
+
+    #[test]
+    fn of_two_held_back_versions_only_the_newest_is_reported() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 5),
+                released("a", "1.2", 2),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.2", "1.0", 2)]
+        );
+    }
+
+    #[test]
+    fn nothing_is_reported_when_the_chosen_version_is_the_newest() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30)],
+        };
+        assert!(held_back_by(&[("a", "*")], &index, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_version_the_project_labview_cannot_run_is_not_reported_as_held_back() {
+        let mut gated = released("a", "3.0", 3);
+        gated.lv_min = Some(26.0);
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3), gated],
+        };
+        // 3.0 is both gated and too new: it is the LabVIEW that rules it out,
+        // so the newest version held back by age alone is 1.1.
+        assert_eq!(
+            held_back_by(&[("a", "*")], &index, &[], Some(24.0)),
+            [held("a", "1.1", "1.0", 3)]
+        );
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                Entry {
+                    lv_min: Some(26.0),
+                    ..released("a", "3.0", 3)
+                },
+            ],
+        };
+        assert!(held_back_by(&[("a", "*")], &index, &[], Some(24.0)).is_empty());
+    }
+
+    #[test]
+    fn a_version_above_an_exact_pin_is_not_reported() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3)],
+        };
+        assert!(held_back_by(&[("a", "1.0")], &index, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_version_a_lock_preference_kept_out_is_not_reported() {
+        // 1.1 is old enough: only the preference for 1.0 keeps it out.
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 20)],
+        };
+        let prefs = [("a".to_string(), Version::parse("1.0"))];
+        let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+        assert!(resolution.held_back.is_empty());
+    }
+
+    #[test]
+    fn a_held_back_transitive_version_is_reported_under_its_own_name() {
+        let index = Index {
+            entries: vec![
+                requiring(released("a", "1.0", 30), "b", "2.0"),
+                released("b", "2.0", 30),
+                released("b", "2.1", 3),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", "*")], &index, &[], None),
+            [held("b", "2.1", "2.0", 3)]
+        );
+    }
+
+    #[test]
+    fn every_package_with_a_newer_version_held_back_is_reported_once_by_name() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 3),
+                released("c", "1.0", 30),
+                released("c", "1.5", 2),
+                released("d", "1.0", 30),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("c", "*"), ("a", "*"), ("d", "*")], &index, &[], None),
+            [held("a", "1.1", "1.0", 3), held("c", "1.5", "1.0", 2)]
         );
     }
 

@@ -10,6 +10,7 @@ use crate::support::feed::{PROJECT_FEED_DIR, archive_path, listing, md5_hex};
 use crate::support::fixtures::{
     ALPHA_3_NEEDING_LABVIEW_2026, FixturePackage, LOCK_PACKAGES, Payload,
 };
+use crate::support::normalise::TIMESTAMP_TOKEN;
 use crate::support::project::MANIFEST_FILE;
 use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR};
 use cucumber::{given, then, when};
@@ -423,6 +424,97 @@ async fn fails_with_the_min_age_days_error(
 }
 
 static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\w.\-]*").expect("the pattern"));
+
+// ---- what the age limit held back ----
+
+/// The line lvpm prints for a version `min-age-days` kept out, built from the
+/// instant the fixture released it and the project's days.
+#[then(regex = r#"^stderr has the held-back line for "([^"]+)" (\S+) using (\S+)$"#)]
+async fn stderr_has_the_held_back_line(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    chosen: String,
+) {
+    let days = world.min_age_days();
+    let at = world.listings.released(&name, &version);
+    let expected = format!(
+        "held back {name} {version} by min-age-days = {days} (released {}, eligible {}); using {chosen}",
+        released::day(at),
+        released::day(released::eligible(at, days))
+    );
+    let stderr = &world.output().stderr;
+    assert!(
+        stderr.lines().any(|line| line == expected),
+        "{expected}\nis not a line of stderr:\n{stderr}"
+    );
+}
+
+#[then(regex = r#"^stderr has no held-back line for "([^"]+)" (\S+)$"#)]
+async fn stderr_has_no_held_back_line_for(world: &mut CliWorld, name: String, version: String) {
+    assert_no_held_back_line(world, &format!("held back {name} {version} "));
+}
+
+#[then("stderr has no held-back line")]
+async fn stderr_has_no_held_back_line(world: &mut CliWorld) {
+    assert_no_held_back_line(world, "held back ");
+}
+
+fn assert_no_held_back_line(world: &CliWorld, prefix: &str) {
+    let stderr = &world.output().stderr;
+    assert!(
+        !stderr.lines().any(|line| line.starts_with(prefix)),
+        "a line of stderr starts with {prefix:?}:\n{stderr}"
+    );
+}
+
+/// The stdout lines that are events of kind `kind`, as JSON.
+fn json_events(world: &CliWorld, kind: &str) -> Vec<serde_json::Value> {
+    world
+        .output()
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|line| line["event"] == kind)
+        .collect()
+}
+
+/// The output of a run is normalised, which turns every RFC 3339 instant into
+/// its token: the dates are checked as instants here, and as days in the line
+/// of stderr and in the event's unit test.
+#[then(
+    regex = r#"^the JSON events include one "([^"]+)" event for "([^"]+)" (\S+) with chosen (\S+), min_age_days (\d+) and its release and eligible dates$"#
+)]
+async fn json_events_include_one_held_back(
+    world: &mut CliWorld,
+    kind: String,
+    name: String,
+    version: String,
+    chosen: String,
+    days: u32,
+) {
+    let events = json_events(world, &kind);
+    let [event] = &events[..] else {
+        panic!("expected one {kind:?} event, got {events:?}");
+    };
+    assert_eq!(
+        event["data"],
+        serde_json::json!({
+            "name": name,
+            "version": version,
+            "chosen": chosen,
+            "released": TIMESTAMP_TOKEN,
+            "eligible": TIMESTAMP_TOKEN,
+            "min_age_days": days,
+        })
+    );
+}
+
+#[then(regex = r#"^the JSON events include no "([^"]+)" event$"#)]
+async fn json_events_include_none(world: &mut CliWorld, kind: String) {
+    let events = json_events(world, &kind);
+    assert!(events.is_empty(), "{kind:?} events: {events:?}");
+}
 
 #[then(regex = r"^the error does not mention version (\S+)$")]
 async fn error_does_not_mention_version(world: &mut CliWorld, version: String) {

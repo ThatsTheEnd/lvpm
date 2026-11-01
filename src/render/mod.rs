@@ -133,6 +133,7 @@ impl Renderer {
             | Event::VenvPortMoved { .. } => venv::render(self, event),
             Event::LockHashing { .. }
             | Event::RequirementUnresolved { .. }
+            | Event::HeldBack { .. }
             | Event::LockChanged { .. }
             | Event::LockWritten { .. }
             | Event::LockUpToDate { .. }

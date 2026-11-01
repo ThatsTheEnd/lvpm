@@ -27,6 +27,22 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                  as unresolved and not locked"
             ),
         ),
+        Event::HeldBack {
+            name,
+            version,
+            chosen,
+            released,
+            eligible,
+            min_age_days,
+        } => r.line(
+            Stream::Err,
+            &format!(
+                "held back {name} {version} by min-age-days = {min_age_days} (released {}, \
+                 eligible {}); using {chosen}",
+                released::day(*released),
+                released::day(*eligible)
+            ),
+        ),
         Event::LockChanged { changes } => {
             for change in changes {
                 r.line(Stream::Out, &change_line(change));
@@ -364,6 +380,26 @@ mod tests {
         });
         assert_eq!(out.text(), "lvpm.lock would be updated:\n  + gamma 1.0\n");
         assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn a_held_back_version_is_one_line_on_stderr_with_its_dates_and_the_one_used() {
+        let (mut renderer, out, err) = renderer();
+        let released = released::parse("Wed, 28 Oct 2026 11:46:49 GMT").expect("a date");
+        renderer.render(&Event::HeldBack {
+            name: "alpha".into(),
+            version: "1.1".into(),
+            chosen: "1.0".into(),
+            released,
+            eligible: released::eligible(released, 14),
+            min_age_days: 14,
+        });
+        assert_eq!(
+            err.text(),
+            "held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible \
+             2026-11-11); using 1.0\n"
+        );
+        assert_eq!(out.text(), "");
     }
 
     #[test]
