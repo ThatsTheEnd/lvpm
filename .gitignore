@@ -12,3 +12,8 @@ __pycache__/
 # mdbook-mermaid install . writes these for the docs site
 /mermaid.min.js
 /mermaid-init.js
+
+# dev-team plugin telemetry and gate state, written locally on every run
+/.claude/metrics/
+/.claude/memory/
+/metrics/
