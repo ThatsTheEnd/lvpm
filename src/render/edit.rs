@@ -11,8 +11,22 @@ use lvpm_core::manifest_edit::DependencyTable;
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
-        Event::ManifestEdited { edit, dev, dry_run } => {
-            r.line(Stream::Out, &edit_line(edit, *dev, *dry_run))
+        Event::ManifestEdited {
+            edit,
+            dev,
+            group,
+            created_table,
+            dry_run,
+        } => {
+            let table = DependencyTable::from_flags(*dev, group.as_deref());
+            r.line(Stream::Out, &edit_line(edit, &table, *dry_run));
+            if *created_table {
+                let verb = if *dry_run { "would create" } else { "created" };
+                r.line(
+                    Stream::Out,
+                    &format!("{verb} [{}], a new group", table.key()),
+                );
+            }
         }
         Event::PackageStillRequired { name, required_by } => r.line(
             Stream::Out,
@@ -28,13 +42,14 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                  it without changing the project, pass --prefix, --global or --labview-version)"
             ),
         ),
-        Event::UninstalledStillListed { name, dev } => {
-            let dev = if *dev { " --dev" } else { "" };
+        Event::UninstalledStillListed { name, dev, group } => {
+            let table = DependencyTable::from_flags(*dev, group.as_deref());
             r.line(
                 Stream::Out,
                 &format!(
-                    "note: {name} is still in lvpm.toml; `lvpm remove {name}{dev}` removes it \
-                     for good (a sync would install it again)"
+                    "note: {name} is still in lvpm.toml; `{}` removes it for good (a sync \
+                     would install it again)",
+                    remove_command(name, &table)
                 ),
             )
         }
@@ -42,17 +57,33 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
     }
 }
 
+/// The flag that names `table` to `add` and `remove`: none for `[dependencies]`.
+fn flag_for(table: &DependencyTable) -> String {
+    match table {
+        DependencyTable::Dependencies => String::new(),
+        DependencyTable::DevDependencies => "--dev".to_string(),
+        DependencyTable::Group(group) => format!("--group {group}"),
+    }
+}
+
+/// The `lvpm remove` that takes `name` out of `table`.
+fn remove_command(name: &str, table: &DependencyTable) -> String {
+    match flag_for(table).as_str() {
+        "" => format!("lvpm remove {name}"),
+        flag => format!("lvpm remove {name} {flag}"),
+    }
+}
+
 /// What happened to one manifest entry, or on a dry run what would.
-fn edit_line(edit: &ManifestEdit, dev: bool, dry_run: bool) -> String {
-    let table = if dev { " [dev-dependencies]" } else { "" };
+fn edit_line(edit: &ManifestEdit, table: &DependencyTable, dry_run: bool) -> String {
+    let header = format!("[{}]", table.key());
+    let table = match table {
+        DependencyTable::Dependencies => String::new(),
+        _ => format!(" {header}"),
+    };
     match (edit, dry_run) {
         (ManifestEdit::Added { name, constraint }, false) => {
-            let to = if dev {
-                "[dev-dependencies]"
-            } else {
-                "[dependencies]"
-            };
-            format!("lvpm.toml: added {name} = \"{constraint}\" to {to}")
+            format!("lvpm.toml: added {name} = \"{constraint}\" to {header}")
         }
         (ManifestEdit::Added { name, constraint }, true) => {
             format!("lvpm.toml would get: {name} = \"{constraint}\"{table}")
@@ -106,18 +137,39 @@ pub fn error(error: &EditError, rerun: &str) -> String {
             "{error}\n\
              next: name a package that lvpm.toml lists, or add it with `lvpm add {name}`"
         ),
-        EditError::InOtherTable { name, found_in } => match found_in {
-            DependencyTable::DevDependencies => {
-                format!("{error}\nnext: use --dev: `lvpm remove {name} --dev`")
-            }
-            DependencyTable::Dependencies => {
-                format!("{error}\nnext: leave out --dev: `lvpm remove {name}`")
-            }
-            DependencyTable::Group(group) => {
-                format!("{error}\nnext: use --group {group}: `lvpm remove {name} --group {group}`")
-            }
-        },
+        EditError::NotInGroup { name, group } => format!(
+            "{error}\n\
+             next: name a package that [dependency-groups.{group}] lists, or add it with \
+             `lvpm add {name} --group {group}`"
+        ),
+        EditError::InOtherTable { name, found_in } => {
+            format!("{error}\n{}", other_table_hints(name, found_in))
+        }
         EditError::Other(cause) => format!("{cause:#}"),
+    }
+}
+
+/// The way out of naming a table that does not hold the package: one `next:`
+/// for the one table that does, one line for each of several.
+fn other_table_hints(name: &str, found_in: &[DependencyTable]) -> String {
+    match found_in {
+        [only] => {
+            let command = remove_command(name, only);
+            match flag_for(only).as_str() {
+                "" => format!("next: leave out --dev: `{command}`"),
+                flag => format!("next: use {flag}: `{command}`"),
+            }
+        }
+        several => (several.iter())
+            .map(|table| {
+                format!(
+                    "next: `{}` removes it from [{}]",
+                    remove_command(name, table),
+                    table.key()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
@@ -159,7 +211,13 @@ mod tests {
                 true,
             ),
         ] {
-            renderer.render(&Event::ManifestEdited { edit, dev, dry_run });
+            renderer.render(&Event::ManifestEdited {
+                edit,
+                dev,
+                group: None,
+                created_table: false,
+                dry_run,
+            });
         }
         assert_eq!(
             out.text(),
@@ -192,6 +250,7 @@ mod tests {
             renderer.render(&Event::UninstalledStillListed {
                 name: "caraya".into(),
                 dev,
+                group: None,
             });
         }
         assert_eq!(
@@ -202,6 +261,100 @@ mod tests {
              (a sync would install it again)\n"
         );
         assert_eq!(err.text(), "");
+    }
+
+    fn group(name: &str) -> DependencyTable {
+        DependencyTable::Group(name.into())
+    }
+
+    #[test]
+    fn an_edit_of_a_group_names_its_table_and_a_new_one_says_it_was_made_on_a_line_of_its_own() {
+        let (mut renderer, out, err) = renderer();
+        for (created_table, dry_run) in [(true, false), (false, false), (true, true)] {
+            renderer.render(&Event::ManifestEdited {
+                edit: added(),
+                dev: false,
+                group: Some("ci".into()),
+                created_table,
+                dry_run,
+            });
+        }
+        renderer.render(&Event::ManifestEdited {
+            edit: ManifestEdit::Removed {
+                name: "gamma".into(),
+                constraint: ">=1.0".into(),
+            },
+            dev: false,
+            group: Some("ci".into()),
+            created_table: false,
+            dry_run: false,
+        });
+        assert_eq!(
+            out.text(),
+            "lvpm.toml: added gamma = \">=1.0\" to [dependency-groups.ci]\n\
+             created [dependency-groups.ci], a new group\n\
+             lvpm.toml: added gamma = \">=1.0\" to [dependency-groups.ci]\n\
+             lvpm.toml would get: gamma = \">=1.0\" [dependency-groups.ci]\n\
+             would create [dependency-groups.ci], a new group\n\
+             lvpm.toml: removed gamma = \">=1.0\" [dependency-groups.ci]\n"
+        );
+        assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn an_uninstalled_package_listed_in_a_group_says_to_remove_it_with_that_group() {
+        let (mut renderer, out, _) = renderer();
+        renderer.render(&Event::UninstalledStillListed {
+            name: "ci_tools".into(),
+            dev: false,
+            group: Some("ci".into()),
+        });
+        assert_eq!(
+            out.text(),
+            "note: ci_tools is still in lvpm.toml; `lvpm remove ci_tools --group ci` removes it \
+             for good (a sync would install it again)\n"
+        );
+    }
+
+    #[test]
+    fn a_name_in_a_group_is_told_to_use_that_group_and_in_several_tables_gets_a_line_for_each() {
+        let in_group = written(&EditError::InOtherTable {
+            name: "beta".into(),
+            found_in: vec![group("ci")],
+        });
+        assert_eq!(
+            in_group,
+            "beta is in [dependency-groups.ci]\nnext: use --group ci: `lvpm remove beta --group ci`"
+        );
+        let in_several = written(&EditError::InOtherTable {
+            name: "beta".into(),
+            found_in: vec![
+                DependencyTable::Dependencies,
+                DependencyTable::DevDependencies,
+                group("ci"),
+            ],
+        });
+        assert_eq!(
+            in_several,
+            "beta is in [dependencies], [dev-dependencies] and [dependency-groups.ci]\n\
+             next: `lvpm remove beta` removes it from [dependencies]\n\
+             next: `lvpm remove beta --dev` removes it from [dev-dependencies]\n\
+             next: `lvpm remove beta --group ci` removes it from [dependency-groups.ci]"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_in_the_group_says_which_group_and_how_to_add_it() {
+        let text = written(&EditError::NotInGroup {
+            name: "beta".into(),
+            group: "ci".into(),
+        });
+        assert_eq!(
+            text,
+            "beta is not in [dependency-groups.ci]\n\
+             next: name a package that [dependency-groups.ci] lists, or add it with \
+             `lvpm add beta --group ci`"
+        );
     }
 
     fn written(error: &EditError) -> String {
@@ -227,7 +380,7 @@ mod tests {
     fn a_name_in_the_other_table_is_told_which_flag_to_change() {
         let in_dev = written(&EditError::InOtherTable {
             name: "caraya".into(),
-            found_in: DependencyTable::DevDependencies,
+            found_in: vec![DependencyTable::DevDependencies],
         });
         assert_eq!(
             in_dev,
@@ -235,7 +388,7 @@ mod tests {
         );
         let in_normal = written(&EditError::InOtherTable {
             name: "beta".into(),
-            found_in: DependencyTable::Dependencies,
+            found_in: vec![DependencyTable::Dependencies],
         });
         assert_eq!(
             in_normal,
@@ -270,6 +423,14 @@ mod tests {
         for error in [
             EditError::EmptyConstraint { name: "g".into() },
             EditError::NotADependency { name: "g".into() },
+            EditError::NotInGroup {
+                name: "g".into(),
+                group: "ci".into(),
+            },
+            EditError::InOtherTable {
+                name: "g".into(),
+                found_in: vec![DependencyTable::Dependencies, group("ci")],
+            },
             EditError::Lock(LockError::NoLabview),
             EditError::Lock(LockError::NeedsNewerLabview {
                 name: "omega".into(),

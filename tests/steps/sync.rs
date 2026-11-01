@@ -202,6 +202,7 @@ impl CliWorld {
     /// Remember the destination, the lock and the manifest as they are.
     pub(super) fn note_the_project(&mut self) {
         self.lock.before = self.lock_bytes();
+        self.lock.manifest_before = Some(self.manifest_bytes());
         self.sync.before = Some(Before {
             dest: snapshot(&self.dest_dir()),
             manifest: self.manifest_bytes(),

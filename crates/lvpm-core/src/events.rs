@@ -354,10 +354,16 @@ pub enum Event {
         to: String,
     },
     /// `add` or `remove` changed one entry of the manifest. `dev`: the entry
-    /// is in `[dev-dependencies]`. `dry_run`: it is shown and not written.
+    /// is in `[dev-dependencies]`; `group`: in `[dependency-groups.<group>]`.
+    /// `created_table`: that group's table is new. `dry_run`: it is shown and
+    /// not written.
     ManifestEdited {
         edit: ManifestEdit,
         dev: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        created_table: bool,
         dry_run: bool,
     },
     /// A package `remove` took out of the manifest stays locked and installed:
@@ -370,8 +376,14 @@ pub enum Event {
     /// flag, is an `add`. `package` is as it was typed. The first thing it says.
     InstallAddsToProject { package: String },
     /// An `uninstall` took out a package that `lvpm.toml` still lists, in
-    /// `[dev-dependencies]` when `dev`: the next sync would put it back.
-    UninstalledStillListed { name: String, dev: bool },
+    /// `[dev-dependencies]` when `dev`, `[dependency-groups.<group>]` when
+    /// `group`: the next sync would put it back.
+    UninstalledStillListed {
+        name: String,
+        dev: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        group: Option<String>,
+    },
     /// The lock on disk still represents the manifest, so it was left alone.
     LockUpToDate { path: PathBuf },
     /// An upgrade found nothing newer than the lock holds, so it was left

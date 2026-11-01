@@ -245,6 +245,9 @@ enum Cmd {
         /// Add it to [dev-dependencies].
         #[arg(long)]
         dev: bool,
+        /// Add it to [dependency-groups.<NAME>], which is made if it is new.
+        #[arg(long, value_name = "NAME", conflicts_with = "dev")]
+        group: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
     },
@@ -258,6 +261,9 @@ enum Cmd {
         /// It is in [dev-dependencies].
         #[arg(long)]
         dev: bool,
+        /// It is in [dependency-groups.<NAME>].
+        #[arg(long, value_name = "NAME", conflicts_with = "dev")]
+        group: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
     },
@@ -671,7 +677,7 @@ fn run(cli: &Cli) -> Result<Report> {
                     env.sink.emit(Event::InstallAddsToProject {
                         package: spec.to_string(),
                     });
-                    cmd_add(&env, spec, false, apply)
+                    cmd_add(&env, spec, DependencyTable::Dependencies, apply)
                 }
                 (InstallMode::Add | InstallMode::Additive, package) => {
                     ops::install::install(&env, package, &apply.options(*no_deps, *allow_downgrade))
@@ -682,13 +688,27 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Add {
             package,
             dev,
+            group,
             apply,
-        } => cmd_add(&env, package, *dev, apply).map(|()| Report::done("add")),
+        } => cmd_add(
+            &env,
+            package,
+            dependency_table(*dev, group.as_deref())?,
+            apply,
+        )
+        .map(|()| Report::done("add")),
         Cmd::Remove {
             package,
             dev,
+            group,
             apply,
-        } => cmd_remove(&env, package, *dev, apply).map(|()| Report::done("remove")),
+        } => cmd_remove(
+            &env,
+            package,
+            dependency_table(*dev, group.as_deref())?,
+            apply,
+        )
+        .map(|()| Report::done("remove")),
         Cmd::Sync { apply, sync } => {
             cmd_sync(&env, &sync.options(apply, env.headless)).map(|()| Report::done("sync"))
         }
@@ -803,31 +823,24 @@ fn run(cli: &Cli) -> Result<Report> {
     }
 }
 
-fn dependency_table(dev: bool) -> DependencyTable {
-    match dev {
-        true => DependencyTable::DevDependencies,
-        false => DependencyTable::Dependencies,
+/// The table `--dev` and `--group` name. `--group dev` in any case is
+/// `--dev`; any other group name is checked here, before anything is read.
+fn dependency_table(dev: bool, group: Option<&str>) -> Result<DependencyTable> {
+    let dev = dev || group.is_some_and(|group| group.eq_ignore_ascii_case("dev"));
+    if let (false, Some(group)) = (dev, group) {
+        lvpm_core::project::valid_group_name(group)?;
     }
+    Ok(DependencyTable::from_flags(dev, group))
 }
 
-fn cmd_add(env: &OpEnv, package: &str, dev: bool, apply: &ApplyArgs) -> Result<()> {
-    ops::add_remove::add(
-        env,
-        package,
-        dependency_table(dev),
-        &apply.options(false, false),
-    )
-    .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
+fn cmd_add(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {
+    ops::add_remove::add(env, package, table, &apply.options(false, false))
+        .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
 }
 
-fn cmd_remove(env: &OpEnv, package: &str, dev: bool, apply: &ApplyArgs) -> Result<()> {
-    ops::add_remove::remove(
-        env,
-        package,
-        dependency_table(dev),
-        &apply.options(false, false),
-    )
-    .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
+fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {
+    ops::add_remove::remove(env, package, table, &apply.options(false, false))
+        .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
 }
 
 fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {

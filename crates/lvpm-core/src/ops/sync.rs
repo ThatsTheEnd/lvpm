@@ -204,8 +204,12 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
 }
 
 /// Fail, before any lock is read or written, when a selected group is not dev
-/// or a `[dependency-groups]` table of the manifest.
-fn refuse_unknown_groups(project: &Project, selection: &Selection) -> Result<(), SyncError> {
+/// or a `[dependency-groups]` table of the manifest. `remove --group` asks the
+/// same of the group it takes an entry out of.
+pub(super) fn refuse_unknown_groups(
+    project: &Project,
+    selection: &Selection,
+) -> Result<(), SyncError> {
     let mut defined: Vec<&str> = (project.groups.iter())
         .map(|(name, _)| name.as_str())
         .collect();

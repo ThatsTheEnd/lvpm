@@ -10,7 +10,7 @@ use super::install::{Applied, InstallOptions, finish};
 use super::session::InstallSession;
 use crate::events::{Event, HookKind, UnrunReason};
 use crate::install;
-use crate::project::{Constraint, same_name};
+use crate::project::same_name;
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 
@@ -93,18 +93,16 @@ fn say_if_still_listed(env: &OpEnv, package: &str) {
     let Ok(Some((_, project))) = env.manifest_for(None, None) else {
         return;
     };
-    let listed = |entries: &[(String, Constraint)]| {
-        entries
+    let found = project.tables().find_map(|(table, entries)| {
+        let (entry, _) = entries
             .iter()
-            .find(|(entry, _)| same_name(entry, package))
-            .map(|(entry, _)| entry.clone())
-    };
-    let found = match listed(&project.dependencies) {
-        Some(name) => Some((name, false)),
-        None => listed(&project.dev_dependencies).map(|name| (name, true)),
-    };
-    if let Some((name, dev)) = found {
-        env.sink.emit(Event::UninstalledStillListed { name, dev });
+            .find(|(entry, _)| same_name(entry, package))?;
+        Some((entry.clone(), table))
+    });
+    if let Some((name, table)) = found {
+        let (dev, group) = table.flags();
+        env.sink
+            .emit(Event::UninstalledStillListed { name, dev, group });
     }
 }
 

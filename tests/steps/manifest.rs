@@ -441,6 +441,7 @@ async fn the_group_project(world: &mut CliWorld) {
     world.sandbox.use_local_project(Some(TABLE_PROJECT_LABVIEW));
     world.depend(DependencyTable::Dependencies, "alpha", "*");
     world.sandbox.make_empty_dest();
+    world.note_the_project();
 }
 
 /// `lvpm.toml has <header> <entries>; <header> <entries>`: entries are
@@ -487,7 +488,9 @@ async fn the_manifest_has_tables(world: &mut CliWorld, tables: String, then_lock
         .split_once(", and ")
     {
         lock_and_dest(world, lock, dest);
-    } else if !then_locked.is_empty() {
+    } else if then_locked.is_empty() {
+        world.note_the_project();
+    } else {
         world.lock_the_project();
         for (name, version) in QUOTED_AND_VERSION
             .captures_iter(&then_locked)

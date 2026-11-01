@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use toml_edit::{DocumentMut, Item, Table, Value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 /// Which dependency table an edit targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,25 @@ impl DependencyTable {
             DependencyTable::Dependencies => None,
             DependencyTable::DevDependencies => Some("dev"),
             DependencyTable::Group(name) => Some(name),
+        }
+    }
+
+    /// The table `--dev` and `--group <name>` ask for; `dev` wins over `group`.
+    pub fn from_flags(dev: bool, group: Option<&str>) -> DependencyTable {
+        match (dev, group) {
+            (true, _) => DependencyTable::DevDependencies,
+            (false, Some(name)) => DependencyTable::Group(name.to_string()),
+            (false, None) => DependencyTable::Dependencies,
+        }
+    }
+
+    /// The table as `--dev` and `--group` spell it: whether it is
+    /// `[dev-dependencies]`, and the name of the `[dependency-groups]` table.
+    pub fn flags(&self) -> (bool, Option<String>) {
+        match self {
+            DependencyTable::Dependencies => (false, None),
+            DependencyTable::DevDependencies => (true, None),
+            DependencyTable::Group(name) => (false, Some(name.clone())),
         }
     }
 }
@@ -109,7 +128,10 @@ pub fn create_file(path: &Path, text: &str) -> std::io::Result<()> {
 pub fn set(text: &str, table: &DependencyTable, name: &str, constraint: &str) -> Result<String> {
     let mut doc = parse(text)?;
     if lookup(&doc, table).is_none() {
-        return Ok(with_appended_table(text, table, name, constraint));
+        return match with_group_in_inline_groups(&mut doc, table, name, constraint)? {
+            true => Ok(render(text, &doc)),
+            false => Ok(with_appended_table(text, table, name, constraint)),
+        };
     }
     let entries = lookup_mut(&mut doc, table)
         .and_then(Item::as_table_like_mut)
@@ -274,6 +296,34 @@ fn with_appended_table(
     }
     out.push_str(&fragment.to_string().replace('\n', eol));
     out
+}
+
+/// Puts a new group into `dependency-groups = { .. }` when the manifest writes
+/// it as an inline table, which a `[dependency-groups.<name>]` header cannot
+/// extend. False, and nothing touched, for any other manifest: a header is
+/// appended there.
+fn with_group_in_inline_groups(
+    doc: &mut DocumentMut,
+    table: &DependencyTable,
+    name: &str,
+    constraint: &str,
+) -> Result<bool> {
+    let DependencyTable::Group(group) = table else {
+        return Ok(false);
+    };
+    let Some(groups) = doc
+        .get_mut("dependency-groups")
+        .filter(|item| !item.is_table())
+    else {
+        return Ok(false);
+    };
+    let groups = groups
+        .as_table_like_mut()
+        .context("[dependency-groups] is not a table")?;
+    let mut entries = InlineTable::new();
+    entries.insert(name, constraint.into());
+    groups.insert(group, Item::Value(entries.into()));
+    Ok(true)
 }
 
 /// The document as text. New lines use the file's own line ending: a file
@@ -661,6 +711,18 @@ version = \"1.0\"
     }
 
     #[test]
+    fn a_table_and_its_flags_are_each_others_inverse_and_dev_wins_over_a_group() {
+        for table in [Dependencies, DevDependencies, ci()] {
+            let (dev, group) = table.flags();
+            assert_eq!(DependencyTable::from_flags(dev, group.as_deref()), table);
+        }
+        assert_eq!(
+            DependencyTable::from_flags(true, Some("ci")),
+            DevDependencies
+        );
+    }
+
+    #[test]
     fn a_missing_group_table_is_appended_with_its_nested_header() {
         let after = set(MANIFEST, &ci(), "ci_tools", ">=2.0").unwrap();
         assert_eq!(
@@ -762,6 +824,30 @@ ci = { a = \"1.0\", b = \"*\" }
 ci = { b = \"*\" }
 "
         );
+    }
+
+    #[test]
+    fn a_new_group_goes_into_an_inline_dependency_groups_table_and_keeps_the_others() {
+        let text = "dependency-groups = { docs = { sphinx = \"*\" } }
+
+[project]
+name = \"x\"
+";
+        let after = set(text, &ci(), "ci_tools", ">=2.0").unwrap();
+        let parsed: toml::Table = after.parse().unwrap_or_else(|why| panic!("{after}: {why}"));
+        assert_eq!(
+            parsed["dependency-groups"]["docs"]["sphinx"].as_str(),
+            Some("*")
+        );
+        assert_eq!(
+            parsed["dependency-groups"]["ci"]["ci_tools"].as_str(),
+            Some(">=2.0")
+        );
+    }
+
+    #[test]
+    fn a_dependency_groups_value_that_is_not_a_table_is_an_error_when_a_group_is_added() {
+        assert!(set("dependency-groups = 3\n", &ci(), "a", "*").is_err());
     }
 
     #[test]
