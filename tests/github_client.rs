@@ -518,6 +518,7 @@ fn github_entry(fake: &GitHubFake) -> Entry {
         display_name: None,
         requires: Vec::new(),
         lv_min: None,
+        released: None,
         source: index::github_source(REPO),
     }
 }

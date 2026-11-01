@@ -184,6 +184,7 @@ mod tests {
             requires: Vec::new(),
             lv_min: Some(20.0),
             source: "https://feed.example".into(),
+            released: None,
         }
     }
 

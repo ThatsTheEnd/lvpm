@@ -15,6 +15,7 @@
 //! [inputs]                             # the manifest it was resolved from
 //! defaults = false
 //! sources = ["http://host/feed"]
+//! min-age-days = 14                    # only when [sources] sets a non-zero limit
 //!
 //! [inputs.dependencies]
 //! beta = ">=1.0"
@@ -72,7 +73,8 @@ pub struct Lockfile {
 }
 
 /// What the manifest said when the lock was made, so that a later change to it
-/// can be noticed.
+/// can be noticed: the sources, the `min-age-days` limit and the dependency
+/// lines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Inputs {
     /// Whether the public indexes were consulted too.
@@ -80,6 +82,9 @@ pub struct Inputs {
     /// The hosted `[sources]` index folders, as the manifest lists them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
+    /// `[sources] min-age-days`; 0, which is also the absent key, is not written.
+    #[serde(default, rename = "min-age-days", skip_serializing_if = "is_zero")]
+    pub min_age_days: u32,
     /// `[dependencies]`: name and constraint as written.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, String>,
@@ -108,6 +113,7 @@ impl Inputs {
         Inputs {
             defaults: project.default_sources,
             sources: project.sources.iter().map(|(_, url)| url.clone()).collect(),
+            min_age_days: project.min_age_days,
             dependencies: constraints(&project.dependencies),
             dev_dependencies: constraints(&project.dev_dependencies),
             github: project.github.clone(),
@@ -142,6 +148,10 @@ pub struct LockedUnresolved {
     pub required_by: String,
 }
 
+fn is_zero(days: &u32) -> bool {
+    *days == 0
+}
+
 /// A constraint as the manifest writes it: `1.2`, `>=1.2` or `*`.
 pub fn constraint_text(constraint: &Constraint) -> String {
     match constraint {
@@ -165,6 +175,9 @@ pub enum StaleReason {
     /// The hosted `[sources]` or `defaults`, or a dependency's GitHub repo,
     /// are not the ones the lock was resolved from.
     SourcesChanged,
+    /// The manifest's `[sources] min-age-days` is not the one the lock was
+    /// resolved with; an absent key counts as 0.
+    MinAgeChanged { from: u32, to: u32 },
     /// The manifest lists a dependency the lock was not resolved for.
     DependencyAdded { name: String, dev: bool },
     /// The lock was resolved for a dependency the manifest no longer lists.
@@ -185,6 +198,7 @@ impl Lockfile {
         self.format_is_outdated()
             .or_else(|| self.labview_changed(project))
             .or_else(|| self.sources_changed(project))
+            .or_else(|| self.min_age_changed(project))
             .or_else(|| {
                 [false, true].into_iter().find_map(|dev| {
                     self.dependency_added(project, dev)
@@ -212,6 +226,13 @@ impl Lockfile {
             || now.sources != self.inputs.sources
             || now.github != self.inputs.github;
         changed.then_some(StaleReason::SourcesChanged)
+    }
+
+    /// Only the limit is compared, never a release date: the lock does not go
+    /// stale as days pass.
+    fn min_age_changed(&self, project: &Project) -> Option<StaleReason> {
+        let (from, to) = (self.inputs.min_age_days, project.min_age_days);
+        (from != to).then_some(StaleReason::MinAgeChanged { from, to })
     }
 
     fn dependency_added(&self, project: &Project, dev: bool) -> Option<StaleReason> {
@@ -348,6 +369,7 @@ mod tests {
             inputs: Inputs {
                 defaults: false,
                 sources: vec!["http://127.0.0.1:8090/feed".to_string()],
+                min_age_days: 0,
                 dependencies: BTreeMap::from([("beta".to_string(), ">=1.0".to_string())]),
                 dev_dependencies: BTreeMap::from([("caraya".to_string(), "*".to_string())]),
                 github: BTreeMap::new(),
@@ -695,6 +717,134 @@ beta = \"o/beta\"
         old.version = FORMAT_VERSION;
         old.labview = "2025".to_string();
         assert_eq!(old.staleness(&project), Some(StaleReason::SourcesChanged));
+    }
+
+    // ---- min-age-days ----
+
+    /// Why a lock made with `locked` days is stale for the manifest, which
+    /// sets `min-age-days` to `manifest` days or leaves it out.
+    fn min_age_staleness(locked: u32, manifest: Option<u32>) -> Option<StaleReason> {
+        let mut lock = lock();
+        lock.inputs.min_age_days = locked;
+        let line = manifest.map_or(String::new(), |days| format!("min-age-days = {days}\n"));
+        let text = MANIFEST.replace("defaults = false\n", &format!("defaults = false\n{line}"));
+        lock.staleness(&crate::project::parse(&text).unwrap())
+    }
+
+    fn min_age_changed(from: u32, to: u32) -> Option<StaleReason> {
+        Some(StaleReason::MinAgeChanged { from, to })
+    }
+
+    #[test]
+    fn a_lock_without_a_limit_has_no_min_age_days_line_and_reads_back_as_zero() {
+        let text = lock().to_toml().unwrap();
+        assert!(!text.contains("min-age-days"), "{text}");
+        assert_eq!(Lockfile::parse(&text).unwrap().inputs.min_age_days, 0);
+    }
+
+    #[test]
+    fn a_non_zero_limit_is_written_under_inputs_and_read_back() {
+        let mut limited = lock();
+        limited.inputs.min_age_days = 14;
+        let text = limited.to_toml().unwrap();
+        assert_eq!(text.matches("min-age-days = 14\n").count(), 1, "{text}");
+        assert!(
+            text.find("min-age-days").unwrap() < text.find("[inputs.dependencies]").unwrap(),
+            "{text}"
+        );
+        assert_eq!(Lockfile::parse(&text).unwrap(), limited);
+        limited.inputs.min_age_days = u32::MAX;
+        let text = limited.to_toml().unwrap();
+        assert_eq!(Lockfile::parse(&text).unwrap(), limited, "{text}");
+    }
+
+    #[test]
+    fn inputs_take_the_limit_from_the_manifest() {
+        let project = crate::project::parse(&MANIFEST.replace(
+            "defaults = false\n",
+            "defaults = false\nmin-age-days = 14\n",
+        ))
+        .unwrap();
+        assert_eq!(Inputs::of(&project).min_age_days, 14);
+        assert_eq!(
+            Inputs::of(&crate::project::parse(MANIFEST).unwrap()).min_age_days,
+            0
+        );
+    }
+
+    #[test]
+    fn a_different_limit_makes_the_lock_stale_and_names_both() {
+        assert_eq!(min_age_staleness(14, Some(7)), min_age_changed(14, 7));
+        assert_eq!(min_age_staleness(0, Some(14)), min_age_changed(0, 14));
+        assert_eq!(min_age_staleness(14, None), min_age_changed(14, 0));
+    }
+
+    #[test]
+    fn the_same_limit_keeps_the_lock_current_and_absent_is_zero() {
+        assert_eq!(min_age_staleness(14, Some(14)), None);
+        assert_eq!(min_age_staleness(0, None), None);
+        assert_eq!(min_age_staleness(0, Some(0)), None);
+    }
+
+    #[test]
+    fn a_lock_with_no_limit_is_byte_for_byte_what_it_was_before_the_limit_existed() {
+        // The text a lock made before `min-age-days` existed is written as.
+        let before = "# This file is generated by `lvpm lock`. Do not edit it.
+# It records the exact packages lvpm.toml resolved to; commit it with the project.
+
+version = 1
+labview = \"2024\"
+
+[inputs]
+defaults = false
+sources = [\"http://127.0.0.1:8090/feed\"]
+
+[inputs.dependencies]
+beta = \">=1.0\"
+
+[inputs.dev-dependencies]
+caraya = \"*\"
+
+[[package]]
+name = \"alpha\"
+version = \"2.0\"
+sha256 = \"abababababababababababababababababababababababababababababababab\"
+source = \"local\"
+
+[[package]]
+name = \"beta\"
+version = \"1.0\"
+sha256 = \"abababababababababababababababababababababababababababababababab\"
+md5 = \"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"
+source = \"http://127.0.0.1:8090/feed/index.vipr\"
+requires = [\"alpha\"]
+
+[[package]]
+name = \"caraya\"
+version = \"1.0\"
+sha256 = \"abababababababababababababababababababababababababababababababab\"
+source = \"local\"
+dev = true
+
+[[unresolved]]
+name = \"ni_lib_missing\"
+required_by = \"beta\"
+";
+        assert_eq!(lock().to_toml().unwrap(), before);
+    }
+
+    #[test]
+    fn a_changed_source_is_named_before_a_changed_limit() {
+        let mut locked = lock();
+        locked.inputs.min_age_days = 14;
+        let project = crate::project::parse(
+            &MANIFEST.replace("defaults = false", "defaults = true\nmin-age-days = 7"),
+        )
+        .unwrap();
+        assert_eq!(
+            locked.staleness(&project),
+            Some(StaleReason::SourcesChanged)
+        );
     }
 
     #[test]

@@ -611,6 +611,7 @@ impl<'a> Search<'a> {
                 requires: Vec::new(),
                 lv_min: None,
                 source: String::new(),
+                released: None,
             },
             expected_sha256: Some(self.sha256()),
         }
@@ -715,6 +716,7 @@ mod tests {
             inputs: Inputs {
                 defaults: false,
                 sources: Vec::new(),
+                min_age_days: 0,
                 dependencies: BTreeMap::new(),
                 dev_dependencies: BTreeMap::new(),
                 github: BTreeMap::new(),

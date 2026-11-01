@@ -23,6 +23,7 @@ pub mod lvpkg;
 mod paths;
 pub mod project;
 pub mod refresh;
+pub mod released;
 pub mod relink;
 pub mod spec;
 pub mod target;

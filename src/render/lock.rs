@@ -6,7 +6,8 @@ use super::{Renderer, Stream};
 use lvpm_core::errors::{ArchiveFailure, ArchiveFault, LockError, LockedArchiveProblem};
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::StaleReason;
-use lvpm_core::solve::{Conflict, Fact};
+use lvpm_core::released;
+use lvpm_core::solve::{AllHeldBack, Conflict, Fact};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -31,6 +32,22 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             &format!(
                 "warning: {name}, required by {required_by}, is in no source: it is recorded \
                  as unresolved and not locked"
+            ),
+        ),
+        Event::HeldBack {
+            name,
+            version,
+            chosen,
+            released,
+            eligible,
+            min_age_days,
+        } => r.line(
+            Stream::Err,
+            &format!(
+                "held back {name} {version} by min-age-days = {min_age_days} (released {}, \
+                 eligible {}); using {chosen}",
+                released::day(*released),
+                released::first_whole_day_from(*eligible)
             ),
         ),
         Event::LockChanged { changes } => {
@@ -75,6 +92,9 @@ pub fn stale_reason(reason: &StaleReason) -> String {
         StaleReason::FormatOutdated => "the lock format is outdated".to_string(),
         StaleReason::LabviewChanged => "labview changed".to_string(),
         StaleReason::SourcesChanged => "sources changed".to_string(),
+        StaleReason::MinAgeChanged { from, to } => {
+            format!("min-age-days changed ({from} -> {to})")
+        }
         StaleReason::DependencyAdded { name, dev } => {
             format!("{} \"{name}\" was added", dependency(*dev))
         }
@@ -163,21 +183,76 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
     }
 }
 
+/// A conflict: a block for each package whose versions are all held back by
+/// min-age-days, then, when something else is wrong too, the general report.
 fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
-    let unlisted: Vec<&str> = conflict
-        .facts
+    let mut blocks = Vec::new();
+    let mut rest = Vec::new();
+    for fact in &conflict.facts {
+        match fact {
+            Fact::AllHeldBack(held) => blocks.push(all_held_back_text(held)),
+            other => rest.push(other),
+        }
+    }
+    if blocks.is_empty() || !rest.is_empty() {
+        blocks.push(general_conflict_text(&rest, rerun));
+    }
+    blocks.join("\n")
+}
+
+/// Every version of `package` that `wanted` admits is held back: each with
+/// its release and the day it is eligible, and the way on.
+fn all_held_back_text(held: &AllHeldBack) -> String {
+    let AllHeldBack {
+        package,
+        versions,
+        wanted,
+        required_by,
+        days,
+    } = held;
+    let mut text = format!(
+        "{package} {}: every version is held back by min-age-days = {days}",
+        manifest_constraint(wanted)
+    );
+    let eligible: Vec<i64> = versions
+        .iter()
+        .map(|(_, released)| released::eligible_at(*released, *days))
+        .collect();
+    for ((version, released), eligible) in versions.iter().zip(&eligible) {
+        text.push_str(&format!(
+            "\n  {version} released {}, eligible {}",
+            released::day(*released),
+            released::first_whole_day_from(*eligible)
+        ));
+    }
+    let earliest = eligible
+        .iter()
+        .min()
+        .map(|time| format!("wait until {}, ", released::first_whole_day_from(*time)))
+        .unwrap_or_default();
+    text.push_str(&format!(
+        "\nnext: {earliest}lower min-age-days, or pin an exact version of {package} in lvpm.toml"
+    ));
+    if let Some(requirer) = required_by {
+        text.push_str(&format!(" (it is required by {requirer})"));
+    }
+    text
+}
+
+fn general_conflict_text(facts: &[&Fact], rerun: &str) -> String {
+    let unlisted: Vec<&str> = facts
         .iter()
         .filter_map(|fact| match fact {
             Fact::NotListed { package } => Some(package.as_str()),
             _ => None,
         })
         .collect();
-    let only_unlisted = unlisted.len() == conflict.facts.len();
+    let only_unlisted = unlisted.len() == facts.len();
     let mut text = match only_unlisted {
         true => "cannot lock:".to_string(),
         false => "cannot lock: no set of versions satisfies lvpm.toml:".to_string(),
     };
-    for fact in &conflict.facts {
+    for fact in facts {
         text.push_str("\n  ");
         text.push_str(&fact_line(fact));
     }
@@ -280,6 +355,7 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
 mod tests {
     use super::super::tests::renderer;
     use super::*;
+    use lvpm_core::released::SECS_PER_DAY;
     use std::path::PathBuf;
 
     #[test]
@@ -331,6 +407,26 @@ mod tests {
         });
         assert_eq!(out.text(), "lvpm.lock would be updated:\n  + gamma 1.0\n");
         assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn a_held_back_version_is_one_line_on_stderr_with_its_dates_and_the_one_used() {
+        let (mut renderer, out, err) = renderer();
+        let released = released::parse("Wed, 28 Oct 2026 11:46:49 GMT").expect("a date");
+        renderer.render(&Event::HeldBack {
+            name: "alpha".into(),
+            version: "1.1".into(),
+            chosen: "1.0".into(),
+            released,
+            eligible: released::eligible_at(released, 14),
+            min_age_days: 14,
+        });
+        assert_eq!(
+            err.text(),
+            "held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible \
+             2026-11-12); using 1.0\n"
+        );
+        assert_eq!(out.text(), "");
     }
 
     #[test]
@@ -502,6 +598,14 @@ mod tests {
             ),
             (StaleReason::LabviewChanged, "labview changed"),
             (StaleReason::SourcesChanged, "sources changed"),
+            (
+                StaleReason::MinAgeChanged { from: 14, to: 7 },
+                "min-age-days changed (14 -> 7)",
+            ),
+            (
+                StaleReason::MinAgeChanged { from: 0, to: 14 },
+                "min-age-days changed (0 -> 14)",
+            ),
             (StaleReason::FormatOutdated, "the lock format is outdated"),
         ] {
             assert_eq!(stale_reason(&reason), text, "{reason:?}");
@@ -518,6 +622,11 @@ mod tests {
                     dev: false,
                 }),
                 "lvpm.lock is out of date: dependency \"gamma\" was added; \
+                 run `lvpm lock` to update it",
+            ),
+            (
+                LockError::Stale(StaleReason::MinAgeChanged { from: 14, to: 7 }),
+                "lvpm.lock is out of date: min-age-days changed (14 -> 7); \
                  run `lvpm lock` to update it",
             ),
             (
@@ -584,6 +693,118 @@ mod tests {
         }));
         assert!(
             text.contains("\n  lvpm.toml: alpha = \"1.0\"\n  --upgrade-package beta@2.0\n"),
+            "{text}"
+        );
+    }
+
+    /// 2023-11-14T22:13:20Z.
+    const NOW: i64 = 1_700_000_000;
+
+    fn all_held(requirer: Option<&str>, days: u32) -> Fact {
+        Fact::AllHeldBack(AllHeldBack {
+            package: "alpha".into(),
+            versions: vec![
+                ("1.2".into(), NOW - 2 * SECS_PER_DAY),
+                ("1.1".into(), NOW - 3 * SECS_PER_DAY),
+            ],
+            wanted: ">= 1.1".into(),
+            required_by: requirer.map(String::from),
+            days,
+        })
+    }
+
+    #[test]
+    fn versions_all_held_back_are_listed_newest_first_with_the_day_each_is_eligible() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![all_held(None, 14)],
+        }));
+        assert_eq!(
+            text,
+            "alpha >=1.1: every version is held back by min-age-days = 14\n\
+             \x20 1.2 released 2023-11-12, eligible 2023-11-27\n\
+             \x20 1.1 released 2023-11-11, eligible 2023-11-26\n\
+             next: wait until 2023-11-26, lower min-age-days, or pin an exact version of alpha \
+             in lvpm.toml"
+        );
+    }
+
+    #[test]
+    fn a_held_back_requirement_says_who_requires_it() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![all_held(Some("beta"), 14)],
+        }));
+        assert!(
+            text.ends_with("in lvpm.toml (it is required by beta)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_longest_limit_renders_without_overflowing() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![all_held(None, u32::MAX)],
+        }));
+        assert!(
+            text.starts_with(
+                "alpha >=1.1: every version is held back by min-age-days = 4294967295\n"
+            ),
+            "{text}"
+        );
+        // The release plus u32::MAX days is year 11 761 244, not a wrapped or capped day.
+        assert!(
+            text.contains(
+                "\n  1.2 released 2023-11-12, eligible 11761244-12-01\n  \
+                 1.1 released 2023-11-11, eligible 11761244-11-30\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(
+                "\nnext: wait until 11761244-11-30, lower min-age-days, or pin an exact \
+                 version of alpha in lvpm.toml"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_package_that_is_not_all_held_back_shows_its_young_version_among_the_facts() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                manifest("a", "*"),
+                Fact::VersionHeldBack {
+                    package: "a".into(),
+                    version: "1.1".into(),
+                    released: NOW - 3 * SECS_PER_DAY,
+                    days: 14,
+                },
+            ],
+        }));
+        assert_eq!(
+            text,
+            "cannot lock: no set of versions satisfies lvpm.toml:\n\
+             \x20 lvpm.toml: a = \"*\"\n\
+             \x20 a 1.1 is held back by min-age-days = 14 (released 2023-11-11)\n\
+             next: change one of these in lvpm.toml, then run `lvpm lock` again"
+        );
+    }
+
+    #[test]
+    fn what_is_wrong_besides_the_held_back_versions_follows_in_the_general_report() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                all_held(None, 14),
+                Fact::NotListed {
+                    package: "zeta".into(),
+                },
+            ],
+        }));
+        assert!(
+            text.starts_with("alpha >=1.1: every version is held back"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\ncannot lock:\n  zeta is in no configured source\nnext: look for it"),
             "{text}"
         );
     }
