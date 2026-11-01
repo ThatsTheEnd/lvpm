@@ -238,7 +238,14 @@ fn settle_lock(
 ) -> Result<(Lockfile, bool), SyncError> {
     let project = &found.1;
     match opts.lock {
-        LockPolicy::Frozen => Ok((warn_unresolved(env, locking::read_lock(lock_path)?), false)),
+        LockPolicy::Frozen => {
+            let lock = locking::read_lock(lock_path)?;
+            // An older format reads its own markers (v1 `dev = true`) as main, so it is never used as it is.
+            if lock.version < lockfile::FORMAT_VERSION {
+                return Err(LockError::Stale(lockfile::StaleReason::FormatOutdated).into());
+            }
+            Ok((warn_unresolved(env, lock), false))
+        }
         LockPolicy::Locked => {
             let lock = locking::read_lock(lock_path)?;
             match lock.staleness(project) {
@@ -2085,6 +2092,28 @@ beta = \"*\"
             pairs(&[("alpha", "2.0"), ("beta", "1.0")])
         );
         assert_eq!(project.lock_bytes(), lock, "the lock was not made again");
+    }
+
+    #[test]
+    fn frozen_refuses_a_lock_in_an_older_format() {
+        let project = project("frozen-old", &["beta"]);
+        locking_lock(&project);
+        let old = project.lock_bytes();
+        let old = String::from_utf8(old.unwrap())
+            .unwrap()
+            .replace("version = 2", "version = 1");
+        std::fs::write(project.lock_path(), &old).unwrap();
+        let (outcome, _) = project.sync(&with(LockPolicy::Frozen));
+        assert!(
+            matches!(
+                outcome,
+                Err(SyncError::Lock(LockError::Stale(
+                    lockfile::StaleReason::FormatOutdated
+                )))
+            ),
+            "{outcome:?}"
+        );
+        assert!(project.installed().is_empty());
     }
 
     #[test]
