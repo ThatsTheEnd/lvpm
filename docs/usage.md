@@ -252,7 +252,7 @@ it for more) also syncs a `[dependency-groups.<name>]`, and a package that only
 unselected groups need is uninstalled; a name the manifest does not define fails
 and lists the defined ones. `--group dev` with `--no-dev` is refused. A bare
 `lvpm install` takes the same flags. Groups are described in
-[manifest.md](manifest.md#named-dependency-groups).
+[manifest.md](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#named-dependency-groups).
 
 ```console
 $ lvpm sync                         # [dependencies] and dev
