@@ -168,6 +168,9 @@ pub struct Project {
     pub sources: Vec<(String, String)>,
     /// Whether the public indexes are consulted too (`sources.defaults`).
     pub default_sources: bool,
+    /// `sources.min-age-days`: versions younger than this many days are held
+    /// back. 0 when absent.
+    pub min_age_days: u32,
     /// `[dependencies]`, in file order.
     pub dependencies: Vec<(String, Constraint)>,
     /// `[dev-dependencies]`, in file order: the same syntax as `[dependencies]`.
@@ -187,6 +190,7 @@ impl Default for Project {
             labview: None,
             sources: Vec::new(),
             default_sources: true,
+            min_age_days: 0,
             dependencies: Vec::new(),
             dev_dependencies: Vec::new(),
             nipm: Vec::new(),
@@ -268,6 +272,14 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     for (key, value) in f.sources {
         match (key.as_str(), value) {
             ("defaults", toml::Value::Boolean(b)) => p.default_sources = b,
+            // Before the string arm: `min-age-days = "14"` is not a source.
+            ("min-age-days", toml::Value::Integer(n)) if u32::try_from(n).is_ok() => {
+                p.min_age_days = n as u32
+            }
+            ("min-age-days", other) => bail!(
+                "[sources] min-age-days must be a whole number of days, 0 or more \
+                 (got {other}), for example min-age-days = 14"
+            ),
             (_, toml::Value::String(s)) => p.sources.push((key, s)),
             (k, other) => {
                 bail!(
@@ -501,6 +513,51 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         let p = parse("[sources]\ndefaults = false\n").unwrap();
         assert!(!p.default_sources);
         assert!(p.sources.is_empty());
+    }
+
+    #[test]
+    fn min_age_days_is_zero_when_absent_and_a_whole_number_of_days_otherwise() {
+        let days = |sources: &str| {
+            parse(&format!("[sources]\n{sources}"))
+                .unwrap()
+                .min_age_days
+        };
+        assert_eq!(days(""), 0);
+        assert_eq!(days("min-age-days = 0\n"), 0);
+        assert_eq!(days("min-age-days = 14\n"), 14);
+        assert_eq!(days("min-age-days = 4294967295\n"), u32::MAX);
+        assert_eq!(parse("").unwrap().min_age_days, 0, "no [sources] at all");
+    }
+
+    #[test]
+    fn min_age_days_is_not_a_source_and_does_not_disturb_the_others() {
+        let p = parse("[sources]\nmirror = \"http://h/x\"\nmin-age-days = 14\ndefaults = false\n")
+            .unwrap();
+        assert_eq!(p.sources, vec![("mirror".into(), "http://h/x".into())]);
+        assert!(!p.default_sources);
+    }
+
+    #[test]
+    fn min_age_days_outside_sources_is_ignored_like_any_unknown_key() {
+        let p = parse("min-age-days = 14\n\n[project]\nname = \"x\"\n").unwrap();
+        assert_eq!(p.min_age_days, 0);
+    }
+
+    #[test]
+    fn min_age_days_that_is_not_a_whole_number_of_days_is_refused_with_the_value_as_written() {
+        for value in ["-1", "\"14\"", "14.5", "true", "4294967296"] {
+            let why = parse(&format!("[sources]\nmin-age-days = {value}\n"))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                why,
+                format!(
+                    "[sources] min-age-days must be a whole number of days, 0 or more \
+                     (got {value}), for example min-age-days = 14"
+                ),
+                "{value}"
+            );
+        }
     }
 
     #[test]
