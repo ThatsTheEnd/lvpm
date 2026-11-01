@@ -541,7 +541,7 @@ graph TD
   - [x] Step 1.4: The lock records the limit
 
 #### Wave 2
-- [ ] Slice 2: Report held-back versions, and the docs
+- [x] Slice 2: Report held-back versions, and the docs
   - [x] Step 2.1: Report a held-back newer version
   - [x] Step 2.2: Document `min-age-days`
 
