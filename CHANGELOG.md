@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.17.0...v0.18.0) (2026-11-01)
+
+
+### Features
+
+* [sources] min-age-days holds back too-new package versions ([#101](https://github.com/ThatsTheEnd/lvpm/issues/101)) ([e08e2ab](https://github.com/ThatsTheEnd/lvpm/commit/e08e2ab6e0199c2f6267f121088d4d995dd56ba1))
+
 ## [0.17.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.16.0...v0.17.0) (2026-11-01)
 
 

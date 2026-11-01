@@ -91,6 +91,10 @@ pub struct Entry {
     /// [`CACHE_SOURCE`] for an imported archive, which is not in
     /// [`Loaded::sources`].
     pub source: String,
+    /// When the feed says it was released, in Unix seconds; `None` for a local,
+    /// cached or `.lvpkg` entry and for a date that is missing or unreadable.
+    #[serde(skip)]
+    pub released: Option<i64>,
 }
 
 /// The [`Entry::source`] of an archive imported with `lvpm cache add`.
@@ -174,6 +178,7 @@ fn local_entry(entry: LocalEntry, url: String, md5: Option<String>) -> Entry {
             .collect(),
         lv_min: entry.lv_min,
         source: String::new(),
+        released: None,
     }
 }
 
@@ -310,6 +315,7 @@ pub(crate) fn entry_from_bytes(path: &Path, bytes: &[u8]) -> Result<Entry> {
             .unwrap_or_default(),
         lv_min: spec.lv_gate.as_deref().and_then(parse_lv_gate),
         source: String::new(),
+        released: None,
     })
 }
 
@@ -727,6 +733,9 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
                 .get("Platform.Exclusive_LabVIEW_Version")
                 .and_then(|s| parse_lv_gate(s)),
             source: String::new(),
+            released: kv
+                .get("Package.Release Date")
+                .and_then(|s| crate::released::parse(s)),
         });
     };
 
@@ -816,6 +825,7 @@ mod tests {
             display_name: None,
             requires: Vec::new(),
             lv_min: None,
+            released: None,
             source: github_source("o/r"),
         };
         assert_eq!(entry.source, "github:o/r");
@@ -1297,6 +1307,48 @@ Package.Display Name=A Thing
     }
 
     #[test]
+    fn a_feed_entry_carries_its_release_date_and_none_when_it_has_none() {
+        let feed = format!(
+            "{SAMPLE}Package.Release Date=Thu, 19 May 2016 15:46:24 -0500\n\n\
+             [Package undated-1.0]\nPackage.URL=u.vip\n\n\
+             [Package garbled-1.0]\nPackage.URL=g.vip\n\
+             Package.Release Date=???, 19 ??? 2016 15:46:24 -0500\n"
+        );
+        let mut out = Vec::new();
+        parse_into(&feed, "http://example.test/", &mut out);
+        let released: Vec<Option<i64>> = out.iter().map(|e| e.released).collect();
+        // 2016-05-19T20:46:24Z, the feed's `15:46:24 -0500`.
+        assert_eq!(released, [Some(1_463_690_784), None, None]);
+    }
+
+    #[test]
+    fn a_cache_imported_entry_and_a_lvpkg_read_entry_have_no_release_date() {
+        let (root, cache) = test_cache("released-none");
+        let source = root.join("package.vip");
+        write_import_fixture(&source, "1.0.0");
+        cache_add(&root, &source, false).unwrap();
+        let index = load(&root, false, &[], &[], false, &NullSink).unwrap();
+        assert_eq!(index.entries[0].source, CACHE_SOURCE);
+        assert_eq!(index.entries[0].released, None);
+
+        let meta = crate::lvpkg::Meta {
+            name: "alpha".into(),
+            version: "1.0.0".into(),
+            labview: ">=2016".into(),
+            vendor: "Vendor".into(),
+            display_name: "Alpha".into(),
+            install_dir: "vi.lib/Vendor/Alpha".into(),
+            dependencies: Vec::new(),
+        };
+        let built = crate::lvpkg::write(&meta, &[("a.vi".into(), b"vi".to_vec())]).unwrap();
+        let entry = entry_from_bytes(Path::new("alpha-1.0.0.lvpkg"), &built).unwrap();
+        assert_eq!(entry.name, "alpha");
+        assert_eq!(entry.released, None);
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn lv_gate_filters_candidates() {
         let mut out = Vec::new();
         parse_into(SAMPLE, "http://example.test/", &mut out);
@@ -1327,6 +1379,7 @@ Package.Display Name=A Thing
             requires: parse_requires(requires),
             lv_min: None,
             source: String::new(),
+            released: None,
         }
     }
 

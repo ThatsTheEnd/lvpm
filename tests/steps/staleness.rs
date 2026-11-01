@@ -348,6 +348,27 @@ async fn the_lock_was_not_rewritten(world: &mut CliWorld) {
     );
 }
 
+#[then("lvpm.lock has no min-age-days entry")]
+async fn the_lock_has_no_min_age_days(world: &mut CliWorld) {
+    let table = world.lock_table();
+    assert!(
+        table["inputs"].get("min-age-days").is_none(),
+        "[inputs] has a min-age-days entry:\n{table}"
+    );
+}
+
+#[then(regex = r"^lvpm\.lock records min-age-days (\d+)$")]
+async fn the_lock_records_min_age_days(world: &mut CliWorld, days: i64) {
+    let table = world.lock_table();
+    assert_eq!(
+        table["inputs"]
+            .get("min-age-days")
+            .and_then(|v| v.as_integer()),
+        Some(days),
+        "[inputs] in:\n{table}"
+    );
+}
+
 #[then(regex = r"^lvpm\.lock still holds (.+)$")]
 async fn the_lock_still_holds(world: &mut CliWorld, packages: String) {
     let locked = world.locked_versions();

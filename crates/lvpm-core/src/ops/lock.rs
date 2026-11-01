@@ -11,7 +11,7 @@ use super::github_index;
 use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
 use super::sync::Search;
-use crate::cache::sha256_hex;
+use crate::cache::{now, sha256_hex};
 use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError};
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
@@ -19,6 +19,7 @@ use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
 use crate::manifest_edit::{self, DependencyTable};
 use crate::paths;
 use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
+use crate::released;
 use crate::solve::{self, Conflict, Fact, Resolution, SolveError};
 use crate::version::Version;
 use anyhow::Context;
@@ -417,6 +418,16 @@ fn relock_in(
             required_by: unresolved.required_by.clone(),
         });
     }
+    for held in &resolution.held_back {
+        env.sink.emit(Event::HeldBack {
+            name: held.name.clone(),
+            version: held.version.clone(),
+            chosen: held.chosen.clone(),
+            released: held.released,
+            eligible: released::eligible_at(held.released, project.min_age_days),
+            min_age_days: project.min_age_days,
+        });
+    }
     let changes = changes(previous, &lock);
     Ok((lock, changes))
 }
@@ -517,12 +528,17 @@ fn resolve(
         .iter()
         .map(|target| target.name.clone())
         .collect();
+    let age = (project.min_age_days > 0).then(|| solve::AgeLimit {
+        now: now(),
+        days: project.min_age_days,
+    });
     solve::solve(
         &constraints,
         index,
         preferences,
         &first,
         Some(gate),
+        age,
         &env.cancel,
     )
     .map_err(|why| match why {
@@ -880,6 +896,7 @@ mod tests {
                 .collect(),
             lv_min: None,
             source: String::new(),
+            released: None,
         }
     }
 
@@ -914,6 +931,7 @@ mod tests {
                 .map(|entry| (name_key(&entry.name), entry))
                 .collect(),
             unresolved,
+            held_back: Vec::new(),
         }
     }
 
@@ -1287,6 +1305,101 @@ caraya = \"*\"
                 ]
             ),
             "{events:?}"
+        );
+    }
+
+    /// `project`'s manifest and index, with each of `dates` (name, version,
+    /// days ago) released then and every other version undated.
+    fn dated_index(
+        project: &ProjectDir,
+        sink: &Recorder,
+        dates: &[(&str, &str, i64)],
+    ) -> (Project, Index) {
+        let env = project.env(sink);
+        let found = find_manifest(&env).unwrap();
+        let mut index = load_index(&env, Some(&found), None, &Moving::Nothing).unwrap();
+        for entry in &mut index.entries {
+            entry.released = dates
+                .iter()
+                .find(|(name, version, _)| {
+                    entry.name == *name && entry.version == Version::parse(version)
+                })
+                .map(|(_, _, days_ago)| now() - days_ago * released::SECS_PER_DAY);
+        }
+        (found.1, index)
+    }
+
+    /// `MANIFEST` with `min-age-days = 14` under `[sources]`; fails if the key
+    /// did not go in, which would make the tests below vacuous.
+    fn with_min_age_14() -> String {
+        let manifest = MANIFEST.replace("false\n", "false\nmin-age-days = 14\n");
+        assert!(manifest.contains("min-age-days = 14"), "{manifest}");
+        manifest
+    }
+
+    #[test]
+    fn a_newer_version_the_age_limit_kept_out_is_an_event_with_its_dates() {
+        let manifest = with_min_age_14();
+        let project = ProjectDir::new(
+            "held-back",
+            &manifest,
+            &[("gamma", "1.0", "23.0", ""), ("gamma", "1.5", "23.0", "")],
+        );
+        let sink = Recorder::default();
+        let (manifest, index) = dated_index(
+            &project,
+            &sink,
+            &[("gamma", "1.0", 30), ("gamma", "1.5", 3)],
+        );
+        let released = index
+            .entries
+            .iter()
+            .find(|entry| entry.version == Version::parse("1.5"))
+            .and_then(|entry| entry.released)
+            .unwrap();
+        relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
+        let held_back: Vec<Event> = sink
+            .events()
+            .into_iter()
+            .filter(|event| matches!(event, Event::HeldBack { .. }))
+            .collect();
+        assert_eq!(
+            held_back,
+            [Event::HeldBack {
+                name: "gamma".into(),
+                version: "1.5".into(),
+                chosen: "1.0".into(),
+                released,
+                eligible: released + 14 * released::SECS_PER_DAY,
+                min_age_days: 14,
+            }]
+        );
+    }
+
+    #[test]
+    fn no_event_says_anything_was_held_back_when_nothing_was() {
+        let manifest = with_min_age_14();
+        let project = ProjectDir::new(
+            "held-back-none",
+            &manifest,
+            &[("gamma", "1.0", "23.0", ""), ("gamma", "1.5", "23.0", "")],
+        );
+        let sink = Recorder::default();
+        // 1.5 is newer than 1.0 but old enough, so it is chosen, not held back.
+        let (manifest, index) = dated_index(
+            &project,
+            &sink,
+            &[("gamma", "1.0", 30), ("gamma", "1.5", 20)],
+        );
+        let (lock, _) = relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
+        assert_eq!(lock.packages[0].version, "1.5");
+        assert!(
+            !sink
+                .events()
+                .iter()
+                .any(|event| matches!(event, Event::HeldBack { .. })),
+            "{:?}",
+            sink.events()
         );
     }
 

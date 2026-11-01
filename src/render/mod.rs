@@ -134,6 +134,7 @@ impl Renderer {
             Event::LockHashing { .. }
             | Event::GitHubListed { .. }
             | Event::RequirementUnresolved { .. }
+            | Event::HeldBack { .. }
             | Event::LockChanged { .. }
             | Event::LockWritten { .. }
             | Event::LockUpToDate { .. }
