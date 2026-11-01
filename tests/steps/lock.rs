@@ -113,7 +113,7 @@ impl CliWorld {
     }
 
     /// The lock as TOML: what `lvpm lock` wrote, read without core.
-    fn lock_table(&self) -> toml::Table {
+    pub(super) fn lock_table(&self) -> toml::Table {
         let text = String::from_utf8(self.lock_bytes().expect("lvpm.lock exists"))
             .expect("lvpm.lock is text");
         text.parse().expect("lvpm.lock is valid TOML")

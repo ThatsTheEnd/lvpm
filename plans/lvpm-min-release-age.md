@@ -528,7 +528,7 @@ graph TD
   - [x] Step 1.1: Read `Package.Release Date` into each feed entry
   - [x] Step 1.2: Read `[sources] min-age-days` from the manifest
   - [x] Step 1.3: The solver holds back versions younger than the limit, except exact pins
-  - [ ] Step 1.4: The lock records the limit
+  - [x] Step 1.4: The lock records the limit
 
 #### Wave 2
 - [ ] Slice 2: Report held-back versions, and the docs

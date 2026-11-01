@@ -69,6 +69,9 @@ pub fn stale_reason(reason: &StaleReason) -> String {
         StaleReason::FormatOutdated => "the lock format is outdated".to_string(),
         StaleReason::LabviewChanged => "labview changed".to_string(),
         StaleReason::SourcesChanged => "sources changed".to_string(),
+        StaleReason::MinAgeChanged { from, to } => {
+            format!("min-age-days changed ({from} -> {to})")
+        }
         StaleReason::DependencyAdded { name, dev } => {
             format!("{} \"{name}\" was added", dependency(*dev))
         }
@@ -532,6 +535,14 @@ mod tests {
             ),
             (StaleReason::LabviewChanged, "labview changed"),
             (StaleReason::SourcesChanged, "sources changed"),
+            (
+                StaleReason::MinAgeChanged { from: 14, to: 7 },
+                "min-age-days changed (14 -> 7)",
+            ),
+            (
+                StaleReason::MinAgeChanged { from: 0, to: 14 },
+                "min-age-days changed (0 -> 14)",
+            ),
             (StaleReason::FormatOutdated, "the lock format is outdated"),
         ] {
             assert_eq!(stale_reason(&reason), text, "{reason:?}");
@@ -548,6 +559,11 @@ mod tests {
                     dev: false,
                 }),
                 "lvpm.lock is out of date: dependency \"gamma\" was added; \
+                 run `lvpm lock` to update it",
+            ),
+            (
+                LockError::Stale(StaleReason::MinAgeChanged { from: 14, to: 7 }),
+                "lvpm.lock is out of date: min-age-days changed (14 -> 7); \
                  run `lvpm lock` to update it",
             ),
             (

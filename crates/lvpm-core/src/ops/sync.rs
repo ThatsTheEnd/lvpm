@@ -654,6 +654,7 @@ mod tests {
             inputs: Inputs {
                 defaults: false,
                 sources: Vec::new(),
+                min_age_days: 0,
                 dependencies: BTreeMap::new(),
                 dev_dependencies: BTreeMap::new(),
             },
