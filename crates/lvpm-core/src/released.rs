@@ -106,7 +106,7 @@ fn zone_offset(zone: &str) -> Option<i64> {
     }
     let (hours, minutes): (i64, i64) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
     // No zone is further from UTC than 14 hours (UTC+14).
-    (hours <= MAX_ZONE_HOURS && minutes < 60)
+    ((hours < MAX_ZONE_HOURS && minutes < 60) || (hours == MAX_ZONE_HOURS && minutes == 0))
         .then_some(sign * (hours * SECS_PER_HOUR + minutes * SECS_PER_MINUTE))
 }
 
@@ -206,9 +206,27 @@ mod tests {
             "Thu, 9223372036854775807 May 2016 15:46:24 -0500",
             "Thu, 19 May 2016 15:46:24 +9959",
             "Thu, 19 May 2016 15:46:24 +1500",
+            "Thu, 19 May 2016 15:46:24 +1401",
+            "Thu, 19 May 2016 15:46:24 -1459",
         ] {
             assert_eq!(parse(text), None, "{text:?}");
         }
+    }
+
+    #[test]
+    fn the_widest_zone_is_fourteen_hours_exactly_and_a_late_minute_is_accepted() {
+        assert_eq!(
+            parse("Thu, 19 May 2016 15:46:24 +1400"),
+            Some(LOCAL_CLOCK_AS_UTC - 14 * SECS_PER_HOUR)
+        );
+        assert_eq!(
+            parse("Thu, 19 May 2016 15:46:24 -1400"),
+            Some(LOCAL_CLOCK_AS_UTC + 14 * SECS_PER_HOUR)
+        );
+        assert_eq!(
+            parse("Thu, 19 May 2016 15:46:24 +0559"),
+            Some(LOCAL_CLOCK_AS_UTC - (5 * 60 + 59) * SECS_PER_MINUTE)
+        );
     }
 
     #[test]
@@ -221,6 +239,23 @@ mod tests {
         assert_eq!(parse("Thu, 29 Feb 2024 00:00:00 GMT"), Some(1_709_164_800));
         assert_eq!(parse("Thu, 29 Feb 2023 00:00:00 GMT"), None);
         assert_eq!(parse("Thu, 31 Dec 1999 23:59:59 GMT"), Some(946_684_799));
+        // A century year is a leap year only when divisible by 400.
+        assert_eq!(parse("Thu, 29 Feb 1900 00:00:00 GMT"), None);
+        assert_eq!(parse("Thu, 29 Feb 2000 00:00:00 GMT"), Some(951_782_400));
+    }
+
+    #[test]
+    fn a_date_before_1970_is_a_negative_instant() {
+        assert_eq!(parse("Wed, 31 Dec 1969 23:59:59 GMT"), Some(-1));
+        assert_eq!(parse("Mon, 01 Jan 1900 00:00:00 GMT"), Some(-2_208_988_800));
+    }
+
+    #[test]
+    fn a_weekday_that_does_not_match_the_date_is_not_checked() {
+        assert_eq!(
+            parse("Mon, 19 May 2016 15:46:24 GMT"),
+            Some(LOCAL_CLOCK_AS_UTC)
+        );
     }
 
     #[test]

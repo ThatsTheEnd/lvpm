@@ -217,10 +217,10 @@ async fn the_sources_have_the_line(world: &mut CliWorld, line: String) {
 #[then(regex = r#"^the command fails saying "((?:\[sources\] )?min-age-days.+)"$"#)]
 async fn the_command_fails_saying(world: &mut CliWorld, text: String) {
     world.assert_failed();
+    let stderr = &world.output().stderr;
     assert!(
-        world.printed().contains(&text),
-        "{text:?} is not in:\n{}",
-        world.printed()
+        stderr.contains(&text),
+        "{text:?} is not in stderr:\n{stderr}"
     );
 }
 

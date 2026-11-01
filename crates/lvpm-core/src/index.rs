@@ -1279,6 +1279,7 @@ Package.Display Name=A Thing
         let mut out = Vec::new();
         parse_into(&feed, "http://example.test/", &mut out);
         let released: Vec<Option<i64>> = out.iter().map(|e| e.released).collect();
+        // 2016-05-19T20:46:24Z, the feed's `15:46:24 -0500`.
         assert_eq!(released, [Some(1_463_690_784), None, None]);
     }
 

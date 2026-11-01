@@ -119,7 +119,8 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And "second" lists "alpha" 1.1 released 30 days ago and "alpha" 2.0 released 30 days ago
     And the project depends on "alpha" ">=1.0"
     When I run "lvpm lock"
-    Then the command fails naming "alpha" and "min-age-days = 14"
+    Then the command fails with the min-age-days error for "alpha" ">=1.0" listing 1.1
+    And the error does not mention version 2.0
     And no lvpm.lock is written
 
   Scenario: a transitive requirement is held to the limit too
@@ -150,7 +151,8 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And I have run "lvpm lock"
     When "first" also lists "alpha" 1.1 released 3 days ago
     And I run "lvpm lock --upgrade"
-    Then lvpm.lock takes "alpha" 1.0 from "first"
+    Then the command succeeds
+    And lvpm.lock takes "alpha" 1.0 from "first"
 
   # Exact pins
   Scenario: an exact pin younger than the limit is locked
@@ -288,13 +290,13 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And I have run "lvpm lock"
     When the project sets min-age-days to <after>
     And I run "lvpm lock --check"
-    Then the command fails saying "min-age-days changed"
+    Then the command fails saying "<message>"
 
     Examples:
-      | before | after  |
-      | 14     | 7      |
-      | absent | 14     |
-      | 14     | absent |
+      | before | after  | message                        |
+      | 14     | 7      | min-age-days changed (14 -> 7) |
+      | absent | 14     | min-age-days changed (0 -> 14) |
+      | 14     | absent | min-age-days changed (14 -> 0) |
 
   Scenario Outline: 0 and absent are the same for the lock
     Given the project sets min-age-days to <before>
@@ -302,8 +304,9 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And the project depends on "alpha" "*"
     And I have run "lvpm lock"
     When the project sets min-age-days to <after>
-    And I run "lvpm lock --check"
+    And I run "lvpm lock"
     Then the command succeeds
+    And the output says lvpm.lock is up to date
 
     Examples:
       | before | after  |
@@ -316,9 +319,10 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And the project depends on "alpha" ">=1.0"
     And I have run "lvpm lock"
     When "first" now lists "alpha" 1.1 as released 30 days ago
-    And I run "lvpm lock --check"
+    And I run "lvpm lock"
     Then the command succeeds
     And lvpm.lock takes "alpha" 1.0 from "first"
+    And lvpm.lock is byte-identical to before
 
   Scenario: raising min-age-days re-locks a version that is now too new
     Given the project sets min-age-days to 7

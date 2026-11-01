@@ -673,7 +673,7 @@ impl Conflict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TooNewVersion {
     package: String,
-    version: String,
+    version: Version,
     released: i64,
     days: u32,
 }
@@ -702,33 +702,7 @@ fn merge_held_back(facts: Vec<Fact>, held: Vec<TooNewVersion>) -> Vec<Fact> {
         .copied()
         .filter(|package| requirements(&facts, package).next().is_none())
         .collect();
-    let mut failing = all_held.clone();
-    while let Some(requirer) = facts.iter().find_map(|fact| match fact {
-        Fact::Requires { package, .. }
-            if !failing.contains(&package.as_str())
-                && !packages.contains(&package.as_str())
-                && requirements(&facts, package).all(|needs| failing.contains(&needs)) =>
-        {
-            Some(package.as_str())
-        }
-        _ => None,
-    }) {
-        failing.push(requirer);
-    }
-    let concerns_held = |fact: &Fact| match fact {
-        Fact::NeedsLabview { package, .. } => all_held.contains(&package.as_str()),
-        Fact::Manifest { package, .. } | Fact::Requires { package, .. } => {
-            failing.contains(&package.as_str())
-        }
-        // What is left of a held-back package once its listed versions are ruled out.
-        Fact::NoVersion { package, .. } => {
-            failing.contains(&package.as_str()) || packages.contains(&package.as_str())
-        }
-        Fact::Pinned { .. }
-        | Fact::NotListed { .. }
-        | Fact::TooNew(_)
-        | Fact::VersionTooNew { .. } => false,
-    };
+    let failing = failing_packages(&facts, &packages, &all_held);
     let mut merged: Vec<Fact> = all_held
         .iter()
         .map(|package| Fact::TooNew(all_held_back(package, &facts, &held)))
@@ -742,14 +716,62 @@ fn merge_held_back(facts: Vec<Fact>, held: Vec<TooNewVersion>) -> Vec<Fact> {
                 .into_iter()
                 .map(|held| Fact::VersionTooNew {
                     package: held.package.clone(),
-                    version: held.version.clone(),
+                    version: held.version.to_string(),
                     released: held.released,
                     days: held.days,
                 }),
         );
     }
-    merged.extend(facts.iter().filter(|fact| !concerns_held(fact)).cloned());
+    merged.extend(
+        facts
+            .iter()
+            .filter(|fact| !concerns_held(fact, &packages, &all_held, &failing))
+            .cloned(),
+    );
     merged
+}
+
+/// `all_held` and every package that requires only failing packages: the ones
+/// that fail only because a held-back package does. Run to a fixed point, since
+/// a requirer that fails makes the packages that require it fail too.
+fn failing_packages<'a>(
+    facts: &'a [Fact],
+    packages: &[&str],
+    all_held: &[&'a str],
+) -> Vec<&'a str> {
+    let mut failing = all_held.to_vec();
+    while let Some(requirer) = facts.iter().find_map(|fact| match fact {
+        Fact::Requires { package, .. }
+            if !failing.contains(&package.as_str())
+                && !packages.contains(&package.as_str())
+                && requirements(facts, package).all(|needs| failing.contains(&needs)) =>
+        {
+            Some(package.as_str())
+        }
+        _ => None,
+    }) {
+        failing.push(requirer);
+    }
+    failing
+}
+
+/// Is `fact` made redundant by the held-back packages (`packages`, of which
+/// `all_held` are held back entirely) and the packages that fail with them?
+fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&str]) -> bool {
+    match fact {
+        Fact::NeedsLabview { package, .. } => all_held.contains(&package.as_str()),
+        Fact::Manifest { package, .. } | Fact::Requires { package, .. } => {
+            failing.contains(&package.as_str())
+        }
+        // What is left of a held-back package once its listed versions are ruled out.
+        Fact::NoVersion { package, .. } => {
+            failing.contains(&package.as_str()) || packages.contains(&package.as_str())
+        }
+        Fact::Pinned { .. }
+        | Fact::NotListed { .. }
+        | Fact::TooNew(_)
+        | Fact::VersionTooNew { .. } => false,
+    }
 }
 
 /// The packages `package` requires, by name.
@@ -767,7 +789,7 @@ fn requirements<'a>(facts: &'a [Fact], package: &'a str) -> impl Iterator<Item =
 /// The held-back versions of `package`, newest first.
 fn newest_first<'a>(package: &str, held: &'a [TooNewVersion]) -> Vec<&'a TooNewVersion> {
     let mut versions: Vec<_> = held.iter().filter(|held| held.package == package).collect();
-    versions.sort_by(|a, b| Version::parse(&b.version).cmp(&Version::parse(&a.version)));
+    versions.sort_by(|a, b| b.version.cmp(&a.version));
     versions
 }
 
@@ -801,7 +823,7 @@ fn all_held_back(package: &str, facts: &[Fact], held: &[TooNewVersion]) -> AllHe
         package: package.to_string(),
         versions: versions
             .iter()
-            .map(|held| (held.version.clone(), held.released))
+            .map(|held| (held.version.to_string(), held.released))
             .collect(),
         wanted,
         required_by,
@@ -877,7 +899,7 @@ fn collect_facts(
         )) => {
             let version = TooNewVersion {
                 package: names.of(package),
-                version: subject(versions),
+                version: Version::parse(&subject(versions)),
                 released: *released,
                 days: *days,
             };
@@ -1645,7 +1667,7 @@ mod tests {
     fn too_new_version(package: &str, version: &str, days_ago: i64) -> TooNewVersion {
         TooNewVersion {
             package: package.into(),
-            version: version.into(),
+            version: Version::parse(version),
             released: NOW - days_ago * DAY,
             days: LIMIT_DAYS,
         }

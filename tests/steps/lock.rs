@@ -454,7 +454,12 @@ async fn both_locks_are_identical(world: &mut CliWorld) {
     let one = world.lock_bytes().expect("world one has a lock");
     let two =
         std::fs::read(other.sandbox.work_dir().join(LOCK_FILE)).expect("world two has a lock");
-    assert_eq!(String::from_utf8_lossy(&one), String::from_utf8_lossy(&two));
+    assert!(
+        one == two,
+        "the locks differ:\n{}\n---\n{}",
+        String::from_utf8_lossy(&one),
+        String::from_utf8_lossy(&two)
+    );
 }
 
 #[then("no lvpm.lock contains either temp root's path")]
@@ -554,9 +559,12 @@ async fn no_lock_exists(world: &mut CliWorld) {
 #[then("lvpm.lock is byte-identical to before")]
 async fn the_lock_is_unchanged(world: &mut CliWorld) {
     let before = world.lock.before.as_ref().expect("a lock was noted before");
-    assert_eq!(
-        String::from_utf8_lossy(&world.lock_bytes().expect("the lock is still there")),
-        String::from_utf8_lossy(before)
+    let after = world.lock_bytes().expect("the lock is still there");
+    assert!(
+        after == *before,
+        "the lock changed:\n{}\n---\n{}",
+        String::from_utf8_lossy(before),
+        String::from_utf8_lossy(&after)
     );
 }
 

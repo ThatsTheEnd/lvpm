@@ -535,6 +535,7 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
             .unwrap();
         assert_eq!(p.sources, vec![("mirror".into(), "http://h/x".into())]);
         assert!(!p.default_sources);
+        assert_eq!(p.min_age_days, 14);
     }
 
     #[test]
@@ -545,7 +546,7 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
 
     #[test]
     fn min_age_days_that_is_not_a_whole_number_of_days_is_refused_with_the_value_as_written() {
-        for value in ["-1", "\"14\"", "14.5", "true", "4294967296"] {
+        for value in ["-1", "\"14\"", "14.0", "14.5", "[14]", "true", "4294967296"] {
             let why = parse(&format!("[sources]\nmin-age-days = {value}\n"))
                 .unwrap_err()
                 .to_string();
@@ -558,6 +559,17 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
                 "{value}"
             );
         }
+    }
+
+    #[test]
+    fn min_age_days_beyond_any_integer_is_refused_by_toml_with_the_line_that_has_it() {
+        // shortcut: TOML itself refuses it (no i64), so the message is toml's, not
+        // the "whole number of days" one; its snippet still names the key and value.
+        let why = parse("[sources]\nmin-age-days = 99999999999999999999\n")
+            .unwrap_err()
+            .to_string();
+        assert!(why.contains("TOML parse error at line 2"), "{why}");
+        assert!(why.contains("min-age-days = 99999999999999999999"), "{why}");
     }
 
     #[test]

@@ -322,6 +322,7 @@ async fn depends_on_two(
 async fn have_run(world: &mut CliWorld, command_line: String) {
     let args: Vec<&str> = command_line.split_whitespace().skip(1).collect();
     world.sandbox.setup_lvpm(&args);
+    world.lock.before = world.lock_bytes();
 }
 
 #[given(regex = r#"^"(first|second)" cannot be reached$"#)]
