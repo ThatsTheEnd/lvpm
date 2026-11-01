@@ -73,7 +73,8 @@ pub enum SolveError {
 /// targets. `lv_gate` is the project's LabVIEW in the index's own units
 /// (`lv_min`, so 24.0 for LabVIEW 2024): no package that needs a newer LabVIEW
 /// is chosen. `None` applies no gate. `age` holds back every version released
-/// less than its days ago, except one a manifest line pins exactly; `None`
+/// less than its days ago, except a version pinned exactly, by a manifest line
+/// or by the pins an upgrade names for that run; `None`
 /// holds nothing back. A cancelled `cancel` stops the solver.
 pub fn solve(
     constraints: &[(String, Constraint)],
@@ -303,8 +304,9 @@ struct Provider<'a> {
     first: HashSet<String>,
     lv_gate: Option<f64>,
     age: Option<AgeLimit>,
-    /// The versions the manifest's own lines pin exactly (lowercased name,
-    /// version): exempt from `age`. A feed entry's requirements never pin.
+    /// The versions pinned exactly, by the manifest's own lines or by the pins
+    /// an upgrade names for that run (lowercased name, version): exempt from
+    /// `age`. A feed entry's requirements never pin.
     pinned: Vec<(String, Version)>,
     cancel: &'a CancelToken,
 }
@@ -745,8 +747,9 @@ struct HeldVersion {
     days: u32,
 }
 
-/// The held-back versions as facts: one `AllHeldBack` per package every version of
-/// which is held back, in place of one per version, and none of the facts it
+/// The held-back versions as facts: one `AllHeldBack` per package that has
+/// held-back versions and no requirement failure (the versions are as
+/// `Fact::AllHeldBack` describes), in place of one per version, and none of the facts it
 /// makes redundant: what the manifest or a requirer asked for (kept in the
 /// fact), the versions no source lists in that range, and the versions that
 /// need a newer LabVIEW. The same goes for the packages that require such a

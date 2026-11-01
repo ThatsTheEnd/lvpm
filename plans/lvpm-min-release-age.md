@@ -43,7 +43,7 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
   that was held back, newest first, and no version the constraint excludes):
   ```text
   alpha >=1.1: every version is held back by min-age-days = 14
-    1.2 released 2026-10-29, eligible 2026-11-12
+    1.2 released 2026-10-29, eligible 2026-11-13
     1.1 released 2026-10-28, eligible 2026-11-12
   next: wait until 2026-11-12, lower min-age-days, or pin an exact version of alpha in lvpm.toml
   ```

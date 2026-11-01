@@ -159,11 +159,13 @@ offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
   `lvpm sync --locked` and `--frozen` never resolve, so they never apply it.
 - A plain install never applies the limit: `lvpm install --global <name>`, or
   `lvpm install <name>` with `--prefix` or `--labview-version`, or outside a
-  project. It uses the project's `[sources]` but not its `min-age-days`. In a
-  project, `lvpm install <name>` with none of those flags is an `lvpm add`,
-  which does apply it. An install from `lvpm-tui` is a plain install too, and
-  so is `--labview-version` in a project with a venv: both write into the
-  project's venv without applying the limit.
+  project. Inside a project it uses the project's `[sources]` but not its
+  `min-age-days`; outside one it reads the indexes alone. In a project,
+  `lvpm install <name>` with none of those flags is an `lvpm add`, which does
+  apply it. An install from `lvpm-tui` is a plain install too: it writes into
+  the project's venv when there is one, else into the newest LabVIEW
+  installation. `--labview-version` in a project with a venv writes into that
+  venv. Neither applies the limit.
 
 ## `[dependencies]`
 
