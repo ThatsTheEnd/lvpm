@@ -528,7 +528,7 @@ graph TD
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: Versions younger than the limit are held back
+- [x] Slice 1: Versions younger than the limit are held back
   - [x] Step 1.1: Read `Package.Release Date` into each feed entry
   - [x] Step 1.2: Read `[sources] min-age-days` from the manifest
   - [x] Step 1.3: The solver holds back versions younger than the limit, except exact pins
