@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.16.0...v0.17.0) (2026-11-01)
+
+
+### Features
+
+* **s4:** GitHub Releases as a feed ([#98](https://github.com/ThatsTheEnd/lvpm/issues/98)) ([a3c376c](https://github.com/ThatsTheEnd/lvpm/commit/a3c376c33333cf8c75280aa20165cce4b1895051))
+
 ## [0.16.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.15.0...v0.16.0) (2026-10-31)
 
 
