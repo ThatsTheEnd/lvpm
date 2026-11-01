@@ -139,9 +139,11 @@ offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
   as too new.
 - Pinning matters: an exact pin is exempt from min-age-days, so `alpha = "1.1"` locks 1.1 even
   when it is three days old. So is a version named on `lvpm add alpha@1.1`
-  or `lvpm lock --upgrade-package alpha@1.1`, but the flag pins only for that
-  run. To keep a young version across later re-locks, pin it exactly in
-  `lvpm.toml`.
+  or `lvpm lock --upgrade-package alpha@1.1`. When the manifest's constraint
+  already admits that version, the upgrade flag pins only for that run; when
+  it excludes it, lvpm rewrites the entry to the exact version, so the pin
+  stays in `lvpm.toml`. To keep a young version across later re-locks, pin it
+  exactly in `lvpm.toml`.
 - It protects only as far as you trust the release date the feed lists; lvpm
   cannot check that date.
 - A held-back version never falls through to a later source: the first

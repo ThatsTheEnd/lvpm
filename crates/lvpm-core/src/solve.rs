@@ -63,8 +63,8 @@ pub enum SolveError {
     Cancelled,
 }
 
-/// Solve `constraints` (a manifest's direct dependencies, in file order)
-/// against `index`.
+/// Solve `constraints` (a manifest's dependencies and dev-dependencies, in file
+/// order, plus any exact pins an upgrade adds for the run) against `index`.
 ///
 /// `prefs` are versions to keep when they still fit, such as the ones an
 /// existing lock holds: a new upstream release then changes nothing. `first`
@@ -74,8 +74,8 @@ pub enum SolveError {
 /// (`lv_min`, so 24.0 for LabVIEW 2024): no package that needs a newer LabVIEW
 /// is chosen. `None` applies no gate. `age` holds back every version released
 /// less than its days ago, except a version pinned exactly, by a manifest line
-/// or by the pins an upgrade names for that run; `None`
-/// holds nothing back. A cancelled `cancel` stops the solver.
+/// or by the pins an upgrade names for that run; `None` holds nothing back.
+/// Cancelling `cancel` stops the solver.
 pub fn solve(
     constraints: &[(String, Constraint)],
     index: &Index,
@@ -748,8 +748,8 @@ struct HeldVersion {
 }
 
 /// The held-back versions as facts: one `AllHeldBack` per package that has
-/// held-back versions and no requirement failure (the versions are as
-/// `Fact::AllHeldBack` describes), in place of one per version, and none of the facts it
+/// held-back versions and requires nothing in the failure (the versions are
+/// as `Fact::AllHeldBack` describes), in place of one per version, and none of the facts it
 /// makes redundant: what the manifest or a requirer asked for (kept in the
 /// fact), the versions no source lists in that range, and the versions that
 /// need a newer LabVIEW. The same goes for the packages that require such a
