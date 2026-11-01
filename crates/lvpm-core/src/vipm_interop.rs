@@ -68,7 +68,7 @@ pub fn parse_toml(text: &str) -> Result<Converted> {
                     project.dependencies.push((name, exact(&key, &s)?));
                 }
             }
-            // shortcut: lvpm has no dependency groups yet (S11), so dev stays dev.
+            // shortcut: VIPM has only `dev-dependencies`, so it maps to the group dev; upgrade if VIPM adds named groups.
             "dev-dependencies" => {
                 for (name, v) in table(&key, value)? {
                     let s = string(&key, &name, v)?;

@@ -218,3 +218,10 @@ Feature: Dependency groups
       | flags            | named                      |
       | --group ci --dev | "--group" and "--dev"      |
       | --group a.b      | "letters, digits, - and _" |
+
+  Scenario: the docs describe the groups that are built
+    Then docs/manifest.md mentions "[dependency-groups.<name>]"
+    And docs/manifest.md mentions "--group"
+    And docs/manifest.md mentions "--no-dev"
+    And docs/manifest.md does not mention "not built in this fork"
+    And docs/usage.md mentions "lvpm sync --group"
