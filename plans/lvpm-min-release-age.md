@@ -2,7 +2,7 @@
 
 **Created**: 2026-10-31
 **Branch**: claude/lvpm-package-age-limit-b8af27
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: tests/features
 **Spec**: [docs/specs/lvpm-min-release-age.md](../docs/specs/lvpm-min-release-age.md)
 
