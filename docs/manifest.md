@@ -107,7 +107,7 @@ public defaults.
 | ---------- | ------- | --------------------------------------------------------------------------------- |
 | `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`. The name is a label.   |
 | `defaults` | boolean | `true` (default): also use the public indexes. `false`: only the sources listed. |
-| `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. See [A minimum release age](#a-minimum-release-age). |
+| `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. A negative value, a non-integer, or a value larger than 4294967295 is an error. See [A minimum release age](#a-minimum-release-age). |
 
 Because `defaults` and `min-age-days` are keys here, a source can't use either as its label.
 
@@ -127,7 +127,10 @@ date is less than 14 days ago; it takes the newest version that is old enough.
 This applies to direct and transitive dependencies. A version with no release
 date is allowed: entries a feed lists without one, local `.vip` directories,
 `lvpm cache add` imports and `.lvpkg` files all have no release date, so the
-limit does not protect against them.
+limit does not protect against them. A release date lvpm cannot read is
+treated the same way, as undated and allowed. It reads RFC 2822 dates
+(`Thu, 19 May 2016 15:46:24 GMT`) ending in `GMT` or a `±HHMM` offset; an
+offset without a sign is read as positive.
 
 - The limit is whole days of 86400 seconds, counted from the release date
   the feed lists. Dates are shown in UTC. A release date in the future counts

@@ -40,7 +40,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 "held back {name} {version} by min-age-days = {min_age_days} (released {}, \
                  eligible {}); using {chosen}",
                 released::day(*released),
-                released::day(*eligible)
+                released::first_whole_day_from(*eligible)
             ),
         ),
         Event::LockChanged { changes } => {
@@ -183,7 +183,7 @@ fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
     let mut rest = Vec::new();
     for fact in &conflict.facts {
         match fact {
-            Fact::TooNew(held) => blocks.push(too_new_text(held)),
+            Fact::AllHeldBack(held) => blocks.push(all_held_back_text(held)),
             other => rest.push(other),
         }
     }
@@ -195,7 +195,7 @@ fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
 
 /// Every version of `package` that `wanted` admits is held back: each with
 /// its release and the day it is eligible, and the way on.
-fn too_new_text(held: &AllHeldBack) -> String {
+fn all_held_back_text(held: &AllHeldBack) -> String {
     let AllHeldBack {
         package,
         versions,
@@ -209,19 +209,19 @@ fn too_new_text(held: &AllHeldBack) -> String {
     );
     let eligible: Vec<i64> = versions
         .iter()
-        .map(|(_, released)| released::eligible(*released, *days))
+        .map(|(_, released)| released::eligible_at(*released, *days))
         .collect();
     for ((version, released), eligible) in versions.iter().zip(&eligible) {
         text.push_str(&format!(
             "\n  {version} released {}, eligible {}",
             released::day(*released),
-            released::day(*eligible)
+            released::first_whole_day_from(*eligible)
         ));
     }
     let earliest = eligible
         .iter()
         .min()
-        .map(|time| format!("wait until {}, ", released::day(*time)))
+        .map(|time| format!("wait until {}, ", released::first_whole_day_from(*time)))
         .unwrap_or_default();
     text.push_str(&format!(
         "\nnext: {earliest}lower min-age-days, or pin an exact version of {package} in lvpm.toml"
@@ -347,6 +347,7 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
 mod tests {
     use super::super::tests::renderer;
     use super::*;
+    use lvpm_core::released::SECS_PER_DAY;
     use std::path::PathBuf;
 
     #[test]
@@ -391,13 +392,13 @@ mod tests {
             version: "1.1".into(),
             chosen: "1.0".into(),
             released,
-            eligible: released::eligible(released, 14),
+            eligible: released::eligible_at(released, 14),
             min_age_days: 14,
         });
         assert_eq!(
             err.text(),
             "held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible \
-             2026-11-11); using 1.0\n"
+             2026-11-12); using 1.0\n"
         );
         assert_eq!(out.text(), "");
     }
@@ -672,12 +673,14 @@ mod tests {
 
     /// 2023-11-14T22:13:20Z.
     const NOW: i64 = 1_700_000_000;
-    const DAY: i64 = 86_400;
 
-    fn too_new(requirer: Option<&str>, days: u32) -> Fact {
-        Fact::TooNew(AllHeldBack {
+    fn all_held(requirer: Option<&str>, days: u32) -> Fact {
+        Fact::AllHeldBack(AllHeldBack {
             package: "alpha".into(),
-            versions: vec![("1.2".into(), NOW - 2 * DAY), ("1.1".into(), NOW - 3 * DAY)],
+            versions: vec![
+                ("1.2".into(), NOW - 2 * SECS_PER_DAY),
+                ("1.1".into(), NOW - 3 * SECS_PER_DAY),
+            ],
             wanted: ">= 1.1".into(),
             required_by: requirer.map(String::from),
             days,
@@ -687,14 +690,14 @@ mod tests {
     #[test]
     fn versions_all_held_back_are_listed_newest_first_with_the_day_each_is_eligible() {
         let text = error(&LockError::Conflict(Conflict {
-            facts: vec![too_new(None, 14)],
+            facts: vec![all_held(None, 14)],
         }));
         assert_eq!(
             text,
             "alpha >=1.1: every version is held back by min-age-days = 14\n\
-             \x20 1.2 released 2023-11-12, eligible 2023-11-26\n\
-             \x20 1.1 released 2023-11-11, eligible 2023-11-25\n\
-             next: wait until 2023-11-25, lower min-age-days, or pin an exact version of alpha \
+             \x20 1.2 released 2023-11-12, eligible 2023-11-27\n\
+             \x20 1.1 released 2023-11-11, eligible 2023-11-26\n\
+             next: wait until 2023-11-26, lower min-age-days, or pin an exact version of alpha \
              in lvpm.toml"
         );
     }
@@ -702,7 +705,7 @@ mod tests {
     #[test]
     fn a_held_back_requirement_says_who_requires_it() {
         let text = error(&LockError::Conflict(Conflict {
-            facts: vec![too_new(Some("beta"), 14)],
+            facts: vec![all_held(Some("beta"), 14)],
         }));
         assert!(
             text.ends_with("in lvpm.toml (it is required by beta)"),
@@ -713,7 +716,7 @@ mod tests {
     #[test]
     fn the_longest_limit_renders_without_overflowing() {
         let text = error(&LockError::Conflict(Conflict {
-            facts: vec![too_new(None, u32::MAX)],
+            facts: vec![all_held(None, u32::MAX)],
         }));
         assert!(
             text.starts_with(
@@ -724,14 +727,14 @@ mod tests {
         // The release plus u32::MAX days is year 11 761 244, not a wrapped or capped day.
         assert!(
             text.contains(
-                "\n  1.2 released 2023-11-12, eligible 11761244-11-30\n  \
-                 1.1 released 2023-11-11, eligible 11761244-11-29\n"
+                "\n  1.2 released 2023-11-12, eligible 11761244-12-01\n  \
+                 1.1 released 2023-11-11, eligible 11761244-11-30\n"
             ),
             "{text}"
         );
         assert!(
             text.ends_with(
-                "\nnext: wait until 11761244-11-29, lower min-age-days, or pin an exact \
+                "\nnext: wait until 11761244-11-30, lower min-age-days, or pin an exact \
                  version of alpha in lvpm.toml"
             ),
             "{text}"
@@ -743,10 +746,10 @@ mod tests {
         let text = error(&LockError::Conflict(Conflict {
             facts: vec![
                 manifest("a", "*"),
-                Fact::VersionTooNew {
+                Fact::VersionHeldBack {
                     package: "a".into(),
                     version: "1.1".into(),
-                    released: NOW - 3 * DAY,
+                    released: NOW - 3 * SECS_PER_DAY,
                     days: 14,
                 },
             ],
@@ -764,7 +767,7 @@ mod tests {
     fn what_is_wrong_besides_the_held_back_versions_follows_in_the_general_report() {
         let text = error(&LockError::Conflict(Conflict {
             facts: vec![
-                too_new(None, 14),
+                all_held(None, 14),
                 Fact::NotListed {
                     package: "zeta".into(),
                 },

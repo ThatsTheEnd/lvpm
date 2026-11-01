@@ -7,7 +7,7 @@
 
 const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 60 * SECS_PER_MINUTE;
-const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
+pub const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
 const MAX_ZONE_HOURS: i64 = 14;
 
 // Days-from-civil calendar arithmetic (Howard Hinnant's `chrono`-compatible
@@ -112,21 +112,25 @@ fn zone_offset(zone: &str) -> Option<i64> {
 
 /// The Unix time `days` whole days after `released`: when a version held back
 /// by a minimum age becomes eligible. Saturates rather than overflows.
-pub fn eligible(released: i64, days: u32) -> i64 {
+pub fn eligible_at(released: i64, days: u32) -> i64 {
     released.saturating_add(i64::from(days) * SECS_PER_DAY)
-}
-
-/// The clock, in Unix seconds.
-pub fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 /// The UTC day of a Unix time, `YYYY-MM-DD`.
 pub fn day(time: i64) -> String {
-    let (year, month, day) = civil_from_days(time.div_euclid(SECS_PER_DAY));
+    day_text(time.div_euclid(SECS_PER_DAY))
+}
+
+/// The first whole UTC day on which a version eligible at `time` can be
+/// locked: the day of `time` when it is exactly midnight, else the day after.
+/// (`day(time)` is a day on which the version can still be refused.)
+pub fn first_whole_day_from(time: i64) -> String {
+    let days = time.div_euclid(SECS_PER_DAY) + i64::from(time.rem_euclid(SECS_PER_DAY) != 0);
+    day_text(days)
+}
+
+fn day_text(days_since_epoch: i64) -> String {
+    let (year, month, day) = civil_from_days(days_since_epoch);
     format!("{year:04}-{month:02}-{day:02}")
 }
 
@@ -273,15 +277,32 @@ mod tests {
 
     #[test]
     fn a_release_is_eligible_whole_days_later_and_never_overflows() {
-        assert_eq!(eligible(1_700_000_000, 14), 1_700_000_000 + 14 * 86_400);
-        assert_eq!(day(eligible(1_700_000_000, 14)), "2023-11-28");
-        assert_eq!(eligible(1_700_000_000, 0), 1_700_000_000);
-        assert_eq!(eligible(i64::MAX, u32::MAX), i64::MAX);
         assert_eq!(
-            eligible(0, u32::MAX),
+            eligible_at(1_700_000_000, 14),
+            1_700_000_000 + 14 * SECS_PER_DAY
+        );
+        assert_eq!(day(eligible_at(1_700_000_000, 14)), "2023-11-28");
+        assert_eq!(eligible_at(1_700_000_000, 0), 1_700_000_000);
+        assert_eq!(eligible_at(i64::MAX, u32::MAX), i64::MAX);
+        assert_eq!(
+            eligible_at(0, u32::MAX),
             i64::from(u32::MAX) * SECS_PER_DAY,
             "u32::MAX days fit an i64"
         );
+    }
+
+    #[test]
+    fn the_first_whole_day_rounds_up_unless_the_instant_is_midnight() {
+        let midnight = 1_700_006_400; // 2023-11-15T00:00:00Z
+        assert_eq!(first_whole_day_from(midnight), "2023-11-15");
+        assert_eq!(first_whole_day_from(midnight + 1), "2023-11-16");
+        assert_eq!(first_whole_day_from(midnight - 1), "2023-11-15");
+        assert_eq!(
+            first_whole_day_from(midnight + SECS_PER_DAY - 1),
+            "2023-11-16"
+        );
+        assert_eq!(first_whole_day_from(-1), "1970-01-01");
+        assert_eq!(first_whole_day_from(0), "1970-01-01");
     }
 
     #[test]

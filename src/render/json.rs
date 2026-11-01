@@ -220,7 +220,7 @@ mod tests {
                 version: "1.1".into(),
                 chosen: "1.0".into(),
                 released,
-                eligible: lvpm_core::released::eligible(released, 14),
+                eligible: lvpm_core::released::eligible_at(released, 14),
                 min_age_days: 14,
             }),
             serde_json::json!({"event": "held_back", "data":

@@ -16,11 +16,12 @@ use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR};
 use cucumber::{given, then, when};
 use lvpm_core::lockfile::LOCAL_SOURCE;
 use lvpm_core::manifest_edit::DependencyTable;
-use lvpm_core::released;
+use lvpm_core::released::{self, SECS_PER_DAY};
 use regex::{Captures, Regex};
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
 const FIRST: &str = "/first/";
@@ -68,7 +69,6 @@ async fn two_sources(world: &mut CliWorld, year: String) {
 
 // ---- what a feed lists, and when each version was released ----
 
-const SECS_PER_DAY: i64 = 86_400;
 /// The oldest LabVIEW the fixtures run on, as the feeds write it.
 const ANY_LABVIEW: &str = "20.0";
 const SIGNED_OFFSET: &str = "a signed offset";
@@ -184,11 +184,14 @@ fn lv_min_of(item: &Captures) -> &'static str {
     })
 }
 
+/// The groups of `LISTED` that say more of a version than its name and version.
+const DETAILS: [&str; 5] = ["year", "days", "undated", "raw", "requires"];
+
 /// The fixture of a version the step says no more of, else a package of
 /// what it does say.
 fn package_of(item: &Captures) -> &'static FixturePackage {
     let (name, version) = (&item["name"], &item["version"]);
-    if item.iter().skip(3).all(|group| group.is_none()) {
+    if DETAILS.iter().all(|detail| item.name(detail).is_none()) {
         return fixture(name, version);
     }
     Box::leak(Box::new(FixturePackage {
@@ -212,7 +215,10 @@ fn listed_in(text: &str) -> Vec<Listed> {
             .all(|word| word.is_empty() || word == "and"),
         "{text:?} says more than a list of versions: {leftover:?} is left"
     );
-    let now = released::now();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs() as i64;
     LISTED
         .captures_iter(text)
         .map(|item| {
@@ -402,19 +408,19 @@ async fn fails_with_the_min_age_days_error(
     let mut eligible = Vec::new();
     for version in VERSION.find_iter(&listing) {
         let at = world.listings.released(&name, version.as_str());
-        let due = released::eligible(at, days);
+        let due = released::eligible_at(at, days);
         eligible.push(due);
         expected.push_str(&format!(
             "\n  {} released {}, eligible {}",
             version.as_str(),
             released::day(at),
-            released::day(due)
+            released::first_whole_day_from(due)
         ));
     }
     let earliest = eligible.into_iter().min().expect("a version is listed");
     expected.push_str(&format!(
         "\nnext: wait until {}, lower min-age-days, or pin an exact version of {name} in lvpm.toml",
-        released::day(earliest)
+        released::first_whole_day_from(earliest)
     ));
     let printed = world.printed();
     assert!(
@@ -441,7 +447,7 @@ async fn stderr_has_the_held_back_line(
     let expected = format!(
         "held back {name} {version} by min-age-days = {days} (released {}, eligible {}); using {chosen}",
         released::day(at),
-        released::day(released::eligible(at, days))
+        released::first_whole_day_from(released::eligible_at(at, days))
     );
     let stderr = &world.output().stderr;
     assert!(

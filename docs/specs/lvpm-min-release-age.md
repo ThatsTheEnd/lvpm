@@ -75,7 +75,9 @@ constraint, the limit and the versions skipped with their release dates.
 
 **Out of scope.** A per-user default (`lvpm config`), a CLI flag, a
 per-package exclude list, hours or other units, and global installs outside a
-project (they have no manifest).
+project (they have no manifest). `lvpm install <name>` with `--global`,
+`--prefix` or `--labview-version` never applies the limit: it does not
+resolve through the solver.
 
 **Constraints.**
 

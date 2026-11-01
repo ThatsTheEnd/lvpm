@@ -235,7 +235,7 @@ fn too_new(released: Option<i64>, limit: &AgeLimit) -> bool {
     if limit.days == 0 {
         return false;
     }
-    released.is_some_and(|released| limit.now < released::eligible(released, limit.days))
+    released.is_some_and(|released| limit.now < released::eligible_at(released, limit.days))
 }
 
 /// Why a listed version is not chosen.
@@ -341,6 +341,9 @@ impl Provider<'_> {
     /// shortcut: a too-new version whose own requirements would also have
     /// conflicted is still reported; check them too if that over-reports.
     fn held_back_in(&self, chosen: &BTreeMap<String, Entry>) -> Vec<HeldBack> {
+        if self.age.is_none() {
+            return Vec::new();
+        }
         chosen
             .iter()
             .filter(|(key, picked)| self.prefs.get(*key) != Some(&picked.version))
@@ -364,18 +367,18 @@ impl Provider<'_> {
             .collect()
     }
 
-    /// The versions of `key` the manifest's lines and the requirements of the
+    /// The versions of `package_key` the manifest's lines and the requirements of the
     /// `chosen` packages all admit.
-    fn admitted(&self, key: &str, chosen: &BTreeMap<String, Entry>) -> Ranges<Version> {
+    fn admitted(&self, package_key: &str, chosen: &BTreeMap<String, Entry>) -> Ranges<Version> {
         let asked = self
             .direct
             .iter()
-            .filter(|(name, _)| name == key)
+            .filter(|(name, _)| name == package_key)
             .map(|(_, range)| range.clone());
         let required = chosen
             .values()
             .flat_map(|entry| &entry.requires)
-            .filter(|requirement| self::key(&requirement.name) == key)
+            .filter(|requirement| key(&requirement.name) == package_key)
             .map(|requirement| floor_range(requirement.floor().as_ref()));
         asked
             .chain(required)
@@ -565,12 +568,12 @@ pub enum Fact {
     },
     /// Every version of a package that the manifest or a requirement admits
     /// and the project's LabVIEW runs is younger than the age limit.
-    TooNew(AllHeldBack),
+    AllHeldBack(AllHeldBack),
     /// `package` at `version`, released at `released` (Unix seconds), is
     /// younger than `days` days. Of a package whose other versions fail for
     /// another reason too, so that not every version is held back: see
-    /// `TooNew`.
-    VersionTooNew {
+    /// `AllHeldBack`.
+    VersionHeldBack {
         package: String,
         version: String,
         released: i64,
@@ -606,7 +609,7 @@ impl Fact {
         match self {
             Fact::Manifest { .. } | Fact::Pinned { .. } => 0,
             Fact::Requires { .. } => 1,
-            Fact::NeedsLabview { .. } | Fact::TooNew(_) | Fact::VersionTooNew { .. } => 2,
+            Fact::NeedsLabview { .. } | Fact::AllHeldBack(_) | Fact::VersionHeldBack { .. } => 2,
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
         }
@@ -638,7 +641,7 @@ impl fmt::Display for Fact {
                 f,
                 "{package} {versions} from {from} needs LabVIEW {needs_year}, and the project's is {project_year}"
             ),
-            Fact::TooNew(AllHeldBack {
+            Fact::AllHeldBack(AllHeldBack {
                 package,
                 versions,
                 days,
@@ -654,7 +657,7 @@ impl fmt::Display for Fact {
                     held.join(", ")
                 )
             }
-            Fact::VersionTooNew {
+            Fact::VersionHeldBack {
                 package,
                 version,
                 released,
@@ -735,14 +738,14 @@ impl Conflict {
 
 /// A version the age limit holds back; pubgrub reports one per version.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct TooNewVersion {
+struct HeldVersion {
     package: String,
     version: Version,
     released: i64,
     days: u32,
 }
 
-/// The held-back versions as facts: one `TooNew` per package every version of
+/// The held-back versions as facts: one `AllHeldBack` per package every version of
 /// which is held back, in place of one per version, and none of the facts it
 /// makes redundant: what the manifest or a requirer asked for (kept in the
 /// fact), the versions no source lists in that range, and the versions that
@@ -753,8 +756,8 @@ struct TooNewVersion {
 /// (its older version may fail on that requirement), and a requirer with a
 /// requirement that is not held back fails for that too. Their facts stay as
 /// they are, for the general report, and the held-back versions of such a
-/// package are one `VersionTooNew` each.
-fn merge_held_back(facts: Vec<Fact>, held: Vec<TooNewVersion>) -> Vec<Fact> {
+/// package are one `VersionHeldBack` each.
+fn merge_held_back(facts: Vec<Fact>, held: Vec<HeldVersion>) -> Vec<Fact> {
     let mut packages: Vec<&str> = Vec::new();
     for version in &held {
         if !packages.contains(&version.package.as_str()) {
@@ -769,7 +772,7 @@ fn merge_held_back(facts: Vec<Fact>, held: Vec<TooNewVersion>) -> Vec<Fact> {
     let failing = failing_packages(&facts, &packages, &all_held);
     let mut merged: Vec<Fact> = all_held
         .iter()
-        .map(|package| Fact::TooNew(all_held_back(package, &facts, &held)))
+        .map(|package| Fact::AllHeldBack(all_held_back(package, &facts, &held)))
         .collect();
     for package in packages
         .iter()
@@ -778,7 +781,7 @@ fn merge_held_back(facts: Vec<Fact>, held: Vec<TooNewVersion>) -> Vec<Fact> {
         merged.extend(
             newest_first(package, &held)
                 .into_iter()
-                .map(|held| Fact::VersionTooNew {
+                .map(|held| Fact::VersionHeldBack {
                     package: held.package.clone(),
                     version: held.version.to_string(),
                     released: held.released,
@@ -833,8 +836,8 @@ fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&
         }
         Fact::Pinned { .. }
         | Fact::NotListed { .. }
-        | Fact::TooNew(_)
-        | Fact::VersionTooNew { .. } => false,
+        | Fact::AllHeldBack(_)
+        | Fact::VersionHeldBack { .. } => false,
     }
 }
 
@@ -851,7 +854,7 @@ fn requirements<'a>(facts: &'a [Fact], package: &'a str) -> impl Iterator<Item =
 }
 
 /// The held-back versions of `package`, newest first.
-fn newest_first<'a>(package: &str, held: &'a [TooNewVersion]) -> Vec<&'a TooNewVersion> {
+fn newest_first<'a>(package: &str, held: &'a [HeldVersion]) -> Vec<&'a HeldVersion> {
     let mut versions: Vec<_> = held.iter().filter(|held| held.package == package).collect();
     versions.sort_by(|a, b| b.version.cmp(&a.version));
     versions
@@ -859,7 +862,7 @@ fn newest_first<'a>(package: &str, held: &'a [TooNewVersion]) -> Vec<&'a TooNewV
 
 /// What `package`, every version of which is held back, comes to: the versions
 /// newest first, and who asked for it.
-fn all_held_back(package: &str, facts: &[Fact], held: &[TooNewVersion]) -> AllHeldBack {
+fn all_held_back(package: &str, facts: &[Fact], held: &[HeldVersion]) -> AllHeldBack {
     let versions = newest_first(package, held);
     let by_manifest = facts.iter().find_map(|fact| match fact {
         Fact::Manifest {
@@ -903,7 +906,7 @@ fn collect_facts(
     names: &Names,
     walked: &mut HashSet<usize>,
     facts: &mut Vec<Fact>,
-    held: &mut Vec<TooNewVersion>,
+    held: &mut Vec<HeldVersion>,
 ) {
     let fact = match tree {
         DerivationTree::Derived(derived) => {
@@ -961,7 +964,7 @@ fn collect_facts(
             versions,
             Unavailable::TooNew { released, days },
         )) => {
-            let version = TooNewVersion {
+            let version = HeldVersion {
                 package: names.of(package),
                 version: Version::parse(&subject(versions)),
                 released: *released,
@@ -1014,6 +1017,7 @@ fn subject(set: &Ranges<Version>) -> String {
 mod tests {
     use super::*;
     use crate::index::Requirement;
+    use crate::released::SECS_PER_DAY;
     use std::cmp::Ordering;
 
     fn entry(name: &str, version: &str, requires: &[(&str, &str)]) -> Entry {
@@ -1495,7 +1499,6 @@ mod tests {
     // ---- the age limit ----
 
     const NOW: i64 = 1_700_000_000;
-    const DAY: i64 = 86_400;
     const LIMIT_DAYS: u32 = 14;
     const LIMIT: Option<AgeLimit> = Some(AgeLimit {
         now: NOW,
@@ -1505,7 +1508,7 @@ mod tests {
     /// An entry released `days_ago` days before `NOW`.
     fn released(name: &str, version: &str, days_ago: i64) -> Entry {
         Entry {
-            released: Some(NOW - days_ago * DAY),
+            released: Some(NOW - days_ago * SECS_PER_DAY),
             ..entry(name, version, &[])
         }
     }
@@ -1529,7 +1532,7 @@ mod tests {
     #[test]
     fn a_version_exactly_the_limit_old_is_eligible_and_one_second_younger_is_not() {
         let limit = LIMIT.unwrap();
-        let age = i64::from(LIMIT_DAYS) * DAY;
+        let age = i64::from(LIMIT_DAYS) * SECS_PER_DAY;
         assert!(!too_new(Some(NOW - age), &limit));
         assert!(too_new(Some(NOW - age + 1), &limit));
         assert!(!too_new(Some(NOW - age - 1), &limit));
@@ -1544,7 +1547,7 @@ mod tests {
     fn a_limit_of_zero_days_holds_nothing_back_not_even_the_future() {
         let off = AgeLimit { now: NOW, days: 0 };
         assert!(!too_new(Some(NOW), &off));
-        assert!(!too_new(Some(NOW + DAY), &off));
+        assert!(!too_new(Some(NOW + SECS_PER_DAY), &off));
         assert!(!too_new(None, &off));
     }
 
@@ -1619,18 +1622,6 @@ mod tests {
         // A second line for the package does not take the pin's exemption away.
         let both = run_aged(&[("a", "1.1"), ("a", ">=1.0")], &index, &[], None, LIMIT);
         assert_eq!(chosen(&both.expect("solves")), [("a", "1.1")]);
-        // A floor is not a pin: `>=1.1` admits only versions that are too new.
-        let floor = held_back_facts(run_aged(&[("a", ">=1.1")], &index, &[], None, LIMIT));
-        assert_eq!(
-            floor,
-            [Fact::TooNew(AllHeldBack {
-                package: "a".into(),
-                versions: vec![("1.2".into(), NOW - 2 * DAY), ("1.1".into(), NOW - 3 * DAY)],
-                wanted: ">= 1.1".into(),
-                required_by: None,
-                days: LIMIT_DAYS,
-            })]
-        );
     }
 
     #[test]
@@ -1658,9 +1649,12 @@ mod tests {
         let facts = held_back_facts(run_aged(&[("a", ">=1.1")], &index, &[], None, LIMIT));
         assert_eq!(
             facts,
-            [Fact::TooNew(AllHeldBack {
+            [Fact::AllHeldBack(AllHeldBack {
                 package: "a".into(),
-                versions: vec![("1.2".into(), NOW - 2 * DAY), ("1.1".into(), NOW - 3 * DAY)],
+                versions: vec![
+                    ("1.2".into(), NOW - 2 * SECS_PER_DAY),
+                    ("1.1".into(), NOW - 3 * SECS_PER_DAY)
+                ],
                 wanted: ">= 1.1".into(),
                 required_by: None,
                 days: LIMIT_DAYS,
@@ -1678,7 +1672,7 @@ mod tests {
         };
         let facts = held_back_facts(run_aged(&[("a", "*")], &index, &[], None, LIMIT));
         let [
-            Fact::TooNew(AllHeldBack {
+            Fact::AllHeldBack(AllHeldBack {
                 package,
                 wanted,
                 required_by,
@@ -1686,7 +1680,7 @@ mod tests {
             }),
         ] = &facts[..]
         else {
-            panic!("expected one TooNew fact, got {facts:?}");
+            panic!("expected one AllHeldBack fact, got {facts:?}");
         };
         assert_eq!(
             (package.as_str(), wanted.as_str(), required_by.as_deref()),
@@ -1702,10 +1696,10 @@ mod tests {
             entries: vec![released("a", "1.1", 3), gated],
         };
         let facts = held_back_facts(run_aged(&[("a", ">=1.1")], &index, &[], Some(24.0), LIMIT));
-        let [Fact::TooNew(AllHeldBack { versions, .. })] = &facts[..] else {
-            panic!("expected only a TooNew fact, got {facts:?}");
+        let [Fact::AllHeldBack(AllHeldBack { versions, .. })] = &facts[..] else {
+            panic!("expected only an AllHeldBack fact, got {facts:?}");
         };
-        assert_eq!(versions, &[("1.1".to_string(), NOW - 3 * DAY)]);
+        assert_eq!(versions, &[("1.1".to_string(), NOW - 3 * SECS_PER_DAY)]);
     }
 
     #[test]
@@ -1728,11 +1722,11 @@ mod tests {
         );
     }
 
-    fn too_new_version(package: &str, version: &str, days_ago: i64) -> TooNewVersion {
-        TooNewVersion {
+    fn held_version(package: &str, version: &str, days_ago: i64) -> HeldVersion {
+        HeldVersion {
             package: package.into(),
             version: Version::parse(version),
-            released: NOW - days_ago * DAY,
+            released: NOW - days_ago * SECS_PER_DAY,
             days: LIMIT_DAYS,
         }
     }
@@ -1759,7 +1753,7 @@ mod tests {
             package: package.into(),
             versions: versions
                 .iter()
-                .map(|(version, days_ago)| (version.to_string(), NOW - days_ago * DAY))
+                .map(|(version, days_ago)| (version.to_string(), NOW - days_ago * SECS_PER_DAY))
                 .collect(),
             wanted: wanted.into(),
             required_by: None,
@@ -1768,17 +1762,17 @@ mod tests {
     }
 
     fn all_held_back_for(requirer: &str, held: AllHeldBack) -> Fact {
-        Fact::TooNew(AllHeldBack {
+        Fact::AllHeldBack(AllHeldBack {
             required_by: Some(requirer.into()),
             ..held
         })
     }
 
-    fn version_too_new(package: &str, version: &str, days_ago: i64) -> Fact {
-        Fact::VersionTooNew {
+    fn version_held_back(package: &str, version: &str, days_ago: i64) -> Fact {
+        Fact::VersionHeldBack {
             package: package.into(),
             version: version.into(),
-            released: NOW - days_ago * DAY,
+            released: NOW - days_ago * SECS_PER_DAY,
             days: LIMIT_DAYS,
         }
     }
@@ -1796,14 +1790,11 @@ mod tests {
             unrelated[0].clone(),
             unrelated[1].clone(),
         ];
-        let held = vec![
-            too_new_version("a", "1.1", 3),
-            too_new_version("a", "1.2", 2),
-        ];
+        let held = vec![held_version("a", "1.1", 3), held_version("a", "1.2", 2)];
         assert_eq!(
             merge_held_back(facts, held),
             [
-                Fact::TooNew(all_held_back_of("a", &[("1.2", 2), ("1.1", 3)], ">= 1.0")),
+                Fact::AllHeldBack(all_held_back_of("a", &[("1.2", 2), ("1.1", 3)], ">= 1.0")),
                 unrelated[0].clone(),
                 unrelated[1].clone(),
             ]
@@ -1828,7 +1819,7 @@ mod tests {
                 manifest_fact("a", "*"),
                 requires_fact("a", "1.0", "b", ">= 2.0"),
                 all_held_back_for("a", all_held_back_of("b", &[("2.0", 3)], ">= 2.0")),
-                version_too_new("a", "1.1", 3),
+                version_held_back("a", "1.1", 3),
             ]
         );
     }
@@ -1856,7 +1847,7 @@ mod tests {
                 manifest_fact("a", "*"),
                 manifest_fact("c", "= 1.0"),
                 requires_fact("a", "1.0", "c", ">= 2.0"),
-                version_too_new("a", "1.1", 3),
+                version_held_back("a", "1.1", 3),
             ]
         );
         assert!(
@@ -1873,16 +1864,31 @@ mod tests {
             requires_fact("a", "1.0", "b", ">= 2.0"),
             requires_fact("a", "1.0", "d", ">= 1.0"),
         ];
-        let held = vec![
-            too_new_version("b", "2.0", 3),
-            too_new_version("d", "1.0", 3),
-        ];
+        let held = vec![held_version("b", "2.0", 3), held_version("d", "1.0", 3)];
         assert_eq!(
             merge_held_back(facts, held),
             [
                 all_held_back_for("a", all_held_back_of("b", &[("2.0", 3)], ">= 2.0")),
                 all_held_back_for("a", all_held_back_of("d", &[("1.0", 3)], ">= 1.0")),
             ]
+        );
+    }
+
+    #[test]
+    fn a_requirer_of_a_failing_requirer_fails_only_because_of_the_held_back_package_too() {
+        // c is held back, so b (which needs only c) fails, and so does a
+        // (which needs only b): a second pass of `failing_packages`.
+        let facts = vec![
+            manifest_fact("a", "*"),
+            requires_fact("a", "1.0", "b", ">= 1.0"),
+            requires_fact("b", "1.0", "c", ">= 1.0"),
+        ];
+        assert_eq!(
+            merge_held_back(facts, vec![held_version("c", "1.0", 3)]),
+            [all_held_back_for(
+                "b",
+                all_held_back_of("c", &[("1.0", 3)], ">= 1.0")
+            )]
         );
     }
 
@@ -1898,7 +1904,7 @@ mod tests {
                 from: String::new(),
             },
         ];
-        let merged = merge_held_back(facts.clone(), vec![too_new_version("b", "2.0", 3)]);
+        let merged = merge_held_back(facts.clone(), vec![held_version("b", "2.0", 3)]);
         assert_eq!(
             merged,
             [
@@ -1958,7 +1964,7 @@ mod tests {
             name: name.into(),
             version: version.into(),
             chosen: chosen.into(),
-            released: NOW - days_ago * DAY,
+            released: NOW - days_ago * SECS_PER_DAY,
         }
     }
 

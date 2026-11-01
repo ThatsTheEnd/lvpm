@@ -62,9 +62,19 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And the project depends on "alpha" ">=1.0"
     And I have run "lvpm lock"
     When "first" also lists "alpha" 1.1 released 3 days ago
-    And I run "lvpm lock --upgrade"
+    And I run "lvpm lock --upgrade --refresh"
     Then the command succeeds
     And lvpm.lock takes "alpha" 1.0 from "first"
+    And stderr has the held-back line for "alpha" 1.1 using 1.0
+
+  Scenario: lvpm lock --upgrade-package takes a version younger than the limit
+    Given the project sets min-age-days to 14
+    And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
+    And the project depends on "alpha" ">=1.0"
+    And I have run "lvpm lock"
+    When I run "lvpm lock --upgrade-package alpha@1.1"
+    Then the command succeeds
+    And lvpm.lock takes "alpha" 1.1 from "first"
 
   # Exact pins
   Scenario: an exact pin younger than the limit is locked
@@ -73,6 +83,15 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And the project depends on "alpha" "1.1"
     When I run "lvpm lock"
     Then lvpm.lock takes "alpha" 1.1 from "first"
+
+  Scenario: lvpm sync --locked installs an exact pin younger than the limit
+    Given the project sets min-age-days to 14
+    And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
+    And the project depends on "alpha" "1.1"
+    And I have run "lvpm lock"
+    When I run "lvpm sync --locked --prefix dest"
+    Then the command succeeds
+    And dest's lvpm-installed packages are exactly "alpha" 1.1
 
   Scenario: an exact dev-dependency pin is exempt too
     Given the project sets min-age-days to 14
@@ -240,7 +259,8 @@ Feature: lvpm does not choose a package version younger than min-age-days
     Given the project sets min-age-days to 7
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 10 days ago
     And the project depends on "alpha" ">=1.0"
-    And I have run "lvpm lock"
+    When I run "lvpm lock"
+    Then lvpm.lock takes "alpha" 1.1 from "first"
     When the project sets min-age-days to 14
     And I run "lvpm lock"
     Then lvpm.lock takes "alpha" 1.0 from "first"

@@ -10,7 +10,7 @@ use super::env::OpEnv;
 use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
 use super::sync::Search;
-use crate::cache::sha256_hex;
+use crate::cache::{now, sha256_hex};
 use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError};
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
@@ -426,7 +426,7 @@ fn relock_in(
             version: held.version.clone(),
             chosen: held.chosen.clone(),
             released: held.released,
-            eligible: released::eligible(held.released, project.min_age_days),
+            eligible: released::eligible_at(held.released, project.min_age_days),
             min_age_days: project.min_age_days,
         });
     }
@@ -516,7 +516,7 @@ fn resolve(
         .map(|target| target.name.clone())
         .collect();
     let age = (project.min_age_days > 0).then(|| solve::AgeLimit {
-        now: released::now(),
+        now: now(),
         days: project.min_age_days,
     });
     solve::solve(
@@ -1158,7 +1158,7 @@ mod tests {
                 .find(|(name, version, _)| {
                     entry.name == *name && entry.version == Version::parse(version)
                 })
-                .map(|(_, _, days_ago)| released::now() - days_ago * 86_400);
+                .map(|(_, _, days_ago)| now() - days_ago * released::SECS_PER_DAY);
         }
         (found.1, index)
     }
@@ -1204,7 +1204,7 @@ mod tests {
                 version: "1.5".into(),
                 chosen: "1.0".into(),
                 released,
-                eligible: released + 14 * 86_400,
+                eligible: released + 14 * released::SECS_PER_DAY,
                 min_age_days: 14,
             }]
         );
