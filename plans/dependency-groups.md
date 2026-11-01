@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-01
 **Branch**: claude/ship-dev-team-project-1c8385
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: plan-file-only
 <!-- The repo registers each feature file by hand in tests/acceptance.rs
      FEATURE_FILES; the export script's <dir>/<plan-slug>/ layout does not
@@ -444,16 +444,16 @@ graph TD
   - [x] Step 2.1: Tables, `groups` in the lock, format 2, per-table staleness
 
 #### Wave 3
-- [ ] Slice 3: `lvpm sync --group`
-  - [ ] Step 3.1: Select groups on sync
+- [x] Slice 3: `lvpm sync --group`
+  - [x] Step 3.1: Select groups on sync
 
 #### Wave 4
-- [ ] Slice 4: `lvpm add/remove --group`
-  - [ ] Step 4.1: Edit any table, sync the edited group
+- [x] Slice 4: `lvpm add/remove --group`
+  - [x] Step 4.1: Edit any table, sync the edited group
 
 #### Wave 5
-- [ ] Slice 5: Docs
-  - [ ] Step 5.1: Document groups on the built syntax
+- [x] Slice 5: Docs
+  - [x] Step 5.1: Document groups on the built syntax
 
 ## Plan Review Summary
 
