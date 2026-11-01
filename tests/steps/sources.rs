@@ -3,7 +3,7 @@
 //! The `.lvpkg` scenarios (S7a) are at the end: a package `lvpm build` wrote,
 //! installed from a package folder, the cache or the loopback feed.
 
-use super::lock::{name_and_version_pairs, sha256_hex};
+use super::lock::sha256_hex;
 use super::staleness::{Snapshot, snapshot};
 use crate::CliWorld;
 use crate::support::feed::{PROJECT_FEED_DIR, archive_path, listing, md5_hex};
@@ -15,9 +15,11 @@ use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR};
 use cucumber::{given, then, when};
 use lvpm_core::lockfile::LOCAL_SOURCE;
 use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::released;
 use regex::Regex;
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use zip::write::SimpleFileOptions;
 
 const FIRST: &str = "/first/";
@@ -63,24 +65,256 @@ async fn two_sources(world: &mut CliWorld, year: String) {
     }
 }
 
-#[given(regex = r#"^"(first|second)" lists (.+)$"#)]
-async fn source_lists(world: &mut CliWorld, source: String, packages: String) {
-    let packages: Vec<&FixturePackage> = name_and_version_pairs(&packages)
-        .iter()
-        .map(|(name, version)| fixture(name, version))
-        .collect();
-    let feed = world.sandbox.feed();
-    let body: String = packages
-        .iter()
-        .map(|package| listing(std::slice::from_ref(*package), true))
-        .collect();
-    feed.publish(dir(&source), &body);
-    for package in packages {
-        feed.serve(
-            &archive_path(dir(&source), &package.file_name()),
-            package.build_vip(),
-        );
+// ---- what a feed lists, and when each version was released ----
+
+const SECS_PER_DAY: i64 = 86_400;
+/// The oldest LabVIEW the fixtures run on, as the feeds write it.
+const ANY_LABVIEW: &str = "20.0";
+const SIGNED_OFFSET: &str = "a signed offset";
+const SIGN_LESS_OFFSET: &str = "a sign-less offset";
+/// Where a feed's clock is, east of UTC, when it writes `0530` without a sign.
+const SIGN_LESS_EAST_SECS: i64 = 5 * 3600 + 30 * 60;
+/// The zone of the signed shape, west of UTC.
+const SIGNED_WEST_SECS: i64 = 5 * 3600;
+const WEEKDAYS_FROM_THURSDAY: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// One version a feed lists, with the `Package.Release Date` it writes.
+#[derive(Debug, Clone)]
+struct Listed {
+    package: &'static FixturePackage,
+    /// The date as the feed spells it; `None` for an entry with no date line.
+    date: Option<String>,
+    /// The instant that date is, as the fixture wrote it; `None` when the
+    /// date is not one lvpm can read.
+    released: Option<i64>,
+}
+
+/// What the feeds of a scenario list.
+#[derive(Debug, Default)]
+pub struct ListingState {
+    by_source: std::collections::HashMap<String, Vec<Listed>>,
+}
+
+impl ListingState {
+    /// When the scenario released `name` `version`, if it dated it.
+    fn released(&self, name: &str, version: &str) -> i64 {
+        self.by_source
+            .values()
+            .flatten()
+            .find(|listed| listed.package.name == name && listed.package.version == version)
+            .and_then(|listed| listed.released)
+            .unwrap_or_else(|| panic!("the scenario gave {name} {version} no release date"))
     }
+}
+
+/// `"alpha" 1.1 for LabVIEW 2026 released 3 days ago written as GMT requiring
+/// "beta>=2.0"`: a name and version, then what else the step says of it.
+static LISTED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r#""(?P<name>[^"]+)" (?P<version>\d[\w.\-]*)"#,
+        r#"(?: for LabVIEW (?P<year>\d{4}))?"#,
+        r#"(?: released (?P<days>\d+) days ago(?: written as (?P<shape>a signed offset|GMT|a sign-less offset))?"#,
+        r#"| (?P<undated>with no release date)"#,
+        r#"| with release date "(?P<raw>[^"]*)")?"#,
+        r#"(?: requiring "(?P<requires>[^"]+)")?"#,
+    ))
+    .expect("the pattern")
+});
+
+fn leaked(text: String) -> &'static str {
+    Box::leak(text.into_boxed_str())
+}
+
+/// `time` as a feed writes a date in `shape` (RFC 2822), e.g.
+/// `Thu, 19 May 2016 15:46:24 -0500`, meaning the same instant.
+fn feed_date(time: i64, shape: &str) -> String {
+    let (shift, zone) = match shape {
+        "GMT" => (0, "GMT"),
+        SIGN_LESS_OFFSET => (SIGN_LESS_EAST_SECS, "0530"),
+        SIGNED_OFFSET => (-SIGNED_WEST_SECS, "-0500"),
+        other => panic!("no date shape {other:?}"),
+    };
+    let local = time + shift;
+    let (days, seconds) = (
+        local.div_euclid(SECS_PER_DAY),
+        local.rem_euclid(SECS_PER_DAY),
+    );
+    let day = released::day(local);
+    let mut parts = day
+        .split('-')
+        .map(|part| part.parse::<usize>().expect("a number"));
+    let (year, month, date) = (
+        parts.next().expect("a year"),
+        parts.next().expect("a month"),
+        parts.next().expect("a day"),
+    );
+    format!(
+        "{}, {date:02} {} {year:04} {:02}:{:02}:{:02} {zone}",
+        WEEKDAYS_FROM_THURSDAY[days.rem_euclid(7) as usize],
+        MONTHS[month - 1],
+        seconds / 3600,
+        seconds % 3600 / 60,
+        seconds % 60
+    )
+}
+
+fn real_clock() -> i64 {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after 1970");
+    i64::try_from(since_epoch.as_secs()).expect("the clock fits an i64")
+}
+
+/// The versions `text` lists, as `LISTED` reads them. Whatever it does not
+/// read is an error in the scenario, not something to skip.
+fn listed_in(text: &str) -> Vec<Listed> {
+    let leftover = LISTED.replace_all(text, "");
+    assert!(
+        leftover
+            .split([',', ' '])
+            .all(|word| word.is_empty() || word == "and"),
+        "{text:?} says more than a list of versions: {leftover:?} is left"
+    );
+    let now = real_clock();
+    LISTED
+        .captures_iter(text)
+        .map(|item| {
+            let (name, version) = (&item["name"], &item["version"]);
+            let plain = item.iter().skip(3).all(|group| group.is_none());
+            let package: &'static FixturePackage = match plain {
+                true => fixture(name, version),
+                false => Box::leak(Box::new(FixturePackage {
+                    name: leaked(name.to_string()),
+                    version: leaked(version.to_string()),
+                    display_name: leaked(name.to_string()),
+                    requires: match item.name("requires") {
+                        Some(clause) => {
+                            let (needs, floor) =
+                                clause.as_str().split_once(">=").expect("`name>=floor`");
+                            Box::leak(Box::new([(leaked(needs.into()), leaked(floor.into()))]))
+                        }
+                        None => &[],
+                    },
+                    lv_min: match item.name("year") {
+                        Some(year) => leaked(format!(
+                            "{}.0",
+                            year.as_str().parse::<u32>().expect("a year") - 2000
+                        )),
+                        None => ANY_LABVIEW,
+                    },
+                    payload: Payload::Text,
+                    post_install_hook: None,
+                })),
+            };
+            let released = item.name("days").map(|days| {
+                now - days.as_str().parse::<i64>().expect("a number of days") * SECS_PER_DAY
+            });
+            let shape = item
+                .name("shape")
+                .map_or(SIGNED_OFFSET, |shape| shape.as_str());
+            let date = match (released, item.name("raw")) {
+                (Some(time), _) => Some(feed_date(time, shape)),
+                (None, Some(raw)) => Some(raw.as_str().to_string()),
+                (None, None) => None,
+            };
+            Listed {
+                package,
+                date,
+                released,
+            }
+        })
+        .collect()
+}
+
+impl CliWorld {
+    /// `source` lists what `more` says besides what it listed before; a
+    /// version listed again takes its new date. The listing is revised, as a
+    /// feed that changed is, so a client that cached the old one fetches it.
+    fn list(&mut self, source: &str, more: Vec<Listed>) {
+        let listed = self
+            .listings
+            .by_source
+            .entry(source.to_string())
+            .or_default();
+        for item in more {
+            listed.retain(|known| {
+                (known.package.name, known.package.version)
+                    != (item.package.name, item.package.version)
+            });
+            listed.push(item);
+        }
+        let body: String = listed
+            .iter()
+            .map(|item| {
+                let mut entry = listing(std::slice::from_ref(item.package), true);
+                if let Some(date) = &item.date {
+                    entry.push_str(&format!("Package.Release Date={date}\n"));
+                }
+                entry
+            })
+            .collect();
+        let feed = self.sandbox.feed();
+        feed.revise(dir(source), &body);
+        for item in &*listed {
+            feed.serve(
+                &archive_path(dir(source), &item.package.file_name()),
+                item.package.build_vip(),
+            );
+        }
+    }
+}
+
+#[given(regex = r#"^"(first|second)" (?:also )?lists (.+)$"#)]
+#[when(regex = r#"^"(first|second)" (?:also )?lists (.+)$"#)]
+async fn source_lists(world: &mut CliWorld, source: String, packages: String) {
+    world.list(&source, listed_in(&packages));
+}
+
+#[when(regex = r#"^"(first|second)" now lists "([^"]+)" (\S+) as released (\d+) days ago$"#)]
+async fn source_lists_again(
+    world: &mut CliWorld,
+    source: String,
+    name: String,
+    version: String,
+    days: u32,
+) {
+    let again = listed_in(&format!("\"{name}\" {version} released {days} days ago"));
+    // Only the date changes: what the package requires stays as it was.
+    let before = world.listings.by_source[&source]
+        .iter()
+        .find(|listed| listed.package.name == name && listed.package.version == version)
+        .unwrap_or_else(|| panic!("{source} did not list {name} {version}"));
+    let item = Listed {
+        package: before.package,
+        ..again.into_iter().next().expect("one version")
+    };
+    world.list(&source, vec![item]);
+}
+
+#[given(regex = r#"^the project dev-depends on "([^"]+)" "([^"]*)"$"#)]
+async fn dev_depends_on(world: &mut CliWorld, name: String, constraint: String) {
+    world.depend(DependencyTable::DevDependencies, &name, &constraint);
+}
+
+#[given(regex = r#"^the project depends on "([^"]+)" "([^"]*)" and "([^"]+)" "([^"]*)"$"#)]
+async fn depends_on_two(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    other: String,
+    other_constraint: String,
+) {
+    world.depend(DependencyTable::Dependencies, &name, &constraint);
+    world.depend(DependencyTable::Dependencies, &other, &other_constraint);
+}
+
+#[given(regex = r#"^I have run "(lvpm [^"]+)"$"#)]
+async fn have_run(world: &mut CliWorld, command_line: String) {
+    let args: Vec<&str> = command_line.split_whitespace().skip(1).collect();
+    world.sandbox.setup_lvpm(&args);
 }
 
 #[given(regex = r#"^"(first|second)" cannot be reached$"#)]
@@ -138,6 +372,86 @@ async fn fails_naming(world: &mut CliWorld, source: String) {
         })
         .any(|line| line.contains(dir(&source)));
     assert!(named, "{source:?} is not named in:\n{printed}");
+}
+
+#[then(regex = r#"^the command fails naming "([^"]+)" and "([^"]+)"$"#)]
+async fn fails_naming_both_texts(world: &mut CliWorld, first: String, second: String) {
+    world.assert_failed();
+    let printed = world.printed();
+    for text in [first, second] {
+        assert!(printed.contains(&text), "{text:?} is not in:\n{printed}");
+    }
+}
+
+/// The error of a package none of whose wanted versions is old enough:
+/// `listing` names the versions held back, newest first, and the dates in it
+/// come from the instants the fixture wrote, shown the way lvpm shows them.
+#[then(
+    regex = r#"^the command fails with the min-age-days error for "([^"]+)" "([^"]*)" listing (.+)$"#
+)]
+async fn fails_with_the_min_age_days_error(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    listing: String,
+) {
+    world.assert_failed();
+    let days = world.min_age_days();
+    let mut expected =
+        format!("{name} {constraint}: every version is held back by min-age-days = {days}");
+    let mut eligible = Vec::new();
+    for version in VERSION.find_iter(&listing) {
+        let at = world.listings.released(&name, version.as_str());
+        eligible.push(released::eligible(at, days));
+        expected.push_str(&format!(
+            "\n  {} released {}, eligible {}",
+            version.as_str(),
+            released::day(at),
+            released::day(*eligible.last().expect("pushed"))
+        ));
+    }
+    let earliest = eligible.into_iter().min().expect("a version is listed");
+    expected.push_str(&format!(
+        "\nnext: wait until {}, lower min-age-days, or pin an exact version of {name} in lvpm.toml",
+        released::day(earliest)
+    ));
+    let printed = world.printed();
+    assert!(
+        printed.contains(&expected),
+        "{expected}\nis not in:\n{printed}"
+    );
+}
+
+static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\w.\-]*").expect("the pattern"));
+
+#[then(regex = r"^the error does not mention version (\S+)$")]
+async fn error_does_not_mention_version(world: &mut CliWorld, version: String) {
+    let mention = format!(r"(^|[^\d.]){}($|[^\d.])", regex::escape(&version));
+    let printed = world.printed();
+    assert!(
+        !Regex::new(&mention)
+            .expect("the pattern")
+            .is_match(&printed),
+        "version {version} is in:\n{printed}"
+    );
+}
+
+#[then(regex = r#"^the error says "([^"]+)"$"#)]
+async fn error_says(world: &mut CliWorld, text: String) {
+    let printed = world.printed();
+    assert!(printed.contains(&text), "{text:?} is not in:\n{printed}");
+}
+
+impl CliWorld {
+    /// The `[sources] min-age-days` of the project's manifest.
+    fn min_age_days(&self) -> u32 {
+        let text = self.manifest_text();
+        let manifest: toml::Table = text.parse().expect("lvpm.toml is TOML");
+        let days = manifest["sources"]["min-age-days"]
+            .as_integer()
+            .unwrap_or_else(|| panic!("no min-age-days in:\n{text}"));
+        u32::try_from(days).expect("a whole number of days")
+    }
 }
 
 #[then(regex = r#"^lvpm\.toml depends on "([^"]+)" "([^"]*)"$"#)]

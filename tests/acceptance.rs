@@ -60,6 +60,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/lvpm-venv-resave/slice-2-staged-install-with-resave.feature",
     "tests/features/sources/s13-first-source-wins.feature",
+    "tests/features/lvpm-min-release-age/slice-1-versions-younger-than-the-limit-are-held-back.feature",
 ];
 const TEST_LABVIEW_ENV_VAR: &str = "LVPM_TEST_LABVIEW";
 const ONLY_LABVIEW_ENV_VAR: &str = "LVPM_TEST_ONLY_LABVIEW";
@@ -115,6 +116,8 @@ pub struct CliWorld {
     pub publish: steps::publish::PublishState,
     /// What a `.lvpkg` scenario has set up and seen.
     pub lvpkg: steps::sources::LvpkgState,
+    /// What the feeds of a `min-age-days` scenario list, and when each was released.
+    pub listings: steps::sources::ListingState,
     /// What an `lvpm init` scenario has set up and seen.
     pub init: steps::init::InitState,
 }
@@ -145,6 +148,7 @@ impl CliWorld {
             build: Default::default(),
             publish: Default::default(),
             lvpkg: Default::default(),
+            listings: Default::default(),
             init: Default::default(),
         }
     }

@@ -155,6 +155,7 @@ async fn the_solver_runs(world: &mut CliWorld, year: String) {
         &state.prefs,
         &[],
         lv_gate,
+        None,
         &state.cancel,
     ));
 }

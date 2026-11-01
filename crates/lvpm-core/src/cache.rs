@@ -11,6 +11,7 @@
 //! independent inventory of imported and downloaded archives. This module owns
 //! persistence only: callers acquire and verify bytes before recording them.
 
+use crate::released::now;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -482,13 +483,6 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// A finished hash as lower-case hex.
 pub(crate) fn finish_hex(h: Sha256) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

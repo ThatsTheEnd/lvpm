@@ -18,6 +18,7 @@ use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
 use crate::manifest_edit::{self, DependencyTable};
 use crate::paths;
 use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
+use crate::released;
 use crate::solve::{self, Conflict, Fact, Resolution, SolveError};
 use crate::version::Version;
 use anyhow::Context;
@@ -504,12 +505,17 @@ fn resolve(
         .iter()
         .map(|target| target.name.clone())
         .collect();
+    let age = (project.min_age_days > 0).then(|| solve::AgeLimit {
+        now: released::now(),
+        days: project.min_age_days,
+    });
     solve::solve(
         &constraints,
         index,
         preferences,
         &first,
         Some(gate),
+        age,
         &env.cancel,
     )
     .map_err(|why| match why {

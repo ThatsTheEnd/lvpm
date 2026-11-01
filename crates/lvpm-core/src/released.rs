@@ -96,6 +96,20 @@ fn zone_offset(zone: &str) -> Option<i64> {
     (minutes < 60).then_some(sign * (hours * SECS_PER_HOUR + minutes * SECS_PER_MINUTE))
 }
 
+/// The Unix time `days` whole days after `released`: when a version held back
+/// by a minimum age becomes eligible. Saturates rather than overflows.
+pub fn eligible(released: i64, days: u32) -> i64 {
+    released.saturating_add(i64::from(days) * SECS_PER_DAY)
+}
+
+/// The clock, in Unix seconds.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
+}
+
 /// The UTC day of a Unix time, `YYYY-MM-DD`.
 pub fn day(time: i64) -> String {
     let (year, month, day) = civil_from_days(time.div_euclid(SECS_PER_DAY));
@@ -196,6 +210,19 @@ mod tests {
             assert_eq!(day(time), day_text);
             assert_eq!(rfc3339(time), instant);
         }
+    }
+
+    #[test]
+    fn a_release_is_eligible_whole_days_later_and_never_overflows() {
+        assert_eq!(eligible(1_700_000_000, 14), 1_700_000_000 + 14 * 86_400);
+        assert_eq!(day(eligible(1_700_000_000, 14)), "2023-11-28");
+        assert_eq!(eligible(1_700_000_000, 0), 1_700_000_000);
+        assert_eq!(eligible(i64::MAX, u32::MAX), i64::MAX);
+        assert_eq!(
+            eligible(0, u32::MAX),
+            i64::from(u32::MAX) * SECS_PER_DAY,
+            "u32::MAX days fit an i64"
+        );
     }
 
     #[test]

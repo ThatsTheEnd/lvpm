@@ -46,13 +46,13 @@ Feature: lvpm does not choose a package version younger than min-age-days
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
     And the project depends on "alpha" ">=1.0"
-    When I run "lvpm sync"
+    When I run "lvpm sync --prefix dest"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
   Scenario: lvpm add without a version writes the newest eligible version
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
-    When I run "lvpm add alpha"
+    When I run "lvpm add alpha --prefix dest"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
   Scenario: lvpm upgrade does not move to a version younger than the limit
@@ -82,7 +82,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
   Scenario: lvpm add with an explicit version is exempt
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
-    When I run "lvpm add alpha@1.1"
+    When I run "lvpm add alpha@1.1 --prefix dest"
     Then lvpm.lock takes "alpha" 1.1 from "first"
 
   Scenario: an exact pin stays exempt when another package also requires the package
@@ -180,6 +180,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
       | 4294967296 |
 
   # The lock
+  @pending-1.4
   Scenario Outline: the lock records a non-zero min-age-days only
     Given the project sets min-age-days to <value>
     And "first" lists "alpha" 1.0 released 30 days ago
@@ -193,6 +194,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
       | 0      | has no min-age-days entry         |
       | 14     | records min-age-days 14           |
 
+  @pending-1.4
   Scenario Outline: changing min-age-days makes the lock stale
     Given the project sets min-age-days to <before>
     And "first" lists "alpha" 1.0 released 30 days ago
@@ -208,6 +210,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
       | absent | 14     |
       | 14     | absent |
 
+  @pending-1.4
   Scenario Outline: 0 and absent are the same for the lock
     Given the project sets min-age-days to <before>
     And "first" lists "alpha" 1.0 released 30 days ago
@@ -222,6 +225,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
       | absent | 0      |
       | 0      | absent |
 
+  @pending-1.4
   Scenario: days passing do not make the lock stale
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
@@ -232,6 +236,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
     Then the command succeeds
     And lvpm.lock takes "alpha" 1.0 from "first"
 
+  @pending-1.4
   Scenario: raising min-age-days re-locks a version that is now too new
     Given the project sets min-age-days to 7
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 10 days ago
