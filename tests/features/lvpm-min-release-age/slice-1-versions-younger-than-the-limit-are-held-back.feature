@@ -31,7 +31,8 @@ Feature: lvpm does not choose a package version younger than min-age-days
     And "second" lists "alpha" 1.1 released 30 days ago and "alpha" 2.0 released 30 days ago
     And the project depends on "alpha" ">=1.0"
     When I run "lvpm lock"
-    Then the command fails naming "alpha" and "min-age-days = 14"
+    Then the command fails with the min-age-days error for "alpha" ">=1.0" listing 1.1
+    And the error does not mention version 2.0
     And no lvpm.lock is written
 
   Scenario: a transitive requirement is held to the limit too
@@ -55,14 +56,15 @@ Feature: lvpm does not choose a package version younger than min-age-days
     When I run "lvpm add alpha --prefix dest"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
-  Scenario: lvpm upgrade does not move to a version younger than the limit
+  Scenario: lvpm lock --upgrade does not move to a version younger than the limit
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago
     And the project depends on "alpha" ">=1.0"
     And I have run "lvpm lock"
     When "first" also lists "alpha" 1.1 released 3 days ago
-    And I run "lvpm upgrade"
-    Then lvpm.lock takes "alpha" 1.0 from "first"
+    And I run "lvpm lock --upgrade"
+    Then the command succeeds
+    And lvpm.lock takes "alpha" 1.0 from "first"
 
   # Exact pins
   Scenario: an exact pin younger than the limit is locked

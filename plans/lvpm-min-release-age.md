@@ -59,7 +59,7 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
 - [ ] AC2 A too-new version is held back for the newest eligible one
 - [ ] AC3 Boundary: exactly N×86400 s old is eligible, one second younger is not; a future date is too new
 - [ ] AC4 Transitive requirements are filtered too
-- [ ] AC5 An exact pin is exempt, and only the pinned package; so is the version named on `lvpm add/upgrade pkg@v` for that run
+- [ ] AC5 An exact pin is exempt, and only the pinned package; so is the version named on `lvpm add pkg@v` or `lvpm lock --upgrade-package pkg@v` for that run
 - [ ] AC6 No eligible version in the source the name resolves from (first source wins; no fall-through): lock fails with the text above
 - [ ] AC7 Undated feed entries and local/cache/`.lvpkg` packages are eligible
 - [ ] AC8 The four release-date shapes parse; sign-less `0530` reads as `+0530`
@@ -134,22 +134,22 @@ Feature: lvpm does not choose a package version younger than min-age-days
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
     And the project depends on "alpha" ">=1.0"
-    When I run "lvpm sync"
+    When I run "lvpm sync --prefix dest"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
   Scenario: lvpm add without a version writes the newest eligible version
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
-    When I run "lvpm add alpha"
+    When I run "lvpm add alpha --prefix dest"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
-  Scenario: lvpm upgrade does not move to a version younger than the limit
+  Scenario: lvpm lock --upgrade does not move to a version younger than the limit
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago
     And the project depends on "alpha" ">=1.0"
     And I have run "lvpm lock"
     When "first" also lists "alpha" 1.1 released 3 days ago
-    And I run "lvpm upgrade"
+    And I run "lvpm lock --upgrade"
     Then lvpm.lock takes "alpha" 1.0 from "first"
 
   # Exact pins
@@ -170,7 +170,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
   Scenario: lvpm add with an explicit version is exempt
     Given the project sets min-age-days to 14
     And "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
-    When I run "lvpm add alpha@1.1"
+    When I run "lvpm add alpha@1.1 --prefix dest"
     Then lvpm.lock takes "alpha" 1.1 from "first"
 
   Scenario: an exact pin stays exempt when another package also requires the package
@@ -353,7 +353,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
 #### Step 1.3: The solver holds back versions younger than the limit, except exact pins
 
 **Complexity**: complex
-**IMPLEMENT**: In `solve.rs`: `pub struct AgeLimit { now: i64, days: u32 }` (pub: `solve` is pub and `clippy -D warnings` rejects a private type in it) and pure `too_new(released: Option<i64>, limit: &AgeLimit) -> bool` (`days == 0` → false first, so 0 is fully off; then `None` → false; future date → true; saturating arithmetic). `solve` takes `Option<AgeLimit>`; the provider keeps the set of (name, version) named by a `Constraint::Exact` in `constraints` — the root constraints only, never a feed entry's `requires` (this includes `pins` from `lvpm add pkg@v` / `lvpm upgrade pkg@v`). Keep `Gated`/`gated()` unchanged; the pubgrub `M` type becomes `enum Unavailable { Labview(Gated), TooNew { released: i64, days: u32 } }`, returned from `get_dependencies` beside the LabVIEW gate. `Unavailable` implements `Display` (pubgrub's `M` needs it) and the `Tree` alias moves to it. pubgrub yields one `Custom` leaf per rejected version, so a post-pass in `Conflict::explain` merges them into one `Fact::TooNew { package, versions: Vec<(version, released)>, wanted, required_by: Option<String>, days }`, taking `wanted` and the requirer from the sibling `Manifest`/`Requires` facts (also in `rank` and `Display`). In `src/render/lock.rs` `conflict_text`, a `TooNew` fact renders its own block and `next:` line in place of the generic header and footer. `ops/lock.rs` `resolve` builds the `AgeLimit` from `project` (no new parameter) with `now()` moved from `cache.rs` to `released.rs`. Update the `solve(` calls in `tests/steps/solver.rs` and the `solve.rs` tests (pass `None`) and the `Resolution {` literal in the `ops/lock.rs` test helper. Update the `Fact` matches in `src/render/lock.rs`
+**IMPLEMENT**: In `solve.rs`: `pub struct AgeLimit { now: i64, days: u32 }` (pub: `solve` is pub and `clippy -D warnings` rejects a private type in it) and pure `too_new(released: Option<i64>, limit: &AgeLimit) -> bool` (`days == 0` → false first, so 0 is fully off; then `None` → false; future date → true; saturating arithmetic). `solve` takes `Option<AgeLimit>`; the provider keeps the set of (name, version) named by a `Constraint::Exact` in `constraints` — the root constraints only, never a feed entry's `requires` (this includes `pins` from `lvpm add pkg@v` / `lvpm lock --upgrade-package pkg@v`). Keep `Gated`/`gated()` unchanged; the pubgrub `M` type becomes `enum Unavailable { Labview(Gated), TooNew { released: i64, days: u32 } }`, returned from `get_dependencies` beside the LabVIEW gate. `Unavailable` implements `Display` (pubgrub's `M` needs it) and the `Tree` alias moves to it. pubgrub yields one `Custom` leaf per rejected version, so a post-pass in `Conflict::explain` merges them into one `Fact::TooNew { package, versions: Vec<(version, released)>, wanted, required_by: Option<String>, days }`, taking `wanted` and the requirer from the sibling `Manifest`/`Requires` facts (also in `rank` and `Display`). In `src/render/lock.rs` `conflict_text`, a `TooNew` fact renders its own block and `next:` line in place of the generic header and footer. `ops/lock.rs` `resolve` builds the `AgeLimit` from `project` (no new parameter) with `now()` moved from `cache.rs` to `released.rs`. Update the `solve(` calls in `tests/steps/solver.rs` and the `solve.rs` tests (pass `None`) and the `Resolution {` literal in the `ops/lock.rs` test helper. Update the `Fact` matches in `src/render/lock.rs`
 **TEST**: Unit tests for `too_new`: exactly N×86400 s (eligible), one second less (not), `now + 1` (not), `days = 0` (always eligible), `u32::MAX` (no overflow), `None` (eligible). Render unit test in `src/render/lock.rs` for the `TooNew` block. Unit test for the conflict text with two held-back versions newest first, with known-answer eligible dates (release + N×86400), and with `u32::MAX` days rendering without panic. Existing LabVIEW-gate conflict tests in `solve.rs` stay green unchanged. Acceptance: all Slice 1 scenarios except "# The lock"
 **REFACTOR**: One eligibility predicate (`fn unavailable(&self, entry)`) used by `get_dependencies` and, in Slice 2, by held-back reporting
 **Files**: `crates/lvpm-core/src/solve.rs`, `crates/lvpm-core/src/cache.rs`, `crates/lvpm-core/src/released.rs`, `crates/lvpm-core/src/ops/lock.rs`, `src/render/lock.rs`, `tests/steps/solver.rs`, `tests/steps/sources.rs`, `tests/features/lvpm-min-release-age/slice-1-versions-younger-than-the-limit-are-held-back.feature`
@@ -450,7 +450,7 @@ Feature: lvpm reports what min-age-days held back
 #### Step 2.1: Report a held-back newer version
 
 **Complexity**: standard
-**IMPLEMENT**: `Resolution.held_back: Vec<HeldBack { name, version, chosen, released }>` (`HeldBack` is pub), computed in `solve.rs` by `Provider::held_back_in(&chosen)` (beside `unresolved_in`): for each chosen package, the newest catalog version above the chosen one that the admitted range allows (rebuilt by a small `admitted(key, chosen) -> Ranges` helper from `self.direct` and the chosen entries' requirements via `floor_range`) and that is unavailable only because it is too new (not LabVIEW-gated, not exempt). A version above the chosen one kept out by a lock preference is not reported. Accepted over-report: a too-new version whose own requirements would also have conflicted is still reported. `lock.rs` maps it to `Event::HeldBack`, rendered in `src/render/lock.rs` and emitted on `lock`, `add`, `upgrade` and `sync` (not on `lock --check`, which resolves nothing). Text and JSON as in "User-visible text"
+**IMPLEMENT**: `Resolution.held_back: Vec<HeldBack { name, version, chosen, released }>` (`HeldBack` is pub), computed in `solve.rs` by `Provider::held_back_in(&chosen)` (beside `unresolved_in`): for each chosen package, the newest catalog version above the chosen one that the admitted range allows (rebuilt by a small `admitted(key, chosen) -> Ranges` helper from `self.direct` and the chosen entries' requirements via `floor_range`) and that is unavailable only because it is too new (not LabVIEW-gated, not exempt). A version above the chosen one kept out by a lock preference is not reported. Accepted over-report: a too-new version whose own requirements would also have conflicted is still reported. `lock.rs` maps it to `Event::HeldBack`, rendered in `src/render/lock.rs` and emitted on `lock` (with or without `--upgrade`), `add` and `sync` (not on `lock --check`, which resolves nothing). Text and JSON as in "User-visible text"
 **TEST**: Unit tests for `held_back_in`: LabVIEW-gated and too-new → not reported; exact pin → not reported; chosen is newest → nothing; two too-new → only the newest. Acceptance: Slice 2 scenarios except the docs one
 **REFACTOR**: `held_back_in` calls the same `unavailable` predicate as `get_dependencies`; add the event to `docs/reference/json-output.md` next to `requirement_unresolved`
 **Files**: `crates/lvpm-core/src/solve.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`, `src/render/lock.rs`, `docs/reference/json-output.md`, `tests/steps/sources.rs`, `tests/features/lvpm-min-release-age/slice-2-report-held-back-versions-and-the-docs.feature`
@@ -459,7 +459,7 @@ Feature: lvpm reports what min-age-days held back
 #### Step 2.2: Document `min-age-days`
 
 **Complexity**: trivial
-**IMPLEMENT**: Row in the `[sources]` table of `docs/manifest.md` and a short section. First paragraph: what it does and that a version with **no release date** is allowed (the protection gap). Then: whole days, UTC dates, an exact pin is exempt (and `lvpm upgrade pkg@v` writes a floor, so pin exactly to keep a young version across re-locks), the date is the one the feed lists (wording: "the release date the feed lists"; it protects only as far as you trust that date), it takes effect at the next `lvpm lock`/`add`/`upgrade`/`sync` re-resolve (an up-to-date `lvpm.lock` is not re-resolved), and `lvpm install --global` outside a project is not covered. Add the key to the complete example at the top
+**IMPLEMENT**: Row in the `[sources]` table of `docs/manifest.md` and a short section. First paragraph: what it does and that a version with **no release date** is allowed (the protection gap). Then: whole days, UTC dates, an exact pin is exempt (and `lvpm lock --upgrade-package pkg@v` pins only for that run, so pin exactly in `lvpm.toml` to keep a young version across re-locks), the date is the one the feed lists (wording: "the release date the feed lists"; it protects only as far as you trust that date), it takes effect at the next `lvpm lock`/`lock --upgrade`/`add`/`sync` re-resolve (an up-to-date `lvpm.lock` is not re-resolved), and `lvpm install --global` outside a project is not covered. Add the key to the complete example at the top
 **TEST**: The docs scenario above, using the existing `docs/manifest.md mentions "…"` step in `tests/steps/docs.rs`, its regex widened to `docs/(usage|manifest|reference/json-output)\.md`
 **REFACTOR**: Link the section from the `[sources]` table row
 **Files**: `docs/manifest.md`, `docs/reference/json-output.md`, `tests/steps/docs.rs`
@@ -510,9 +510,9 @@ graph TD
 - **Who sets the date** (not verified): `Package.Release Date` is listed by the
   feed. If a publisher can set it freely, a bad release can be backdated. The
   docs say the limit protects only as far as the feed's date is trusted.
-- **`lvpm upgrade pkg@v` writes a floor**: the young version is exempt for that
+- **`lvpm lock --upgrade-package pkg@v` pins only for that run**: the young version is exempt for that
   run, but a later re-lock holds it back again (and fails if nothing older
-  fits). Documented; changing `upgrade` to write an exact pin is out of scope.
+  fits). Documented; making the flag persist a pin is out of scope.
 - **Sign-less offsets** (291 entries) are read as positive. At day granularity
   a wrong reading costs at most one day.
 - **Clock skew** on a build machine shifts the cutoff by the skew; accepted.
@@ -525,9 +525,9 @@ graph TD
 
 #### Wave 1
 - [ ] Slice 1: Versions younger than the limit are held back
-  - [ ] Step 1.1: Read `Package.Release Date` into each feed entry
-  - [ ] Step 1.2: Read `[sources] min-age-days` from the manifest
-  - [ ] Step 1.3: The solver holds back versions younger than the limit, except exact pins
+  - [x] Step 1.1: Read `Package.Release Date` into each feed entry
+  - [x] Step 1.2: Read `[sources] min-age-days` from the manifest
+  - [x] Step 1.3: The solver holds back versions younger than the limit, except exact pins
   - [ ] Step 1.4: The lock records the limit
 
 #### Wave 2

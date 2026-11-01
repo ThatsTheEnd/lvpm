@@ -16,7 +16,7 @@ use cucumber::{given, then, when};
 use lvpm_core::lockfile::LOCAL_SOURCE;
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::released;
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -99,10 +99,13 @@ pub struct ListingState {
 }
 
 impl ListingState {
-    /// When the scenario released `name` `version`, if it dated it.
+    /// When the scenario released `name` `version`, if it dated it. Of a
+    /// version both sources list it is the first source's: lvpm never asks
+    /// the second one (ADR 4).
     fn released(&self, name: &str, version: &str) -> i64 {
-        self.by_source
-            .values()
+        ["first", "second"]
+            .iter()
+            .filter_map(|source| self.by_source.get(*source))
             .flatten()
             .find(|listed| listed.package.name == name && listed.package.version == version)
             .and_then(|listed| listed.released)
@@ -161,11 +164,41 @@ fn feed_date(time: i64, shape: &str) -> String {
     )
 }
 
-fn real_clock() -> i64 {
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after 1970");
-    i64::try_from(since_epoch.as_secs()).expect("the clock fits an i64")
+/// What a listed version requires: its `requiring "name>=floor"`, if any.
+fn requires_of(item: &Captures) -> &'static [(&'static str, &'static str)] {
+    let Some(clause) = item.name("requires") else {
+        return &[];
+    };
+    let (needs, floor) = clause.as_str().split_once(">=").expect("`name>=floor`");
+    Box::leak(Box::new([(leaked(needs.into()), leaked(floor.into()))]))
+}
+
+/// The LabVIEW a listed version needs, as the feed writes it.
+fn lv_min_of(item: &Captures) -> &'static str {
+    item.name("year").map_or(ANY_LABVIEW, |year| {
+        leaked(format!(
+            "{}.0",
+            year.as_str().parse::<u32>().expect("a year") - 2000
+        ))
+    })
+}
+
+/// The fixture of a version the step says no more of, else a package of
+/// what it does say.
+fn package_of(item: &Captures) -> &'static FixturePackage {
+    let (name, version) = (&item["name"], &item["version"]);
+    if item.iter().skip(3).all(|group| group.is_none()) {
+        return fixture(name, version);
+    }
+    Box::leak(Box::new(FixturePackage {
+        name: leaked(name.to_string()),
+        version: leaked(version.to_string()),
+        display_name: leaked(name.to_string()),
+        requires: requires_of(item),
+        lv_min: lv_min_of(item),
+        payload: Payload::Text,
+        post_install_hook: None,
+    }))
 }
 
 /// The versions `text` lists, as `LISTED` reads them. Whatever it does not
@@ -178,37 +211,11 @@ fn listed_in(text: &str) -> Vec<Listed> {
             .all(|word| word.is_empty() || word == "and"),
         "{text:?} says more than a list of versions: {leftover:?} is left"
     );
-    let now = real_clock();
+    let now = released::now();
     LISTED
         .captures_iter(text)
         .map(|item| {
-            let (name, version) = (&item["name"], &item["version"]);
-            let plain = item.iter().skip(3).all(|group| group.is_none());
-            let package: &'static FixturePackage = match plain {
-                true => fixture(name, version),
-                false => Box::leak(Box::new(FixturePackage {
-                    name: leaked(name.to_string()),
-                    version: leaked(version.to_string()),
-                    display_name: leaked(name.to_string()),
-                    requires: match item.name("requires") {
-                        Some(clause) => {
-                            let (needs, floor) =
-                                clause.as_str().split_once(">=").expect("`name>=floor`");
-                            Box::leak(Box::new([(leaked(needs.into()), leaked(floor.into()))]))
-                        }
-                        None => &[],
-                    },
-                    lv_min: match item.name("year") {
-                        Some(year) => leaked(format!(
-                            "{}.0",
-                            year.as_str().parse::<u32>().expect("a year") - 2000
-                        )),
-                        None => ANY_LABVIEW,
-                    },
-                    payload: Payload::Text,
-                    post_install_hook: None,
-                })),
-            };
+            let package = package_of(&item);
             let released = item.name("days").map(|days| {
                 now - days.as_str().parse::<i64>().expect("a number of days") * SECS_PER_DAY
             });
@@ -374,15 +381,6 @@ async fn fails_naming(world: &mut CliWorld, source: String) {
     assert!(named, "{source:?} is not named in:\n{printed}");
 }
 
-#[then(regex = r#"^the command fails naming "([^"]+)" and "([^"]+)"$"#)]
-async fn fails_naming_both_texts(world: &mut CliWorld, first: String, second: String) {
-    world.assert_failed();
-    let printed = world.printed();
-    for text in [first, second] {
-        assert!(printed.contains(&text), "{text:?} is not in:\n{printed}");
-    }
-}
-
 /// The error of a package none of whose wanted versions is old enough:
 /// `listing` names the versions held back, newest first, and the dates in it
 /// come from the instants the fixture wrote, shown the way lvpm shows them.
@@ -402,12 +400,13 @@ async fn fails_with_the_min_age_days_error(
     let mut eligible = Vec::new();
     for version in VERSION.find_iter(&listing) {
         let at = world.listings.released(&name, version.as_str());
-        eligible.push(released::eligible(at, days));
+        let due = released::eligible(at, days);
+        eligible.push(due);
         expected.push_str(&format!(
             "\n  {} released {}, eligible {}",
             version.as_str(),
             released::day(at),
-            released::day(*eligible.last().expect("pushed"))
+            released::day(due)
         ));
     }
     let earliest = eligible.into_iter().min().expect("a version is listed");
@@ -426,7 +425,9 @@ static VERSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d[\w.\-]*").exp
 
 #[then(regex = r"^the error does not mention version (\S+)$")]
 async fn error_does_not_mention_version(world: &mut CliWorld, version: String) {
-    let mention = format!(r"(^|[^\d.]){}($|[^\d.])", regex::escape(&version));
+    // A version ends at a character that is no part of one, or at a full stop
+    // that ends the sentence: `1.0.` mentions 1.0, `1.0.1` does not.
+    let mention = format!(r"(^|[^\d.]){}($|[^\d.]|\.(\s|$))", regex::escape(&version));
     let printed = world.printed();
     assert!(
         !Regex::new(&mention)

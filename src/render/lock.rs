@@ -7,7 +7,7 @@ use lvpm_core::errors::{ArchiveFailure, ArchiveFault, LockError, LockedArchivePr
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::StaleReason;
 use lvpm_core::released;
-use lvpm_core::solve::{Conflict, Fact};
+use lvpm_core::solve::{AllHeldBack, Conflict, Fact};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -164,19 +164,7 @@ fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
     let mut rest = Vec::new();
     for fact in &conflict.facts {
         match fact {
-            Fact::TooNew {
-                package,
-                versions,
-                wanted,
-                required_by,
-                days,
-            } => blocks.push(too_new_text(
-                package,
-                versions,
-                wanted,
-                required_by.as_deref(),
-                *days,
-            )),
+            Fact::TooNew(held) => blocks.push(too_new_text(held)),
             other => rest.push(other),
         }
     }
@@ -188,29 +176,33 @@ fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
 
 /// Every version of `package` that `wanted` admits is held back: each with
 /// its release and the day it is eligible, and the way on.
-fn too_new_text(
-    package: &str,
-    versions: &[(String, i64)],
-    wanted: &str,
-    required_by: Option<&str>,
-    days: u32,
-) -> String {
+fn too_new_text(held: &AllHeldBack) -> String {
+    let AllHeldBack {
+        package,
+        versions,
+        wanted,
+        required_by,
+        days,
+    } = held;
     let mut text = format!(
         "{package} {}: every version is held back by min-age-days = {days}",
         manifest_constraint(wanted)
     );
-    for (version, released) in versions {
+    let eligible: Vec<i64> = versions
+        .iter()
+        .map(|(_, released)| released::eligible(*released, *days))
+        .collect();
+    for ((version, released), eligible) in versions.iter().zip(&eligible) {
         text.push_str(&format!(
             "\n  {version} released {}, eligible {}",
             released::day(*released),
-            released::day(released::eligible(*released, days))
+            released::day(*eligible)
         ));
     }
-    let earliest = versions
+    let earliest = eligible
         .iter()
-        .map(|(_, released)| released::eligible(*released, days))
         .min()
-        .map(|time| format!("wait until {}, ", released::day(time)))
+        .map(|time| format!("wait until {}, ", released::day(*time)))
         .unwrap_or_default();
     text.push_str(&format!(
         "\nnext: {earliest}lower min-age-days, or pin an exact version of {package} in lvpm.toml"
@@ -631,13 +623,13 @@ mod tests {
     const DAY: i64 = 86_400;
 
     fn too_new(requirer: Option<&str>, days: u32) -> Fact {
-        Fact::TooNew {
+        Fact::TooNew(AllHeldBack {
             package: "alpha".into(),
             versions: vec![("1.2".into(), NOW - 2 * DAY), ("1.1".into(), NOW - 3 * DAY)],
             wanted: ">= 1.1".into(),
             required_by: requirer.map(String::from),
             days,
-        }
+        })
     }
 
     #[test]
@@ -677,9 +669,42 @@ mod tests {
             ),
             "{text}"
         );
+        // The release plus u32::MAX days is year 11 761 244, not a wrapped or capped day.
         assert!(
-            text.contains("  1.1 released 2023-11-11, eligible "),
+            text.contains(
+                "\n  1.2 released 2023-11-12, eligible 11761244-11-30\n  \
+                 1.1 released 2023-11-11, eligible 11761244-11-29\n"
+            ),
             "{text}"
+        );
+        assert!(
+            text.ends_with(
+                "\nnext: wait until 11761244-11-29, lower min-age-days, or pin an exact \
+                 version of alpha in lvpm.toml"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_package_that_is_not_all_held_back_shows_its_young_version_among_the_facts() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                manifest("a", "*"),
+                Fact::VersionTooNew {
+                    package: "a".into(),
+                    version: "1.1".into(),
+                    released: NOW - 3 * DAY,
+                    days: 14,
+                },
+            ],
+        }));
+        assert_eq!(
+            text,
+            "cannot lock: no set of versions satisfies lvpm.toml:\n\
+             \x20 lvpm.toml: a = \"*\"\n\
+             \x20 a 1.1 is held back by min-age-days = 14 (released 2023-11-11)\n\
+             next: change one of these in lvpm.toml, then run `lvpm lock` again"
         );
     }
 

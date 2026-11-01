@@ -51,7 +51,7 @@ LabVIEW gate (`gated`): a candidate is eligible when its release date is
 `None`, or when `now - release >= min-age-days * 86400`. "Now" is the system
 clock at resolution time. A root whose manifest constraint is an exact
 version is not filtered. Floors (`>=`), `*` and every transitive
-requirement (always a floor) are. A version named on `lvpm add/upgrade pkg@v`
+requirement (always a floor) are. A version named on `lvpm add pkg@v` or `lvpm lock --upgrade-package pkg@v`
 is an exact pin to the solver for that run, so it is exempt too. A held-back
 version never falls through to a later source (first source wins, S13).
 
@@ -144,7 +144,7 @@ project (they have no manifest).
 | `min-age-days` placed outside `[sources]` | `inferable` | inference | Treated like any unknown top-level key (ignored), as today; the docs show it under `[sources]` |
 | Global install outside a project | `inferable` | inference | No manifest, so no setting; out of scope |
 | Trust in the release date | `inferable` | inference | The date is what the feed lists; the docs say the limit protects only as far as that date is trusted |
-| `lvpm upgrade pkg@v` with a young `v` | `inferable` | inference | The explicit version is exempt for that run (it is an exact pin to the solver); `upgrade` writes a floor, so a later re-lock applies the limit again. Documented, not changed |
+| `lvpm lock --upgrade-package pkg@v` with a young `v` | `inferable` | inference | The explicit version is exempt for that run (it is an exact pin to the solver); the flag pins only for that run, so a later re-lock applies the limit again. Documented, not changed |
 
 **Completeness sweep.** Entities: the `min-age-days` setting, the release
 date. Setting: create/update/delete is editing `lvpm.toml` (criteria 1, 10,

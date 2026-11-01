@@ -8,6 +8,7 @@
 const SECS_PER_MINUTE: i64 = 60;
 const SECS_PER_HOUR: i64 = 60 * SECS_PER_MINUTE;
 const SECS_PER_DAY: i64 = 24 * SECS_PER_HOUR;
+const MAX_ZONE_HOURS: i64 = 14;
 
 // Days-from-civil calendar arithmetic (Howard Hinnant's `chrono`-compatible
 // algorithms): years are split into 400-year eras of 146 097 days, counted from
@@ -56,14 +57,14 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 pub fn parse(text: &str) -> Option<i64> {
     let text = text.split_once(',').map_or(text, |(_, rest)| rest);
     let mut words = text.split_whitespace();
-    let day: i64 = words.next()?.parse().ok()?;
+    let day: u8 = digits(words.next()?)?;
     let month = words.next()?.to_ascii_lowercase();
     let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
-    let year = words.next().filter(|y| y.len() == 4)?.parse().ok()?;
+    let year: u16 = words.next().filter(|y| y.len() == 4).and_then(digits)?;
     let mut clock = words.next()?.split(':');
-    let hour: i64 = clock.next()?.parse().ok()?;
-    let minute: i64 = clock.next()?.parse().ok()?;
-    let second: i64 = clock.next()?.parse().ok()?;
+    let hour: u8 = digits(clock.next()?)?;
+    let minute: u8 = digits(clock.next()?)?;
+    let second: u8 = digits(clock.next()?)?;
     let offset = zone_offset(words.next()?)?;
     if words.next().is_some() || clock.next().is_some() {
         return None;
@@ -71,12 +72,23 @@ pub fn parse(text: &str) -> Option<i64> {
     if hour >= 24 || minute >= 60 || second >= 60 {
         return None;
     }
+    let (year, day) = (i64::from(year), i64::from(day));
     let days = days_from_civil(year, month, day);
     // A day the month does not have (Feb 30) rolls into the next month.
     if civil_from_days(days) != (year, month, day) {
         return None;
     }
-    Some(days * SECS_PER_DAY + hour * SECS_PER_HOUR + minute * SECS_PER_MINUTE + second - offset)
+    let clock = i64::from(hour) * SECS_PER_HOUR + i64::from(minute) * SECS_PER_MINUTE;
+    Some(days * SECS_PER_DAY + clock + i64::from(second) - offset)
+}
+
+/// `text` as a number, when it is nothing but ASCII digits: `str::parse` also
+/// takes a sign, which no field of a date has.
+fn digits<T: std::str::FromStr>(text: &str) -> Option<T> {
+    text.bytes()
+        .all(|b| b.is_ascii_digit())
+        .then(|| text.parse().ok())
+        .flatten()
 }
 
 /// Seconds east of UTC for `GMT`, `-0500`, `+0530` or a sign-less `0530`.
@@ -93,7 +105,9 @@ fn zone_offset(zone: &str) -> Option<i64> {
         return None;
     }
     let (hours, minutes): (i64, i64) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
-    (minutes < 60).then_some(sign * (hours * SECS_PER_HOUR + minutes * SECS_PER_MINUTE))
+    // No zone is further from UTC than 14 hours (UTC+14).
+    (hours <= MAX_ZONE_HOURS && minutes < 60)
+        .then_some(sign * (hours * SECS_PER_HOUR + minutes * SECS_PER_MINUTE))
 }
 
 /// The Unix time `days` whole days after `released`: when a version held back
@@ -103,7 +117,7 @@ pub fn eligible(released: i64, days: u32) -> i64 {
 }
 
 /// The clock, in Unix seconds.
-pub(crate) fn now() -> i64 {
+pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -182,6 +196,16 @@ mod tests {
             "Thu, 32 May 2016 15:46:24 -0500",
             "Thu, 30 Feb 2016 15:46:24 -0500",
             "Thu, x May 2016 15:46:24 -0500",
+            "Thu, 19 May 2016 -1:46:24 -0500",
+            "Thu, 19 May 2016 +1:46:24 -0500",
+            "Thu, 19 May 2016 15:-5:24 -0500",
+            "Thu, 19 May 2016 15:46:-4 -0500",
+            "Thu, 19 May -999 15:46:24 -0500",
+            "Thu, 19 May +999 15:46:24 -0500",
+            "Thu, +9 May 2016 15:46:24 -0500",
+            "Thu, 9223372036854775807 May 2016 15:46:24 -0500",
+            "Thu, 19 May 2016 15:46:24 +9959",
+            "Thu, 19 May 2016 15:46:24 +1500",
         ] {
             assert_eq!(parse(text), None, "{text:?}");
         }
