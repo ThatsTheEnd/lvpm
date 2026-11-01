@@ -132,6 +132,7 @@ impl Renderer {
             | Event::VenvRemoved { .. }
             | Event::VenvPortMoved { .. } => venv::render(self, event),
             Event::LockHashing { .. }
+            | Event::GitHubListed { .. }
             | Event::RequirementUnresolved { .. }
             | Event::HeldBack { .. }
             | Event::LockChanged { .. }

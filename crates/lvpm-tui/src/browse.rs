@@ -85,6 +85,9 @@ impl Package {
 /// A source, short: a feed by its host (`github` for GitHub's), else `local`
 /// for a folder or `cache` for an imported archive.
 pub fn source_label(source: &str) -> &str {
+    if source.starts_with(lvpm_core::index::GITHUB_SCHEME) {
+        return "github";
+    }
     let Some((_, rest)) = source.split_once("://") else {
         return if source == CACHE_SOURCE {
             "cache"
@@ -286,6 +289,7 @@ mod tests {
             label("https://raw.githubusercontent.com/o/r/main/i"),
             "github"
         );
+        assert_eq!(label(&lvpm_core::index::github_source("o/r")), "github");
         assert_eq!(label(r"C:\packages"), "local");
         assert_eq!(label(CACHE_SOURCE), "cache");
     }

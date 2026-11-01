@@ -7,6 +7,7 @@
 //! complete and a failed run leaves the old one untouched.
 
 use super::env::OpEnv;
+use super::github_index;
 use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
 use super::sync::Search;
@@ -106,7 +107,7 @@ pub fn upgrade(env: &OpEnv, which: &Upgrade) -> Result<Lockfile, LockError> {
             (Some(held), Moving::Only(targets))
         }
     };
-    let index = load_index(env, Some(&found))?;
+    let index = load_index(env, Some(&found), previous.as_ref(), &moving)?;
     let pins = Pins::of(&found, moving.targets(), &index, gate)?;
     let project = pins
         .rewrite
@@ -166,7 +167,7 @@ pub(super) fn announce_written(
 }
 
 /// Which locked versions a new resolution may leave.
-enum Moving<'a> {
+pub(super) enum Moving<'a> {
     /// None: every one that still fits is kept.
     Nothing,
     /// Only the packages these name (in any case).
@@ -176,7 +177,7 @@ enum Moving<'a> {
 }
 
 impl Moving<'_> {
-    fn moves(&self, name: &str) -> bool {
+    pub(super) fn moves(&self, name: &str) -> bool {
         match self {
             Moving::Nothing => false,
             Moving::Only(targets) => targets.iter().any(|target| same_name(&target.name, name)),
@@ -354,7 +355,7 @@ pub(super) fn relock(
     found: &(PathBuf, Project),
     previous: Option<&Lockfile>,
 ) -> Result<(Lockfile, Vec<LockChange>), LockError> {
-    let index = load_index(env, Some(found))?;
+    let index = load_index(env, Some(found), previous, &Moving::Nothing)?;
     relock_with(env, &found.1, &index, previous)
 }
 
@@ -448,15 +449,31 @@ pub fn check(env: &OpEnv) -> Result<(), LockError> {
 
 /// [`OpEnv::load_index`], with a load that was cancelled told apart from one
 /// that failed.
+///
+/// Each GitHub dependency of `manifest`'s project is then taken from its repo
+/// instead of the feeds (see [`github_index`]): `previous` is the lock the run
+/// starts from and `moving` says which of its versions may move. The caller
+/// passes the project as the run means it, an edit's included, in `manifest`.
 pub(super) fn load_index(
     env: &OpEnv,
     manifest: Option<&(PathBuf, Project)>,
+    previous: Option<&Lockfile>,
+    moving: &Moving,
 ) -> Result<Index, LockError> {
-    env.load_index(manifest)
-        .map_err(|why| match why.is::<Cancelled>() {
+    let index = env.load_index(manifest).map_err(|why| -> LockError {
+        match why.is::<Cancelled>() {
             true => Cancelled.into(),
             false => why.into(),
-        })
+        }
+    })?;
+    match manifest {
+        // No GitHub dependency: no cache is opened for one.
+        Some((_, project)) if !project.github.is_empty() => {
+            let downloads = Downloads::open(env)?;
+            github_index::with_github(env, &downloads, project, previous, moving, index)
+        }
+        _ => Ok(index),
+    }
 }
 
 /// The manifest of the project the command runs in.
@@ -609,7 +626,9 @@ fn hash_archives(
             .iter()
             .flat_map(|lock| &lock.packages)
             .find(|package| {
-                name_key(&package.name) == *key && Version::parse(&package.version) == entry.version
+                name_key(&package.name) == *key
+                    && Version::parse(&package.version) == entry.version
+                    && from_same_repo(package, entry)
             });
         if let Some(locked) = kept {
             let mut search = Search::in_cache(&downloads, locked);
@@ -651,6 +670,24 @@ fn hash_archives(
     }
 }
 
+/// The `source` the lock records for a package that comes from `repo`.
+pub(super) fn github_lock_source(repo: &str) -> String {
+    format!("https://github.com/{repo}")
+}
+
+/// Whether `package`, as the previous lock holds it, is where `entry` comes
+/// from. Only a GitHub entry is told apart: the lock's `source` for any other
+/// is the feed's, which is known only after the run.
+/// shortcut: a package that moves from a repo to a feed keeps its pin; check
+/// the feed's source here when that bites.
+fn from_same_repo(package: &LockedPackage, entry: &Entry) -> bool {
+    index::github_repo(entry).is_none_or(|repo| {
+        package
+            .source
+            .eq_ignore_ascii_case(&github_lock_source(repo))
+    })
+}
+
 /// The lock a resolution makes, given the hash of each archive in it.
 fn build(
     project: &Project,
@@ -668,7 +705,10 @@ fn build(
             version: entry.version.to_string(),
             sha256: hashes[key].clone(),
             md5: entry.md5.clone(),
-            source: index::source_of(&entry.url, feeds),
+            source: match index::github_repo(entry) {
+                Some(repo) => github_lock_source(repo),
+                None => index::source_of(&entry.url, feeds),
+            },
             requires: locked_requirements(entry, resolution),
             dev: !direct.contains(key),
         })
@@ -843,6 +883,30 @@ mod tests {
             source: String::new(),
             released: None,
         }
+    }
+
+    #[test]
+    fn a_locked_package_stands_for_a_github_entry_only_from_the_same_repo() {
+        let locked = |source: &str| LockedPackage {
+            name: "pkg".into(),
+            version: "1.0".into(),
+            sha256: "ab".into(),
+            md5: None,
+            source: source.into(),
+            requires: Vec::new(),
+            dev: false,
+        };
+        let mut github = entry("pkg", "1.0", &[], "http://api/assets/1");
+        github.source = index::github_source("o/r");
+        let feed = entry("pkg", "1.0", &[], "http://feed/pkg-1.0.vip");
+
+        assert!(from_same_repo(&locked("https://github.com/O/R"), &github));
+        assert!(!from_same_repo(
+            &locked("https://github.com/fork/r"),
+            &github
+        ));
+        assert!(!from_same_repo(&locked("http://feed/index.vipr"), &github));
+        assert!(from_same_repo(&locked("http://feed/index.vipr"), &feed));
     }
 
     fn resolution(entries: Vec<Entry>, unresolved: Vec<Unresolved>) -> Resolution {
@@ -1151,7 +1215,7 @@ mod tests {
     ) -> (Project, Index) {
         let env = project.env(sink);
         let found = find_manifest(&env).unwrap();
-        let mut index = load_index(&env, Some(&found)).unwrap();
+        let mut index = load_index(&env, Some(&found), None, &Moving::Nothing).unwrap();
         for entry in &mut index.entries {
             entry.released = dates
                 .iter()

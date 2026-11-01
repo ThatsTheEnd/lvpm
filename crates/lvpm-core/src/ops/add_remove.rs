@@ -9,7 +9,7 @@
 
 use super::env::{Destination, OpEnv};
 use super::install::{InstallOptions, announce_target, finish};
-use super::lock::{self as locking, announce_written, write_manifest_and_lock};
+use super::lock::{self as locking, Moving, announce_written, write_manifest_and_lock};
 use super::session::InstallSession;
 use super::snapshot::restoring_on_failure;
 use super::sync::{SyncOptions, announce_migration, apply_sync, fetch_locked, plan_sync};
@@ -44,12 +44,21 @@ pub fn add(
     let dest = env.destination()?;
     announce_project(env, &prepared, &dest);
 
-    let index = locking::load_index(env, Some(&prepared.found))?;
-    let constraint = match request.constraint {
-        Some(written) => written,
-        None => floor(env, &prepared, &index, table, &request.name)?,
+    // The index is made for the project as the edit will leave it, so that a
+    // narrowed constraint on a GitHub dependency is judged as written; with no
+    // constraint given, as `*`, which `floor` then narrows.
+    let asked = request.constraint.as_deref().unwrap_or("*");
+    let edit = prepared.set(table, &request.name, asked)?;
+    let edited = (prepared.found.0.clone(), edit.project.clone());
+    let moving = Moving::Nothing;
+    let index = locking::load_index(env, Some(&edited), prepared.previous.as_ref(), &moving)?;
+    let edit = match request.constraint {
+        Some(_) => edit,
+        None => {
+            let floor = floor(env, &prepared, &index, table, &request.name)?;
+            prepared.set(table, &request.name, &floor)?
+        }
     };
-    let edit = prepared.set(table, &request.name, &constraint)?;
     commit(env, prepared, edit, &index, dest, options)
 }
 
@@ -71,7 +80,13 @@ pub fn remove(
     let dest = env.destination()?;
     announce_project(env, &prepared, &dest);
 
-    let index = locking::load_index(env, Some(&prepared.found))?;
+    let edited = (prepared.found.0.clone(), edit.project.clone());
+    let index = locking::load_index(
+        env,
+        Some(&edited),
+        prepared.previous.as_ref(),
+        &Moving::Nothing,
+    )?;
     commit(env, prepared, edit, &index, dest, options)
 }
 

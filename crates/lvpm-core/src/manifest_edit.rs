@@ -68,7 +68,9 @@ pub fn create_file(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// `text` with `name = "<constraint>"` in `table`: a new entry is added at the
 /// end of the table (the table is appended to the file when it is missing), an
-/// existing one changes its value only, keeping its same-line comment.
+/// existing one changes its value only, keeping its same-line comment. An
+/// entry that is a table, `{ github = "o/r", version = "1.0" }`, changes only
+/// its `version`.
 pub fn set(text: &str, table: DependencyTable, name: &str, constraint: &str) -> Result<String> {
     let mut doc = parse(text)?;
     let key = table.key();
@@ -79,19 +81,50 @@ pub fn set(text: &str, table: DependencyTable, name: &str, constraint: &str) -> 
         .get_mut(key)
         .and_then(Item::as_table_like_mut)
         .with_context(|| format!("[{key}] is not a table"))?;
-    match entries.get_mut(name) {
-        Some(Item::Value(old)) if old.as_str() == Some(constraint) => return Ok(text.to_string()),
-        Some(Item::Value(old)) => {
+    let changed = match entries.get_mut(name) {
+        Some(entry) => set_entry(entry, constraint),
+        None => {
+            entries.insert(name, Item::Value(constraint.into()));
+            true
+        }
+    };
+    if !changed {
+        return Ok(text.to_string());
+    }
+    Ok(render(text, &doc))
+}
+
+/// Gives `entry` the constraint, whether it is a string or a table. False
+/// when it already had it, and nothing was touched.
+fn set_entry(entry: &mut Item, constraint: &str) -> bool {
+    let Some(fields) = entry.as_table_like_mut() else {
+        return set_string(entry, constraint);
+    };
+    match fields.get_mut("version") {
+        Some(version) => set_string(version, constraint),
+        None => {
+            fields.insert("version", Item::Value(constraint.into()));
+            true
+        }
+    }
+}
+
+/// Makes `item` the string `constraint`, keeping its decor (spaces and
+/// comment). False when it already was that string, however quoted.
+fn set_string(item: &mut Item, constraint: &str) -> bool {
+    match item {
+        Item::Value(old) if old.as_str() == Some(constraint) => false,
+        Item::Value(old) => {
             let mut new = Value::from(constraint);
             *new.decor_mut() = old.decor().clone();
             *old = new;
+            true
         }
-        Some(other) => *other = Item::Value(constraint.into()),
-        None => {
-            entries.insert(name, Item::Value(constraint.into()));
+        other => {
+            *other = Item::Value(constraint.into());
+            true
         }
     }
-    Ok(render(text, &doc))
 }
 
 /// `text` without the `name` entry of `table`: its own line, with any
@@ -449,6 +482,92 @@ beta = \">=1.0\"
     fn an_equal_value_comes_back_untouched_whatever_its_quoting() {
         let text = "[dependencies]\nalpha = '1.0'   # x\n";
         assert_eq!(set(text, Dependencies, "alpha", "1.0").unwrap(), text);
+    }
+
+    #[test]
+    fn a_table_line_changes_only_its_version_and_keeps_github_and_the_comment() {
+        let text = "[dependencies]\nalpha = { github = \"o/r\", version = \"1.0\" }  # pinned\nbeta = \">=1.0\"\n";
+        assert_eq!(
+            set(text, Dependencies, "alpha", ">=2.0").unwrap(),
+            "[dependencies]\nalpha = { github = \"o/r\", version = \">=2.0\" }  # pinned\nbeta = \">=1.0\"\n"
+        );
+        let reversed = "[dependencies]\nalpha = { version = '1.0',   github = \"o/r\" }\n";
+        assert_eq!(
+            set(reversed, Dependencies, "alpha", "*").unwrap(),
+            "[dependencies]\nalpha = { version = \"*\",   github = \"o/r\" }\n"
+        );
+    }
+
+    #[test]
+    fn a_table_line_with_the_same_version_comes_back_byte_identical() {
+        let text = "[dev-dependencies]\nalpha = {github='o/r',  version = '1.0' }   # x\n";
+        assert_eq!(set(text, DevDependencies, "alpha", "1.0").unwrap(), text);
+    }
+
+    #[test]
+    fn a_table_without_a_version_gets_one_and_keeps_its_other_keys() {
+        let after = set(
+            "[dependencies]
+alpha = { github = \"o/r\" }
+",
+            Dependencies,
+            "alpha",
+            "*",
+        )
+        .unwrap();
+        let parsed: toml::Table = after.parse().unwrap();
+        assert_eq!(
+            parsed["dependencies"]["alpha"],
+            toml::Value::Table(
+                "github = \"o/r\"
+version = \"*\"
+"
+                .parse::<toml::Table>()
+                .unwrap()
+            ),
+            "{after}"
+        );
+    }
+
+    #[test]
+    fn a_table_written_as_its_own_section_changes_only_its_version() {
+        let text = "[dependencies.alpha]\ngithub = \"o/r\"  # the repo\nversion = \"1.0\"\n";
+        assert_eq!(
+            set(text, Dependencies, "alpha", ">=2.0").unwrap(),
+            "[dependencies.alpha]\ngithub = \"o/r\"  # the repo\nversion = \">=2.0\"\n"
+        );
+    }
+
+    #[test]
+    fn removing_a_table_entry_drops_the_whole_entry_and_keeps_the_rest() {
+        let inline = "[dependencies]
+# the first
+alpha = { github = \"o/r\", version = \"1.0\" }  # pinned
+beta = \">=1.0\"
+";
+        assert_eq!(
+            remove(inline, Dependencies, "alpha").unwrap(),
+            "[dependencies]
+# the first
+beta = \">=1.0\"
+"
+        );
+        let section = "[dependencies]
+beta = \">=1.0\"
+
+# the first
+[dependencies.alpha]
+github = \"o/r\"
+version = \"1.0\"
+";
+        let after = remove(section, Dependencies, "alpha").unwrap();
+        let parsed: toml::Table = after.parse().unwrap();
+        assert_eq!(
+            parsed["dependencies"].as_table().unwrap().len(),
+            1,
+            "{after}"
+        );
+        assert!(after.contains("beta = \">=1.0\""), "{after}");
     }
 
     #[test]

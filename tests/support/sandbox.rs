@@ -38,6 +38,8 @@ pub const LOCAL_APP_DATA_DIR: &str = "local-app-data";
 pub const APP_DATA_DIR: &str = "app-data";
 pub const XDG_CONFIG_DIR: &str = "xdg-config";
 pub const XDG_CACHE_DIR: &str = "xdg-cache";
+/// An empty `GH_CONFIG_DIR`: a `gh` on the machine finds no login in it.
+pub const GH_CONFIG_DIR: &str = "gh-config";
 /// What the child sees as the user's home and profile.
 pub const HOME_DIR: &str = "home";
 /// Where a scenario keeps the copy of a recording it has altered.
@@ -78,6 +80,16 @@ const INHERITED_ENV_VARS: &[&str] = &[
 /// Proxy variables, in the spellings different libraries read.
 const PROXY_ENV_VARS: &[&str] = &["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"];
 const NO_PROXY_ENV_VARS: &[&str] = &["NO_PROXY", "no_proxy"];
+
+/// `path` without the folders that hold a `gh`.
+fn path_without_gh(path: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    let holds_gh = |dir: &PathBuf| ["gh", "gh.exe"].iter().any(|gh| dir.join(gh).is_file());
+    let kept = path
+        .iter()
+        .flat_map(std::env::split_paths)
+        .filter(|dir| !holds_gh(dir));
+    std::env::join_paths(kept).unwrap_or_default()
+}
 
 /// The ports something other than this test run is listening on, read once.
 /// A venv's VI Server port follows from its path, so a sandbox is made at a
@@ -251,6 +263,9 @@ pub struct Sandbox {
     /// Whether the children run with `LV_RTE_HEADLESS` set: only the scenarios
     /// that ask for it, and only their own children.
     headless: AtomicBool,
+    /// The GitHub API the children use and the token they carry, once a
+    /// scenario has said; until then they have neither.
+    github: Mutex<Option<(String, Option<String>)>>,
 }
 
 impl Sandbox {
@@ -262,6 +277,7 @@ impl Sandbox {
             learned: Mutex::new(Learned::default()),
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
+            github: Mutex::new(None),
         };
         for name in [
             WORK_DIR,
@@ -271,6 +287,7 @@ impl Sandbox {
             APP_DATA_DIR,
             XDG_CONFIG_DIR,
             XDG_CACHE_DIR,
+            GH_CONFIG_DIR,
             HOME_DIR,
         ] {
             std::fs::create_dir_all(sandbox.root().join(name)).expect("create a sandbox directory");
@@ -450,6 +467,13 @@ impl Sandbox {
         self.headless.store(headless, Ordering::SeqCst);
     }
 
+    /// From now on, run the children against the GitHub API at `api`, with
+    /// `token` as `GH_TOKEN` when there is one. Nothing else reaches them.
+    pub fn set_github(&self, api: &str, token: Option<&str>) {
+        let github = (api.to_string(), token.map(str::to_string));
+        *self.github.lock().unwrap_or_else(PoisonError::into_inner) = Some(github);
+    }
+
     fn is_headless(&self) -> bool {
         self.headless.load(Ordering::SeqCst)
     }
@@ -514,6 +538,7 @@ impl Sandbox {
             .env("APPDATA", root.join(APP_DATA_DIR))
             .env("XDG_CONFIG_HOME", root.join(XDG_CONFIG_DIR))
             .env("XDG_CACHE_HOME", root.join(XDG_CACHE_DIR))
+            .env("GH_CONFIG_DIR", root.join(GH_CONFIG_DIR))
             .env("LVPM_CONFIG_CACHE", self.cache_dir())
             .env(
                 "LVPM_CONFIG_SOURCES_LOCAL",
@@ -529,6 +554,19 @@ impl Sandbox {
         }
         if self.is_headless() {
             command.env(HEADLESS_ENV_VAR, "1");
+        }
+        if let Some((api, token)) = &*self.github.lock().unwrap_or_else(PoisonError::into_inner) {
+            command.env("GITHUB_API_URL", api);
+            // The fake is on loopback, which the proxy above would catch.
+            for name in NO_PROXY_ENV_VARS {
+                command.env(name, "127.0.0.1,localhost");
+            }
+            // A `gh` on the machine answers `gh auth token` from the user's
+            // keyring, which an empty GH_CONFIG_DIR does not hide: none is run.
+            command.env("PATH", path_without_gh(std::env::var_os("PATH")));
+            if let Some(token) = token {
+                command.env("GH_TOKEN", token);
+            }
         }
     }
 

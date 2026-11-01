@@ -20,6 +20,13 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             Stream::Err,
             &format!("hashing {name} {version} ({position}/{total})"),
         ),
+        Event::GitHubListed { name, repo, cached } => r.line(
+            Stream::Err,
+            &format!(
+                "{name}: listing releases of github.com/{repo}{}",
+                if *cached { " (cached)" } else { "" }
+            ),
+        ),
         Event::RequirementUnresolved { name, required_by } => r.line(
             Stream::Err,
             &format!(
@@ -330,6 +337,7 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
             ArchiveFault::NotFound => format!(
                 "{name} {version}: no archive with SHA-256 {sha256} is in the cache or in any source"
             ),
+            ArchiveFault::Unfetched { reason } => format!("{name} {version}: {reason}"),
             ArchiveFault::DiffersFromLock { found_sha256 } => format!(
                 "{name} {version}: the archive has SHA-256 {found_sha256} and lvpm.lock has \
                  {sha256}, so it was not locked again"
@@ -368,6 +376,24 @@ mod tests {
              next: add the archive lvpm.lock was made from with `lvpm cache add <file>`, or \
              delete lvpm.lock to lock the archives as they are now, then run `lvpm lock` again"
         );
+    }
+
+    #[test]
+    fn a_listing_of_releases_is_a_line_on_stderr_that_says_when_it_came_from_the_cache() {
+        let (mut renderer, out, err) = renderer();
+        for cached in [false, true] {
+            renderer.render(&Event::GitHubListed {
+                name: "pkg".into(),
+                repo: "o/r".into(),
+                cached,
+            });
+        }
+        assert_eq!(
+            err.text(),
+            "pkg: listing releases of github.com/o/r\n\
+             pkg: listing releases of github.com/o/r (cached)\n"
+        );
+        assert_eq!(out.text(), "");
     }
 
     #[test]

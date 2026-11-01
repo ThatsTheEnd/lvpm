@@ -183,27 +183,7 @@ async fn help_names_the_manifest_key(world: &mut CliWorld, key: String) {
 async fn read_the_add_section(world: &mut CliWorld) {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/usage.md"))
         .expect("read docs/usage.md");
-    let (mut in_fence, mut level, mut section) = (false, 0, String::new());
-    for line in text.lines() {
-        in_fence ^= line.starts_with("```");
-        let heading_level = line.chars().take_while(|c| *c == '#').count();
-        let is_heading = !in_fence && heading_level > 0 && line[heading_level..].starts_with(' ');
-        if is_heading && level > 0 && heading_level <= level {
-            break;
-        }
-        if is_heading && level == 0 && line[heading_level..].trim_start().starts_with("Adding") {
-            level = heading_level;
-        }
-        if level > 0 {
-            section.push_str(line);
-            section.push('\n');
-        }
-    }
-    assert!(
-        !section.is_empty(),
-        "the usage guide has no section on adding"
-    );
-    world.docs.readme_section = section;
+    world.docs.readme_section = section_of(&text, "Adding");
 }
 
 #[then(expr = "it shows a quoted example {string} for PowerShell and cmd")]
@@ -535,4 +515,130 @@ async fn comparison_says_not_planned(_: &mut CliWorld, what: String) {
             .any(|line| line.contains(&what) && line.contains("not planned")),
         "vipm-cli-comparison.md has no line saying {what} is not planned"
     );
+}
+
+const RELEASE_TEMPLATE: &str = ".github/workflow-templates/lvpm-release.yml";
+
+/// The template's lines without blanks and comments, trimmed.
+fn template_lines() -> Vec<String> {
+    repo_file(RELEASE_TEMPLATE)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The text under the first heading of `doc` that holds `title`, up to the next
+/// heading of its level or a higher one. A `#` line inside a fence is no heading.
+fn section_of(doc: &str, title: &str) -> String {
+    let (mut in_fence, mut level, mut section) = (false, 0, String::new());
+    for line in doc.lines() {
+        in_fence ^= line.starts_with("```");
+        let hashes = line.chars().take_while(|c| *c == '#').count();
+        let is_heading = !in_fence && hashes > 0 && line[hashes..].starts_with(' ');
+        if is_heading && level > 0 && hashes <= level {
+            break;
+        }
+        if is_heading && level == 0 && line.contains(title) {
+            level = hashes;
+        }
+        if level > 0 {
+            section.push_str(line);
+            section.push('\n');
+        }
+    }
+    assert!(
+        !section.is_empty(),
+        "no section whose heading holds {title}"
+    );
+    section
+}
+
+#[then(
+    regex = r#"^\.github/workflow-templates/lvpm-release\.yml runs on pushed tags with "([^"]+)"$"#
+)]
+async fn template_runs_on_tags(_: &mut CliWorld, permission: String) {
+    let lines = template_lines();
+    assert!(
+        lines
+            .windows(3)
+            .any(|w| w[0] == "on:" && w[1] == "push:" && w[2].starts_with("tags:")),
+        "{RELEASE_TEMPLATE} does not run on pushed tags"
+    );
+    assert!(
+        lines.contains(&permission),
+        "{RELEASE_TEMPLATE} has no `{permission}`"
+    );
+}
+
+#[then(regex = r"^it pins LVPM_VERSION to a version matching .+$")]
+async fn template_pins_lvpm(_: &mut CliWorld) {
+    let lines = template_lines();
+    let pin = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("LVPM_VERSION:"))
+        .expect("the template has no LVPM_VERSION");
+    let version = pin.trim().trim_matches(['"', '\'']);
+    let parts: Vec<_> = version.split('.').collect();
+    assert!(
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+        "LVPM_VERSION {version:?} is not <major>.<minor>.<patch>"
+    );
+}
+
+#[then(regex = r#"^it uploads with "([^"]+)" and "([^"]+)"$"#)]
+async fn template_uploads(_: &mut CliWorld, command: String, flag: String) {
+    assert!(
+        template_lines()
+            .iter()
+            .any(|line| line.contains(&command) && line.contains(&flag)),
+        "no line of {RELEASE_TEMPLATE} runs `{command}` with `{flag}`"
+    );
+}
+
+#[then(regex = r#"^docs/manifest\.md shows a dependency line with "([^"]+)" and "([^"]+)"$"#)]
+async fn manifest_shows_a_table_line(_: &mut CliWorld, a: String, b: String) {
+    let manifest = repo_file("docs/manifest.md");
+    assert!(
+        manifest.lines().any(|line| line.contains("= {")
+            && line.contains(&format!("{a} ="))
+            && line.contains(&format!("{b} ="))),
+        "docs/manifest.md shows no dependency line `name = {{ {a} = ..., {b} = ... }}`"
+    );
+}
+
+#[then(regex = r#"^docs/manifest\.md names "([^"]+)" and "([^"]+)" as refusals$"#)]
+async fn manifest_names_refusals(_: &mut CliWorld, a: String, b: String) {
+    let section = section_of(&repo_file("docs/manifest.md"), "GitHub");
+    for refusal in [a, b] {
+        assert!(
+            section.contains(&refusal),
+            "the GitHub section of docs/manifest.md does not name {refusal}"
+        );
+    }
+}
+
+#[then("docs/manifest.md says the version comes from the file name, not the tag")]
+async fn manifest_says_file_name_not_tag(_: &mut CliWorld) {
+    let section = section_of(&repo_file("docs/manifest.md"), "GitHub");
+    let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("version comes from the file name, not the tag"),
+        "the GitHub section of docs/manifest.md does not say so"
+    );
+}
+
+#[then(regex = r#"^docs/usage\.md names ("[^"]+"(?:, "[^"]+")* and "[^"]+")$"#)]
+async fn usage_names_github_terms(_: &mut CliWorld, quoted: String) {
+    let section = section_of(&repo_file("docs/usage.md"), "GitHub");
+    for term in quoted.split('"').skip(1).step_by(2) {
+        assert!(
+            section.contains(term),
+            "the GitHub section of docs/usage.md does not name {term}"
+        );
+    }
 }

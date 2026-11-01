@@ -28,7 +28,7 @@ at the end and in
 [project]
 name = "YourProject"
 version = "0.1.0"
-labview = "2025"                  # the oldest LabVIEW the project is meant for
+labview = ">=2025"                # the oldest LabVIEW the project is meant for
 
 [sources]                         # repositories beyond the public indexes
 mirror = "http://host:8090/files" # a hosted index.vipr folder
@@ -38,6 +38,7 @@ min-age-days = 14                 # skip versions released fewer than 14 days ag
 [dependencies]
 delacor_lib_qmh = "7.1.2.1547"    # exactly this version
 oglib_error = ">=6.0.1"           # the newest version satisfying the floor
+labview_open_source_lib_serializer = { github = "LabVIEW-Open-Source/Serializer", version = ">=1.2" }  # from that repo's releases
 
 [dependencies.test]                # installed only with --with test
 jki_lib_caraya = "*"              # the newest version
@@ -184,13 +185,61 @@ basename without version, e.g. `oglib_error`), and a quoted constraint.
 Rules:
 
 - The version must be quoted. `oglib_array = 6.0` is a TOML float and is
-  rejected, as is any non-string value (tables and arrays included).
+  rejected, as is any other value that is not a string or a table (arrays
+  included). A table is the form [below](#a-dependency-from-github).
 - Versions compare component by component the way VIPM numbers them
   (`major.minor.patch.build`); odd but real forms such as `1.0.1-1` are
   accepted as written.
 - Other operators (`<`, `=`, `~`, `^`, ranges) are rejected with an error
   naming the dependency, rather than misread.
 - The install plan lists dependencies before the packages that need them.
+
+### A dependency from GitHub
+
+A line can be a table instead of a string. `[dev-dependencies]` takes the
+same form.
+
+```toml
+[dependencies]
+labview_open_source_lib_serializer = { github = "LabVIEW-Open-Source/Serializer", version = ">=1.2" }
+```
+
+| Key       | Meaning                                                                                              |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| `version` | Required. The same constraint as the string form; `{ version = "*" }` is the same as `"*"`.         |
+| `github`  | `owner/repo`. The package comes from that repo's releases and from nowhere else.                    |
+
+A GitHub dependency is never looked up in `[sources]`, even when a source
+lists the same name in a higher version. If the repo has no fitting version,
+the command fails and does not fall back. Drafts and pre-releases are skipped.
+
+**The release file.** In each release, the package is the asset named
+`<name>-<version>.lvpkg`, or `<name>-<version>.vip` when the release has no
+`.lvpkg`. `<name>` is the key on the dependency line (case does not matter),
+and `lvpm build` writes this name. Other assets are ignored.
+
+- The version comes from the file name, not the tag. A tag `1.2.1` that holds
+  `labview_open_source_lib_serializer-1.2.1.16.vip` is version `1.2.1.16`. The
+  tag only groups the files.
+- Two releases with the same version fail and name both tags; delete one file.
+- The name and version inside the package must equal the key and the file
+  name's version. If they differ, `lvpm lock` fails and installs nothing.
+- The package's own requirements resolve through `[sources]` as usual. To
+  take one of them from GitHub too, list it as a direct dependency.
+- `lvpm lock` pins the file's SHA-256. A file re-uploaded with other bytes
+  makes `lvpm sync` fail naming both hashes.
+
+**What is refused.** These fail when the manifest is read, naming the package:
+
+- `github` together with `index`: a GitHub dependency comes only from its repo.
+- `index` alone: not supported yet.
+- Any key besides `version` and `github`: `unknown key "hooks"; expected version or github`.
+- A table without `version`.
+- A `github` value that is not `owner/repo`, such as `"https://github.com/o/r"`
+  (drop the `https://github.com/`).
+
+Tokens, rate limits and the commands that call GitHub are in
+[usage.md](usage.md#github-dependencies).
 
 ### How the manifest resolves
 
@@ -291,7 +340,9 @@ manifest readable by older lvpm builds as the format grows, and lets one file
 carry another tool's sections (see below). The flip side is that a misspelt
 key such as `labveiw` is silently ignored; check the install banner, which
 echoes the manifest path, project name, groups and `labview` minimum it read.
-(Upstream: `[dev-dependencies]` in an `lvpm.toml` is ignored there and
+Inside a dependency table the rule is the opposite: an unknown key is refused
+([above](#a-dependency-from-github)), because ignoring it would drop what you
+asked for. (Upstream: `[dev-dependencies]` in an `lvpm.toml` is ignored there and
 `[dependencies.dev]` is used instead. In this fork `[dev-dependencies]` is
 read; see the note at the top.)
 
@@ -402,7 +453,7 @@ intersection, with both LabVIEW keys:
 [project]
 name = "NovaXC"
 version = "0.1.0"
-labview = "2025"          # lvpm: minimum
+labview = ">=2025"        # lvpm: minimum
 labview-version = "2025"  # VIPM: pinned year
 
 [dependencies]
@@ -464,7 +515,8 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
   - `lvpm.lock` records every group's packages, each tagged with its groups,
     so changing the selection never re-resolves. `lvpm sync` uninstalls
     packages that only unselected groups need.
-- **Per-dependency tables**: `{ version = "...", hooks = "run", source = "..." }`.
+- **More per-dependency keys**: `{ version = "...", hooks = "run", index = "..." }`.
+  `version` and `github` are built ([above](#a-dependency-from-github)).
 - **`[venv]` overrides**: `dir`, `vi-server-port`, `bitness`.
 - **`vipm.toml` conversion, remaining fields**: `labview-bitness` is checked
   against the selected target once `[venv] bitness` exists. Writing an

@@ -58,6 +58,10 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s2-lvpm-publish.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
+    "tests/features/build-slices/s4-github-manifest.feature",
+    "tests/features/build-slices/s4-github-lock.feature",
+    "tests/features/build-slices/s4-github-sync.feature",
+    "tests/features/build-slices/s4-github-docs.feature",
     "tests/features/lvpm-venv-resave/slice-2-staged-install-with-resave.feature",
     "tests/features/sources/s13-first-source-wins.feature",
     "tests/features/lvpm-min-release-age/slice-1-versions-younger-than-the-limit-are-held-back.feature",
@@ -121,6 +125,8 @@ pub struct CliWorld {
     pub listings: steps::sources::ListingState,
     /// What an `lvpm init` scenario has set up and seen.
     pub init: steps::init::InitState,
+    /// What a GitHub scenario has set up.
+    pub github: steps::github::GitHubState,
 }
 
 impl CliWorld {
@@ -151,6 +157,7 @@ impl CliWorld {
             lvpkg: Default::default(),
             listings: Default::default(),
             init: Default::default(),
+            github: Default::default(),
         }
     }
 

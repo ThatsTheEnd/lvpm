@@ -6,7 +6,7 @@ members = ["crates/lvpm-core", "crates/lvpm-testkit", "crates/lvpm-tui", "e2e"]
 default-members = [".", "crates/lvpm-testkit", "crates/lvpm-tui"]
 
 [workspace.package]
-version = "0.16.0"
+version = "0.17.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ThatsTheEnd/lvpm"
@@ -33,6 +33,7 @@ futures = "0.3.34"
 lvpm-testkit = { path = "crates/lvpm-testkit" }
 md-5 = "0.11.0"
 regex = "1.13.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking"] }
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 toml = { version = "1.1.5", features = ["preserve_order"] }

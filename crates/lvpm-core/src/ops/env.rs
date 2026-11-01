@@ -10,6 +10,7 @@
 use crate::cancel::CancelToken;
 use crate::config::Config;
 use crate::events::{Event, EventSink};
+use crate::github::GitHub;
 use crate::index::{self, Index};
 use crate::paths;
 use crate::project::{self, Project};
@@ -60,6 +61,8 @@ pub struct OpEnv<'a> {
     /// directory for a LabVIEW installation. Only a test of an installation
     /// that is not really there sets it; see [`Roots::labview_on`].
     pub machine: Option<PathBuf>,
+    /// The API GitHub dependencies are read from, and the token it is told.
+    pub github: GitHub,
 }
 
 /// Where a command's packages live.
@@ -111,6 +114,7 @@ impl<'a> OpEnv<'a> {
             sink,
             cancel: CancelToken::default(),
             machine: None,
+            github: GitHub::default(),
         }
     }
 

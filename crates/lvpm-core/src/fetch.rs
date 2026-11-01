@@ -10,8 +10,28 @@ use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::index::{self, Entry};
 use anyhow::{Context, Result, ensure};
-use reqwest::blocking::Client;
+use reqwest::StatusCode;
+use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::header::{ACCEPT, HeaderMap};
 use std::io::Read;
+
+/// A GitHub download that came back with a status that is not a success. Its
+/// headers are kept (`error_for_status` drops them), so that a rate limit can
+/// say when it resets. The URL is not kept: after a redirect it is the CDN's,
+/// and its query is a signed grant to the file.
+#[derive(Debug)]
+pub struct Rejected {
+    pub status: StatusCode,
+    pub headers: HeaderMap,
+}
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {}", self.status)
+    }
+}
+
+impl std::error::Error for Rejected {}
 
 /// Return archive bytes, checking SHA-256 on cache reads and MD5 when advertised.
 ///
@@ -21,29 +41,56 @@ use std::io::Read;
 /// Cache population also occurs during dry runs; target writes are the caller's
 /// responsibility. Missing explicit cache entries fail instead of downloading.
 ///
+/// A GitHub entry (see [`index::github_repo`]) is asked for its bytes
+/// (`Accept: application/octet-stream`); `auth` gives the token sent along with
+/// it, as `Authorization: Bearer`. It is called only when a download is due, so
+/// finding the token (which may run `gh`) costs nothing on a cache hit. Nothing
+/// of the token is kept or shown.
+///
 /// A cancelled `cancel` ends the fetch with [`Cancelled`] before it starts and
 /// between the chunks of a download, so nothing of a cancelled download is
 /// cached.
-pub fn package(
+pub fn package<'a>(
     cache: &Cache,
     client: &Client,
     entry: &Entry,
+    auth: impl FnOnce() -> Option<&'a str>,
     cancel: &CancelToken,
 ) -> Result<Vec<u8>> {
     ensure_running(cancel)?;
     if let Some(bytes) = on_hand(cache, entry)? {
         return Ok(bytes);
     }
-    let response = client
-        .get(&entry.url)
+    let response = request(client, entry, auth())
         .send()
-        .with_context(|| format!("downloading {}", entry.url))?
-        .error_for_status()?;
+        .with_context(|| format!("downloading {}", entry.url))?;
+    if index::github_repo(entry).is_some() && !response.status().is_success() {
+        return Err(Rejected {
+            status: response.status(),
+            headers: response.headers().clone(),
+        }
+        .into());
+    }
+    let response = response.error_for_status()?;
     let bytes = read_body(response, cancel)?;
     let md5 = verify_md5(entry, &bytes)?;
     let sha256 = cache.store(&bytes)?;
     cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
     Ok(bytes)
+}
+
+/// The GET for an entry's archive. A token goes only to a GitHub entry's own URL:
+/// a feed entry never gets one, and reqwest drops it when a redirect leaves the host.
+fn request(client: &Client, entry: &Entry, auth: Option<&str>) -> RequestBuilder {
+    let request = client.get(&entry.url);
+    if index::github_repo(entry).is_none() {
+        return request;
+    }
+    let request = request.header(ACCEPT, "application/octet-stream");
+    match auth {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    }
 }
 
 /// The archive's bytes when [`package`] would not download them: from the
@@ -122,7 +169,7 @@ mod tests {
 
     /// The fetch of a token nobody cancels, which is what most tests are about.
     fn package(cache: &Cache, client: &Client, entry: &Entry) -> Result<Vec<u8>> {
-        super::package(cache, client, entry, &CancelToken::new())
+        super::package(cache, client, entry, || None, &CancelToken::new())
     }
 
     fn test_cache(name: &str) -> (PathBuf, Cache) {
@@ -177,9 +224,19 @@ mod tests {
         let (url, thread) = server(b"package bytes");
         let entry = entry(url, Some(index::md5_hex(b"package bytes")));
         let client = Client::new();
-        assert_eq!(package(&cache, &client, &entry).unwrap(), b"package bytes");
+        // The token is looked for when a download is due, not on a cache hit.
+        let asked = std::cell::Cell::new(0);
+        let fetch = |entry: &Entry| {
+            let auth = || {
+                asked.set(asked.get() + 1);
+                None
+            };
+            super::package(&cache, &client, entry, auth, &CancelToken::new()).unwrap()
+        };
+        assert_eq!(fetch(&entry), b"package bytes");
         thread.join().unwrap();
-        assert_eq!(package(&cache, &client, &entry).unwrap(), b"package bytes");
+        assert_eq!(fetch(&entry), b"package bytes");
+        assert_eq!(asked.get(), 1);
         assert!(cache.imported_packages().unwrap().is_empty());
         drop(cache);
         std::fs::remove_dir_all(root).ok();
@@ -232,7 +289,7 @@ mod tests {
         let token = CancelToken::new();
         token.cancel();
         let wanted = entry("http://127.0.0.1:1/unavailable".into(), None);
-        let why = super::package(&cache, &Client::new(), &wanted, &token).unwrap_err();
+        let why = super::package(&cache, &Client::new(), &wanted, || None, &token).unwrap_err();
         assert!(why.is::<Cancelled>(), "{why:#}");
         drop(cache);
         std::fs::remove_dir_all(root).ok();
@@ -270,7 +327,7 @@ mod tests {
         // The cache is not shared between threads: the fetch takes it along.
         let (why, cache) = std::thread::scope(|scope| {
             let fetching = scope.spawn(|| {
-                let fetched = super::package(&cache, &Client::new(), &wanted, &token);
+                let fetched = super::package(&cache, &Client::new(), &wanted, || None, &token);
                 (fetched, cache)
             });
             first_sent

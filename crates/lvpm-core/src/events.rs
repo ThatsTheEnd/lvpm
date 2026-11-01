@@ -332,6 +332,13 @@ pub enum Event {
         position: usize,
         total: usize,
     },
+    /// The releases of a GitHub dependency's repo (`owner/repo`) were listed,
+    /// from GitHub or, when `cached`, from the cache.
+    GitHubListed {
+        name: String,
+        repo: String,
+        cached: bool,
+    },
     /// A requirement of a locked package that no source lists; the lock
     /// records it as unresolved and goes on.
     RequirementUnresolved { name: String, required_by: String },

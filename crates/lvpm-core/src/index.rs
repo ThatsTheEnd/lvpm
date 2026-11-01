@@ -100,6 +100,23 @@ pub struct Entry {
 /// The [`Entry::source`] of an archive imported with `lvpm cache add`.
 pub const CACHE_SOURCE: &str = "cache";
 
+/// What an [`Entry::source`] starts with when GitHub's releases listed it:
+/// `github:owner/repo`, which no feed URL does.
+///
+/// shortcut: the repo rides in a string scheme, not an `Origin` enum; upgrade
+/// when a third kind of source needs more than a repo.
+pub const GITHUB_SCHEME: &str = "github:";
+
+/// The [`Entry::source`] of a file in `repo`'s (`owner/repo`) releases.
+pub fn github_source(repo: &str) -> String {
+    format!("{GITHUB_SCHEME}{repo}")
+}
+
+/// The repo (`owner/repo`) a GitHub entry comes from; `None` for any other.
+pub fn github_repo(entry: &Entry) -> Option<&str> {
+    entry.source.strip_prefix(GITHUB_SCHEME)
+}
+
 impl Entry {
     /// Whether the name or display name contains `query`, in any case.
     pub fn matches(&self, query: &str) -> bool {
@@ -797,6 +814,27 @@ mod tests {
     use crate::ops::testing::CancelOn;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_github_entry_names_its_repo_and_no_other_entry_does() {
+        let mut entry = Entry {
+            name: "pkg".into(),
+            version: Version::parse("1.0"),
+            url: "https://api.github.com/repos/o/r/releases/assets/1".into(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: None,
+            released: None,
+            source: github_source("o/r"),
+        };
+        assert_eq!(entry.source, "github:o/r");
+        assert_eq!(github_repo(&entry), Some("o/r"));
+        for other in ["https://github.com/o/r/index.json", CACHE_SOURCE, ""] {
+            entry.source = other.into();
+            assert_eq!(github_repo(&entry), None, "{other}");
+        }
+    }
 
     /// A server that answers each connection with the next canned response and
     /// keeps the request it got, so a test can assert what went out.

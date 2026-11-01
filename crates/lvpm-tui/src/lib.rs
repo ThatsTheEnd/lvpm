@@ -18,6 +18,7 @@ pub mod progress;
 pub mod ui;
 pub mod worker;
 
+use lvpm_core::github::{GitHub, gh_auth_token};
 use lvpm_core::{config, target};
 use ratatui::crossterm::event;
 use std::time::Duration;
@@ -31,8 +32,9 @@ const TICK: Duration = Duration::from_millis(100);
 #[allow(clippy::disallowed_methods)]
 pub fn run() -> anyhow::Result<()> {
     // Read before the terminal is taken, so an error prints as usual.
-    let builder =
+    let mut builder =
         destination::EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
+    builder.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token);
     let mut app = app::App::new(builder);
     let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
     app.log_file = local_app_data.as_deref().map(log::path);

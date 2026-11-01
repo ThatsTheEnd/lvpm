@@ -8,9 +8,14 @@
 //! response carries one fixed `ETag`; a request presenting it gets `304`.
 
 use crate::fixtures::FixturePackage;
+#[cfg(test)]
+use crate::http::{Reply, SOCKET_TIMEOUT, get_from};
+use crate::http::{Request, accept, accept_loop, response, shut_down};
 use md5::{Digest, Md5};
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
+#[cfg(test)]
+use std::io::Read;
+use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -42,9 +47,6 @@ const _: () = assert!(
 /// Where a listing's `Package.URL` points, relative to the listing's folder.
 const ARCHIVE_SUBDIR: &str = "packages/";
 const INDEX_FILE: &str = "index.vipr";
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
-/// A request head larger than this is not one lvpm sent.
-const MAX_REQUEST_HEAD: usize = 16 * 1024;
 
 /// An archive in the faulty feed: what its listing promises (the MD5 of
 /// `promised`) and what the server then does (`served`, or a 404 when `None`).
@@ -310,12 +312,7 @@ impl Drop for Feed {
     fn drop(&mut self) {
         // A request still held would keep the thread from seeing `stop`.
         self.release();
-        self.stop.store(true, Ordering::SeqCst);
-        // `accept` is blocking; a connection wakes it so it can see the flag.
-        TcpStream::connect(self.addr).ok();
-        if let Some(thread) = self.thread.take() {
-            thread.join().ok();
-        }
+        shut_down(self.addr, &self.stop, self.thread.take());
     }
 }
 
@@ -439,24 +436,13 @@ fn serve(
     down: &AtomicBool,
     pauses: &Pauses,
 ) {
-    for stream in listener.incoming() {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
+    accept_loop(listener, stop, |stream| {
         if down.load(Ordering::SeqCst) {
-            continue;
+            return;
         }
-        if let Ok(stream) = stream {
-            // One bad connection must not take the server down for the rest.
-            handle(stream, served, hits, archives_refused, pauses).ok();
-        }
-    }
-}
-
-struct Request {
-    method: String,
-    path: String,
-    if_none_match: Option<String>,
+        // One bad connection must not take the server down for the rest.
+        handle(stream, served, hits, archives_refused, pauses).ok();
+    });
 }
 
 fn handle(
@@ -466,9 +452,7 @@ fn handle(
     archives_refused: &AtomicBool,
     pauses: &Pauses,
 ) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(SOCKET_TIMEOUT))?;
-    stream.set_write_timeout(Some(SOCKET_TIMEOUT))?;
-    let request = read_request(&mut stream)?;
+    let request = accept(&mut stream)?;
     *hits
         .lock()
         .expect("hit counter")
@@ -493,43 +477,6 @@ fn handle(
     stream.write_all(&response)
 }
 
-fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() >= MAX_REQUEST_HEAD || stream.read(&mut byte)? == 0 {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        head.push(byte[0]);
-    }
-    let head = String::from_utf8_lossy(&head);
-    let mut lines = head.lines();
-    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
-    let method = request_line.next().unwrap_or_default().to_string();
-    let path = path_of(request_line.next().unwrap_or_default());
-    let if_none_match = lines.find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("if-none-match")
-            .then(|| value.trim().to_string())
-    });
-    Ok(Request {
-        method,
-        path,
-        if_none_match,
-    })
-}
-
-/// `/a/b` as sent to an origin, or `http://host/a/b` as sent to a proxy.
-fn path_of(target: &str) -> String {
-    match target.strip_prefix("http://") {
-        Some(rest) => rest
-            .find('/')
-            .map_or("/", |slash| &rest[slash..])
-            .to_string(),
-        None => target.to_string(),
-    }
-}
-
 fn respond(request: &Request, routes: &Routes, etag: &str) -> Vec<u8> {
     if request.method != "GET" {
         return response("405 Method Not Allowed", &[], b"");
@@ -537,7 +484,7 @@ fn respond(request: &Request, routes: &Routes, etag: &str) -> Vec<u8> {
     let Some(body) = routes.get(&request.path) else {
         return response("404 Not Found", &[], b"");
     };
-    let matched = request.if_none_match.as_deref() == Some(etag);
+    let matched = request.header("if-none-match") == Some(etag);
     let etag = ("ETag", etag);
     if matched {
         return response("304 Not Modified", &[etag], b"");
@@ -549,53 +496,13 @@ fn respond(request: &Request, routes: &Routes, etag: &str) -> Vec<u8> {
     )
 }
 
-/// An HTTP/1.1 response that ends the connection after `body`.
-fn response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
-    let mut head = format!("HTTP/1.1 {status}\r\n");
-    for (name, value) in headers {
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    ));
-    let mut bytes = head.into_bytes();
-    bytes.extend_from_slice(body);
-    bytes
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixtures::PACKAGES;
 
-    struct Reply {
-        status_line: String,
-        head: String,
-        body: Vec<u8>,
-    }
-
     fn get(feed: &Feed, target: &str, extra_headers: &str) -> Reply {
-        let mut stream = TcpStream::connect(feed.addr).unwrap();
-        stream.set_read_timeout(Some(SOCKET_TIMEOUT)).unwrap();
-        write!(
-            stream,
-            "GET {target} HTTP/1.1\r\nHost: test\r\n{extra_headers}\r\n"
-        )
-        .unwrap();
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).unwrap();
-        let split = raw
-            .windows(4)
-            .position(|w| w == b"\r\n\r\n")
-            .expect("a response head")
-            + 4;
-        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
-        Reply {
-            status_line: head.lines().next().unwrap().to_string(),
-            head,
-            body: raw[split..].to_vec(),
-        }
+        get_from(feed.addr, target, extra_headers)
     }
 
     fn beta() -> &'static FixturePackage {
