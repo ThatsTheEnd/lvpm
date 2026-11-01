@@ -1225,7 +1225,8 @@ mod tests {
             &sink,
             &[("gamma", "1.0", 30), ("gamma", "1.5", 20)],
         );
-        relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
+        let (lock, _) = relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
+        assert_eq!(lock.packages[0].version, "1.5");
         assert!(
             !sink
                 .events()

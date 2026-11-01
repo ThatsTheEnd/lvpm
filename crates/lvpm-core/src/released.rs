@@ -182,6 +182,8 @@ mod tests {
 
     #[test]
     fn text_that_is_not_a_date_is_none() {
+        // Why `digits` exists: `parse` alone accepts a sign.
+        assert_eq!("+9".parse::<u8>(), Ok(9));
         for text in [
             "",
             "Thu, 19 May 2016",

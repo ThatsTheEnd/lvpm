@@ -37,15 +37,15 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
 - **Held-back notice** (one line per package, newest held-back version only,
   nothing printed when nothing is held back or the key is absent/0, never for
   an exact pin), on stderr like the existing `warning: … unresolved` advisory:
-  `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible 2026-11-11); using 1.0`
+  `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28, eligible 2026-11-12); using 1.0`
 - **JSON event** (nested under `data` like every event): `{"event": "held_back", "data": {"name": "alpha", "version": "1.1", "chosen": "1.0", "released": "2026-10-28T11:46:49Z", "eligible": "2026-11-11T11:46:49Z", "min_age_days": 14}}`
 - **No eligible version** (the error lists every version the constraint admits
   that was held back, newest first, and no version the constraint excludes):
   ```text
   alpha >=1.1: every version is held back by min-age-days = 14
     1.2 released 2026-10-29, eligible 2026-11-12
-    1.1 released 2026-10-28, eligible 2026-11-11
-  next: wait until 2026-11-11, lower min-age-days, or pin an exact version of alpha in lvpm.toml
+    1.1 released 2026-10-28, eligible 2026-11-12
+  next: wait until 2026-11-12, lower min-age-days, or pin an exact version of alpha in lvpm.toml
   ```
   The `next:` date is the earliest eligible date listed. For a transitive
   package the last line reads `… or pin an exact version of beta in lvpm.toml
@@ -550,7 +550,15 @@ graph TD
   from the list. Known wording limit.
 - **Deviation: a second solver fact.** The solver has `Fact::VersionHeldBack`
   for a partly held-back package (an older version fails for another reason),
-  besides `Fact::AllHeldBack`; the plan had a single variant.
+  besides `Fact::AllHeldBack`; the plan had a single variant, `Fact::TooNew`,
+  which became `AllHeldBack` (one fact per package).
+- **Deviation: human dates round up.** The `eligible` and `wait until` days
+  are the first whole UTC day on which the version is eligible
+  (`first_whole_day_from`), so the plan's example dates moved one day later;
+  `--json` keeps the exact instant.
+- **Deviation: two test helpers changed.** `tests/steps/lock.rs` compares
+  locks byte for byte, and `tests/steps/docs.rs` squashes whitespace in
+  every doc-mentions check, so a phrase may wrap across lines.
 - **Clock skew** on a build machine shifts the cutoff by the skew; accepted.
 - **`min-age-days` becomes a reserved name** in `[sources]`: a hosted source
   labelled `min-age-days` is no longer possible. Unlikely; noted in the docs.
@@ -580,6 +588,6 @@ Plan tier: complex (a `complex` step, security-sensitive) — reviewers: Accepta
 | Parallelization | approve | Slices share `solve.rs`/`lock.rs`; run in sequence |
 | Strategic | approve with warnings | Merged to 2 slices; docs state the feed-supplied date and the global-install gap |
 | UX | approve (iter 2) | Exact texts fixed; warnings applied: `next:` hint, held-back line on stderr, bad-value example |
-| Design | approve (iter 2) | Held-back reporting moved into the solver; warnings applied: pub `AgeLimit`/`HeldBack`, merged `Fact::TooNew` rendered in `conflict_text`, `admitted` helper, `now()` in `released.rs` |
+| Design | approve (iter 2) | Held-back reporting moved into the solver; warnings applied: pub `AgeLimit`/`HeldBack`, merged `Fact::TooNew` rendered in `conflict_text`, `admitted` helper; `now()` stayed in `cache.rs` |
 | Acceptance | blocker fixed after iter 2 | Docs assertions now use phrases absent today; known-answer date tests, `u32::MAX` accepted, `lock --check` silent, pin-also-required and gated-not-listed scenarios added. Not re-reviewed (iteration cap) |
 

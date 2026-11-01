@@ -570,8 +570,8 @@ pub enum Fact {
     /// and the project's LabVIEW runs is younger than the age limit.
     AllHeldBack(AllHeldBack),
     /// `package` at `version`, released at `released` (Unix seconds), is
-    /// younger than `days` days. Of a package whose other versions fail for
-    /// another reason too, so that not every version is held back: see
+    /// younger than `days` days. Used when the package's other versions also
+    /// fail for another reason, so not every version is held back; see
     /// `AllHeldBack`.
     VersionHeldBack {
         package: String,
@@ -754,9 +754,10 @@ struct HeldVersion {
 ///
 /// A held-back package that requires something does not fail by its age alone
 /// (its older version may fail on that requirement), and a requirer with a
-/// requirement that is not held back fails for that too. Their facts stay as
-/// they are, for the general report, and the held-back versions of such a
-/// package are one `VersionHeldBack` each.
+/// requirement that is not held back fails for that too. Their `Manifest` and
+/// `Requires` facts stay, for the general report, but their leftover
+/// `NoVersion` ranges are dropped; the held-back versions of such a package
+/// are one `VersionHeldBack` each.
 fn merge_held_back(facts: Vec<Fact>, held: Vec<HeldVersion>) -> Vec<Fact> {
     let mut packages: Vec<&str> = Vec::new();
     for version in &held {

@@ -109,7 +109,8 @@ public defaults.
 | `defaults` | boolean | `true` (default): also use the public indexes. `false`: only the sources listed. |
 | `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. A negative value, a non-integer, or a value larger than 4294967295 is an error. See [A minimum release age](#a-minimum-release-age). |
 
-Because `defaults` and `min-age-days` are keys here, a source can't use either as its label.
+A source can't be labelled `min-age-days`. `defaults` is the switch only when
+it is `true` or `false`; a string under `defaults` is read as a source.
 
 The public defaults are NI's `download.ni.com/.../index.vipr` and JKI's
 `jkisoft.ogpd`. A path on disk is refused here rather than silently resolving
@@ -130,10 +131,11 @@ date is allowed: entries a feed lists without one, local `.vip` directories,
 limit does not protect against them. A release date lvpm cannot read is
 treated the same way, as undated and allowed. It reads RFC 2822 dates
 (`Thu, 19 May 2016 15:46:24 GMT`) ending in `GMT` or a `±HHMM` offset; an
-offset without a sign is read as positive.
+offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
 
 - The limit is whole days of 86400 seconds, counted from the release date
-  the feed lists. Dates are shown in UTC. A release date in the future counts
+  the feed lists. Dates are shown in UTC; the human `eligible` day is the
+  first whole UTC day on which the version is eligible. A release date in the future counts
   as too new.
 - Pinning matters: an exact pin is exempt from min-age-days, so `alpha = "1.1"` locks 1.1 even
   when it is three days old. So is a version named on `lvpm add alpha@1.1`
@@ -146,7 +148,7 @@ offset without a sign is read as positive.
   source that lists a package still decides its versions.
 - When the limit keeps out a newer version, lvpm says so on stderr, for
   example `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28,
-  eligible 2026-11-11); using 1.0`, and `--json` writes a `held_back` event
+  eligible 2026-11-12); using 1.0`, and `--json` writes a `held_back` event
   ([JSON output](reference/json-output.md#the-held_back-event)). When no version is old enough,
   the lock fails, lists the held-back versions and the date the first becomes
   eligible.
@@ -157,9 +159,11 @@ offset without a sign is read as positive.
   `lvpm sync --locked` and `--frozen` never resolve, so they never apply it.
 - A plain install never applies the limit: `lvpm install --global <name>`, or
   `lvpm install <name>` with `--prefix` or `--labview-version`, or outside a
-  project. It resolves from the indexes alone, whatever `lvpm.toml` says. In a
+  project. It uses the project's `[sources]` but not its `min-age-days`. In a
   project, `lvpm install <name>` with none of those flags is an `lvpm add`,
-  which does apply it.
+  which does apply it. An install from `lvpm-tui` is a plain install too, and
+  so is `--labview-version` in a project with a venv: both write into the
+  project's venv without applying the limit.
 
 ## `[dependencies]`
 
