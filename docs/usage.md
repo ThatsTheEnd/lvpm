@@ -298,7 +298,7 @@ labview_open_source_lib_serializer = { github = "LabVIEW-Open-Source/Serializer"
 
 That package comes from that repo and never from `[sources]`. Which release
 file lvpm picks, how its version is read and what the manifest refuses are in
-[manifest.md](manifest.md#a-dependency-from-github). Edit the line by hand;
+[manifest.md](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#a-dependency-from-github). Edit the line by hand;
 `lvpm add` does not write `github`, and on a table line it changes only
 `version`.
 
