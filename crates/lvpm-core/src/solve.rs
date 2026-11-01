@@ -343,6 +343,7 @@ impl Provider<'_> {
     fn held_back_in(&self, chosen: &BTreeMap<String, Entry>) -> Vec<HeldBack> {
         chosen
             .iter()
+            .filter(|(key, picked)| self.prefs.get(*key) != Some(&picked.version))
             .filter_map(|(key, picked)| {
                 let admitted = self.admitted(key, chosen);
                 self.catalog
@@ -2049,6 +2050,42 @@ mod tests {
         let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
         assert_eq!(chosen(&resolution), [("a", "1.0")]);
         assert!(resolution.held_back.is_empty());
+    }
+
+    #[test]
+    fn a_preferred_version_is_not_reported_even_when_a_newer_one_is_too_new() {
+        // The preference keeps 1.1 out; 1.2 is too new, but the lock, not the
+        // age, decided what was chosen.
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 20),
+                released("a", "1.2", 3),
+            ],
+        };
+        let prefs = [("a".to_string(), Version::parse("1.0"))];
+        let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+        assert!(
+            resolution.held_back.is_empty(),
+            "{:?}",
+            resolution.held_back
+        );
+    }
+
+    #[test]
+    fn the_newest_version_held_back_is_found_above_an_eligible_chosen_one() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 20),
+                released("a", "1.2", 3),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.2", "1.1", 3)]
+        );
     }
 
     #[test]

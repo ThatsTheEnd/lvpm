@@ -6,8 +6,9 @@
 
 When `[sources] min-age-days` kept out a version newer than the one a
 resolving command chose (`lvpm lock`, `lvpm lock --upgrade`, `lvpm add`,
-`lvpm sync`), it writes one `held_back` event for each package, naming the
-newest such version. `released` and `eligible` are RFC 3339 UTC instants;
+`lvpm remove`, `lvpm sync`), it writes one `held_back` event for each package,
+naming the newest such version. `lvpm sync --locked` and `--frozen` never
+resolve, so they write none. `released` and `eligible` are RFC 3339 UTC instants;
 `eligible` is `released` plus `min_age_days` days, the first moment the
 version may be chosen.
 

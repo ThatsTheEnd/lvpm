@@ -505,8 +505,10 @@ async fn usage_section_contains(_: &mut CliWorld, heading: String, quoted: Strin
 #[then(regex = r#"^docs/(usage|manifest|reference/json-output)\.md (?:mentions|names) "([^"]+)"$"#)]
 async fn doc_mentions(_: &mut CliWorld, doc: String, text: String) {
     let file = format!("docs/{doc}.md");
+    // Prose wraps: compare with every run of whitespace as one space.
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        repo_file(&file).contains(&text),
+        squash(&repo_file(&file)).contains(&squash(&text)),
         "{file} does not mention {text}"
     );
 }

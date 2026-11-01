@@ -1163,9 +1163,17 @@ mod tests {
         (found.1, index)
     }
 
+    /// `MANIFEST` with `min-age-days = 14` under `[sources]`; fails if the key
+    /// did not go in, which would make the tests below vacuous.
+    fn with_min_age_14() -> String {
+        let manifest = MANIFEST.replace("false\n", "false\nmin-age-days = 14\n");
+        assert!(manifest.contains("min-age-days = 14"), "{manifest}");
+        manifest
+    }
+
     #[test]
     fn a_newer_version_the_age_limit_kept_out_is_an_event_with_its_dates() {
-        let manifest = MANIFEST.replace("false\n", "false\nmin-age-days = 14\n");
+        let manifest = with_min_age_14();
         let project = ProjectDir::new(
             "held-back",
             &manifest,
@@ -1204,10 +1212,19 @@ mod tests {
 
     #[test]
     fn no_event_says_anything_was_held_back_when_nothing_was() {
-        let manifest = MANIFEST.replace("false\n", "false\nmin-age-days = 14\n");
-        let project = ProjectDir::new("held-back-none", &manifest, &[("gamma", "1.0", "23.0", "")]);
+        let manifest = with_min_age_14();
+        let project = ProjectDir::new(
+            "held-back-none",
+            &manifest,
+            &[("gamma", "1.0", "23.0", ""), ("gamma", "1.5", "23.0", "")],
+        );
         let sink = Recorder::default();
-        let (manifest, index) = dated_index(&project, &sink, &[("gamma", "1.0", 30)]);
+        // 1.5 is newer than 1.0 but old enough, so it is chosen, not held back.
+        let (manifest, index) = dated_index(
+            &project,
+            &sink,
+            &[("gamma", "1.0", 30), ("gamma", "1.5", 20)],
+        );
         relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
         assert!(
             !sink

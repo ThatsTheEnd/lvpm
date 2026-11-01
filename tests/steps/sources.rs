@@ -461,6 +461,7 @@ async fn stderr_has_no_held_back_line(world: &mut CliWorld) {
 }
 
 fn assert_no_held_back_line(world: &CliWorld, prefix: &str) {
+    world.assert_succeeded();
     let stderr = &world.output().stderr;
     assert!(
         !stderr.lines().any(|line| line.starts_with(prefix)),
@@ -468,13 +469,24 @@ fn assert_no_held_back_line(world: &CliWorld, prefix: &str) {
     );
 }
 
-/// The stdout lines that are events of kind `kind`, as JSON.
+/// The stdout lines that are events of kind `kind`, as JSON. The run must have
+/// succeeded and written a `lock_written` event, so that no events at all
+/// (a failed run, or output that is not JSON) cannot pass for "none of `kind`".
 fn json_events(world: &CliWorld, kind: &str) -> Vec<serde_json::Value> {
-    world
+    world.assert_succeeded();
+    let all: Vec<serde_json::Value> = world
         .output()
         .stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect();
+    assert!(
+        all.iter().any(|event| event["event"] == "lock_written"),
+        "no lock_written event in the JSON output:
+{}",
+        world.printed()
+    );
+    all.into_iter()
         .filter(|line| line["event"] == kind)
         .collect()
 }

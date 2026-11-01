@@ -33,15 +33,21 @@ Feature: lvpm reports what min-age-days held back
   Scenario: nothing is printed when nothing was held back
     Given "first" lists "alpha" 1.0 released 30 days ago
     And the project depends on "alpha" "*"
-    When I run "lvpm lock --json"
+    When I run "lvpm lock"
     Then stderr has no held-back line
-    And the JSON events include no "held_back" event
+
+  Scenario: the JSON output has no held_back event when nothing was held back
+    Given "first" lists "alpha" 1.0 released 30 days ago
+    And the project depends on "alpha" "*"
+    When I run "lvpm lock --json"
+    Then the JSON events include no "held_back" event
 
   Scenario: an exact pin is not reported as held back
     Given "first" lists "alpha" 1.0 released 30 days ago and "alpha" 1.1 released 3 days ago
     And the project depends on "alpha" "1.0"
     When I run "lvpm lock"
-    Then stderr has no held-back line
+    Then lvpm.lock takes "alpha" 1.0 from "first"
+    And stderr has no held-back line
 
   Scenario: a newer version gated by LabVIEW is not reported as held back by age
     Given "first" lists "alpha" 1.0 released 30 days ago and "alpha" 3.0 for LabVIEW 2026 released 3 days ago
@@ -64,4 +70,4 @@ Feature: lvpm reports what min-age-days held back
     And docs/manifest.md mentions "no release date"
     And docs/manifest.md mentions "the release date the feed lists"
     And docs/manifest.md mentions "lvpm install --global"
-    And docs/reference/json-output.md mentions "held_back"
+    And docs/reference/json-output.md mentions "The `held_back` event"

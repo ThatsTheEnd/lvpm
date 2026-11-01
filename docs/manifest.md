@@ -68,7 +68,9 @@ manifest a command uses is chosen in this order, first match wins:
 No manifest is fine: `lvpm install <name>` works without a project. When a
 manifest is found, its `[sources]` apply to every command that reads indexes
 (`search`, single-package `install`, full `install`), not only to a
-manifest-driven install.
+manifest-driven install. `min-age-days` is the exception: a single-package
+install that is not an `lvpm add` never applies it (see
+[A minimum release age](#a-minimum-release-age)).
 
 Only the file name `lvpm.toml` is discovered. A `vipm.toml` is read only
 when named with `venv create --manifest` or `init --from`, and is converted first (see
@@ -147,10 +149,14 @@ limit does not protect against them.
   eligible.
 - `lvpm.lock` records the limit, so changing it makes the lock out of date.
   Time passing does not: the limit takes effect at the next `lvpm lock`,
-  `lvpm lock --upgrade`, `lvpm add` or `lvpm sync` that resolves again, and an
-  up-to-date `lvpm.lock` is not resolved again.
-- `lvpm install --global` outside a project has no manifest, so no limit
-  applies to it.
+  `lvpm lock --upgrade`, `lvpm add`, `lvpm remove` or `lvpm sync` that
+  resolves again, and an up-to-date `lvpm.lock` is not resolved again.
+  `lvpm sync --locked` and `--frozen` never resolve, so they never apply it.
+- A plain install never applies the limit: `lvpm install --global <name>`, or
+  `lvpm install <name>` with `--prefix` or `--labview-version`, or outside a
+  project. It resolves from the indexes alone, whatever `lvpm.toml` says. In a
+  project, `lvpm install <name>` with none of those flags is an `lvpm add`,
+  which does apply it.
 
 ## `[dependencies]`
 
