@@ -83,10 +83,7 @@ pub(super) fn with_github(
         let dependency = Dependency {
             name,
             repo,
-            constraints: project
-                .dependencies
-                .iter()
-                .chain(&project.dev_dependencies)
+            constraints: (project.tables().flat_map(|(_, entries)| entries))
                 .filter(|(entry, _)| same_name(entry, name))
                 .map(|(_, constraint)| constraint)
                 .collect(),
@@ -392,6 +389,7 @@ mod tests {
                 sources: Vec::new(),
                 dependencies: Default::default(),
                 dev_dependencies: Default::default(),
+                dependency_groups: Default::default(),
                 github: Default::default(),
             },
             packages: vec![crate::lockfile::LockedPackage {
@@ -401,7 +399,7 @@ mod tests {
                 md5: None,
                 source: source.into(),
                 requires: Vec::new(),
-                dev: false,
+                groups: Vec::new(),
             }],
             unresolved: Vec::new(),
         }

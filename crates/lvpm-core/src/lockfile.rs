@@ -9,7 +9,7 @@
 //!
 //! ```toml
 //! # (generated header)
-//! version = 1                          # the format of this file
+//! version = 2                          # the format of this file
 //! labview = "2024"                     # the LabVIEW it was resolved for
 //!
 //! [inputs]                             # the manifest it was resolved from
@@ -18,6 +18,9 @@
 //!
 //! [inputs.dependencies]
 //! beta = ">=1.0"
+//!
+//! [inputs.dependency-groups.ci]        # one table per [dependency-groups.<name>]
+//! ci_tools = "*"
 //!
 //! [inputs.github]                      # only when a dependency names a repo
 //! beta = "owner/repo"
@@ -29,13 +32,14 @@
 //! md5 = "..."                          # only when the feed lists one
 //! source = "local"                     # or the feed's index URL, or https://github.com/owner/repo
 //! requires = ["beta"]                  # the locked packages it needs
-//! dev = true                           # only when nothing but dev dependencies need it
+//! groups = ["ci", "dev"]               # only when [dependencies] does not need it
 //!
 //! [[unresolved]]                       # a requirement no source lists
 //! name = "ni_lib_missing"
 //! required_by = "beta"
 //! ```
 
+use crate::manifest_edit::DependencyTable;
 use crate::project::{Constraint, Project, name_key};
 use crate::solve::range_of;
 use crate::version::Version;
@@ -47,7 +51,7 @@ use std::path::Path;
 /// The lock's file name; it sits beside `lvpm.toml`.
 pub const FILE_NAME: &str = "lvpm.lock";
 /// The format this lvpm writes. A lock with an older number is stale.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 /// The `source` of a package that came from a local folder or the cache.
 pub const LOCAL_SOURCE: &str = "local";
 
@@ -90,6 +94,14 @@ pub struct Inputs {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub dev_dependencies: BTreeMap<String, String>,
+    /// `[dependency-groups.<name>]`: each group's names and constraints as
+    /// written, by group name.
+    #[serde(
+        default,
+        rename = "dependency-groups",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub dependency_groups: BTreeMap<String, BTreeMap<String, String>>,
     /// The `github = "owner/repo"` of each dependency that has one, by the
     /// name its line is written under.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -110,6 +122,9 @@ impl Inputs {
             sources: project.sources.iter().map(|(_, url)| url.clone()).collect(),
             dependencies: constraints(&project.dependencies),
             dev_dependencies: constraints(&project.dev_dependencies),
+            dependency_groups: (project.groups.iter())
+                .map(|(group, entries)| (group.clone(), constraints(entries)))
+                .collect(),
             github: project.github.clone(),
         }
     }
@@ -130,9 +145,10 @@ pub struct LockedPackage {
     /// The locked packages this one requires, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<String>,
-    /// Needed only through `[dev-dependencies]`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub dev: bool,
+    /// The tables other than `[dependencies]` that need it, `dev` for
+    /// `[dev-dependencies]`, sorted; empty when `[dependencies]` needs it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 /// A requirement that no source lists, and the package that has it.
@@ -166,16 +182,22 @@ pub enum StaleReason {
     /// are not the ones the lock was resolved from.
     SourcesChanged,
     /// The manifest lists a dependency the lock was not resolved for.
-    DependencyAdded { name: String, dev: bool },
+    DependencyAdded {
+        name: String,
+        table: DependencyTable,
+    },
     /// The lock was resolved for a dependency the manifest no longer lists.
-    DependencyRemoved { name: String, dev: bool },
+    DependencyRemoved {
+        name: String,
+        table: DependencyTable,
+    },
     /// The manifest's `constraint` for `name` does not admit the version the
     /// lock holds.
     ConstraintExcludesLocked {
         name: String,
         constraint: String,
         locked: String,
-        dev: bool,
+        table: DependencyTable,
     },
 }
 
@@ -185,13 +207,7 @@ impl Lockfile {
         self.format_is_outdated()
             .or_else(|| self.labview_changed(project))
             .or_else(|| self.sources_changed(project))
-            .or_else(|| {
-                [false, true].into_iter().find_map(|dev| {
-                    self.dependency_added(project, dev)
-                        .or_else(|| self.dependency_removed(project, dev))
-                        .or_else(|| self.constraint_excludes_locked(project, dev))
-                })
-            })
+            .or_else(|| self.dependencies_changed(project))
     }
 
     fn format_is_outdated(&self) -> Option<StaleReason> {
@@ -214,70 +230,89 @@ impl Lockfile {
         changed.then_some(StaleReason::SourcesChanged)
     }
 
-    fn dependency_added(&self, project: &Project, dev: bool) -> Option<StaleReason> {
-        let resolved = self.resolved_names(dev);
-        manifest_lines(project, dev)
+    /// The first change in any table: the manifest's own, then each group the
+    /// lock was resolved for and the manifest no longer has (an empty table).
+    fn dependencies_changed(&self, project: &Project) -> Option<StaleReason> {
+        let no_lines: &[(String, Constraint)] = &[];
+        let dropped_groups = (self.inputs.dependency_groups.keys())
+            .filter(|group| !project.groups.iter().any(|(name, _)| name == *group))
+            .map(|group| (DependencyTable::Group(group.clone()), no_lines));
+        (project.tables())
+            .chain(dropped_groups)
+            .find_map(|(table, lines)| {
+                self.dependency_added(&table, lines)
+                    .or_else(|| self.dependency_removed(&table, lines))
+                    .or_else(|| self.constraint_excludes_locked(&table, lines))
+            })
+    }
+
+    fn dependency_added(
+        &self,
+        table: &DependencyTable,
+        lines: &[(String, Constraint)],
+    ) -> Option<StaleReason> {
+        let resolved = self.resolved_names(table);
+        lines
             .iter()
             .find(|(name, _)| !resolved.contains(&name_key(name)))
             .map(|(name, _)| StaleReason::DependencyAdded {
                 name: name.clone(),
-                dev,
+                table: table.clone(),
             })
     }
 
-    fn dependency_removed(&self, project: &Project, dev: bool) -> Option<StaleReason> {
-        let listed: HashSet<String> = manifest_lines(project, dev)
-            .iter()
-            .map(|(name, _)| name_key(name))
-            .collect();
-        self.resolved_lines(dev)
+    fn dependency_removed(
+        &self,
+        table: &DependencyTable,
+        lines: &[(String, Constraint)],
+    ) -> Option<StaleReason> {
+        let listed: HashSet<String> = lines.iter().map(|(name, _)| name_key(name)).collect();
+        self.resolved_lines(table)
             .keys()
             .find(|name| !listed.contains(&name_key(name)))
             .map(|name| StaleReason::DependencyRemoved {
                 name: name.clone(),
-                dev,
+                table: table.clone(),
             })
     }
 
-    fn constraint_excludes_locked(&self, project: &Project, dev: bool) -> Option<StaleReason> {
-        manifest_lines(project, dev)
-            .iter()
-            .find_map(|(name, constraint)| {
-                let locked = self
-                    .packages
-                    .iter()
-                    .find(|package| name_key(&package.name) == name_key(name))?;
-                let admitted = range_of(constraint).contains(&Version::parse(&locked.version));
-                (!admitted).then(|| StaleReason::ConstraintExcludesLocked {
-                    name: name.clone(),
-                    constraint: constraint_text(constraint),
-                    locked: locked.version.clone(),
-                    dev,
-                })
+    fn constraint_excludes_locked(
+        &self,
+        table: &DependencyTable,
+        lines: &[(String, Constraint)],
+    ) -> Option<StaleReason> {
+        lines.iter().find_map(|(name, constraint)| {
+            let locked = self
+                .packages
+                .iter()
+                .find(|package| name_key(&package.name) == name_key(name))?;
+            let admitted = range_of(constraint).contains(&Version::parse(&locked.version));
+            (!admitted).then(|| StaleReason::ConstraintExcludesLocked {
+                name: name.clone(),
+                constraint: constraint_text(constraint),
+                locked: locked.version.clone(),
+                table: table.clone(),
             })
+        })
     }
 
     /// The manifest lines the lock was resolved for, in one table.
-    fn resolved_lines(&self, dev: bool) -> &BTreeMap<String, String> {
-        match dev {
-            true => &self.inputs.dev_dependencies,
-            false => &self.inputs.dependencies,
+    fn resolved_lines(&self, table: &DependencyTable) -> &BTreeMap<String, String> {
+        static NONE: BTreeMap<String, String> = BTreeMap::new();
+        match table {
+            DependencyTable::Dependencies => &self.inputs.dependencies,
+            DependencyTable::DevDependencies => &self.inputs.dev_dependencies,
+            DependencyTable::Group(name) => {
+                self.inputs.dependency_groups.get(name).unwrap_or(&NONE)
+            }
         }
     }
 
-    fn resolved_names(&self, dev: bool) -> HashSet<String> {
-        self.resolved_lines(dev)
+    fn resolved_names(&self, table: &DependencyTable) -> HashSet<String> {
+        self.resolved_lines(table)
             .keys()
             .map(|name| name_key(name))
             .collect()
-    }
-}
-
-/// The manifest's lines of one dependency table, in file order.
-fn manifest_lines(project: &Project, dev: bool) -> &[(String, Constraint)] {
-    match dev {
-        true => &project.dev_dependencies,
-        false => &project.dependencies,
     }
 }
 
@@ -291,6 +326,8 @@ impl Lockfile {
         for package in &mut lock.packages {
             package.requires.sort_by_cached_key(|name| name_key(name));
             package.requires.dedup();
+            package.groups.sort();
+            package.groups.dedup();
         }
         lock.unresolved.sort_by_cached_key(|unresolved| {
             (
@@ -331,7 +368,7 @@ mod tests {
             md5: None,
             source: LOCAL_SOURCE.to_string(),
             requires: Vec::new(),
-            dev: false,
+            groups: Vec::new(),
         }
     }
 
@@ -341,7 +378,7 @@ mod tests {
         beta.source = "http://127.0.0.1:8090/feed/index.vipr".to_string();
         beta.requires = vec!["alpha".to_string()];
         let mut caraya = package("caraya", "1.0");
-        caraya.dev = true;
+        caraya.groups = vec!["dev".to_string()];
         Lockfile {
             version: FORMAT_VERSION,
             labview: "2024".to_string(),
@@ -350,6 +387,7 @@ mod tests {
                 sources: vec!["http://127.0.0.1:8090/feed".to_string()],
                 dependencies: BTreeMap::from([("beta".to_string(), ">=1.0".to_string())]),
                 dev_dependencies: BTreeMap::from([("caraya".to_string(), "*".to_string())]),
+                dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
             },
             packages: vec![package("alpha", "2.0"), beta, caraya],
@@ -373,9 +411,10 @@ mod tests {
             text.starts_with("# This file is generated by `lvpm lock`. Do not edit it."),
             "{text}"
         );
-        // `dev` and `md5` are written where they apply and nowhere else.
-        assert_eq!(text.matches("dev = true").count(), 1, "{text}");
-        assert_eq!(text.matches("dev = false").count(), 0, "{text}");
+        // `groups` and `md5` are written where they apply and nowhere else.
+        assert_eq!(text.matches("groups = [\"dev\"]").count(), 1, "{text}");
+        assert_eq!(text.matches("groups = ").count(), 1, "{text}");
+        assert_eq!(text.matches("dev = ").count(), 0, "{text}");
         assert_eq!(text.matches("md5 = ").count(), 1, "{text}");
         assert_eq!(text.matches("[[package]]").count(), 3, "{text}");
     }
@@ -512,26 +551,33 @@ beta = \"o/beta\"
         lock().staleness(&crate::project::parse(&change(MANIFEST)).unwrap())
     }
 
-    fn added(name: &str, dev: bool) -> Option<StaleReason> {
+    use DependencyTable::{Dependencies, DevDependencies};
+
+    fn added(name: &str, table: DependencyTable) -> Option<StaleReason> {
         Some(StaleReason::DependencyAdded {
             name: name.to_string(),
-            dev,
+            table,
         })
     }
 
-    fn removed(name: &str, dev: bool) -> Option<StaleReason> {
+    fn removed(name: &str, table: DependencyTable) -> Option<StaleReason> {
         Some(StaleReason::DependencyRemoved {
             name: name.to_string(),
-            dev,
+            table,
         })
     }
 
-    fn excludes(name: &str, constraint: &str, locked: &str, dev: bool) -> Option<StaleReason> {
+    fn excludes(
+        name: &str,
+        constraint: &str,
+        locked: &str,
+        table: DependencyTable,
+    ) -> Option<StaleReason> {
         Some(StaleReason::ConstraintExcludesLocked {
             name: name.to_string(),
             constraint: constraint.to_string(),
             locked: locked.to_string(),
-            dev,
+            table,
         })
     }
 
@@ -545,27 +591,31 @@ beta = \"o/beta\"
         let reason = staleness_after(|text| {
             text.replace("beta = \">=1.0\"\n", "beta = \">=1.0\"\ngamma = \"*\"\n")
         });
-        assert_eq!(reason, added("gamma", false));
+        assert_eq!(reason, added("gamma", Dependencies));
         let reason = staleness_after(|text| format!("{text}zeta = \"*\"\n"));
-        assert_eq!(reason, added("zeta", true), "in [dev-dependencies]");
+        assert_eq!(
+            reason,
+            added("zeta", DevDependencies),
+            "in [dev-dependencies]"
+        );
     }
 
     #[test]
     fn a_dependency_that_was_removed_makes_the_lock_stale() {
         let reason = staleness_after(|text| text.replace("beta = \">=1.0\"\n", ""));
-        assert_eq!(reason, removed("beta", false));
+        assert_eq!(reason, removed("beta", Dependencies));
         let reason = staleness_after(|text| text.replace("caraya = \"*\"\n", ""));
-        assert_eq!(reason, removed("caraya", true));
+        assert_eq!(reason, removed("caraya", DevDependencies));
     }
 
     #[test]
     fn a_constraint_that_excludes_the_locked_version_makes_the_lock_stale() {
         let reason = staleness_after(|text| text.replace(">=1.0", "2.0"));
-        assert_eq!(reason, excludes("beta", "2.0", "1.0", false));
+        assert_eq!(reason, excludes("beta", "2.0", "1.0", Dependencies));
         let reason = staleness_after(|text| text.replace(">=1.0", ">=1.5"));
-        assert_eq!(reason, excludes("beta", ">=1.5", "1.0", false));
+        assert_eq!(reason, excludes("beta", ">=1.5", "1.0", Dependencies));
         let reason = staleness_after(|text| text.replace("caraya = \"*\"", "caraya = \"2.0\""));
-        assert_eq!(reason, excludes("caraya", "2.0", "1.0", true));
+        assert_eq!(reason, excludes("caraya", "2.0", "1.0", DevDependencies));
     }
 
     #[test]
@@ -713,7 +763,106 @@ beta = \"o/beta\"
         lock.packages = vec![package("gamma", "2.0")];
         assert_eq!(
             lock.staleness(&current),
-            excludes("gamma", "1.5", "2.0", true)
+            excludes("gamma", "1.5", "2.0", DevDependencies)
         );
+    }
+
+    // ---- dependency groups ----
+
+    fn ci() -> DependencyTable {
+        DependencyTable::Group("ci".to_string())
+    }
+
+    /// A lock resolved from `MANIFEST` plus `[dependency-groups.ci]`.
+    const WITH_CI: &str = "[project]\nlabview = \">=2024\"\n\n[sources]\ndefaults = false\n\n\
+                           [dependency-groups.ci]\nci_tools = \"*\"\n";
+
+    fn lock_with_ci() -> Lockfile {
+        let project = crate::project::parse(WITH_CI).unwrap();
+        Lockfile {
+            version: FORMAT_VERSION,
+            labview: "2024".to_string(),
+            inputs: Inputs::of(&project),
+            packages: vec![package("ci_tools", "2.0")],
+            unresolved: Vec::new(),
+        }
+    }
+
+    fn staleness_of_ci_after(change: impl Fn(&str) -> String) -> Option<StaleReason> {
+        lock_with_ci().staleness(&crate::project::parse(&change(WITH_CI)).unwrap())
+    }
+
+    #[test]
+    fn inputs_hold_each_groups_lines_apart_from_the_other_tables() {
+        let project = crate::project::parse(WITH_CI).unwrap();
+        let inputs = Inputs::of(&project);
+        assert_eq!(inputs.dependency_groups["ci"]["ci_tools"], "*");
+        assert!(inputs.dependencies.is_empty() && inputs.dev_dependencies.is_empty());
+    }
+
+    #[test]
+    fn a_groups_inputs_are_written_as_their_own_table_and_survive_reading() {
+        let text = lock_with_ci().to_toml().unwrap();
+        assert!(
+            text.contains("[inputs.dependency-groups.ci]\nci_tools = \"*\"\n"),
+            "{text}"
+        );
+        assert_eq!(Lockfile::parse(&text).unwrap(), lock_with_ci());
+        assert!(!lock().to_toml().unwrap().contains("dependency-groups"));
+    }
+
+    #[test]
+    fn a_packages_groups_are_written_sorted_and_without_repeats_and_survive_reading() {
+        let mut lock = lock();
+        lock.packages[0].groups = vec!["dev".to_string(), "ci".to_string(), "dev".to_string()];
+        let text = lock.to_toml().unwrap();
+        assert!(text.contains("groups = [\"ci\", \"dev\"]"), "{text}");
+        let read = Lockfile::parse(&text).unwrap();
+        assert_eq!(read.packages[0].groups, ["ci", "dev"]);
+    }
+
+    #[test]
+    fn a_group_that_is_unchanged_keeps_the_lock_current() {
+        assert_eq!(staleness_of_ci_after(str::to_string), None);
+    }
+
+    #[test]
+    fn a_dependency_added_to_a_group_makes_the_lock_stale_naming_the_group() {
+        let reason = staleness_of_ci_after(|text| format!("{text}beta = \"*\"\n"));
+        assert_eq!(reason, added("beta", ci()));
+    }
+
+    #[test]
+    fn a_dependency_removed_from_a_group_makes_the_lock_stale_naming_the_group() {
+        let reason = staleness_of_ci_after(|text| text.replace("ci_tools = \"*\"\n", ""));
+        assert_eq!(reason, removed("ci_tools", ci()));
+    }
+
+    #[test]
+    fn a_group_the_manifest_no_longer_has_makes_the_lock_stale_for_what_it_held() {
+        let reason = staleness_of_ci_after(|text| {
+            text.replace("[dependency-groups.ci]\nci_tools = \"*\"\n", "")
+        });
+        assert_eq!(reason, removed("ci_tools", ci()));
+    }
+
+    #[test]
+    fn a_group_constraint_that_excludes_the_locked_version_makes_the_lock_stale() {
+        let reason =
+            staleness_of_ci_after(|text| text.replace("ci_tools = \"*\"", "ci_tools = \"1.0\""));
+        assert_eq!(reason, excludes("ci_tools", "1.0", "2.0", ci()));
+    }
+
+    #[test]
+    fn an_empty_group_that_is_gone_leaves_the_lock_current() {
+        let manifest = "[project]\nlabview = \">=2024\"\n\n[sources]\ndefaults = false\n";
+        let with_empty =
+            crate::project::parse(&format!("{manifest}\n[dependency-groups.ci]\n")).unwrap();
+        let mut lock = lock_with_ci();
+        lock.inputs = Inputs::of(&with_empty);
+        lock.packages.clear();
+        let gone = crate::project::parse(manifest).unwrap();
+        assert_eq!(lock.staleness(&with_empty), None);
+        assert_eq!(lock.staleness(&gone), None);
     }
 }

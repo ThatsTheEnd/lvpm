@@ -113,6 +113,9 @@ pub fn error(error: &EditError, rerun: &str) -> String {
             DependencyTable::Dependencies => {
                 format!("{error}\nnext: leave out --dev: `lvpm remove {name}`")
             }
+            DependencyTable::Group(group) => {
+                format!("{error}\nnext: use --group {group}: `lvpm remove {name} --group {group}`")
+            }
         },
         EditError::Other(cause) => format!("{cause:#}"),
     }

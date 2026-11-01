@@ -3,6 +3,7 @@
 //! Files are compared as bytes and as whole lines, so a change that is not the
 //! one asked for cannot hide in a parsed view of the manifest.
 
+use super::sync::quoted;
 use crate::CliWorld;
 use crate::support::fixtures::{FixturePackage, GROUP_PACKAGES, Payload};
 use crate::support::project::MANIFEST_FILE;
@@ -159,27 +160,27 @@ async fn dev_dependency_entry(world: &mut CliWorld, name: String, constraint: St
 #[when(expr = "{string} = {string} is written to [dependencies]")]
 async fn written_to_dependencies(world: &mut CliWorld, name: String, constraint: String) {
     world.edit(|path| {
-        manifest_edit::set_file(path, DependencyTable::Dependencies, &name, &constraint)
+        manifest_edit::set_file(path, &DependencyTable::Dependencies, &name, &constraint)
     });
 }
 
 #[when(expr = "{string} = {string} is written as a dev dependency")]
 async fn written_as_dev_dependency(world: &mut CliWorld, name: String, constraint: String) {
     world.edit(|path| {
-        manifest_edit::set_file(path, DependencyTable::DevDependencies, &name, &constraint)
+        manifest_edit::set_file(path, &DependencyTable::DevDependencies, &name, &constraint)
     });
 }
 
 #[when(expr = "{string} is set to {string}")]
 async fn set_to(world: &mut CliWorld, name: String, constraint: String) {
     world.edit(|path| {
-        manifest_edit::set_file(path, DependencyTable::Dependencies, &name, &constraint)
+        manifest_edit::set_file(path, &DependencyTable::Dependencies, &name, &constraint)
     });
 }
 
 #[when(expr = "{string} is removed")]
 async fn removed(world: &mut CliWorld, name: String) {
-    world.edit(|path| manifest_edit::remove_file(path, DependencyTable::Dependencies, &name));
+    world.edit(|path| manifest_edit::remove_file(path, &DependencyTable::Dependencies, &name));
 }
 
 #[when("the manifest is read")]
@@ -446,9 +447,13 @@ async fn the_group_project(world: &mut CliWorld) {
 /// `"name" "constraint"` separated by `,`, or `empty`. Anything else is a raw
 /// TOML line, so a table can be written wrongly on purpose. `[dependencies]`
 /// and `[dev-dependencies]` are merged into the Background's tables, every
-/// other table is appended.
-#[given(regex = r"^lvpm\.toml has (\[.+)$")]
-async fn the_manifest_has_tables(world: &mut CliWorld, tables: String) {
+/// other table is appended. The tables may be followed by `and a current
+/// lvpm.lock` or `and lvpm.lock holds "name" version`: the project is then
+/// locked, and noted as it is.
+#[given(
+    regex = r#"^lvpm\.toml has (\[.+?)( and a current lvpm\.lock| and lvpm\.lock holds "[^"]+" \S+|)$"#
+)]
+async fn the_manifest_has_tables(world: &mut CliWorld, tables: String, then_locked: String) {
     for table in tables.split(';').map(str::trim) {
         let (header, entries) = table.split_once(' ').expect("a header and its entries");
         let lines = entries
@@ -461,23 +466,11 @@ async fn the_manifest_has_tables(world: &mut CliWorld, tables: String) {
             _ => None,
         };
         let Some(merged) = merged else {
-            let mut text = format!(
-                "{}
-{header}
-",
-                world.manifest_text()
-            );
+            let mut text = format!("{}\n{header}\n", world.manifest_text());
             for line in lines {
                 match ENTRY.captures(line) {
-                    Some(entry) => text.push_str(&format!(
-                        "{} = \"{}\"
-",
-                        &entry[1], &entry[2]
-                    )),
-                    None => text.push_str(&format!(
-                        "{line}
-"
-                    )),
+                    Some(entry) => text.push_str(&format!("{} = \"{}\"\n", &entry[1], &entry[2])),
+                    None => text.push_str(&format!("{line}\n")),
                 }
             }
             std::fs::write(world.manifest_path(), text).expect("write the manifest");
@@ -485,7 +478,204 @@ async fn the_manifest_has_tables(world: &mut CliWorld, tables: String) {
         };
         for line in lines {
             let entry = ENTRY.captures(line).expect("a name and a constraint");
-            world.depend(merged, &entry[1], &entry[2]);
+            world.depend(merged.clone(), &entry[1], &entry[2]);
         }
     }
+    if !then_locked.is_empty() {
+        world.lock_the_project();
+        for (name, version) in QUOTED_AND_VERSION
+            .captures_iter(&then_locked)
+            .map(|held| (held[1].to_string(), held[2].to_string()))
+        {
+            assert!(
+                world
+                    .locked_versions()
+                    .contains(&(name.clone(), version.clone())),
+                "{name} {version} is not what lvpm.lock holds: {:?}",
+                world.locked_versions()
+            );
+        }
+        world.note_the_project();
+    }
+}
+
+/// `"name" 1.0`: a quoted name and the version after it.
+static QUOTED_AND_VERSION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""([^"]+)" (\S+)"#).expect("the pattern"));
+
+/// The group table of a `lvpm.toml ... [dependency-groups.<name>]` step.
+fn group(name: &str) -> DependencyTable {
+    DependencyTable::Group(name.to_string())
+}
+
+// ---- dependency groups: changing a manifest as a person would ----
+
+#[given(
+    regex = r#"^lvpm\.toml now also lists \[dependency-groups\.([\w-]+)\] "([^"]+)" "([^"]*)"$"#
+)]
+async fn a_group_gains_an_entry(
+    world: &mut CliWorld,
+    name: String,
+    entry: String,
+    constraint: String,
+) {
+    world.depend(group(&name), &entry, &constraint);
+}
+
+#[given(regex = r#"^lvpm\.toml gives \[dependency-groups\.([\w-]+)\] "([^"]+)" "([^"]*)"$"#)]
+async fn a_group_entry_changes(
+    world: &mut CliWorld,
+    name: String,
+    entry: String,
+    constraint: String,
+) {
+    world.depend(group(&name), &entry, &constraint);
+}
+
+#[given(regex = r#"^lvpm\.toml no longer lists \[dependency-groups\.([\w-]+)\] "([^"]+)"$"#)]
+async fn a_group_loses_an_entry(world: &mut CliWorld, name: String, entry: String) {
+    manifest_edit::remove_file(&world.manifest_path(), &group(&name), &entry)
+        .expect("remove the entry from the manifest");
+}
+
+/// The group's table goes, from its header to the next table or the end.
+#[given(regex = r"^lvpm\.toml has no \[dependency-groups\.([\w-]+)\] table$")]
+async fn a_group_table_goes(world: &mut CliWorld, name: String) {
+    let text = world.manifest_text();
+    let header = format!("[dependency-groups.{name}]");
+    let from = text
+        .find(&header)
+        .expect("the group's table is in the manifest");
+    let rest = &text[from + header.len()..];
+    let to = rest
+        .find("\n[")
+        .map_or(text.len(), |at| from + header.len() + at + 1);
+    std::fs::write(
+        world.manifest_path(),
+        format!("{}{}", &text[..from], &text[to..]),
+    )
+    .expect("write the manifest");
+}
+
+/// A lock as lvpm 0.17 wrote it: format 1, and `dev = true` where only dev
+/// dependencies need a package.
+#[given(regex = r#"^an lvpm\.lock in format 1 with "([^"]+)" marked dev = true$"#)]
+async fn a_format_1_lock(world: &mut CliWorld, dev_dependency: String) {
+    world.depend(DependencyTable::DevDependencies, &dev_dependency, "*");
+    world.lock_the_project();
+    let text = String::from_utf8(world.lock_bytes().expect("`lvpm lock` wrote a lock"))
+        .expect("lvpm.lock is text");
+    let old = text
+        .replacen("version = 2\n", "version = 1\n", 1)
+        .replace("groups = [\"dev\"]", "dev = true");
+    assert!(old.contains("dev = true"), "nothing is dev only:\n{text}");
+    std::fs::write(world.lock_path(), old).expect("write the old lock");
+    world.note_the_project();
+}
+
+// ---- dependency groups: what the lock says ----
+
+/// `lvpm.lock is format 2`, or `... and has no "dev =" line`.
+#[then(regex = r#"^lvpm\.lock is format (\d+)(?: and has no "([^"]+)" line)?$"#)]
+async fn the_lock_is_in_a_format(world: &mut CliWorld, format: String, absent_line: String) {
+    let text = String::from_utf8(world.lock_bytes().expect("lvpm.lock exists")).expect("text");
+    assert!(
+        text.lines()
+            .any(|line| line == format!("version = {format}")),
+        "not format {format}:\n{text}"
+    );
+    assert!(
+        absent_line.is_empty() || !text.lines().any(|line| line.starts_with(&absent_line)),
+        "a line starts with {absent_line:?}:\n{text}"
+    );
+}
+
+/// One `"name" and "name" [version] groups ["a", "b"]` or `... no groups`.
+static LOCKED_GROUPS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?P<names>"[^"]+"(?: and "[^"]+")*)(?: (?P<version>\d\S*))? (?:groups (?P<groups>\[[^\]]*\])|(?P<none>no groups))"#,
+    )
+    .expect("the pattern")
+});
+
+#[then(regex = r"^lvpm\.lock gives (.+)$")]
+async fn the_lock_gives_groups(world: &mut CliWorld, wanted: String) {
+    let mut seen = 0;
+    for pair in LOCKED_GROUPS.captures_iter(&wanted) {
+        let expected = pair
+            .name("groups")
+            .map_or(Vec::new(), |groups| quoted(groups.as_str()));
+        for name in quoted(&pair["names"]) {
+            let package = world.locked_package(&name);
+            let groups: Vec<String> = package
+                .get("groups")
+                .and_then(toml::Value::as_array)
+                .map_or(Vec::new(), |groups| {
+                    groups
+                        .iter()
+                        .map(|group| group.as_str().expect("a group name").to_string())
+                        .collect()
+                });
+            assert_eq!(groups, expected, "the groups of {name} in {package:?}");
+            if let Some(version) = pair.name("version") {
+                assert_eq!(
+                    package["version"].as_str(),
+                    Some(version.as_str()),
+                    "{name}"
+                );
+            }
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "no package named in: {wanted}");
+}
+
+#[then(regex = r#"^\[dependency-groups\.([\w-]+)\] says "([^"]+)" = "([^"]*)"$"#)]
+async fn the_group_says(world: &mut CliWorld, name: String, entry: String, constraint: String) {
+    let manifest: toml::Table = world.manifest_text().parse().expect("the manifest is TOML");
+    assert_eq!(
+        manifest["dependency-groups"][&name][&entry].as_str(),
+        Some(constraint.as_str()),
+        "{manifest:?}"
+    );
+}
+
+// ---- dependency groups: what the command said ----
+
+#[then(regex = r"^the command fails saying lvpm\.lock is out of date: (.+)$")]
+async fn fails_out_of_date_because(world: &mut CliWorld, reason: String) {
+    world.assert_failed();
+    let said = format!("lvpm.lock is out of date: {reason}");
+    assert!(
+        world.printed().contains(&said),
+        "{said:?} is not in:\n{}",
+        world.printed()
+    );
+}
+
+#[then(regex = r#"^the command fails saying "(lvpm\.lock is out of date: .+)"$"#)]
+async fn fails_saying_out_of_date_in_full(world: &mut CliWorld, said: String) {
+    world.assert_failed();
+    assert!(
+        world.printed().contains(&said),
+        "{said:?} is not in:\n{}",
+        world.printed()
+    );
+}
+
+#[then("the command fails saying the lock format is outdated")]
+async fn fails_saying_the_format_is_outdated(world: &mut CliWorld) {
+    world.assert_failed();
+    let said = "the lock format is outdated (this lvpm writes format 2)";
+    assert!(
+        world.printed().contains(said),
+        "{said:?} is not in:\n{}",
+        world.printed()
+    );
+}
+
+#[then("dest and lvpm.lock are byte-identical to before")]
+async fn dest_and_lock_are_byte_identical(world: &mut CliWorld) {
+    world.assert_dest_unchanged();
+    assert_eq!(world.lock_bytes(), world.lock.before, "the lock changed");
 }

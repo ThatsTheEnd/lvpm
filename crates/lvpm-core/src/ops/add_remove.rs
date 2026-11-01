@@ -48,15 +48,15 @@ pub fn add(
     // narrowed constraint on a GitHub dependency is judged as written; with no
     // constraint given, as `*`, which `floor` then narrows.
     let asked = request.constraint.as_deref().unwrap_or("*");
-    let edit = prepared.set(table, &request.name, asked)?;
+    let edit = prepared.set(&table, &request.name, asked)?;
     let edited = (prepared.found.0.clone(), edit.project.clone());
     let moving = Moving::Nothing;
     let index = locking::load_index(env, Some(&edited), prepared.previous.as_ref(), &moving)?;
     let edit = match request.constraint {
         Some(_) => edit,
         None => {
-            let floor = floor(env, &prepared, &index, table, &request.name)?;
-            prepared.set(table, &request.name, &floor)?
+            let floor = floor(env, &prepared, &index, &table, &request.name)?;
+            prepared.set(&table, &request.name, &floor)?
         }
     };
     commit(env, prepared, edit, &index, dest, options)
@@ -76,7 +76,7 @@ pub fn remove(
     options: &InstallOptions,
 ) -> Result<(), EditError> {
     let prepared = Prepared::of(env)?;
-    let edit = prepared.take_out(table, name)?;
+    let edit = prepared.take_out(&table, name)?;
     let dest = env.destination()?;
     announce_project(env, &prepared, &dest);
 
@@ -144,18 +144,20 @@ impl Prepared {
     }
 
     /// The entry of `table` called `name` in any case, as the manifest has it.
-    fn entry(&self, table: DependencyTable, name: &str) -> Option<&(String, Constraint)> {
-        let entries = match table {
-            DependencyTable::Dependencies => &self.found.1.dependencies,
-            DependencyTable::DevDependencies => &self.found.1.dev_dependencies,
-        };
+    fn entry(&self, table: &DependencyTable, name: &str) -> Option<&(String, Constraint)> {
+        let (_, entries) = self.found.1.tables().find(|(listed, _)| listed == table)?;
         entries
             .iter()
             .find(|(entry, _)| project::same_name(entry, name))
     }
 
     /// The manifest with `name` in `table` asking for `constraint`.
-    fn set(&self, table: DependencyTable, name: &str, constraint: &str) -> Result<Edit, EditError> {
+    fn set(
+        &self,
+        table: &DependencyTable,
+        name: &str,
+        constraint: &str,
+    ) -> Result<Edit, EditError> {
         let (key, change) = match self.entry(table, name) {
             Some((entry, old)) => {
                 let from = constraint_text(old);
@@ -180,16 +182,18 @@ impl Prepared {
 
     /// The manifest without `name` in `table`; the error says where the name
     /// is when it is not there.
-    fn take_out(&self, table: DependencyTable, name: &str) -> Result<Edit, EditError> {
+    fn take_out(&self, table: &DependencyTable, name: &str) -> Result<Edit, EditError> {
         let Some((entry, constraint)) = self.entry(table, name) else {
-            let other = match table {
-                DependencyTable::Dependencies => DependencyTable::DevDependencies,
-                DependencyTable::DevDependencies => DependencyTable::Dependencies,
-            };
-            return Err(match self.entry(other, name) {
-                Some(_) => EditError::InOtherTable {
+            let other = self.found.1.tables().find(|(listed, entries)| {
+                listed != table
+                    && entries
+                        .iter()
+                        .any(|(entry, _)| project::same_name(entry, name))
+            });
+            return Err(match other {
+                Some((found_in, _)) => EditError::InOtherTable {
                     name: name.to_string(),
-                    found_in: other,
+                    found_in,
                 },
                 None => EditError::NotADependency {
                     name: name.to_string(),
@@ -219,14 +223,14 @@ impl Edit {
     fn of(
         text: String,
         change: Option<ManifestEdit>,
-        table: DependencyTable,
+        table: &DependencyTable,
     ) -> Result<Edit, EditError> {
         let project = project::parse(&text).context("parsing the new manifest")?;
         Ok(Edit {
             text,
             project,
             change,
-            dev: table == DependencyTable::DevDependencies,
+            dev: *table == DependencyTable::DevDependencies,
         })
     }
 }
@@ -238,7 +242,7 @@ fn floor(
     env: &OpEnv,
     prepared: &Prepared,
     index: &Index,
-    table: DependencyTable,
+    table: &DependencyTable,
     name: &str,
 ) -> Result<String, EditError> {
     let project = &prepared.found.1;
@@ -461,7 +465,7 @@ mod tests {
     fn a_new_entry_goes_at_the_end_of_its_table_and_nothing_else_changes() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "gamma", ">=1.0")
+            .set(&DependencyTable::Dependencies, "gamma", ">=1.0")
             .unwrap();
         assert_eq!(
             edit.text,
@@ -482,7 +486,7 @@ mod tests {
     fn an_entry_that_is_there_is_updated_under_its_own_spelling() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "beta", ">=0.5")
+            .set(&DependencyTable::Dependencies, "beta", ">=0.5")
             .unwrap();
         assert_eq!(edit.text, MANIFEST.replace(">=1.0", ">=0.5"));
         assert_eq!(
@@ -499,7 +503,7 @@ mod tests {
     fn the_constraint_an_entry_already_has_is_no_change() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "Beta", ">=1.0")
+            .set(&DependencyTable::Dependencies, "Beta", ">=1.0")
             .unwrap();
         assert_eq!(edit.text, MANIFEST);
         assert_eq!(edit.change, None);
@@ -509,7 +513,7 @@ mod tests {
     fn a_dev_entry_goes_to_the_dev_table() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::DevDependencies, "delta", "1.0")
+            .set(&DependencyTable::DevDependencies, "delta", "1.0")
             .unwrap();
         assert!(edit.dev);
         assert_eq!(edit.project.dev_dependencies.len(), 2);
@@ -520,7 +524,7 @@ mod tests {
     fn a_removal_takes_only_the_entrys_line_and_names_it_as_the_manifest_does() {
         let project = prepared(MANIFEST);
         let edit = project
-            .take_out(DependencyTable::Dependencies, "BETA")
+            .take_out(&DependencyTable::Dependencies, "BETA")
             .unwrap();
         assert_eq!(edit.text, MANIFEST.replace("Beta = \">=1.0\" # keep\n", ""));
         assert_eq!(
@@ -537,10 +541,10 @@ mod tests {
         let project = prepared(MANIFEST);
         let refused = |table, name: &str| project.take_out(table, name).err().unwrap();
         assert!(matches!(
-            refused(DependencyTable::Dependencies, "zeta"),
+            refused(&DependencyTable::Dependencies, "zeta"),
             EditError::NotADependency { name } if name == "zeta"
         ));
-        let in_dev = refused(DependencyTable::Dependencies, "caraya");
+        let in_dev = refused(&DependencyTable::Dependencies, "caraya");
         assert!(matches!(
             &in_dev,
             EditError::InOtherTable {
@@ -549,7 +553,7 @@ mod tests {
             }
         ));
         assert_eq!(in_dev.to_string(), "caraya is in [dev-dependencies]");
-        let in_normal = refused(DependencyTable::DevDependencies, "beta");
+        let in_normal = refused(&DependencyTable::DevDependencies, "beta");
         assert_eq!(in_normal.to_string(), "beta is in [dependencies]");
     }
 

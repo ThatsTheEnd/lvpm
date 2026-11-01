@@ -62,7 +62,7 @@ fn set_up_project(sandbox: &Sandbox) {
     sandbox.use_local_project(Some(PROJECT_LABVIEW));
     manifest_edit::set_file(
         &sandbox.work_dir().join(MANIFEST_FILE),
-        DependencyTable::Dependencies,
+        &DependencyTable::Dependencies,
         "beta",
         ">=1.0",
     )

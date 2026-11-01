@@ -30,6 +30,7 @@
 //! an older one.
 
 use crate::errors::LockError;
+use crate::manifest_edit::DependencyTable;
 use crate::version::Version;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -221,6 +222,25 @@ impl Project {
             }
         }
         Ok(self.sources.iter().map(|(_, s)| s.clone()).collect())
+    }
+
+    /// Every dependency table, with its lines: `[dependencies]`,
+    /// `[dev-dependencies]`, then each group in file order. The one list of
+    /// tables: whatever treats the tables alike goes through it.
+    pub fn tables(&self) -> impl Iterator<Item = (DependencyTable, &[(String, Constraint)])> {
+        [
+            (DependencyTable::Dependencies, self.dependencies.as_slice()),
+            (
+                DependencyTable::DevDependencies,
+                self.dev_dependencies.as_slice(),
+            ),
+        ]
+        .into_iter()
+        .chain(
+            self.groups
+                .iter()
+                .map(|(name, entries)| (DependencyTable::Group(name.clone()), entries.as_slice())),
+        )
     }
 }
 
@@ -909,6 +929,39 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
                 .unwrap()
                 .groups
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn tables_lists_dependencies_then_dev_then_each_group_in_file_order() {
+        let p = parse(
+            "[dependency-groups.zeta]
+z = \"*\"
+
+[dev-dependencies]
+d = \"*\"
+
+             [dependencies]
+a = \"*\"
+
+[dependency-groups.ci]
+c = \"*\"
+e = \"*\"
+",
+        )
+        .unwrap();
+        let tables: Vec<(String, usize)> = p
+            .tables()
+            .map(|(table, entries)| (table.key(), entries.len()))
+            .collect();
+        assert_eq!(
+            tables,
+            [
+                ("dependencies".to_string(), 1),
+                ("dev-dependencies".to_string(), 1),
+                ("dependency-groups.zeta".to_string(), 1),
+                ("dependency-groups.ci".to_string(), 2),
+            ]
         );
     }
 

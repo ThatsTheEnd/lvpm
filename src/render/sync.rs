@@ -427,7 +427,7 @@ mod tests {
         let stale = error(&SyncError::Lock(LockError::Stale(
             lvpm_core::lockfile::StaleReason::DependencyAdded {
                 name: "gamma".into(),
-                dev: false,
+                table: lvpm_core::manifest_edit::DependencyTable::Dependencies,
             },
         )));
         assert_eq!(

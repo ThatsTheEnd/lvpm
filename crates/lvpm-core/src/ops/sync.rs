@@ -362,7 +362,12 @@ impl SyncPlan {
 /// destination holds. With `no_dev`, packages that only dev dependencies need
 /// are left out of the wanted set, and are taken out when installed.
 pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], no_dev: bool) -> SyncPlan {
-    let wanted_here = |package: &LockedPackage| !(no_dev && package.dev);
+    // Until groups can be selected, only a package that dev alone needs is left out.
+    let wanted_here = |package: &LockedPackage| {
+        let dev_only =
+            !package.groups.is_empty() && package.groups.iter().all(|group| group == "dev");
+        !(no_dev && dev_only)
+    };
     let locked: HashMap<String, &LockedPackage> = lock
         .packages
         .iter()
@@ -704,7 +709,11 @@ mod tests {
             md5: None,
             source: LOCAL_SOURCE.to_string(),
             requires: requires.iter().map(|name| name.to_string()).collect(),
-            dev,
+            groups: if dev {
+                vec!["dev".to_string()]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -717,6 +726,7 @@ mod tests {
                 sources: Vec::new(),
                 dependencies: BTreeMap::new(),
                 dev_dependencies: BTreeMap::new(),
+                dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
             },
             packages,

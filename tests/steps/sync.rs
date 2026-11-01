@@ -118,7 +118,7 @@ fn set_up_project(sandbox: &Sandbox) {
 fn manifest_depend(sandbox: &Sandbox, table: DependencyTable, name: &str, constraint: &str) {
     lvpm_core::manifest_edit::set_file(
         &sandbox.work_dir().join(MANIFEST_FILE),
-        table,
+        &table,
         name,
         constraint,
     )
@@ -133,7 +133,7 @@ fn arguments(command_line: &str) -> Vec<&str> {
 }
 
 /// Every `"quoted"` part of a step's text.
-fn quoted(text: &str) -> Vec<String> {
+pub(super) fn quoted(text: &str) -> Vec<String> {
     static QUOTED: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#""([^"]+)""#).expect("the pattern"));
     QUOTED

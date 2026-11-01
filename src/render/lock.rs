@@ -5,7 +5,8 @@
 use super::{Renderer, Stream};
 use lvpm_core::errors::{ArchiveFailure, ArchiveFault, LockError, LockedArchiveProblem};
 use lvpm_core::events::{Event, LockChange};
-use lvpm_core::lockfile::StaleReason;
+use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
+use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::solve::{Conflict, Fact};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
@@ -70,26 +71,40 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
 /// Why a lock is out of date, as the clause that follows "lvpm.lock is out of
 /// date:". It names the manifest line at fault.
 pub fn stale_reason(reason: &StaleReason) -> String {
-    let dependency = |dev: bool| if dev { "dev dependency" } else { "dependency" };
     match reason {
-        StaleReason::FormatOutdated => "the lock format is outdated".to_string(),
+        StaleReason::FormatOutdated => {
+            format!("the lock format is outdated (this lvpm writes format {FORMAT_VERSION})")
+        }
         StaleReason::LabviewChanged => "labview changed".to_string(),
         StaleReason::SourcesChanged => "sources changed".to_string(),
-        StaleReason::DependencyAdded { name, dev } => {
-            format!("{} \"{name}\" was added", dependency(*dev))
+        StaleReason::DependencyAdded { name, table } => {
+            format!("{} \"{name}\" was added", dependency(table))
         }
-        StaleReason::DependencyRemoved { name, dev } => {
-            format!("{} \"{name}\" was removed", dependency(*dev))
+        StaleReason::DependencyRemoved { name, table } => {
+            format!("{} \"{name}\" was removed", dependency(table))
         }
         StaleReason::ConstraintExcludesLocked {
             name,
             constraint,
             locked,
-            dev,
+            table,
         } => {
-            let prefix = if *dev { "dev dependency " } else { "" };
+            let prefix = match table {
+                DependencyTable::Dependencies => String::new(),
+                DependencyTable::DevDependencies => "dev dependency ".to_string(),
+                DependencyTable::Group(_) => format!("[{}] ", table.key()),
+            };
             format!("{prefix}\"{name}\" \"{constraint}\" excludes locked {locked}")
         }
+    }
+}
+
+/// What a reason calls a dependency of `table`.
+fn dependency(table: &DependencyTable) -> String {
+    match table {
+        DependencyTable::Dependencies => "dependency".to_string(),
+        DependencyTable::DevDependencies => "dev dependency".to_string(),
+        DependencyTable::Group(_) => format!("[{}] dependency", table.key()),
     }
 }
 
@@ -460,49 +475,74 @@ mod tests {
     #[test]
     fn every_stale_reason_names_the_line_at_fault() {
         let named = |name: &str| name.to_string();
-        let excludes = |dev| StaleReason::ConstraintExcludesLocked {
+        let ci = || DependencyTable::Group("ci".to_string());
+        let excludes = |table| StaleReason::ConstraintExcludesLocked {
             name: named("beta"),
             constraint: named("2.0"),
             locked: named("1.0"),
-            dev,
+            table,
         };
         for (reason, text) in [
             (
                 StaleReason::DependencyAdded {
                     name: named("gamma"),
-                    dev: false,
+                    table: DependencyTable::Dependencies,
                 },
                 "dependency \"gamma\" was added",
             ),
             (
                 StaleReason::DependencyRemoved {
                     name: named("beta"),
-                    dev: false,
+                    table: DependencyTable::Dependencies,
                 },
                 "dependency \"beta\" was removed",
             ),
             (
                 StaleReason::DependencyAdded {
                     name: named("caraya"),
-                    dev: true,
+                    table: DependencyTable::DevDependencies,
                 },
                 "dev dependency \"caraya\" was added",
             ),
             (
                 StaleReason::DependencyRemoved {
                     name: named("caraya"),
-                    dev: true,
+                    table: DependencyTable::DevDependencies,
                 },
                 "dev dependency \"caraya\" was removed",
             ),
-            (excludes(false), "\"beta\" \"2.0\" excludes locked 1.0"),
             (
-                excludes(true),
+                excludes(DependencyTable::Dependencies),
+                "\"beta\" \"2.0\" excludes locked 1.0",
+            ),
+            (
+                excludes(DependencyTable::DevDependencies),
                 "dev dependency \"beta\" \"2.0\" excludes locked 1.0",
+            ),
+            (
+                StaleReason::DependencyAdded {
+                    name: named("beta"),
+                    table: ci(),
+                },
+                "[dependency-groups.ci] dependency \"beta\" was added",
+            ),
+            (
+                StaleReason::DependencyRemoved {
+                    name: named("ci_tools"),
+                    table: ci(),
+                },
+                "[dependency-groups.ci] dependency \"ci_tools\" was removed",
+            ),
+            (
+                excludes(ci()),
+                "[dependency-groups.ci] \"beta\" \"2.0\" excludes locked 1.0",
             ),
             (StaleReason::LabviewChanged, "labview changed"),
             (StaleReason::SourcesChanged, "sources changed"),
-            (StaleReason::FormatOutdated, "the lock format is outdated"),
+            (
+                StaleReason::FormatOutdated,
+                "the lock format is outdated (this lvpm writes format 2)",
+            ),
         ] {
             assert_eq!(stale_reason(&reason), text, "{reason:?}");
         }
@@ -515,7 +555,7 @@ mod tests {
             (
                 LockError::Stale(StaleReason::DependencyAdded {
                     name: "gamma".into(),
-                    dev: false,
+                    table: DependencyTable::Dependencies,
                 }),
                 "lvpm.lock is out of date: dependency \"gamma\" was added; \
                  run `lvpm lock` to update it",
