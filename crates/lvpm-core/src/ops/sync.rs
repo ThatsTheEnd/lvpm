@@ -89,10 +89,56 @@ pub struct SyncOptions {
     /// Leave out the packages that only dev dependencies need, and take them
     /// out when they are installed.
     pub no_dev: bool,
+    /// The dependency groups to install besides `[dependencies]` and dev, which
+    /// are installed unless `no_dev`. `dev` in any case names the dev group.
+    pub groups: Vec<String>,
     /// The install flags a sync honors: a dry run, and what the relink and the
     /// hooks do. A sync takes the lock's versions, and all of them, so
     /// `allow_downgrade` and `no_deps` mean nothing to it.
     pub install: InstallOptions,
+}
+
+impl SyncOptions {
+    /// What the options select, `dev` folded to its one spelling.
+    fn selection(&self) -> Selection {
+        Selection {
+            no_dev: self.no_dev,
+            groups: (self.groups.iter())
+                .map(|group| match group.eq_ignore_ascii_case(DEV_GROUP) {
+                    true => DEV_GROUP.to_string(),
+                    false => group.clone(),
+                })
+                .collect(),
+            keep_listed: false,
+        }
+    }
+}
+
+/// The group the packages of `[dev-dependencies]` are in.
+const DEV_GROUP: &str = "dev";
+
+/// Which of the lock's packages a sync puts on disk: those `[dependencies]`
+/// needs, those dev needs unless `no_dev`, and those a selected group needs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub no_dev: bool,
+    /// Groups other than dev, as the manifest spells them.
+    pub groups: Vec<String>,
+    /// Keep an installed package the lock lists, wanted or not: a sync that
+    /// installs only part of the lock takes nothing out but what the lock drops.
+    pub keep_listed: bool,
+}
+
+impl Selection {
+    /// The package is put on disk: `[dependencies]` needs it, or a group that
+    /// is selected does. The lock lists no groups for what `[dependencies]` needs.
+    fn wants(&self, package: &LockedPackage) -> bool {
+        package.groups.is_empty()
+            || (package.groups.iter()).any(|group| match group == DEV_GROUP {
+                true => !self.no_dev,
+                false => self.groups.contains(group),
+            })
+    }
 }
 
 /// Make the destination `env` settles hold exactly the packages `lvpm.lock`
@@ -109,6 +155,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
     }
     let found = locking::find_manifest(env)?;
     let (manifest_path, project) = &found;
+    refuse_unknown_groups(project, &opts.selection())?;
     env.sink.emit(Event::PhaseStarted {
         phase: Phase::Resolve,
     });
@@ -133,7 +180,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
         });
     }
 
-    let plan = plan_sync(&lock, &install::list_installed(&store)?, opts.no_dev);
+    let plan = plan_sync(&lock, &install::list_installed(&store)?, &opts.selection());
     if first_sync {
         announce_migration(env, &plan);
     }
@@ -154,6 +201,28 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
     let applied = apply_sync(env, &mut session, &lock, &plan, planned, opts)?;
     finish(env, &mut session, &applied, &opts.install)?;
     Ok(())
+}
+
+/// Fail, before any lock is read or written, when a selected group is not dev
+/// or a `[dependency-groups]` table of the manifest.
+fn refuse_unknown_groups(project: &Project, selection: &Selection) -> Result<(), SyncError> {
+    let mut defined: Vec<&str> = (project.groups.iter())
+        .map(|(name, _)| name.as_str())
+        .collect();
+    defined.push(DEV_GROUP);
+    defined.sort_unstable();
+    match selection
+        .groups
+        .iter()
+        .find(|group| !defined.contains(&group.as_str()))
+    {
+        Some(unknown) => Err(anyhow::anyhow!(
+            "unknown group '{unknown}'; defined groups: {}",
+            defined.join(", ")
+        )
+        .into()),
+        None => Ok(()),
+    }
 }
 
 /// The lock this sync goes by, and whether it is the project's first: made
@@ -240,6 +309,7 @@ pub(super) fn announce_migration(env: &OpEnv, plan: &SyncPlan) {
                 name,
                 version,
                 reason: RemoveReason::NotInLock,
+                ..
             } => Some(PackageRef {
                 name: name.clone(),
                 version: version.clone(),
@@ -323,7 +393,7 @@ fn incomplete(
     cause: &anyhow::Error,
 ) -> SyncError {
     let left = match install::list_installed(session.store()) {
-        Ok(installed) => plan_sync(lock, &installed, opts.no_dev).steps,
+        Ok(installed) => plan_sync(lock, &installed, &opts.selection()).steps,
         Err(_) => plan.steps.clone(),
     };
     let pending: HashSet<&str> = left.iter().map(SyncStep::name).collect();
@@ -359,15 +429,10 @@ impl SyncPlan {
 }
 
 /// What it takes to make a destination equal `lock`. `installed` is what the
-/// destination holds. With `no_dev`, packages that only dev dependencies need
-/// are left out of the wanted set, and are taken out when installed.
-pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], no_dev: bool) -> SyncPlan {
-    // Until groups can be selected, only a package that dev alone needs is left out.
-    let wanted_here = |package: &LockedPackage| {
-        let dev_only =
-            !package.groups.is_empty() && package.groups.iter().all(|group| group == "dev");
-        !(no_dev && dev_only)
-    };
+/// destination holds. A package the `selection` does not want is left out of
+/// the wanted set, and is taken out when installed, unless it keeps what is
+/// listed.
+pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], selection: &Selection) -> SyncPlan {
     let locked: HashMap<String, &LockedPackage> = lock
         .packages
         .iter()
@@ -389,22 +454,28 @@ pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], no_dev: bool) -> SyncP
     let mut steps: Vec<SyncStep> = installed
         .iter()
         .filter_map(|manifest| {
-            let reason = match locked.get(&name_key(&manifest.name)) {
+            let (reason, groups) = match locked.get(&name_key(&manifest.name)) {
                 None if unresolved.contains(&name_key(&manifest.name)) => return None,
-                None => RemoveReason::NotInLock,
-                Some(package) if !wanted_here(package) => RemoveReason::DevOnly,
+                None => (RemoveReason::NotInLock, Vec::new()),
+                Some(package) if !selection.keep_listed && !selection.wants(package) => {
+                    unselected(package)
+                }
                 Some(_) => return None,
             };
             Some(SyncStep::Remove {
                 name: manifest.name.clone(),
                 version: manifest.version.clone(),
                 reason,
+                groups,
             })
         })
         .collect();
 
     let mut wanted = Vec::new();
-    let to_put_on_disk = lock.packages.iter().filter(|package| wanted_here(package));
+    let to_put_on_disk = lock
+        .packages
+        .iter()
+        .filter(|package| selection.wants(package));
     let ordered = order_dependencies_first(
         to_put_on_disk.collect(),
         |package| name_key(&package.name),
@@ -427,6 +498,15 @@ pub fn plan_sync(lock: &Lockfile, installed: &[Manifest], no_dev: bool) -> SyncP
         wanted.push(package.clone());
     }
     SyncPlan { steps, wanted }
+}
+
+/// Why a locked package is taken out, and which groups need it, when no
+/// selected group does.
+fn unselected(package: &LockedPackage) -> (RemoveReason, Vec<String>) {
+    match package.groups.as_slice() {
+        [only] if only == DEV_GROUP => (RemoveReason::DevOnly, Vec::new()),
+        groups => (RemoveReason::GroupsOnly, groups.to_vec()),
+    }
 }
 
 /// The same version, from the same archive. A manifest written before the
@@ -702,6 +782,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn locked(name: &str, version: &str, requires: &[&str], dev: bool) -> LockedPackage {
+        locked_in(name, version, requires, if dev { &["dev"] } else { &[] })
+    }
+
+    fn locked_in(name: &str, version: &str, requires: &[&str], groups: &[&str]) -> LockedPackage {
         LockedPackage {
             name: name.to_string(),
             version: version.to_string(),
@@ -709,11 +793,7 @@ mod tests {
             md5: None,
             source: LOCAL_SOURCE.to_string(),
             requires: requires.iter().map(|name| name.to_string()).collect(),
-            groups: if dev {
-                vec!["dev".to_string()]
-            } else {
-                Vec::new()
-            },
+            groups: groups.iter().map(|group| group.to_string()).collect(),
         }
     }
 
@@ -776,6 +856,30 @@ mod tests {
             name: name.to_string(),
             version: version.to_string(),
             reason,
+            groups: Vec::new(),
+        }
+    }
+
+    fn remove_for_groups(name: &str, version: &str, groups: &[&str]) -> SyncStep {
+        SyncStep::Remove {
+            name: name.to_string(),
+            version: version.to_string(),
+            reason: RemoveReason::GroupsOnly,
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+        }
+    }
+
+    fn no_dev() -> Selection {
+        Selection {
+            no_dev: true,
+            ..Selection::default()
+        }
+    }
+
+    fn with_groups(groups: &[&str]) -> Selection {
+        Selection {
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+            ..Selection::default()
         }
     }
 
@@ -788,7 +892,7 @@ mod tests {
 
     #[test]
     fn an_empty_destination_gets_everything_the_lock_lists() {
-        let plan = plan_sync(&alpha_and_beta(), &[], false);
+        let plan = plan_sync(&alpha_and_beta(), &[], &Selection::default());
         assert_eq!(
             plan.steps,
             [install("alpha", "2.0"), install("beta", "1.0")]
@@ -800,7 +904,7 @@ mod tests {
     #[test]
     fn a_destination_that_already_matches_has_nothing_to_do() {
         let here = [installed("alpha", "2.0"), installed("beta", "1.0")];
-        let plan = plan_sync(&alpha_and_beta(), &here, false);
+        let plan = plan_sync(&alpha_and_beta(), &here, &Selection::default());
         assert!(plan.is_empty(), "{plan:?}");
         assert!(plan.wanted.is_empty());
     }
@@ -812,7 +916,7 @@ mod tests {
             installed("beta", "1.0"),
             installed("gamma", "1.0"),
         ];
-        let plan = plan_sync(&alpha_and_beta(), &here, false);
+        let plan = plan_sync(&alpha_and_beta(), &here, &Selection::default());
         assert_eq!(
             plan.steps,
             [remove("gamma", "1.0", RemoveReason::NotInLock)]
@@ -836,7 +940,7 @@ mod tests {
         // No source listed ni_lib, so the lock cannot hold it; it is there
         // because the requirement is met by hand.
         assert_eq!(
-            plan_sync(&lock, &here, false).steps,
+            plan_sync(&lock, &here, &Selection::default()).steps,
             [remove("gamma", "1.0", RemoveReason::NotInLock)]
         );
     }
@@ -844,7 +948,7 @@ mod tests {
     #[test]
     fn another_version_is_replaced_and_names_both() {
         let here = [installed("alpha", "1.0"), installed("beta", "1.0")];
-        let plan = plan_sync(&alpha_and_beta(), &here, false);
+        let plan = plan_sync(&alpha_and_beta(), &here, &Selection::default());
         assert_eq!(plan.steps, [replace("alpha", "1.0", "2.0")]);
         assert_eq!(plan.wanted[0].version, "2.0");
     }
@@ -854,7 +958,7 @@ mod tests {
         let mut other = installed("alpha", "2.0");
         other.archive_sha256 = Some("sha-of-something-else".to_string());
         let here = [other, installed("beta", "1.0")];
-        let plan = plan_sync(&alpha_and_beta(), &here, false);
+        let plan = plan_sync(&alpha_and_beta(), &here, &Selection::default());
         assert_eq!(plan.steps, [replace("alpha", "2.0", "2.0")]);
     }
 
@@ -863,7 +967,7 @@ mod tests {
         let mut legacy = installed("alpha", "2.0");
         legacy.archive_sha256 = None;
         let here = [legacy, installed("beta", "1.0")];
-        let plan = plan_sync(&alpha_and_beta(), &here, false);
+        let plan = plan_sync(&alpha_and_beta(), &here, &Selection::default());
         // Nothing says which archive it came from, so it is not the locked one.
         assert_eq!(plan.steps, [replace("alpha", "2.0", "2.0")]);
         assert_eq!(plan.wanted[0].name, "alpha");
@@ -874,7 +978,7 @@ mod tests {
         let lock = lock_of(vec![locked("Alpha", "2.0", &[], false)]);
         let mut here = installed("alpha", "2.0");
         here.archive_sha256 = Some("sha-of-Alpha-2.0".to_string());
-        assert!(plan_sync(&lock, &[here], false).is_empty());
+        assert!(plan_sync(&lock, &[here], &Selection::default()).is_empty());
     }
 
     fn with_a_dev_package() -> Lockfile {
@@ -894,7 +998,7 @@ mod tests {
             installed("caraya", "1.0"),
             installed("delta", "1.0"),
         ];
-        let plan = plan_sync(&with_a_dev_package(), &everything, true);
+        let plan = plan_sync(&with_a_dev_package(), &everything, &no_dev());
         assert_eq!(
             plan.steps,
             [
@@ -903,7 +1007,7 @@ mod tests {
             ]
         );
 
-        let nothing_yet = plan_sync(&with_a_dev_package(), &[], true);
+        let nothing_yet = plan_sync(&with_a_dev_package(), &[], &no_dev());
         assert_eq!(
             nothing_yet.steps,
             [install("alpha", "2.0"), install("beta", "1.0")]
@@ -912,7 +1016,7 @@ mod tests {
 
     #[test]
     fn without_no_dev_the_dev_packages_are_wanted_like_any_other() {
-        let plan = plan_sync(&with_a_dev_package(), &[], false);
+        let plan = plan_sync(&with_a_dev_package(), &[], &Selection::default());
         assert_eq!(plan.steps.len(), 4);
     }
 
@@ -924,14 +1028,108 @@ mod tests {
             locked("caraya", "1.0", &["alpha"], true),
         ]);
         let here = [installed("alpha", "2.0"), installed("caraya", "1.0")];
-        let plan = plan_sync(&lock, &here, true);
+        let plan = plan_sync(&lock, &here, &no_dev());
         assert_eq!(plan.steps, [remove("caraya", "1.0", RemoveReason::DevOnly)]);
+    }
+
+    /// The lock of the `[dependencies]` alpha, dev's caraya (needing delta),
+    /// and a `ci` group that lists ci_tools (needing alpha) and caraya.
+    fn with_a_ci_group() -> Lockfile {
+        lock_of(vec![
+            locked_in("alpha", "1.0", &[], &[]),
+            locked_in("ci_tools", "1.0", &["alpha"], &["ci"]),
+            locked_in("caraya", "1.0", &["delta"], &["ci", "dev"]),
+            locked_in("delta", "1.0", &[], &["ci", "dev"]),
+        ])
+    }
+
+    fn wanted_names(selection: &Selection) -> Vec<String> {
+        let mut names: Vec<String> = plan_sync(&with_a_ci_group(), &[], selection)
+            .wanted
+            .into_iter()
+            .map(|package| package.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn the_selection_decides_which_packages_are_wanted() {
+        let default = &Selection::default();
+        let ci = &with_groups(&["ci"]);
+        let no_dev_and_ci = &Selection {
+            no_dev: true,
+            ..with_groups(&["ci"])
+        };
+        let ci_twice = &with_groups(&["ci", "ci"]);
+        let dev = &with_groups(&["dev"]);
+        let everything = ["alpha", "caraya", "ci_tools", "delta"];
+        for (selection, wanted) in [
+            (default, &["alpha", "caraya", "delta"][..]),
+            (&no_dev(), &["alpha"]),
+            (ci, &everything),
+            (no_dev_and_ci, &everything),
+            (ci_twice, &everything),
+            (dev, &["alpha", "caraya", "delta"]),
+        ] {
+            assert_eq!(wanted_names(selection), wanted, "{selection:?}");
+        }
+    }
+
+    #[test]
+    fn dev_in_any_case_selects_the_dev_group() {
+        let options = SyncOptions {
+            groups: vec!["Dev".to_string(), "ci".to_string()],
+            ..SyncOptions::default()
+        };
+        assert_eq!(options.selection().groups, ["dev", "ci"]);
+    }
+
+    #[test]
+    fn a_package_that_only_unselected_groups_need_is_removed_naming_them() {
+        let everything = [
+            installed("alpha", "1.0"),
+            installed("ci_tools", "1.0"),
+            installed("caraya", "1.0"),
+            installed("delta", "1.0"),
+        ];
+        let plan = plan_sync(&with_a_ci_group(), &everything, &Selection::default());
+        assert_eq!(plan.steps, [remove_for_groups("ci_tools", "1.0", &["ci"])]);
+
+        let plan = plan_sync(&with_a_ci_group(), &everything, &no_dev());
+        assert_eq!(
+            plan.steps,
+            [
+                remove_for_groups("ci_tools", "1.0", &["ci"]),
+                remove_for_groups("caraya", "1.0", &["ci", "dev"]),
+                remove_for_groups("delta", "1.0", &["ci", "dev"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn keep_listed_keeps_what_is_installed_and_the_lock_lists_and_installs_only_what_is_wanted() {
+        let keep = Selection {
+            keep_listed: true,
+            ..Selection::default()
+        };
+        let here = [installed("ci_tools", "1.0"), installed("gone", "1.0")];
+        let plan = plan_sync(&with_a_ci_group(), &here, &keep);
+        assert_eq!(
+            plan.steps,
+            [
+                remove("gone", "1.0", RemoveReason::NotInLock),
+                install("alpha", "1.0"),
+                install("delta", "1.0"),
+                install("caraya", "1.0"),
+            ]
+        );
     }
 
     #[test]
     fn a_package_not_in_the_lock_is_not_in_the_lock_even_with_no_dev() {
         let here = [installed("gamma", "1.0")];
-        let plan = plan_sync(&alpha_and_beta(), &here, true);
+        let plan = plan_sync(&alpha_and_beta(), &here, &no_dev());
         assert_eq!(
             plan.steps[0],
             remove("gamma", "1.0", RemoveReason::NotInLock)
@@ -946,7 +1144,7 @@ mod tests {
             locked("middle", "1.0", &["aardvark"], false),
             locked("zebra", "1.0", &[], false),
         ]);
-        let plan = plan_sync(&lock, &[installed("gone", "1.0")], false);
+        let plan = plan_sync(&lock, &[installed("gone", "1.0")], &Selection::default());
         assert_eq!(
             plan.steps,
             [
@@ -964,7 +1162,7 @@ mod tests {
             locked("one", "1.0", &["two"], false),
             locked("two", "1.0", &["one"], false),
         ]);
-        assert_eq!(plan_sync(&lock, &[], false).steps.len(), 2);
+        assert_eq!(plan_sync(&lock, &[], &Selection::default()).steps.len(), 2);
     }
 
     // ---- fetching by SHA-256 ----
@@ -1481,11 +1679,7 @@ mod tests {
             .iter()
             .position(|event| {
                 matches!(event, Event::SyncPlanned { steps, dry_run: false }
-                if steps == &[SyncStep::Remove {
-                    name: "gamma".into(),
-                    version: "1.0".into(),
-                    reason: RemoveReason::NotInLock,
-                }])
+                if steps == &[remove("gamma", "1.0", RemoveReason::NotInLock)])
             })
             .unwrap_or_else(|| panic!("no announcement in {events:?}"));
         let removed = events
@@ -1536,6 +1730,92 @@ mod tests {
                 event,
                 Event::PackageStart { .. } | Event::PackageRemoved { .. }
             )),
+            "{events:?}"
+        );
+    }
+
+    /// A project that depends on alpha, with a `ci` group holding beta.
+    fn project_with_a_ci_group(tag: &str) -> Scratch {
+        let project = project(tag, &["alpha"]);
+        let path = project.root.join(crate::project::FILE_NAME);
+        let mut manifest = std::fs::read_to_string(&path).unwrap();
+        manifest.push_str(
+            "
+[dependency-groups.ci]
+beta = \"*\"
+",
+        );
+        std::fs::write(path, manifest).unwrap();
+        project
+    }
+
+    fn selecting(groups: &[&str]) -> SyncOptions {
+        SyncOptions {
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+            ..SyncOptions::default()
+        }
+    }
+
+    #[test]
+    fn an_unknown_group_fails_naming_the_defined_ones_before_a_lock_is_written() {
+        let project = project_with_a_ci_group("unknown-group-no-lock");
+        let (outcome, events) = project.sync(&selecting(&["nope"]));
+
+        assert_eq!(
+            outcome.unwrap_err().to_string(),
+            "unknown group 'nope'; defined groups: ci, dev"
+        );
+        assert_eq!(project.lock_bytes(), None, "a lock was written");
+        assert!(project.installed().is_empty());
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                Event::SyncLockMissing { .. } | Event::SyncPlanned { .. }
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_group_leaves_a_stale_lock_and_the_destination_as_they_were() {
+        let project = project_with_a_ci_group("unknown-group-stale-lock");
+        project.sync(&SyncOptions::default()).0.unwrap();
+        let stale = project.lock_bytes().unwrap();
+        // The manifest moves on, so the lock is stale and a sync would rewrite it.
+        project.write_manifest(&["alpha", "gamma"]);
+
+        let (outcome, _) = project.sync(&selecting(&["ci", "nope"]));
+
+        assert!(outcome.is_err());
+        assert_eq!(project.lock_bytes(), Some(stale));
+        assert_eq!(project.installed(), pairs(&[("alpha", "2.0")]));
+    }
+
+    #[test]
+    fn dev_in_any_case_and_an_empty_dev_table_are_known_groups() {
+        let project = project_with_a_ci_group("known-groups");
+        let (outcome, _) = project.sync(&selecting(&["Dev", "ci"]));
+        outcome.unwrap();
+        assert_eq!(
+            project.installed(),
+            pairs(&[("alpha", "2.0"), ("beta", "1.0")])
+        );
+    }
+
+    #[test]
+    fn a_group_that_is_no_longer_selected_is_announced_with_its_name_and_then_removed() {
+        let project = project_with_a_ci_group("group-deselected");
+        project.sync(&selecting(&["ci"])).0.unwrap();
+        assert_eq!(project.installed().len(), 2);
+
+        let (outcome, events) = project.sync(&SyncOptions::default());
+        outcome.unwrap();
+
+        assert_eq!(project.installed(), pairs(&[("alpha", "2.0")]));
+        assert!(
+            events.iter().any(|event| matches!(event,
+                Event::SyncPlanned { steps, dry_run: false }
+                if steps == &[remove_for_groups("beta", "1.0", &["ci"])])),
             "{events:?}"
         );
     }

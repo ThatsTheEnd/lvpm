@@ -12,7 +12,9 @@ use super::install::{InstallOptions, announce_target, finish};
 use super::lock::{self as locking, Moving, announce_written, write_manifest_and_lock};
 use super::session::InstallSession;
 use super::snapshot::restoring_on_failure;
-use super::sync::{SyncOptions, announce_migration, apply_sync, fetch_locked, plan_sync};
+use super::sync::{
+    Selection, SyncOptions, announce_migration, apply_sync, fetch_locked, plan_sync,
+};
 use crate::errors::{EditError, LockError, SyncError};
 use crate::events::{Event, ManifestEdit, Phase};
 use crate::index::Index;
@@ -307,7 +309,12 @@ fn commit(
     }
     // Locking warns about the requirements no source lists.
     let (lock, changes) = locking::relock_with(env, &edit.project, index, previous.as_ref())?;
-    let plan = plan_sync(&lock, &install::list_installed(&dest.store())?, false);
+    // A package the lock lists stays where it is: only what the lock drops goes.
+    let selection = Selection {
+        keep_listed: true,
+        ..Selection::default()
+    };
+    let plan = plan_sync(&lock, &install::list_installed(&dest.store())?, &selection);
     if lock_missing {
         announce_migration(env, &plan);
     }

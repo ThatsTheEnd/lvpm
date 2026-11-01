@@ -551,6 +551,9 @@ pub enum SyncStep {
         name: String,
         version: String,
         reason: RemoveReason,
+        /// For [`RemoveReason::GroupsOnly`]: the groups that need the package.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        groups: Vec<String>,
     },
 }
 
@@ -574,6 +577,9 @@ pub enum RemoveReason {
     /// `lvpm.lock` lists it, but only dev dependencies need it, and this sync
     /// leaves those out.
     DevOnly,
+    /// `lvpm.lock` lists it, but only groups need it, and this sync selects
+    /// none of them. The groups are on the step.
+    GroupsOnly,
 }
 
 /// A file a dry run would write.

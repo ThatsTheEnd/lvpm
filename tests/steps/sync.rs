@@ -180,7 +180,14 @@ impl CliWorld {
     }
 
     pub(super) fn sync_into_dest(&self) {
-        self.sandbox.setup_lvpm(&["sync", "--prefix", DEST_DIR]);
+        self.sync_into_dest_with(&[]);
+    }
+
+    pub(super) fn sync_into_dest_with(&self, flags: &[&str]) {
+        let mut arguments = vec!["sync"];
+        arguments.extend(flags);
+        arguments.extend(["--prefix", DEST_DIR]);
+        self.sandbox.setup_lvpm(&arguments);
     }
 
     pub(super) fn install_into_dest(&self, name: &str, version: &str) {
@@ -379,6 +386,16 @@ async fn a_lock_without_a_new_dependency(
             .all(|(name, _)| *name != missing)
     );
     world.depend(DependencyTable::Dependencies, &dependency, &constraint);
+    world.note_the_project();
+}
+
+#[given("a current lvpm.lock and no [dev-dependencies]")]
+async fn a_current_lock_without_dev_dependencies(world: &mut CliWorld) {
+    assert!(
+        !String::from_utf8_lossy(&world.manifest_bytes()).contains("[dev-dependencies]"),
+        "the manifest has a dev table"
+    );
+    world.lock_the_project();
     world.note_the_project();
 }
 
@@ -645,12 +662,32 @@ async fn run_in_two_worlds(world: &mut CliWorld, first: String, second: String) 
 
 // ---- what was installed ----
 
+/// `"alpha" 2.0 and "beta" 1.0`, or names alone as `alpha, beta and gamma`.
 fn assert_exactly(world: &CliWorld, packages: &str) {
-    assert_eq!(
-        sorted(world.installed()),
-        sorted(name_and_version_pairs(packages)),
-        "what dest holds"
-    );
+    if packages.contains('"') {
+        assert_eq!(
+            sorted(world.installed()),
+            sorted(name_and_version_pairs(packages)),
+            "what dest holds"
+        );
+        return;
+    }
+    let mut wanted: Vec<&str> = packages.split([',', ' ']).collect();
+    wanted.retain(|name| !name.is_empty() && *name != "and");
+    wanted.sort_unstable();
+    let mut held: Vec<String> = world
+        .installed()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    held.sort_unstable();
+    assert_eq!(held, wanted, "what dest holds");
+}
+
+#[then(regex = r"^the command succeeds and dest's lvpm-installed packages are exactly (.+)$")]
+async fn succeeds_and_dest_holds_exactly(world: &mut CliWorld, packages: String) {
+    assert_eq!(world.output().exit_code, 0, "{}", world.printed());
+    assert_exactly(world, &packages);
 }
 
 #[then(regex = r"^dest's lvpm-installed packages are exactly (.+)$")]
@@ -711,6 +748,11 @@ async fn installed_with_the_locked_hash(world: &mut CliWorld, name: String, vers
 #[then(regex = r#"^"([^"]+)" is no longer installed$"#)]
 async fn no_longer_installed(world: &mut CliWorld, name: String) {
     assert!(!world.is_installed(&name), "{name} is installed");
+}
+
+#[then(regex = r#"^"([^"]+)" is installed in dest$"#)]
+async fn a_package_is_installed_in_dest(world: &mut CliWorld, name: String) {
+    assert!(world.is_installed(&name), "{name} is not installed");
 }
 
 #[then(regex = r#"^"([^"]+)" is installed$"#)]
@@ -790,13 +832,21 @@ fn lines_of(output: &str) -> Vec<&str> {
     regex = r#"^the line naming "([^"]+)" as removed because lvpm\.lock does not list it comes before the removal output$"#
 )]
 async fn the_announcement_comes_first(world: &mut CliWorld, name: String) {
+    assert_announced_before_removed(world, &name, "not in lvpm.lock");
+}
+
+#[then(regex = r#"^the line "([^":]+): ([^"]+)" comes before the removal output$"#)]
+async fn the_reason_is_announced_first(world: &mut CliWorld, name: String, reason: String) {
+    assert_announced_before_removed(world, &name, &reason);
+}
+
+/// The plan names `name` and says `reason` before the sync reports it removed.
+fn assert_announced_before_removed(world: &CliWorld, name: &str, reason: &str) {
     let stdout = world.output().stdout.clone();
     let lines = lines_of(&stdout);
     let announced = lines
         .iter()
-        .position(|line| {
-            line.starts_with(&format!("remove {name} ")) && line.contains("not in lvpm.lock")
-        })
+        .position(|line| line.starts_with(&format!("remove {name} ")) && line.contains(reason))
         .unwrap_or_else(|| panic!("{name} is not announced in:\n{stdout}"));
     let removed = lines
         .iter()
@@ -1012,6 +1062,37 @@ async fn fails_saying_there_is_no_lock(world: &mut CliWorld) {
         "{}",
         world.printed()
     );
+}
+
+#[then(regex = r#"^the command fails saying "(unknown group [^"]+)"$"#)]
+async fn fails_saying_the_group_is_unknown(world: &mut CliWorld, said: String) {
+    world.assert_failed();
+    assert!(
+        world.printed().contains(&said),
+        "{said:?} is not in:
+{}",
+        world.printed()
+    );
+}
+
+#[then(regex = r#"^the command fails saying "([^"]+)" and "([^"]+)" cannot be combined$"#)]
+async fn fails_saying_two_flags_cannot_be_combined(world: &mut CliWorld, a: String, b: String) {
+    world.assert_failed();
+    let printed = world.printed();
+    for part in [a.as_str(), b.as_str(), "cannot be combined"] {
+        assert!(
+            printed.contains(part),
+            "{part:?} is not in:
+{printed}"
+        );
+    }
+}
+
+#[then(regex = r#"^the command fails as a usage error naming "([^"]+)"$"#)]
+async fn fails_as_a_usage_error_naming(world: &mut CliWorld, flag: String) {
+    let output = world.output();
+    assert_eq!(output.exit_code, 2, "{output:?}");
+    assert!(output.stderr.contains(&flag), "{}", output.stderr);
 }
 
 #[then("the command fails saying the two flags cannot be combined")]

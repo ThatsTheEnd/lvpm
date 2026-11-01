@@ -68,3 +68,78 @@ Feature: Dependency groups
     When I run "lvpm sync --locked --prefix dest"
     Then the command fails saying the lock format is outdated
     And dest and lvpm.lock are byte-identical to before
+
+  # AC1, AC2
+  Scenario Outline: the selection decides what is installed
+    Given lvpm.toml has [dev-dependencies] "caraya" "*"; [dependency-groups.ci] "caraya" "*", "ci_tools" "*", "delta" "*" and a current lvpm.lock
+    When I run "lvpm sync <flags> --prefix dest"
+    Then dest's lvpm-installed packages are exactly <installed>
+
+    Examples:
+      | flags                 | installed                      |
+      |                       | alpha, caraya, delta           |
+      | --no-dev              | alpha                          |
+      | --group ci            | alpha, caraya, ci_tools, delta |
+      | --no-dev --group ci   | alpha, caraya, ci_tools, delta |
+      | --group ci --group ci | alpha, caraya, ci_tools, delta |
+      | --group dev           | alpha, caraya, delta           |
+      | --group Dev           | alpha, caraya, delta           |
+
+  # AC1
+  Scenario: an unselected group's package is announced, then removed
+    Given lvpm.toml has [dependency-groups.ci] "ci_tools" "*", a current lvpm.lock, and dest synced with "--group ci"
+    When I run "lvpm sync --prefix dest"
+    Then the line "ci_tools: only the group ci needs it, and it is not selected" comes before the removal output
+    And dest's lvpm-installed packages are exactly alpha
+
+  # AC2
+  Scenario Outline: a package both [dependencies] and a group need survives every selection
+    Given lvpm.toml has [dependency-groups.ci] "ci_tools" "*", "alpha" "*" and a current lvpm.lock
+    When I run "lvpm sync <flags> --prefix dest"
+    Then "alpha" is installed in dest
+
+    Examples:
+      | flags      |
+      |            |
+      | --no-dev   |
+      | --group ci |
+
+  # AC8
+  Scenario Outline: an unknown group fails before anything changes
+    Given lvpm.toml has [dependency-groups.ci] "ci_tools" "*", <lock>, and "beta" 1.0 installed in dest
+    When I run "lvpm sync --group nope --prefix dest"
+    Then the command fails saying "unknown group 'nope'; defined groups: ci, dev"
+    And dest, lvpm.lock and lvpm.toml are byte-identical to before
+
+    Examples:
+      | lock                |
+      | a current lvpm.lock |
+      | a stale lvpm.lock   |
+      | no lvpm.lock        |
+
+  # AC1
+  Scenario: an empty group is a known group
+    Given lvpm.toml has [dependency-groups.ci] empty and a current lvpm.lock
+    When I run "lvpm sync --group ci --prefix dest"
+    Then the command succeeds and dest's lvpm-installed packages are exactly alpha
+
+  # AC8
+  Scenario: --group dev is known without a dev table
+    Given a current lvpm.lock and no [dev-dependencies]
+    When I run "lvpm sync --group dev --prefix dest"
+    Then the command succeeds
+
+  Scenario: --group dev with --no-dev is refused
+    When I run "lvpm sync --group dev --no-dev --prefix dest"
+    Then the command fails saying "--group dev" and "--no-dev" cannot be combined
+
+  # AC1
+  Scenario: bare install takes --group like sync
+    Given lvpm.toml has [dependency-groups.ci] "ci_tools" "*" and a current lvpm.lock
+    When I run "lvpm install --group ci --prefix dest"
+    Then dest's lvpm-installed packages are exactly alpha and ci_tools
+    And lvpm.lock is byte-identical to before
+
+  Scenario: --group is refused with a package argument
+    When I run "lvpm install beta --group ci --prefix dest"
+    Then the command fails as a usage error naming "--group"

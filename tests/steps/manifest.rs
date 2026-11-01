@@ -449,9 +449,10 @@ async fn the_group_project(world: &mut CliWorld) {
 /// and `[dev-dependencies]` are merged into the Background's tables, every
 /// other table is appended. The tables may be followed by `and a current
 /// lvpm.lock` or `and lvpm.lock holds "name" version`: the project is then
-/// locked, and noted as it is.
+/// locked, and noted as it is. Or by `, <a current|a stale|no> lvpm.lock, and
+/// <what dest holds>`, which is [`lock_and_dest`].
 #[given(
-    regex = r#"^lvpm\.toml has (\[.+?)( and a current lvpm\.lock| and lvpm\.lock holds "[^"]+" \S+|)$"#
+    regex = r#"^lvpm\.toml has (\[.+?)( and a current lvpm\.lock| and lvpm\.lock holds "[^"]+" \S+|, (?:a current lvpm\.lock|a stale lvpm\.lock|no lvpm\.lock), and (?:dest synced with "[^"]*"|"[^"]+" \S+ installed in dest)|)$"#
 )]
 async fn the_manifest_has_tables(world: &mut CliWorld, tables: String, then_locked: String) {
     for table in tables.split(';').map(str::trim) {
@@ -481,7 +482,12 @@ async fn the_manifest_has_tables(world: &mut CliWorld, tables: String, then_lock
             world.depend(merged.clone(), &entry[1], &entry[2]);
         }
     }
-    if !then_locked.is_empty() {
+    if let Some((lock, dest)) = then_locked
+        .trim_start_matches([',', ' '])
+        .split_once(", and ")
+    {
+        lock_and_dest(world, lock, dest);
+    } else if !then_locked.is_empty() {
         world.lock_the_project();
         for (name, version) in QUOTED_AND_VERSION
             .captures_iter(&then_locked)
@@ -497,6 +503,28 @@ async fn the_manifest_has_tables(world: &mut CliWorld, tables: String, then_lock
         }
         world.note_the_project();
     }
+}
+
+/// The lock a group scenario starts from, and what its destination holds:
+/// `a stale lvpm.lock` is one that `beta` was added after, and `no lvpm.lock`
+/// leaves none.
+fn lock_and_dest(world: &mut CliWorld, lock: &str, dest: &str) {
+    if lock != "no lvpm.lock" {
+        world.lock_the_project();
+    }
+    if lock == "a stale lvpm.lock" {
+        world.depend(DependencyTable::Dependencies, "beta", "*");
+    }
+    if let Some(flags) = dest.strip_prefix("dest synced with ") {
+        let flags = quoted(flags).join(" ");
+        world.sync_into_dest_with(&flags.split_whitespace().collect::<Vec<_>>());
+    } else {
+        let installed = QUOTED_AND_VERSION
+            .captures(dest)
+            .expect("a name and a version installed in dest");
+        world.install_into_dest(&installed[1], &installed[2]);
+    }
+    world.note_the_project();
 }
 
 /// `"name" 1.0`: a quoted name and the version after it.

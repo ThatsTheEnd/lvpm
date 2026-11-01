@@ -139,13 +139,20 @@ struct SyncArgs {
     /// LabVIEW runs headless (LV_RTE_HEADLESS is set) and --locked is the default.
     #[arg(long)]
     no_locked: bool,
-    /// Leave out the packages that only dev dependencies need, and uninstall
-    /// them if they are installed.
+    /// Leave out the dev group
     #[arg(long)]
     no_dev: bool,
+    /// Also install this dependency group (repeatable); [dependencies] and dev are installed by default
+    #[arg(long, value_name = "NAME")]
+    group: Vec<String>,
 }
 
 impl SyncArgs {
+    /// `--group dev` with `--no-dev`: dev is both asked for and left out.
+    fn asks_for_and_against_dev(&self) -> bool {
+        self.no_dev && self.group.iter().any(|g| g.eq_ignore_ascii_case("dev"))
+    }
+
     fn options(&self, apply: &ApplyArgs, headless: bool) -> SyncOptions {
         let strictness = strictness(
             headless,
@@ -159,6 +166,7 @@ impl SyncArgs {
             lock: strictness.policy,
             headless_implied: strictness.implied_by_headless,
             no_dev: self.no_dev,
+            groups: self.group.clone(),
             install: apply.options(false, false),
         }
     }
@@ -198,7 +206,7 @@ enum Cmd {
     /// --global, --prefix or --labview-version say where it goes.
     Install {
         /// Package to install. Omit it in a project to sync the project.
-        #[arg(conflicts_with_all = ["locked", "frozen", "no_locked", "no_dev"])]
+        #[arg(conflicts_with_all = ["locked", "frozen", "no_locked", "no_dev", "group"])]
         package: Option<String>,
         /// Not supported with a lock: lvpm.lock always holds the full set.
         #[arg(long, value_name = "FILE", conflicts_with = "package")]
@@ -567,6 +575,16 @@ fn main() -> std::process::ExitCode {
             .error(
                 clap::error::ErrorKind::ArgumentConflict,
                 "--json is not taken by app-probe, vi-probe, vi-save or vi-run",
+            )
+            .exit();
+    }
+    if let Cmd::Sync { sync, .. } | Cmd::Install { sync, .. } = &cli.cmd
+        && sync.asks_for_and_against_dev()
+    {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--group dev and --no-dev cannot be combined: --no-dev leaves out the dev group",
             )
             .exit();
     }
