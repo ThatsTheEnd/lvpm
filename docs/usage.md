@@ -163,7 +163,7 @@ Local package folders are configured globally instead. Any
 `search` and to a single-package `install` as much as to a full one.
 `min-age-days` is the exception: a single-package `install` that is not an
 `lvpm add` never applies it (see
-[A minimum release age](manifest.md#a-minimum-release-age)).
+[A minimum release age](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#a-minimum-release-age)).
 
 ```toml
 [project]
