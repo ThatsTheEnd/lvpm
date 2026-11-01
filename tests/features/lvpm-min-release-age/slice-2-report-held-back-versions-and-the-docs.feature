@@ -58,7 +58,6 @@ Feature: lvpm reports what min-age-days held back
     Then the command succeeds
     And stderr has no held-back line
 
-  @pending-2.2
   Scenario: the manifest guide documents min-age-days
     Then docs/manifest.md mentions "min-age-days"
     And docs/manifest.md mentions "an exact pin is exempt from min-age-days"

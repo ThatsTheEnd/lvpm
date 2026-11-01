@@ -537,7 +537,7 @@ graph TD
 #### Wave 2
 - [ ] Slice 2: Report held-back versions, and the docs
   - [x] Step 2.1: Report a held-back newer version
-  - [ ] Step 2.2: Document `min-age-days`
+  - [x] Step 2.2: Document `min-age-days`
 
 ## Plan Review Summary
 

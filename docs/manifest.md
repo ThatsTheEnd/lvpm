@@ -33,6 +33,7 @@ labview = "2025"                  # the oldest LabVIEW the project is meant for
 [sources]                         # repositories beyond the public indexes
 mirror = "http://host:8090/files" # a hosted index.vipr folder
 defaults = true                   # false: only the sources listed here
+min-age-days = 14                 # skip versions released fewer than 14 days ago
 
 [dependencies]
 delacor_lib_qmh = "7.1.2.1547"    # exactly this version
@@ -104,6 +105,9 @@ public defaults.
 | ---------- | ------- | --------------------------------------------------------------------------------- |
 | `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`. The name is a label.   |
 | `defaults` | boolean | `true` (default): also use the public indexes. `false`: only the sources listed. |
+| `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. See [A minimum release age](#a-minimum-release-age). |
+
+Because `defaults` and `min-age-days` are keys here, a source can't use either as its label.
 
 The public defaults are NI's `download.ni.com/.../index.vipr` and JKI's
 `jkisoft.ogpd`. A path on disk is refused here rather than silently resolving
@@ -111,6 +115,42 @@ nothing: local `.vip` directories are a per-user setting
 (`lvpm config set sources.local`) and imported packages live in the shared
 cache (`lvpm cache add`), because a filesystem path rarely means the same
 thing on a teammate's machine or a CI runner.
+
+### A minimum release age
+
+A version that was just published can be malicious: a maintainer account is
+taken over, or a release is tampered with, and it is usually found out within
+days. `min-age-days = 14` tells lvpm not to choose a version whose release
+date is less than 14 days ago; it takes the newest version that is old enough.
+This applies to direct and transitive dependencies. A version with no release
+date is allowed: entries a feed lists without one, local `.vip` directories,
+`lvpm cache add` imports and `.lvpkg` files all have no release date, so the
+limit does not protect against them.
+
+- The limit is whole days of 86400 seconds, counted from the release date
+  the feed lists. Dates are shown in UTC. A release date in the future counts
+  as too new.
+- Pinning matters: an exact pin is exempt from min-age-days, so `alpha = "1.1"` locks 1.1 even
+  when it is three days old. So is a version named on `lvpm add alpha@1.1`
+  or `lvpm lock --upgrade-package alpha@1.1`, but the flag pins only for that
+  run. To keep a young version across later re-locks, pin it exactly in
+  `lvpm.toml`.
+- It protects only as far as you trust the release date the feed lists; lvpm
+  cannot check that date.
+- A held-back version never falls through to a later source: the first
+  source that lists a package still decides its versions.
+- When the limit keeps out a newer version, lvpm says so on stderr, for
+  example `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28,
+  eligible 2026-11-11); using 1.0`, and `--json` writes a `held_back` event
+  ([JSON output](reference/json-output.md#the-held_back-event)). When no version is old enough,
+  the lock fails, lists the held-back versions and the date the first becomes
+  eligible.
+- `lvpm.lock` records the limit, so changing it makes the lock out of date.
+  Time passing does not: the limit takes effect at the next `lvpm lock`,
+  `lvpm lock --upgrade`, `lvpm add` or `lvpm sync` that resolves again, and an
+  up-to-date `lvpm.lock` is not resolved again.
+- `lvpm install --global` outside a project has no manifest, so no limit
+  applies to it.
 
 ## `[dependencies]`
 

@@ -502,7 +502,7 @@ async fn usage_section_contains(_: &mut CliWorld, heading: String, quoted: Strin
     }
 }
 
-#[then(regex = r#"^docs/(usage|manifest)\.md (?:mentions|names) "([^"]+)"$"#)]
+#[then(regex = r#"^docs/(usage|manifest|reference/json-output)\.md (?:mentions|names) "([^"]+)"$"#)]
 async fn doc_mentions(_: &mut CliWorld, doc: String, text: String) {
     let file = format!("docs/{doc}.md");
     assert!(
