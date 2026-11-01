@@ -50,19 +50,22 @@ no release date (`None`).
 LabVIEW gate (`gated`): a candidate is eligible when its release date is
 `None`, or when `now - release >= min-age-days * 86400`. "Now" is the system
 clock at resolution time. A root whose manifest constraint is an exact
-version is not filtered. Floors (`>=`, `>`), `*` and every transitive
-requirement (always a floor) are.
+version is not filtered. Floors (`>=`), `*` and every transitive
+requirement (always a floor) are. A version named on `lvpm add/upgrade pkg@v`
+is an exact pin to the solver for that run, so it is exempt too. A held-back
+version never falls through to a later source (first source wins, S13).
 
 **The manifest.** `project.rs` reads `[sources] min-age-days` as a
-non-negative integer into `Project`. Absent means `0` (off). Any other type or
+integer from 0 to 4294967295 into `Project`. Absent means `0` (off). Any other type or
 a negative value is an error that names the key; the key is known, so it is
 not silently ignored like unknown keys.
 
 **The lock.** `lockfile::Inputs` records `min-age-days` when it is not `0`, so
 locks written without the key keep their bytes. A different value from the
 manifest makes the lock stale. The lock stores no dates and no clock reading:
-time passing never makes a lock stale, and `lvpm sync` installs the locked
-versions as recorded.
+time passing never makes a lock stale, and `lvpm sync` with a current lock
+installs the locked versions as recorded; sync re-resolves only when there is
+no current lock.
 
 **Reporting.** When the rule holds back a newer version of a package, lock
 output names the package, the held-back version and its release date, in the
@@ -93,8 +96,9 @@ project (they have no manifest).
 4. **Transitive.** A transitive requirement `bar>=2.0` with `bar` 2.0 (old)
    and 2.1 (new) resolves to 2.0.
 5. **Exact pin exempt.** `foo = "1.1"` with 1.1 three days old locks 1.1.
-6. **No eligible version.** `foo = ">=1.1"` where 1.1 is the only version at
-   or above the floor and it is 3 days old: lock fails, and the error names
+6. **No eligible version.** `foo = ">=1.1"` where every version the source
+   lists at or above the floor is younger than the limit (no fall-through to a
+   later source): lock fails, and the error names
    `foo`, `>=1.1`, the 14-day limit and 1.1 with its release date.
 7. **Undated is allowed.** A feed entry with no or an unreadable
    `Package.Release Date`, and any local, cached or `.lvpkg` package, is
@@ -103,7 +107,7 @@ project (they have no manifest).
    stated; the sign-less `0530` reads as `+0530`.
 9. **Held-back notice.** In case 2, lock output names `foo`, 1.1 and its
    release date; `--json` carries the same as an event.
-10. **Bad value.** `min-age-days = -1`, `"14"` or `14.5` is an error naming
+10. **Bad value.** `min-age-days = -1`, `"14"`, `14.5` or `4294967296` is an error naming
     `min-age-days`.
 11. **Lock staleness.** Changing `min-age-days` from 14 to 7 (or adding or
     removing it) makes `lvpm.lock` stale; leaving it unchanged while days
@@ -137,6 +141,7 @@ project (they have no manifest).
 | Time passing and `lvpm sync` | `inferable` | inference | The lock is the record and sync never re-resolves; the rule takes effect at the next `lvpm lock` or `lvpm add` |
 | Invalid value | `inferable` | inference | Manifest rejects badly typed dependency values rather than misreading them; same for a known key |
 | Held-back notice | `inferable` | inference | A silently older pick would look like a resolver bug; existing events report resolution outcomes |
+| `min-age-days` placed outside `[sources]` | `inferable` | inference | Treated like any unknown top-level key (ignored), as today; the docs show it under `[sources]` |
 | Global install outside a project | `inferable` | inference | No manifest, so no setting; out of scope |
 | Trust in the release date | `inferable` | inference | The date is what the feed lists; the docs say the limit protects only as far as that date is trusted |
 | `lvpm upgrade pkg@v` with a young `v` | `inferable` | inference | The explicit version is exempt for that run (it is an exact pin to the solver); `upgrade` writes a floor, so a later re-lock applies the limit again. Documented, not changed |

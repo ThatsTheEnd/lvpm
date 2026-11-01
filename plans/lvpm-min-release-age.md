@@ -51,7 +51,7 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
   package the last line reads `… or pin an exact version of beta in lvpm.toml
   (it is required by alpha)`.
 - **Bad value**: `lvpm.toml: [sources] min-age-days must be a whole number of days, 0 or more (got "14"), for example min-age-days = 14`
-- **Stale lock**: `lvpm.lock is out of date: min-age-days changed (14 -> 7)`
+- **Stale lock**: `lvpm.lock is out of date: min-age-days changed (14 -> 7)`; absent renders as `0` (`0 -> 14`)
 
 ## Acceptance Criteria
 
@@ -59,12 +59,12 @@ shown in UTC as `YYYY-MM-DD`; "eligible" is release date + N days.
 - [ ] AC2 A too-new version is held back for the newest eligible one
 - [ ] AC3 Boundary: exactly N×86400 s old is eligible, one second younger is not; a future date is too new
 - [ ] AC4 Transitive requirements are filtered too
-- [ ] AC5 An exact pin is exempt, and only the pinned package
-- [ ] AC6 No eligible version: lock fails with the text above
+- [ ] AC5 An exact pin is exempt, and only the pinned package; so is the version named on `lvpm add/upgrade pkg@v` for that run
+- [ ] AC6 No eligible version in the source the name resolves from (first source wins; no fall-through): lock fails with the text above
 - [ ] AC7 Undated feed entries and local/cache/`.lvpkg` packages are eligible
 - [ ] AC8 The four release-date shapes parse; sign-less `0530` reads as `+0530`
 - [ ] AC9 Held-back notice and JSON event as above
-- [ ] AC10 Bad values are refused with the text above
+- [ ] AC10 Bad values (negative, non-integer, over 4294967295) are refused with the text above
 - [ ] AC11 Changing, adding or removing the key makes the lock stale (`0` and absent are the same); time passing does not
 - [ ] AC12 `docs/manifest.md` documents the key, the exact-pin exemption, the undated rule, the date's origin and the global-install gap
 
@@ -336,7 +336,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
 
 **Complexity**: standard
 **IMPLEMENT**: New std-only module `released.rs`: `parse(&str) -> Option<i64>` (RFC 2822 with signed offset, `GMT`, sign-less `HHMM` read as `+`), `day(i64) -> String` (`YYYY-MM-DD` UTC) and `rfc3339(i64) -> String`. `Entry.released: Option<i64>` with `#[serde(skip)]`; `parse_into` fills it from `Package.Release Date`; local, cache and `.lvpkg` entries get `None`. Add `released: None` to every existing `Entry {` literal (≈40 in 16 files, a few more under `crates/lvpm-core/src/`: `fetch.rs`, `ops/sync.rs`, `staging.rs`, `install.rs`)
-**TEST**: Unit tests in `released.rs` for the four shapes, `0530` == `+0530` != `-0530` (exact epoch values), `???` → `None`, and known-answer formatting: 0 → `1970-01-01` / `1970-01-01T00:00:00Z`, 1_700_000_000 → `2023-11-14` / `2023-11-14T22:13:20Z`, and a leap day. One test in `index.rs` that runs a feed fragment through `parse_into` and gets the date from the `Package.Release Date` key; one that a cache-imported entry has `None`
+**TEST**: Unit tests in `released.rs` for the four shapes, `0530` == `+0530` != `-0530` (exact epoch values), `???` → `None`, and known-answer formatting: 0 → `1970-01-01` / `1970-01-01T00:00:00Z`, 1_700_000_000 → `2023-11-14` / `2023-11-14T22:13:20Z`, and a leap day: 1_709_164_800 → `2024-02-29` / `2024-02-29T00:00:00Z`. A `.lvpkg`-read entry has `None` too. One test in `index.rs` that runs a feed fragment through `parse_into` and gets the date from the `Package.Release Date` key; one that a cache-imported entry has `None`
 **REFACTOR**: Keep `released.rs` the only place that knows date formats
 **Files**: `crates/lvpm-core/src/released.rs`, `crates/lvpm-core/src/lib.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/cache.rs`, `src/render/query.rs`, `crates/lvpm-tui/**`, `tests/support/**`
 **Commit**: `feat(index): read each feed entry's release date`
@@ -353,7 +353,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
 #### Step 1.3: The solver holds back versions younger than the limit, except exact pins
 
 **Complexity**: complex
-**IMPLEMENT**: In `solve.rs`: `pub struct AgeLimit { now: i64, days: u32 }` (pub: `solve` is pub and `clippy -D warnings` rejects a private type in it) and pure `too_new(released: Option<i64>, limit: &AgeLimit) -> bool` (`None` → false; future date → true; saturating arithmetic). `solve` takes `Option<AgeLimit>`; the provider keeps the set of (name, version) named by a `Constraint::Exact` in `constraints` (this includes `pins` from `lvpm add pkg@v` / `lvpm upgrade pkg@v`). Keep `Gated`/`gated()` unchanged; the pubgrub `M` type becomes `enum Unavailable { Labview(Gated), TooNew { released: i64, days: u32 } }`, returned from `get_dependencies` beside the LabVIEW gate. `Unavailable` implements `Display` (pubgrub's `M` needs it) and the `Tree` alias moves to it. pubgrub yields one `Custom` leaf per rejected version, so a post-pass in `Conflict::explain` merges them into one `Fact::TooNew { package, versions: Vec<(version, released)>, wanted, required_by: Option<String>, days }`, taking `wanted` and the requirer from the sibling `Manifest`/`Requires` facts (also in `rank` and `Display`). In `src/render/lock.rs` `conflict_text`, a `TooNew` fact renders its own block and `next:` line in place of the generic header and footer. `ops/lock.rs` `resolve` builds the `AgeLimit` from `project` (no new parameter) with `now()` moved from `cache.rs` to `released.rs`. Update the `solve(` calls in `tests/steps/solver.rs` and the `solve.rs` tests (pass `None`) and the `Resolution {` literal in the `ops/lock.rs` test helper. Update the `Fact` matches in `src/render/lock.rs`
+**IMPLEMENT**: In `solve.rs`: `pub struct AgeLimit { now: i64, days: u32 }` (pub: `solve` is pub and `clippy -D warnings` rejects a private type in it) and pure `too_new(released: Option<i64>, limit: &AgeLimit) -> bool` (`days == 0` → false first, so 0 is fully off; then `None` → false; future date → true; saturating arithmetic). `solve` takes `Option<AgeLimit>`; the provider keeps the set of (name, version) named by a `Constraint::Exact` in `constraints` — the root constraints only, never a feed entry's `requires` (this includes `pins` from `lvpm add pkg@v` / `lvpm upgrade pkg@v`). Keep `Gated`/`gated()` unchanged; the pubgrub `M` type becomes `enum Unavailable { Labview(Gated), TooNew { released: i64, days: u32 } }`, returned from `get_dependencies` beside the LabVIEW gate. `Unavailable` implements `Display` (pubgrub's `M` needs it) and the `Tree` alias moves to it. pubgrub yields one `Custom` leaf per rejected version, so a post-pass in `Conflict::explain` merges them into one `Fact::TooNew { package, versions: Vec<(version, released)>, wanted, required_by: Option<String>, days }`, taking `wanted` and the requirer from the sibling `Manifest`/`Requires` facts (also in `rank` and `Display`). In `src/render/lock.rs` `conflict_text`, a `TooNew` fact renders its own block and `next:` line in place of the generic header and footer. `ops/lock.rs` `resolve` builds the `AgeLimit` from `project` (no new parameter) with `now()` moved from `cache.rs` to `released.rs`. Update the `solve(` calls in `tests/steps/solver.rs` and the `solve.rs` tests (pass `None`) and the `Resolution {` literal in the `ops/lock.rs` test helper. Update the `Fact` matches in `src/render/lock.rs`
 **TEST**: Unit tests for `too_new`: exactly N×86400 s (eligible), one second less (not), `now + 1` (not), `days = 0` (always eligible), `u32::MAX` (no overflow), `None` (eligible). Render unit test in `src/render/lock.rs` for the `TooNew` block. Unit test for the conflict text with two held-back versions newest first, with known-answer eligible dates (release + N×86400), and with `u32::MAX` days rendering without panic. Existing LabVIEW-gate conflict tests in `solve.rs` stay green unchanged. Acceptance: all Slice 1 scenarios except "# The lock"
 **REFACTOR**: One eligibility predicate (`fn unavailable(&self, entry)`) used by `get_dependencies` and, in Slice 2, by held-back reporting
 **Files**: `crates/lvpm-core/src/solve.rs`, `crates/lvpm-core/src/cache.rs`, `crates/lvpm-core/src/released.rs`, `crates/lvpm-core/src/ops/lock.rs`, `src/render/lock.rs`, `tests/steps/solver.rs`, `tests/steps/sources.rs`, `tests/features/lvpm-min-release-age/slice-1-versions-younger-than-the-limit-are-held-back.feature`
@@ -363,7 +363,7 @@ Feature: lvpm does not choose a package version younger than min-age-days
 
 **Complexity**: standard
 **IMPLEMENT**: `Inputs.min_age_days: u32` with `#[serde(default, skip_serializing_if = "is_zero")]`; a difference is `StaleReason::MinAgeChanged { from, to }`, rendered as in "User-visible text" (and in `--json`). Update the `Inputs` literal in `ops/sync.rs`'s `lock_of` test helper and the doc comment on `Inputs`
-**TEST**: Unit tests in `lockfile.rs`: a zero lock's text is byte-identical to today's; a non-zero value round-trips; an old lock without the key parses as 0. Acceptance: the "# The lock" scenarios
+**TEST**: Unit tests in `lockfile.rs`: the staleness check takes no clock input (its signature has no `now`); a zero lock's text is byte-identical to today's; a non-zero value round-trips; an old lock without the key parses as 0. Acceptance: the "# The lock" scenarios
 **REFACTOR**: Check the new reason next to `SourcesChanged` in the same function
 **Files**: `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/ops/sync.rs`, `src/render/lock.rs`, `tests/steps/staleness.rs`
 **Commit**: `feat(lock): record min-age-days in [inputs]`
