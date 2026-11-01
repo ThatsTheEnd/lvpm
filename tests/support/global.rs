@@ -410,6 +410,8 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
+        let started_at = process_start(pid);
+        assert!(started_at.is_some(), "ping is running");
         *STARTED.lock().unwrap() = Some(child);
         let failed = std::panic::catch_unwind(|| {
             let _run = GlobalRun {
@@ -420,7 +422,8 @@ mod tests {
         });
         assert!(failed.is_err());
         assert!(!path.exists(), "the claim is given back");
-        assert_eq!(process_start(pid), None, "PID {pid} is still running");
+        // Windows reuses a PID fast, so a process under it may be a new one.
+        assert_ne!(process_start(pid), started_at, "PID {pid} is still running");
     }
 
     /// A stand-in installation and ProgramData, both empty.
