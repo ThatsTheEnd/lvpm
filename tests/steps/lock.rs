@@ -457,6 +457,11 @@ async fn both_locks_are_identical(world: &mut CliWorld) {
     assert_eq!(String::from_utf8_lossy(&one), String::from_utf8_lossy(&two));
 }
 
+#[then("lvpm.lock does not exist")]
+async fn the_lock_does_not_exist(world: &mut CliWorld) {
+    assert!(world.lock_bytes().is_none(), "lvpm.lock exists");
+}
+
 #[then("no lvpm.lock contains either temp root's path")]
 async fn no_lock_has_a_temp_root(world: &mut CliWorld) {
     let other = world.lock.other.as_ref().expect("a second world");

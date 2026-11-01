@@ -19,6 +19,9 @@
 //! [dev-dependencies]                # test and CI tooling, same syntax
 //! jki_lib_unit_test = "*"
 //!
+//! [dependency-groups.ci]            # a named group, same syntax
+//! ci_tools = "*"
+//!
 //! [nipm.dependencies]               # NI Package Manager packages, reported only
 //! ni-daqmx-labview-support = "26.0"
 //! ```
@@ -177,7 +180,10 @@ pub struct Project {
     pub dependencies: Vec<(String, Constraint)>,
     /// `[dev-dependencies]`, in file order: the same syntax as `[dependencies]`.
     pub dev_dependencies: Vec<(String, Constraint)>,
-    /// The `github = "owner/repo"` of every dependency that has one, in either
+    /// `[dependency-groups.<name>]`, in file order: the same syntax as
+    /// `[dependencies]`. Never `dev`, which is `[dev-dependencies]`.
+    pub groups: Vec<(String, Vec<(String, Constraint)>)>,
+    /// The `github = "owner/repo"` of every dependency that has one, in any
     /// table, by the name the line is written under.
     pub github: BTreeMap<String, String>,
     /// `[nipm.dependencies]` names, for reporting only.
@@ -197,6 +203,7 @@ impl Default for Project {
             default_sources: true,
             dependencies: Vec::new(),
             dev_dependencies: Vec::new(),
+            groups: Vec::new(),
             github: BTreeMap::new(),
             nipm: Vec::new(),
             distribution: None,
@@ -227,6 +234,8 @@ struct File {
     dependencies: toml::Table,
     #[serde(rename = "dev-dependencies")]
     dev_dependencies: toml::Table,
+    #[serde(rename = "dependency-groups")]
+    dependency_groups: toml::Table,
     nipm: NipmTable,
     distribution: Option<toml::Table>,
 }
@@ -288,6 +297,7 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     }
     p.dependencies = parse_dependencies("dependencies", f.dependencies, &mut p.github)?;
     p.dev_dependencies = parse_dependencies("dev-dependencies", f.dev_dependencies, &mut p.github)?;
+    p.groups = parse_groups(f.dependency_groups, &mut p.github)?;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     Ok(p)
 }
@@ -307,6 +317,49 @@ pub(crate) fn labview_minimum(text: &str) -> Result<String> {
              write it like labview = \">=2024\""
         ),
     }
+}
+
+/// Whether `name` can name a dependency group: letters, digits, `-` and `_`.
+pub fn valid_group_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        bail!("group name {name:?} may use only letters, digits, - and _");
+    }
+    Ok(())
+}
+
+/// One dependency table's lines, in file order.
+type Entries = Vec<(String, Constraint)>;
+
+/// `[dependency-groups]`: each key a group name, each value that group's
+/// dependency table, in file order. `dev` is `[dev-dependencies]`, not a group.
+fn parse_groups(
+    groups: toml::Table,
+    github: &mut BTreeMap<String, String>,
+) -> Result<Vec<(String, Entries)>> {
+    groups
+        .into_iter()
+        .map(|(name, value)| {
+            valid_group_name(&name).context("[dependency-groups]")?;
+            if name.eq_ignore_ascii_case("dev") {
+                bail!(
+                    "[dependency-groups.{name}] is not allowed: the group dev is [dev-dependencies]"
+                );
+            }
+            let toml::Value::Table(entries) = value else {
+                bail!(
+                    "[dependency-groups] {name}: must be a table, got {}",
+                    value.type_str()
+                );
+            };
+            let entries =
+                parse_dependencies(&format!("dependency-groups.{name}"), entries, github)?;
+            Ok((name, entries))
+        })
+        .collect()
 }
 
 /// One dependency table, in file order. `table` names it in error messages;
@@ -813,5 +866,139 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         assert!(why.contains("[dev-dependencies] caraya"), "{why}");
         assert!(why.contains("~1.0"), "{why}");
         assert!(parse("[dev-dependencies]\ncaraya = 1.0\n").is_err());
+    }
+
+    /// `groups` as `(name, [entry names])`, to compare by what they hold.
+    fn group_entries(p: &Project) -> Vec<(&str, Vec<&str>)> {
+        p.groups
+            .iter()
+            .map(|(group, entries)| {
+                (
+                    group.as_str(),
+                    entries.iter().map(|(name, _)| name.as_str()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dependency_groups_are_read_in_file_order_beside_the_other_tables() {
+        let p = parse(
+            "[dependencies]\nalpha = \"1.0\"\n\n[dependency-groups.zeta]\nz_tool = \">=2.0\"\n\n\
+             [dev-dependencies]\ncaraya = \"*\"\n\n[dependency-groups.ci-1_a]\nb_tool = \"*\"\na_tool = \"1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            group_entries(&p),
+            [
+                ("zeta", vec!["z_tool"]),
+                ("ci-1_a", vec!["b_tool", "a_tool"])
+            ]
+        );
+        assert_eq!(
+            p.groups[0].1,
+            vec![(
+                "z_tool".to_string(),
+                Constraint::AtLeast(Version::parse("2.0"))
+            )]
+        );
+        assert_eq!(p.dependencies.len(), 1, "the tables stay apart");
+        assert_eq!(p.dev_dependencies.len(), 1, "the tables stay apart");
+        assert!(
+            parse("[project]\nname = \"x\"\n")
+                .unwrap()
+                .groups
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn an_empty_group_is_a_group() {
+        let p = parse("[dependency-groups.ci]\n").unwrap();
+        assert_eq!(group_entries(&p), [("ci", vec![])]);
+    }
+
+    #[test]
+    fn a_group_named_dev_in_any_case_is_refused_pointing_at_dev_dependencies() {
+        for name in ["dev", "Dev", "DEV"] {
+            let why = format!(
+                "{:#}",
+                parse(&format!("[dependency-groups.{name}]\ncaraya = \"*\"\n")).unwrap_err()
+            );
+            assert_eq!(
+                why,
+                format!(
+                    "[dependency-groups.{name}] is not allowed: the group dev is [dev-dependencies]"
+                )
+            );
+        }
+        assert!(
+            parse("[dependency-groups.devs]\n").is_ok(),
+            "only dev itself"
+        );
+    }
+
+    #[test]
+    fn a_dependency_groups_value_that_is_not_a_table_is_refused_by_key() {
+        let why = format!(
+            "{:#}",
+            parse("[dependency-groups]\nci = \"ci_tools\"\n").unwrap_err()
+        );
+        assert_eq!(why, "[dependency-groups] ci: must be a table, got string");
+    }
+
+    #[test]
+    fn a_group_name_outside_letters_digits_dash_and_underscore_is_refused() {
+        for name in ["", "a.b", "a b", "a/b", "ä"] {
+            assert!(valid_group_name(name).is_err(), "{name:?}");
+        }
+        for name in ["ci", "CI", "a-b_c9", "9"] {
+            assert!(valid_group_name(name).is_ok(), "{name:?}");
+        }
+        let why = format!(
+            "{:#}",
+            parse("[dependency-groups.\"a.b\"]\nbeta = \"*\"\n").unwrap_err()
+        );
+        assert!(why.contains("[dependency-groups]"), "{why}");
+        assert!(why.contains("\"a.b\""), "{why}");
+        assert!(why.contains("letters, digits, - and _"), "{why}");
+    }
+
+    #[test]
+    fn a_bad_entry_in_a_group_names_the_group_and_the_entry() {
+        let why = refusal("dependency-groups.ci", "pkg = \"~1.0\"");
+        assert!(
+            why.starts_with("[dependency-groups.ci] pkg: unsupported version constraint"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_name_in_a_group_and_in_dependencies_has_one_github_repo() {
+        let both = |group: &str| {
+            parse(&format!(
+                "[dependencies]\ncaraya = {{ github = \"o/r\", version = \"*\" }}\n\n[dependency-groups.ci]\nCaraya = {group}\n"
+            ))
+        };
+        both("{ github = \"o/r\", version = \"1.0\" }").unwrap();
+        both("\"1.0\"").unwrap();
+        let why = both("{ github = \"x/y\", version = \"1.0\" }")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            why,
+            "[dependency-groups.ci] Caraya: github = \"x/y\" differs from \"o/r\" in the other dependency table"
+        );
+    }
+
+    #[test]
+    fn a_name_in_two_groups_has_one_github_repo() {
+        let why = parse(
+            "[dependency-groups.a]\npkg = { github = \"o/r\", version = \"*\" }\n\n\
+             [dependency-groups.b]\npkg = { github = \"x/y\", version = \"*\" }\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.starts_with("[dependency-groups.b] pkg:"), "{why}");
     }
 }

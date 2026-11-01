@@ -156,6 +156,18 @@ pub const SYNC_PACKAGES: &[FixturePackage] = &[
     text_package("delta", "1.0", &[], "20.0"),
 ];
 
+/// What the dependency-group scenarios publish: alpha 1.0, beta 1.0, caraya
+/// 1.0 requiring delta >= 1.0, delta 1.0, and ci_tools 1.0 and 2.0 each
+/// requiring alpha >= 1.0.
+pub const GROUP_PACKAGES: &[FixturePackage] = &[
+    text_package("alpha", "1.0", &[], "20.0"),
+    text_package("beta", "1.0", &[], "20.0"),
+    text_package("caraya", "1.0", &[("delta", "1.0")], "20.0"),
+    text_package("delta", "1.0", &[], "20.0"),
+    text_package("ci_tools", "1.0", &[("alpha", "1.0")], "20.0"),
+    text_package("ci_tools", "2.0", &[("alpha", "1.0")], "20.0"),
+];
+
 /// The same caraya 1.0, also requiring alpha >= 1.0.
 pub const CARAYA_NEEDING_ALPHA: FixturePackage = text_package(
     "caraya",

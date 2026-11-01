@@ -50,6 +50,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/lvpm-lockfile/slice-14-remaining-operations-move-to-core.feature",
     "tests/features/lvpm-lockfile/slice-15-cancellation-before-files-are-written.feature",
     "tests/features/lvpm-lockfile/slice-16-documentation-and-help-text.feature",
+    "tests/features/lvpm-lockfile/slice-17-dependency-groups.feature",
     "tests/features/lvpm-tui/slice-1-catalog-listing-uncapped.feature",
     "tests/features/lvpm-tui/slice-2-package-details-lvpm-info.feature",
     "tests/features/lvpm-tui/slice-3-json-and-the-exit-code-table.feature",

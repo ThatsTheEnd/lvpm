@@ -4,11 +4,13 @@
 //! one asked for cannot hide in a parsed view of the manifest.
 
 use crate::CliWorld;
-use crate::support::fixtures::{FixturePackage, Payload};
+use crate::support::fixtures::{FixturePackage, GROUP_PACKAGES, Payload};
 use crate::support::project::MANIFEST_FILE;
 use cucumber::{given, then, when};
 use lvpm_core::manifest_edit::{self, DependencyTable};
 use lvpm_core::project::{self, Constraint, Project};
+use regex::Regex;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 /// The manifest every scenario starts from, then changes as its `Given` says.
@@ -365,7 +367,7 @@ async fn a_project_with_a_feed_that_lists_pkg(
     world.depend(DependencyTable::Dependencies, &name, &constraint);
 }
 
-#[then(regex = r#"^the command fails naming "(\[[a-z-]+\] [^"]+)"$"#)]
+#[then(regex = r#"^the command fails naming "(\[[^\]"]+\] [^"]+)"$"#)]
 async fn the_command_fails_naming_a_manifest_line(world: &mut CliWorld, line: String) {
     world.assert_failed();
     let report = world.printed();
@@ -374,7 +376,7 @@ async fn the_command_fails_naming_a_manifest_line(world: &mut CliWorld, line: St
 
 /// `said` is a quoted phrase as a table cell writes it, `\"` for each quote
 /// inside it.
-#[then(regex = r#"^the command fails naming "(\[[a-z-]+\] [^"]+)" and "(.+)"$"#)]
+#[then(regex = r#"^the command fails naming "(\[[^\]"]+\](?: [^"]+)?)" and "(.+)"$"#)]
 async fn the_command_fails_naming_a_manifest_line_and_saying(
     world: &mut CliWorld,
     line: String,
@@ -403,4 +405,87 @@ async fn the_lock_has_no_github_inputs(world: &mut CliWorld) {
         !world.locked_versions().is_empty(),
         "nothing is locked:\n{text}"
     );
+}
+
+// ---- dependency groups: the manifest grammar ----
+
+/// One `"name" "constraint"` entry of the grammar.
+static ENTRY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^"([^"]+)" "([^"]*)"$"#).expect("the pattern"));
+
+#[given(
+    r#"fixture packages "alpha" 1.0, "beta" 1.0, "caraya" 1.0 requiring "delta" >= 1.0, "delta" 1.0, "ci_tools" 1.0 and 2.0 requiring "alpha" >= 1.0"#
+)]
+async fn group_fixture_packages(world: &mut CliWorld) {
+    let ids: Vec<String> = GROUP_PACKAGES.iter().map(FixturePackage::id).collect();
+    assert_eq!(
+        ids,
+        [
+            "alpha-1.0",
+            "beta-1.0",
+            "caraya-1.0",
+            "delta-1.0",
+            "ci_tools-1.0",
+            "ci_tools-2.0"
+        ],
+        "the feature and the fixture table disagree"
+    );
+    world.publish(&GROUP_PACKAGES.iter().collect::<Vec<_>>());
+}
+
+#[given(
+    r#"a project with labview "2024" depending on "alpha" "*", with a scratch destination "dest""#
+)]
+async fn the_group_project(world: &mut CliWorld) {
+    world.sandbox.use_local_project(Some(TABLE_PROJECT_LABVIEW));
+    world.depend(DependencyTable::Dependencies, "alpha", "*");
+    world.sandbox.make_empty_dest();
+}
+
+/// `lvpm.toml has <header> <entries>; <header> <entries>`: entries are
+/// `"name" "constraint"` separated by `,`, or `empty`. Anything else is a raw
+/// TOML line, so a table can be written wrongly on purpose. `[dependencies]`
+/// and `[dev-dependencies]` are merged into the Background's tables, every
+/// other table is appended.
+#[given(regex = r"^lvpm\.toml has (\[.+)$")]
+async fn the_manifest_has_tables(world: &mut CliWorld, tables: String) {
+    for table in tables.split(';').map(str::trim) {
+        let (header, entries) = table.split_once(' ').expect("a header and its entries");
+        let lines = entries
+            .split(',')
+            .map(str::trim)
+            .filter(|line| *line != "empty");
+        let merged = match header {
+            "[dependencies]" => Some(DependencyTable::Dependencies),
+            "[dev-dependencies]" => Some(DependencyTable::DevDependencies),
+            _ => None,
+        };
+        let Some(merged) = merged else {
+            let mut text = format!(
+                "{}
+{header}
+",
+                world.manifest_text()
+            );
+            for line in lines {
+                match ENTRY.captures(line) {
+                    Some(entry) => text.push_str(&format!(
+                        "{} = \"{}\"
+",
+                        &entry[1], &entry[2]
+                    )),
+                    None => text.push_str(&format!(
+                        "{line}
+"
+                    )),
+                }
+            }
+            std::fs::write(world.manifest_path(), text).expect("write the manifest");
+            continue;
+        };
+        for line in lines {
+            let entry = ENTRY.captures(line).expect("a name and a constraint");
+            world.depend(merged, &entry[1], &entry[2]);
+        }
+    }
 }
