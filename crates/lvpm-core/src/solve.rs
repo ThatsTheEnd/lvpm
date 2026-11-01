@@ -12,6 +12,7 @@
 use crate::cancel::CancelToken;
 use crate::index::{Entry, Floor, Index, github_repo};
 use crate::project::{Constraint, name_key as key};
+use crate::released;
 use crate::version::Version;
 use pubgrub::{
     Dependencies, DependencyConstraints, DependencyProvider, DerivationTree, External,
@@ -31,6 +32,9 @@ pub struct Resolution {
     /// Requirements of the chosen packages that no source lists, by name then
     /// requirer. They are not a failure: the package is simply not locked.
     pub unresolved: Vec<Unresolved>,
+    /// For each chosen package, the newest version the age limit alone kept
+    /// out, by name.
+    pub held_back: Vec<HeldBack>,
 }
 
 /// A requirement that no source lists, and the package that has it.
@@ -38,6 +42,16 @@ pub struct Resolution {
 pub struct Unresolved {
     pub name: String,
     pub required_by: String,
+}
+
+/// A version newer than the one chosen that the age limit kept out: `name`
+/// `version`, released at `released` (Unix seconds), while `chosen` was taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldBack {
+    pub name: String,
+    pub version: String,
+    pub chosen: String,
+    pub released: i64,
 }
 
 /// Why `solve` returned no resolution.
@@ -49,8 +63,8 @@ pub enum SolveError {
     Cancelled,
 }
 
-/// Solve `constraints` (a manifest's direct dependencies, in file order)
-/// against `index`.
+/// Solve `constraints` (a manifest's dependencies and dev-dependencies, in file
+/// order, plus any exact pins an upgrade adds for the run) against `index`.
 ///
 /// `prefs` are versions to keep when they still fit, such as the ones an
 /// existing lock holds: a new upstream release then changes nothing. `first`
@@ -58,13 +72,17 @@ pub enum SolveError {
 /// package gives way to what they need, never the other way round: an upgrade's
 /// targets. `lv_gate` is the project's LabVIEW in the index's own units
 /// (`lv_min`, so 24.0 for LabVIEW 2024): no package that needs a newer LabVIEW
-/// is chosen. `None` applies no gate. A cancelled `cancel` stops the solver.
+/// is chosen. `None` applies no gate. `age` holds back every version released
+/// less than its days ago, except a version pinned exactly, by a manifest line
+/// or by the pins an upgrade names for that run; `None` holds nothing back.
+/// Cancelling `cancel` stops the solver.
 pub fn solve(
     constraints: &[(String, Constraint)],
     index: &Index,
     prefs: &[(String, Version)],
     first: &[String],
     lv_gate: Option<f64>,
+    age: Option<AgeLimit>,
     cancel: &CancelToken,
 ) -> Result<Resolution, SolveError> {
     let provider = Provider {
@@ -73,12 +91,20 @@ pub fn solve(
             .iter()
             .map(|(name, constraint)| (key(name), range_of(constraint)))
             .collect(),
+        pinned: constraints
+            .iter()
+            .filter_map(|(name, constraint)| match constraint {
+                Constraint::Exact(version) => Some((key(name), version.clone())),
+                Constraint::AtLeast(_) | Constraint::Any => None,
+            })
+            .collect(),
         prefs: prefs
             .iter()
             .map(|(name, version)| (key(name), version.clone()))
             .collect(),
         first: first.iter().map(|name| key(name)).collect(),
         lv_gate,
+        age,
         cancel,
     };
     match pubgrub::resolve(&provider, Pkg::Root, root_version()) {
@@ -94,9 +120,11 @@ pub fn solve(
                 })
                 .collect();
             let unresolved = provider.unresolved_in(&packages);
+            let held_back = provider.held_back_in(&packages);
             Ok(Resolution {
                 packages,
                 unresolved,
+                held_back,
             })
         }
         Err(PubGrubError::NoSolution(tree)) => Err(SolveError::Conflict(Conflict::explain(
@@ -193,6 +221,44 @@ impl fmt::Display for Gated {
     }
 }
 
+/// How young a version may be: nothing released less than `days` days before
+/// `now` (Unix seconds) is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgeLimit {
+    pub now: i64,
+    pub days: u32,
+}
+
+/// Whether a version released at `released` is younger than `limit` allows. A
+/// limit of 0 days holds nothing back, whatever the date, and neither does a
+/// missing date; a date in the future is too new.
+fn too_new(released: Option<i64>, limit: &AgeLimit) -> bool {
+    if limit.days == 0 {
+        return false;
+    }
+    released.is_some_and(|released| limit.now < released::eligible_at(released, limit.days))
+}
+
+/// Why a listed version is not chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unavailable {
+    Labview(Gated),
+    TooNew { released: i64, days: u32 },
+}
+
+impl fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Unavailable::Labview(gated) => fmt::Display::fmt(gated, f),
+            Unavailable::TooNew { released, days } => write!(
+                f,
+                "released {}, held back by min-age-days = {days}",
+                released::day(*released)
+            ),
+        }
+    }
+}
+
 /// An index's entries grouped by package: newest first, one per version. Two
 /// entries that are the same version (`1.0`, `1.0.0`) keep the one listed first.
 struct Catalog<'a> {
@@ -237,6 +303,11 @@ struct Provider<'a> {
     /// Lowercased names of the packages decided before the rest.
     first: HashSet<String>,
     lv_gate: Option<f64>,
+    age: Option<AgeLimit>,
+    /// The versions pinned exactly, by the manifest's own lines or by the pins
+    /// an upgrade names for that run (lowercased name, version): exempt from
+    /// `age`. A feed entry's requirements never pin.
+    pinned: Vec<(String, Version)>,
     cancel: &'a CancelToken,
 }
 
@@ -264,12 +335,78 @@ impl Provider<'_> {
         unresolved
     }
 
+    /// For each chosen package, the newest version above the chosen one that
+    /// the manifest and the chosen packages' requirements admit and that only
+    /// its age keeps out. A version a LabVIEW gate or a lock preference keeps
+    /// out is not held back by age.
+    ///
+    /// shortcut: a too-new version whose own requirements would also have
+    /// conflicted is still reported; check them too if that over-reports.
+    fn held_back_in(&self, chosen: &BTreeMap<String, Entry>) -> Vec<HeldBack> {
+        if self.age.is_none() {
+            return Vec::new();
+        }
+        chosen
+            .iter()
+            .filter(|(key, picked)| self.prefs.get(*key) != Some(&picked.version))
+            .filter_map(|(key, picked)| {
+                let admitted = self.admitted(key, chosen);
+                self.catalog
+                    .versions(key)
+                    .iter()
+                    .take_while(|newer| newer.version > picked.version)
+                    .filter(|newer| admitted.contains(&newer.version))
+                    .find_map(|newer| match self.unavailable(newer) {
+                        Some(Unavailable::TooNew { released, .. }) => Some(HeldBack {
+                            name: newer.name.clone(),
+                            version: newer.version.to_string(),
+                            chosen: picked.version.to_string(),
+                            released,
+                        }),
+                        Some(Unavailable::Labview(_)) | None => None,
+                    })
+            })
+            .collect()
+    }
+
+    /// The versions of `package_key` the manifest's lines and the requirements of the
+    /// `chosen` packages all admit.
+    fn admitted(&self, package_key: &str, chosen: &BTreeMap<String, Entry>) -> Ranges<Version> {
+        let asked = self
+            .direct
+            .iter()
+            .filter(|(name, _)| name == package_key)
+            .map(|(_, range)| range.clone());
+        let required = chosen
+            .values()
+            .flat_map(|entry| &entry.requires)
+            .filter(|requirement| key(&requirement.name) == package_key)
+            .map(|requirement| floor_range(requirement.floor().as_ref()));
+        asked
+            .chain(required)
+            .fold(Ranges::full(), |all, range| all.intersection(&range))
+    }
+
     fn is_unlisted(&self, name: &str) -> bool {
         self.catalog.versions(&key(name)).is_empty()
     }
 
-    fn gated(&self, entry: &Entry) -> Option<Gated> {
-        gated(entry, self.lv_gate?)
+    /// Why `entry` cannot be chosen: the LabVIEW it needs, else its age.
+    fn unavailable(&self, entry: &Entry) -> Option<Unavailable> {
+        if let Some(gated) = self.lv_gate.and_then(|gate| gated(entry, gate)) {
+            return Some(Unavailable::Labview(gated));
+        }
+        let limit = self.age.as_ref()?;
+        let released = entry.released?;
+        let name = key(&entry.name);
+        let pinned = self
+            .pinned
+            .iter()
+            .any(|(pinned, version)| *pinned == name && *version == entry.version);
+        (!pinned && too_new(Some(released), limit)).then_some(Unavailable::TooNew {
+            released,
+            days: limit.days,
+        })
     }
 }
 
@@ -293,7 +430,7 @@ impl DependencyProvider for Provider<'_> {
     type V = Version;
     type VS = Ranges<Version>;
     type Priority = bool;
-    type M = Gated;
+    type M = Unavailable;
     type Err = Stopped;
 
     /// The packages of `first` are decided first, and when one of them
@@ -343,7 +480,7 @@ impl DependencyProvider for Provider<'_> {
         &self,
         package: &Pkg,
         version: &Version,
-    ) -> Result<Dependencies<Pkg, Ranges<Version>, Gated>, Stopped> {
+    ) -> Result<Dependencies<Pkg, Ranges<Version>, Unavailable>, Stopped> {
         let key = match package {
             Pkg::Named(key) => key,
             Pkg::Root => {
@@ -373,8 +510,8 @@ impl DependencyProvider for Provider<'_> {
         let Some(entry) = self.catalog.entry(key, version) else {
             return Ok(Dependencies::Available(DependencyConstraints::default()));
         };
-        if let Some(gated) = self.gated(entry) {
-            return Ok(Dependencies::Unavailable(gated));
+        if let Some(unavailable) = self.unavailable(entry) {
+            return Ok(Dependencies::Unavailable(unavailable));
         }
         Ok(Dependencies::Available(
             entry
@@ -431,6 +568,19 @@ pub enum Fact {
         needs_year: u32,
         project_year: u32,
     },
+    /// Every version of a package that the manifest or a requirement admits
+    /// and the project's LabVIEW runs is younger than the age limit.
+    AllHeldBack(AllHeldBack),
+    /// `package` at `version`, released at `released` (Unix seconds), is
+    /// younger than `days` days. Used when the package's other versions also
+    /// fail for another reason, so not every version is held back; see
+    /// `AllHeldBack`.
+    VersionHeldBack {
+        package: String,
+        version: String,
+        released: i64,
+        days: u32,
+    },
     /// No version source `from` lists of `package` is within `wanted`. A
     /// later source is never asked (ADR 4).
     NoVersion {
@@ -442,13 +592,26 @@ pub enum Fact {
     NotListed { package: String },
 }
 
+/// Every version of `package` that `wanted` admits and the project's LabVIEW
+/// runs was released less than `days` days ago: `versions` are those, newest
+/// first, with their release times (Unix seconds). `required_by` is the
+/// package whose requirement asks for it, when the manifest does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllHeldBack {
+    pub package: String,
+    pub versions: Vec<(String, i64)>,
+    pub wanted: String,
+    pub required_by: Option<String>,
+    pub days: u32,
+}
+
 impl Fact {
     /// Where the fact sits in a report: what was asked, then why it fails.
     fn rank(&self) -> u8 {
         match self {
             Fact::Manifest { .. } | Fact::Pinned { .. } => 0,
             Fact::Requires { .. } => 1,
-            Fact::NeedsLabview { .. } => 2,
+            Fact::NeedsLabview { .. } | Fact::AllHeldBack(_) | Fact::VersionHeldBack { .. } => 2,
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
         }
@@ -480,6 +643,32 @@ impl fmt::Display for Fact {
                 f,
                 "{package} {versions} from {from} needs LabVIEW {needs_year}, and the project's is {project_year}{}",
                 github_note(from)
+            ),
+            Fact::AllHeldBack(AllHeldBack {
+                package,
+                versions,
+                days,
+                ..
+            }) => {
+                let held: Vec<&str> = versions
+                    .iter()
+                    .map(|(version, _)| version.as_str())
+                    .collect();
+                write!(
+                    f,
+                    "{package} {} held back by min-age-days = {days}",
+                    held.join(", ")
+                )
+            }
+            Fact::VersionHeldBack {
+                package,
+                version,
+                released,
+                days,
+            } => write!(
+                f,
+                "{package} {version} is held back by min-age-days = {days} (released {})",
+                released::day(*released)
             ),
             Fact::NoVersion {
                 package,
@@ -553,28 +742,200 @@ impl Names<'_> {
     }
 }
 
-type Tree = DerivationTree<Pkg, Ranges<Version>, Gated>;
+type Tree = DerivationTree<Pkg, Ranges<Version>, Unavailable>;
 
 impl Conflict {
     fn explain(tree: &Tree, names: &Names) -> Conflict {
         let mut facts = Vec::new();
-        collect_facts(tree, names, &mut HashSet::new(), &mut facts);
+        let mut held = Vec::new();
+        collect_facts(tree, names, &mut HashSet::new(), &mut facts, &mut held);
+        let mut facts = merge_held_back(facts, held);
         facts.sort_by_key(Fact::rank);
         Conflict { facts }
+    }
+}
+
+/// A version the age limit holds back; pubgrub reports one per version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeldVersion {
+    package: String,
+    version: Version,
+    released: i64,
+    days: u32,
+}
+
+/// The held-back versions as facts: one `AllHeldBack` per package that has
+/// held-back versions and requires nothing in the failure (the versions are
+/// as `Fact::AllHeldBack` describes), in place of one per version, and none of the facts it
+/// makes redundant: what the manifest or a requirer asked for (kept in the
+/// fact), the versions no source lists in that range, and the versions that
+/// need a newer LabVIEW. The same goes for the packages that require such a
+/// package and nothing else: they fail only because it does.
+///
+/// A held-back package that requires something does not fail by its age alone
+/// (its older version may fail on that requirement), and a requirer with a
+/// requirement that is not held back fails for that too. Their `Manifest` and
+/// `Requires` facts stay, for the general report, but their leftover
+/// `NoVersion` ranges are dropped; the held-back versions of such a package
+/// are one `VersionHeldBack` each.
+fn merge_held_back(facts: Vec<Fact>, held: Vec<HeldVersion>) -> Vec<Fact> {
+    let mut packages: Vec<&str> = Vec::new();
+    for version in &held {
+        if !packages.contains(&version.package.as_str()) {
+            packages.push(&version.package);
+        }
+    }
+    let all_held: Vec<&str> = packages
+        .iter()
+        .copied()
+        .filter(|package| requirements(&facts, package).next().is_none())
+        .collect();
+    let failing = failing_packages(&facts, &packages, &all_held);
+    let mut merged: Vec<Fact> = all_held
+        .iter()
+        .map(|package| Fact::AllHeldBack(all_held_back(package, &facts, &held)))
+        .collect();
+    for package in packages
+        .iter()
+        .filter(|package| !all_held.contains(package))
+    {
+        merged.extend(
+            newest_first(package, &held)
+                .into_iter()
+                .map(|held| Fact::VersionHeldBack {
+                    package: held.package.clone(),
+                    version: held.version.to_string(),
+                    released: held.released,
+                    days: held.days,
+                }),
+        );
+    }
+    merged.extend(
+        facts
+            .iter()
+            .filter(|fact| !concerns_held(fact, &packages, &all_held, &failing))
+            .cloned(),
+    );
+    merged
+}
+
+/// `all_held` and every package that requires only failing packages: the ones
+/// that fail only because a held-back package does. Run to a fixed point, since
+/// a requirer that fails makes the packages that require it fail too.
+fn failing_packages<'a>(
+    facts: &'a [Fact],
+    packages: &[&str],
+    all_held: &[&'a str],
+) -> Vec<&'a str> {
+    let mut failing = all_held.to_vec();
+    while let Some(requirer) = facts.iter().find_map(|fact| match fact {
+        Fact::Requires { package, .. }
+            if !failing.contains(&package.as_str())
+                && !packages.contains(&package.as_str())
+                && requirements(facts, package).all(|needs| failing.contains(&needs)) =>
+        {
+            Some(package.as_str())
+        }
+        _ => None,
+    }) {
+        failing.push(requirer);
+    }
+    failing
+}
+
+/// Is `fact` made redundant by the held-back packages (`packages`, of which
+/// `all_held` are held back entirely) and the packages that fail with them?
+fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&str]) -> bool {
+    match fact {
+        Fact::NeedsLabview { package, .. } => all_held.contains(&package.as_str()),
+        Fact::Manifest { package, .. } | Fact::Requires { package, .. } => {
+            failing.contains(&package.as_str())
+        }
+        // What is left of a held-back package once its listed versions are ruled out.
+        Fact::NoVersion { package, .. } => {
+            failing.contains(&package.as_str()) || packages.contains(&package.as_str())
+        }
+        Fact::Pinned { .. }
+        | Fact::NotListed { .. }
+        | Fact::AllHeldBack(_)
+        | Fact::VersionHeldBack { .. } => false,
+    }
+}
+
+/// The packages `package` requires, by name.
+fn requirements<'a>(facts: &'a [Fact], package: &'a str) -> impl Iterator<Item = &'a str> {
+    facts.iter().filter_map(move |fact| match fact {
+        Fact::Requires {
+            package: requirer,
+            needs,
+            ..
+        } if requirer == package => Some(needs.as_str()),
+        _ => None,
+    })
+}
+
+/// The held-back versions of `package`, newest first.
+fn newest_first<'a>(package: &str, held: &'a [HeldVersion]) -> Vec<&'a HeldVersion> {
+    let mut versions: Vec<_> = held.iter().filter(|held| held.package == package).collect();
+    versions.sort_by(|a, b| b.version.cmp(&a.version));
+    versions
+}
+
+/// What `package`, every version of which is held back, comes to: the versions
+/// newest first, and who asked for it.
+fn all_held_back(package: &str, facts: &[Fact], held: &[HeldVersion]) -> AllHeldBack {
+    let versions = newest_first(package, held);
+    let by_manifest = facts.iter().find_map(|fact| match fact {
+        Fact::Manifest {
+            package: asked,
+            wanted,
+        } if asked == package => Some((wanted, None)),
+        _ => None,
+    });
+    let by_requirer = facts.iter().find_map(|fact| match fact {
+        Fact::Requires {
+            package: requirer,
+            needs,
+            wanted,
+            ..
+        } if needs == package => Some((wanted, Some(requirer.clone()))),
+        _ => None,
+    });
+    // Whatever pubgrub tried was asked for by something in the tree; `*` only
+    // stands in for a question nothing asks.
+    let (wanted, required_by) = by_manifest.or(by_requirer).map_or_else(
+        || ("*".to_string(), None),
+        |(wanted, requirer)| (wanted.clone(), requirer),
+    );
+    AllHeldBack {
+        package: package.to_string(),
+        versions: versions
+            .iter()
+            .map(|held| (held.version.to_string(), held.released))
+            .collect(),
+        wanted,
+        required_by,
+        days: versions.first().map_or(0, |held| held.days),
     }
 }
 
 /// The external incompatibilities at the tree's leaves, once each. A derived
 /// node that appears more than once in the tree (`shared_id`) is walked the
 /// first time only: its leaves are already collected.
-fn collect_facts(tree: &Tree, names: &Names, walked: &mut HashSet<usize>, facts: &mut Vec<Fact>) {
+fn collect_facts(
+    tree: &Tree,
+    names: &Names,
+    walked: &mut HashSet<usize>,
+    facts: &mut Vec<Fact>,
+    held: &mut Vec<HeldVersion>,
+) {
     let fact = match tree {
         DerivationTree::Derived(derived) => {
             if derived.shared_id.is_some_and(|id| !walked.insert(id)) {
                 return;
             }
-            collect_facts(&derived.cause1, names, walked, facts);
-            collect_facts(&derived.cause2, names, walked, facts);
+            collect_facts(&derived.cause1, names, walked, facts, held);
+            collect_facts(&derived.cause2, names, walked, facts, held);
             return;
         }
         DerivationTree::External(External::NotRoot(..)) => return,
@@ -607,14 +968,33 @@ fn collect_facts(tree: &Tree, names: &Names, walked: &mut HashSet<usize>, facts:
                 },
             }
         }
-        DerivationTree::External(External::Custom(package, versions, gated)) => {
-            Fact::NeedsLabview {
+        DerivationTree::External(External::Custom(
+            package,
+            versions,
+            Unavailable::Labview(gated),
+        )) => Fact::NeedsLabview {
+            package: names.of(package),
+            versions: subject(versions),
+            from: names.source(package),
+            needs_year: gated.needs_year,
+            project_year: gated.project_year,
+        },
+        // One per version; `merge_held_back` makes them facts.
+        DerivationTree::External(External::Custom(
+            package,
+            versions,
+            Unavailable::TooNew { released, days },
+        )) => {
+            let version = HeldVersion {
                 package: names.of(package),
-                versions: subject(versions),
-                from: names.source(package),
-                needs_year: gated.needs_year,
-                project_year: gated.project_year,
+                version: Version::parse(&subject(versions)),
+                released: *released,
+                days: *days,
+            };
+            if !held.contains(&version) {
+                held.push(version);
             }
+            return;
         }
     };
     if !facts.contains(&fact) {
@@ -658,6 +1038,7 @@ fn subject(set: &Ranges<Version>) -> String {
 mod tests {
     use super::*;
     use crate::index::Requirement;
+    use crate::released::SECS_PER_DAY;
     use std::cmp::Ordering;
 
     fn entry(name: &str, version: &str, requires: &[(&str, &str)]) -> Entry {
@@ -677,6 +1058,7 @@ mod tests {
                 .collect(),
             lv_min: None,
             source: String::new(),
+            released: None,
         }
     }
 
@@ -851,6 +1233,7 @@ mod tests {
             &index,
             &held,
             &["X".to_string()],
+            None,
             None,
             &CancelToken::new(),
         )
@@ -1098,7 +1481,15 @@ mod tests {
         };
         let token = CancelToken::new();
         token.cancel();
-        let result = solve(&manifest(&[("a", "*")]), &index, &[], &[], None, &token);
+        let result = solve(
+            &manifest(&[("a", "*")]),
+            &index,
+            &[],
+            &[],
+            None,
+            None,
+            &token,
+        );
         assert!(matches!(result, Err(SolveError::Cancelled)));
     }
 
@@ -1145,11 +1536,651 @@ mod tests {
         assert_eq!(conflict.facts.len(), 2, "{conflict}");
     }
 
+    // ---- the age limit ----
+
+    const NOW: i64 = 1_700_000_000;
+    const LIMIT_DAYS: u32 = 14;
+    const LIMIT: Option<AgeLimit> = Some(AgeLimit {
+        now: NOW,
+        days: LIMIT_DAYS,
+    });
+
+    /// An entry released `days_ago` days before `NOW`.
+    fn released(name: &str, version: &str, days_ago: i64) -> Entry {
+        Entry {
+            released: Some(NOW - days_ago * SECS_PER_DAY),
+            ..entry(name, version, &[])
+        }
+    }
+
+    fn requiring(mut entry: Entry, name: &str, floor: &str) -> Entry {
+        entry.requires.push(Requirement {
+            name: name.to_string(),
+            min: Some(Version::parse(floor)),
+            min_exclusive: false,
+        });
+        entry
+    }
+
+    fn held_back_facts(result: Result<Resolution, SolveError>) -> Vec<Fact> {
+        match result {
+            Err(SolveError::Conflict(conflict)) => conflict.facts,
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_version_exactly_the_limit_old_is_eligible_and_one_second_younger_is_not() {
+        let limit = LIMIT.unwrap();
+        let age = i64::from(LIMIT_DAYS) * SECS_PER_DAY;
+        assert!(!too_new(Some(NOW - age), &limit));
+        assert!(too_new(Some(NOW - age + 1), &limit));
+        assert!(!too_new(Some(NOW - age - 1), &limit));
+    }
+
+    #[test]
+    fn a_release_date_in_the_future_is_too_new() {
+        assert!(too_new(Some(NOW + 1), &LIMIT.unwrap()));
+    }
+
+    #[test]
+    fn a_limit_of_zero_days_holds_nothing_back_not_even_the_future() {
+        let off = AgeLimit { now: NOW, days: 0 };
+        assert!(!too_new(Some(NOW), &off));
+        assert!(!too_new(Some(NOW + SECS_PER_DAY), &off));
+        assert!(!too_new(None, &off));
+    }
+
+    #[test]
+    fn a_version_with_no_release_date_is_eligible() {
+        assert!(!too_new(None, &LIMIT.unwrap()));
+    }
+
+    #[test]
+    fn the_largest_limit_does_not_overflow() {
+        let huge = AgeLimit {
+            now: i64::MAX,
+            days: u32::MAX,
+        };
+        assert!(!too_new(Some(0), &huge));
+        assert!(too_new(Some(0), &AgeLimit { now: NOW, ..huge }));
+        assert!(too_new(Some(NOW), &AgeLimit { now: NOW, ..huge }));
+        // The day it becomes eligible does not fit an i64: it saturates, and a
+        // clock just short of the end of time is still before it.
+        let near_the_end = AgeLimit {
+            now: i64::MAX - 1,
+            days: u32::MAX,
+        };
+        assert!(too_new(Some(i64::MAX - 10), &near_the_end));
+    }
+
+    #[test]
+    fn a_version_younger_than_the_limit_is_held_back_for_the_newest_old_enough() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3)],
+        };
+        let resolution = run_aged(&[("a", ">=1.0")], &index, &[], None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+        let unlimited = run_aged(&[("a", ">=1.0")], &index, &[], None, None).expect("solves");
+        assert_eq!(chosen(&unlimited), [("a", "1.1")]);
+    }
+
+    #[test]
+    fn a_locked_version_that_is_now_too_new_gives_way_to_an_older_one() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 10)],
+        };
+        let prefs = [("a".to_string(), Version::parse("1.1"))];
+        let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+    }
+
+    #[test]
+    fn a_transitive_requirement_is_held_to_the_limit_too() {
+        let index = Index {
+            entries: vec![
+                requiring(released("a", "1.0", 30), "b", "2.0"),
+                released("b", "2.0", 30),
+                released("b", "2.1", 3),
+            ],
+        };
+        let resolution = run_aged(&[("a", "*")], &index, &[], None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0"), ("b", "2.0")]);
+    }
+
+    #[test]
+    fn a_version_the_manifest_pins_exactly_is_exempt_and_only_that_version() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 3),
+                released("a", "1.2", 2),
+            ],
+        };
+        let pinned = run_aged(&[("a", "1.1")], &index, &[], None, LIMIT).expect("solves");
+        assert_eq!(chosen(&pinned), [("a", "1.1")]);
+        // A second line for the package does not take the pin's exemption away.
+        let both = run_aged(&[("a", "1.1"), ("a", ">=1.0")], &index, &[], None, LIMIT);
+        assert_eq!(chosen(&both.expect("solves")), [("a", "1.1")]);
+    }
+
+    #[test]
+    fn an_exact_pin_exempts_the_pinned_package_but_not_what_it_requires() {
+        let index = Index {
+            entries: vec![
+                requiring(released("a", "1.1", 3), "b", "2.0"),
+                released("b", "2.0", 30),
+                released("b", "2.1", 3),
+            ],
+        };
+        let resolution = run_aged(&[("a", "1.1")], &index, &[], None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.1"), ("b", "2.0")]);
+    }
+
+    #[test]
+    fn every_version_held_back_is_one_fact_listing_them_newest_first() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 3),
+                released("a", "1.2", 2),
+            ],
+        };
+        let facts = held_back_facts(run_aged(&[("a", ">=1.1")], &index, &[], None, LIMIT));
+        assert_eq!(
+            facts,
+            [Fact::AllHeldBack(AllHeldBack {
+                package: "a".into(),
+                versions: vec![
+                    ("1.2".into(), NOW - 2 * SECS_PER_DAY),
+                    ("1.1".into(), NOW - 3 * SECS_PER_DAY)
+                ],
+                wanted: ">= 1.1".into(),
+                required_by: None,
+                days: LIMIT_DAYS,
+            })]
+        );
+    }
+
+    #[test]
+    fn a_requirement_with_no_version_old_enough_names_who_asked() {
+        let index = Index {
+            entries: vec![
+                requiring(released("a", "1.0", 30), "b", "2.0"),
+                released("b", "2.0", 3),
+            ],
+        };
+        let facts = held_back_facts(run_aged(&[("a", "*")], &index, &[], None, LIMIT));
+        let [
+            Fact::AllHeldBack(AllHeldBack {
+                package,
+                wanted,
+                required_by,
+                ..
+            }),
+        ] = &facts[..]
+        else {
+            panic!("expected one AllHeldBack fact, got {facts:?}");
+        };
+        assert_eq!(
+            (package.as_str(), wanted.as_str(), required_by.as_deref()),
+            ("b", ">= 2.0", Some("a"))
+        );
+    }
+
+    #[test]
+    fn a_version_the_project_labview_cannot_run_is_not_among_those_held_back() {
+        let mut gated = released("a", "3.0", 30);
+        gated.lv_min = Some(26.0);
+        let index = Index {
+            entries: vec![released("a", "1.1", 3), gated],
+        };
+        let facts = held_back_facts(run_aged(&[("a", ">=1.1")], &index, &[], Some(24.0), LIMIT));
+        let [Fact::AllHeldBack(AllHeldBack { versions, .. })] = &facts[..] else {
+            panic!("expected only an AllHeldBack fact, got {facts:?}");
+        };
+        assert_eq!(versions, &[("1.1".to_string(), NOW - 3 * SECS_PER_DAY)]);
+    }
+
+    #[test]
+    fn each_reason_a_version_is_unavailable_says_what_it_is() {
+        let too_new = Unavailable::TooNew {
+            released: NOW,
+            days: LIMIT_DAYS,
+        };
+        assert_eq!(
+            too_new.to_string(),
+            "released 2023-11-14, held back by min-age-days = 14"
+        );
+        let gated = Unavailable::Labview(Gated {
+            needs_year: 2026,
+            project_year: 2024,
+        });
+        assert_eq!(
+            gated.to_string(),
+            "needs LabVIEW 2026, and the project's is 2024"
+        );
+    }
+
+    fn held_version(package: &str, version: &str, days_ago: i64) -> HeldVersion {
+        HeldVersion {
+            package: package.into(),
+            version: Version::parse(version),
+            released: NOW - days_ago * SECS_PER_DAY,
+            days: LIMIT_DAYS,
+        }
+    }
+
+    fn manifest_fact(package: &str, wanted: &str) -> Fact {
+        Fact::Manifest {
+            package: package.into(),
+            wanted: wanted.into(),
+        }
+    }
+
+    fn requires_fact(package: &str, versions: &str, needs: &str, wanted: &str) -> Fact {
+        Fact::Requires {
+            package: package.into(),
+            versions: versions.into(),
+            needs: needs.into(),
+            wanted: wanted.into(),
+        }
+    }
+
+    /// Every one of `versions` (with the days ago it was released) of `package` held back.
+    fn all_held_back_of(package: &str, versions: &[(&str, i64)], wanted: &str) -> AllHeldBack {
+        AllHeldBack {
+            package: package.into(),
+            versions: versions
+                .iter()
+                .map(|(version, days_ago)| (version.to_string(), NOW - days_ago * SECS_PER_DAY))
+                .collect(),
+            wanted: wanted.into(),
+            required_by: None,
+            days: LIMIT_DAYS,
+        }
+    }
+
+    fn all_held_back_for(requirer: &str, held: AllHeldBack) -> Fact {
+        Fact::AllHeldBack(AllHeldBack {
+            required_by: Some(requirer.into()),
+            ..held
+        })
+    }
+
+    fn version_held_back(package: &str, version: &str, days_ago: i64) -> Fact {
+        Fact::VersionHeldBack {
+            package: package.into(),
+            version: version.into(),
+            released: NOW - days_ago * SECS_PER_DAY,
+            days: LIMIT_DAYS,
+        }
+    }
+
+    #[test]
+    fn a_held_back_package_leaves_the_facts_about_other_packages_alone() {
+        let unrelated = [
+            manifest_fact("c", "= 1.0"),
+            Fact::NotListed {
+                package: "z".into(),
+            },
+        ];
+        let facts = vec![
+            manifest_fact("a", ">= 1.0"),
+            unrelated[0].clone(),
+            unrelated[1].clone(),
+        ];
+        let held = vec![held_version("a", "1.1", 3), held_version("a", "1.2", 2)];
+        assert_eq!(
+            merge_held_back(facts, held),
+            [
+                Fact::AllHeldBack(all_held_back_of("a", &[("1.2", 2), ("1.1", 3)], ">= 1.0")),
+                unrelated[0].clone(),
+                unrelated[1].clone(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_package_whose_older_version_needs_something_held_back_is_not_all_held_back() {
+        // a 1.1 is too new; a 1.0 is old enough but needs b >= 2.0, and b 2.0
+        // is too new: "every version of a is held back" would be false.
+        let index = Index {
+            entries: vec![
+                released("a", "1.1", 3),
+                requiring(released("a", "1.0", 30), "b", "2.0"),
+                released("b", "2.0", 3),
+            ],
+        };
+        let facts = held_back_facts(run_aged(&[("a", "*")], &index, &[], None, LIMIT));
+        assert_eq!(
+            facts,
+            [
+                manifest_fact("a", "*"),
+                requires_fact("a", "1.0", "b", ">= 2.0"),
+                all_held_back_for("a", all_held_back_of("b", &[("2.0", 3)], ">= 2.0")),
+                version_held_back("a", "1.1", 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_package_whose_older_version_needs_what_cannot_be_had_is_not_all_held_back() {
+        // a 1.0 needs c >= 2.0, and the manifest pins c 1.0.
+        let index = Index {
+            entries: vec![
+                released("a", "1.1", 3),
+                requiring(released("a", "1.0", 30), "c", "2.0"),
+                released("c", "1.0", 30),
+            ],
+        };
+        let facts = held_back_facts(run_aged(
+            &[("a", "*"), ("c", "1.0")],
+            &index,
+            &[],
+            None,
+            LIMIT,
+        ));
+        assert_eq!(
+            facts,
+            [
+                manifest_fact("a", "*"),
+                manifest_fact("c", "= 1.0"),
+                requires_fact("a", "1.0", "c", ">= 2.0"),
+                version_held_back("a", "1.1", 3),
+            ]
+        );
+        assert!(
+            Conflict { facts }
+                .to_string()
+                .contains("a 1.1 is held back by min-age-days = 14 (released 2023-11-11)")
+        );
+    }
+
+    #[test]
+    fn a_requirer_that_needs_only_held_back_packages_fails_only_because_of_them() {
+        let facts = vec![
+            manifest_fact("a", "*"),
+            requires_fact("a", "1.0", "b", ">= 2.0"),
+            requires_fact("a", "1.0", "d", ">= 1.0"),
+        ];
+        let held = vec![held_version("b", "2.0", 3), held_version("d", "1.0", 3)];
+        assert_eq!(
+            merge_held_back(facts, held),
+            [
+                all_held_back_for("a", all_held_back_of("b", &[("2.0", 3)], ">= 2.0")),
+                all_held_back_for("a", all_held_back_of("d", &[("1.0", 3)], ">= 1.0")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_requirer_of_a_failing_requirer_fails_only_because_of_the_held_back_package_too() {
+        // c is held back, so b (which needs only c) fails, and so does a
+        // (which needs only b): a second pass of `failing_packages`.
+        let facts = vec![
+            manifest_fact("a", "*"),
+            requires_fact("a", "1.0", "b", ">= 1.0"),
+            requires_fact("b", "1.0", "c", ">= 1.0"),
+        ];
+        assert_eq!(
+            merge_held_back(facts, vec![held_version("c", "1.0", 3)]),
+            [all_held_back_for(
+                "b",
+                all_held_back_of("c", &[("1.0", 3)], ">= 1.0")
+            )]
+        );
+    }
+
+    #[test]
+    fn a_requirer_with_a_requirement_that_is_not_held_back_keeps_its_own_facts() {
+        let facts = vec![
+            manifest_fact("a", "*"),
+            requires_fact("a", "1.0", "b", ">= 2.0"),
+            requires_fact("a", "1.0", "c", ">= 2.0"),
+            Fact::NoVersion {
+                package: "c".into(),
+                wanted: ">= 2.0".into(),
+                from: String::new(),
+            },
+        ];
+        let merged = merge_held_back(facts.clone(), vec![held_version("b", "2.0", 3)]);
+        assert_eq!(
+            merged,
+            [
+                vec![all_held_back_for(
+                    "a",
+                    all_held_back_of("b", &[("2.0", 3)], ">= 2.0")
+                )],
+                facts
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn a_version_exactly_the_limit_old_is_chosen_by_the_solver() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", i64::from(LIMIT_DAYS)),
+                released("a", "1.2", i64::from(LIMIT_DAYS) - 1),
+            ],
+        };
+        let resolution = run_aged(&[("a", ">=1.0")], &index, &[], None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.1")]);
+    }
+
+    #[test]
+    fn the_project_labview_wins_over_an_exact_pin_that_is_too_new() {
+        let mut gated = released("a", "1.1", 3);
+        gated.lv_min = Some(26.0);
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), gated],
+        };
+        let Err(SolveError::Conflict(conflict)) =
+            run_aged(&[("a", "1.1")], &index, &[], Some(24.0), LIMIT)
+        else {
+            panic!("expected a conflict");
+        };
+        assert!(
+            conflict.facts.contains(&Fact::NeedsLabview {
+                package: "a".into(),
+                versions: "1.1".into(),
+                from: String::new(),
+                needs_year: 2026,
+                project_year: 2024,
+            }),
+            "{conflict}"
+        );
+    }
+
+    // ---- what the age limit held back ----
+
+    /// The `HeldBack` of `name` `version` released `days_ago` days before
+    /// `NOW`, with `chosen` taken instead.
+    fn held(name: &str, version: &str, chosen: &str, days_ago: i64) -> HeldBack {
+        HeldBack {
+            name: name.into(),
+            version: version.into(),
+            chosen: chosen.into(),
+            released: NOW - days_ago * SECS_PER_DAY,
+        }
+    }
+
+    fn held_back_by(
+        lines: &[(&str, &str)],
+        index: &Index,
+        prefs: &[(String, Version)],
+        lv_gate: Option<f64>,
+    ) -> Vec<HeldBack> {
+        run_aged(lines, index, prefs, lv_gate, LIMIT)
+            .expect("solves")
+            .held_back
+    }
+
+    #[test]
+    fn a_newer_version_the_age_limit_kept_out_is_reported_with_the_one_chosen() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3)],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.1", "1.0", 3)]
+        );
+    }
+
+    #[test]
+    fn of_two_held_back_versions_only_the_newest_is_reported() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 5),
+                released("a", "1.2", 2),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.2", "1.0", 2)]
+        );
+    }
+
+    #[test]
+    fn nothing_is_reported_when_the_chosen_version_is_the_newest() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30)],
+        };
+        assert!(held_back_by(&[("a", "*")], &index, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_version_the_project_labview_cannot_run_is_not_reported_as_held_back() {
+        let mut gated = released("a", "3.0", 3);
+        gated.lv_min = Some(26.0);
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3), gated],
+        };
+        // 3.0 is both gated and too new: it is the LabVIEW that rules it out,
+        // so the newest version held back by age alone is 1.1.
+        assert_eq!(
+            held_back_by(&[("a", "*")], &index, &[], Some(24.0)),
+            [held("a", "1.1", "1.0", 3)]
+        );
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                Entry {
+                    lv_min: Some(26.0),
+                    ..released("a", "3.0", 3)
+                },
+            ],
+        };
+        assert!(held_back_by(&[("a", "*")], &index, &[], Some(24.0)).is_empty());
+    }
+
+    #[test]
+    fn a_version_above_an_exact_pin_is_not_reported() {
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 3)],
+        };
+        assert!(held_back_by(&[("a", "1.0")], &index, &[], None).is_empty());
+    }
+
+    #[test]
+    fn a_version_a_lock_preference_kept_out_is_not_reported() {
+        // 1.1 is old enough: only the preference for 1.0 keeps it out.
+        let index = Index {
+            entries: vec![released("a", "1.0", 30), released("a", "1.1", 20)],
+        };
+        let prefs = [("a".to_string(), Version::parse("1.0"))];
+        let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+        assert!(resolution.held_back.is_empty());
+    }
+
+    #[test]
+    fn a_preferred_version_is_not_reported_even_when_a_newer_one_is_too_new() {
+        // The preference keeps 1.1 out; 1.2 is too new, but the lock, not the
+        // age, decided what was chosen.
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 20),
+                released("a", "1.2", 3),
+            ],
+        };
+        let prefs = [("a".to_string(), Version::parse("1.0"))];
+        let resolution = run_aged(&[("a", "*")], &index, &prefs, None, LIMIT).expect("solves");
+        assert_eq!(chosen(&resolution), [("a", "1.0")]);
+        assert!(
+            resolution.held_back.is_empty(),
+            "{:?}",
+            resolution.held_back
+        );
+    }
+
+    #[test]
+    fn the_newest_version_held_back_is_found_above_an_eligible_chosen_one() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 20),
+                released("a", "1.2", 3),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", ">=1.0")], &index, &[], None),
+            [held("a", "1.2", "1.1", 3)]
+        );
+    }
+
+    #[test]
+    fn a_held_back_transitive_version_is_reported_under_its_own_name() {
+        let index = Index {
+            entries: vec![
+                requiring(released("a", "1.0", 30), "b", "2.0"),
+                released("b", "2.0", 30),
+                released("b", "2.1", 3),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("a", "*")], &index, &[], None),
+            [held("b", "2.1", "2.0", 3)]
+        );
+    }
+
+    #[test]
+    fn every_package_with_a_newer_version_held_back_is_reported_once_by_name() {
+        let index = Index {
+            entries: vec![
+                released("a", "1.0", 30),
+                released("a", "1.1", 3),
+                released("c", "1.0", 30),
+                released("c", "1.5", 2),
+                released("d", "1.0", 30),
+            ],
+        };
+        assert_eq!(
+            held_back_by(&[("c", "*"), ("a", "*"), ("d", "*")], &index, &[], None),
+            [held("a", "1.1", "1.0", 3), held("c", "1.5", "1.0", 2)]
+        );
+    }
+
     fn run(
         lines: &[(&str, &str)],
         index: &Index,
         prefs: &[(String, Version)],
         lv_gate: Option<f64>,
+    ) -> Result<Resolution, SolveError> {
+        run_aged(lines, index, prefs, lv_gate, None)
+    }
+
+    fn run_aged(
+        lines: &[(&str, &str)],
+        index: &Index,
+        prefs: &[(String, Version)],
+        lv_gate: Option<f64>,
+        age: Option<AgeLimit>,
     ) -> Result<Resolution, SolveError> {
         solve(
             &manifest(lines),
@@ -1157,6 +2188,7 @@ mod tests {
             prefs,
             &[],
             lv_gate,
+            age,
             &CancelToken::new(),
         )
     }

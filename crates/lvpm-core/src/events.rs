@@ -9,6 +9,7 @@
 //! an end event, so the front end owns the half-written line.
 
 use crate::git::GitOutcome;
+use crate::released;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -341,6 +342,20 @@ pub enum Event {
     /// A requirement of a locked package that no source lists; the lock
     /// records it as unresolved and goes on.
     RequirementUnresolved { name: String, required_by: String },
+    /// A newer version of `name` than the `chosen` one was kept out by
+    /// `[sources] min-age-days`: `released` (Unix seconds) is when `version`
+    /// came out, and `eligible` when `min_age_days` days after that has
+    /// passed. Both are RFC 3339 instants in JSON.
+    HeldBack {
+        name: String,
+        version: String,
+        chosen: String,
+        #[serde(serialize_with = "as_rfc3339")]
+        released: i64,
+        #[serde(serialize_with = "as_rfc3339")]
+        eligible: i64,
+        min_age_days: u32,
+    },
     /// What the lock written differs by from the one it replaced, by name.
     LockChanged { changes: Vec<LockChange> },
     /// The lock is on disk, holding `packages` packages.
@@ -458,6 +473,11 @@ pub enum Event {
     // ---- ops::query ----
     /// A package's archive is not cached and is about to be downloaded.
     ArchiveFetching { name: String, version: String },
+}
+
+/// A Unix time (seconds) as an RFC 3339 string.
+fn as_rfc3339<S: serde::Serializer>(time: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&released::rfc3339(*time))
 }
 
 /// What kind of file `init --from` read.

@@ -223,6 +223,7 @@ mod tests {
             display_name: None,
             requires: Vec::new(),
             lv_min: None,
+            released: None,
             source,
         }
     }

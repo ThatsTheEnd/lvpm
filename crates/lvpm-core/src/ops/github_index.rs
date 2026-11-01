@@ -287,6 +287,7 @@ pub(super) fn listed(name: &str, repo: &str, file: &ReleaseFile) -> Entry {
         display_name: None,
         requires: Vec::new(),
         lv_min: None,
+        released: None,
         source: index::github_source(repo),
     }
 }
@@ -353,6 +354,7 @@ mod tests {
             display_name: None,
             requires: Vec::new(),
             lv_min,
+            released: None,
             source: index::github_source("o/r"),
         }
     }
@@ -393,6 +395,7 @@ mod tests {
                 dependencies: Default::default(),
                 dev_dependencies: Default::default(),
                 github: Default::default(),
+                min_age_days: 0,
             },
             packages: vec![crate::lockfile::LockedPackage {
                 name: "pkg".into(),

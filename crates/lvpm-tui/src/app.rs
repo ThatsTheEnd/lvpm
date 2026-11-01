@@ -715,6 +715,7 @@ mod tests {
             requires: Vec::new(),
             lv_min: Some(lv_min),
             source: String::new(),
+            released: None,
         };
         let catalog = lvpm_core::ops::query::Catalog {
             entries: vec![entry("alpha", 20.0), entry("gamma", 99.0)],
@@ -928,6 +929,7 @@ mod tests {
             requires: Vec::new(),
             lv_min: Some(20.0),
             source: String::new(),
+            released: None,
         };
         Catalog {
             entries: names.iter().map(|n| entry(n)).collect(),

@@ -152,6 +152,7 @@ async fn a_plan_built_by_hand(world: &mut CliWorld, name: String, version: Strin
         requires: Vec::new(),
         lv_min: None,
         source: String::new(),
+        released: None,
     };
     world.install = InstallState {
         plan: Some(InstallPlan {

@@ -77,6 +77,7 @@ fn entry(name: &str, version: &str) -> Entry {
         requires: Vec::new(),
         lv_min: None,
         source: String::new(),
+        released: None,
     }
 }
 
@@ -154,6 +155,7 @@ async fn the_solver_runs(world: &mut CliWorld, year: String) {
         &state.prefs,
         &[],
         lv_gate,
+        None,
         &state.cancel,
     ));
 }

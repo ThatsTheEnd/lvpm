@@ -180,6 +180,51 @@ async fn removed(world: &mut CliWorld, name: String) {
     world.edit(|path| manifest_edit::remove_file(path, DependencyTable::Dependencies, &name));
 }
 
+const MIN_AGE_KEY: &str = "min-age-days";
+
+impl CliWorld {
+    /// Add `line` right under `[sources]` in the project's manifest, after
+    /// dropping any `min-age-days` line, so a scenario can set it again.
+    fn set_sources_line(&self, line: Option<&str>) {
+        let text = self.manifest_text();
+        let mut lines: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with(MIN_AGE_KEY))
+            .collect();
+        let header = lines
+            .iter()
+            .position(|l| *l == "[sources]")
+            .expect("the manifest has a [sources] table");
+        lines.splice(header + 1..header + 1, line);
+        std::fs::write(self.manifest_path(), lines.join("\n") + "\n").expect("write lvpm.toml");
+    }
+}
+
+#[given(regex = r"^the project sets min-age-days to (absent|\d+)$")]
+#[when(regex = r"^the project sets min-age-days to (absent|\d+)$")]
+async fn the_project_sets_min_age_days(world: &mut CliWorld, value: String) {
+    let line = format!("{MIN_AGE_KEY} = {value}");
+    world.set_sources_line((value != "absent").then_some(line.as_str()));
+}
+
+#[given(regex = r"^the project's \[sources\] has the line '(.+)'$")]
+async fn the_sources_have_the_line(world: &mut CliWorld, line: String) {
+    world.set_sources_line(Some(&line));
+}
+
+/// To end of line, so a quoted value may hold quotes: `(got "14")`. Limited to
+/// the min-age-days texts: a looser pattern is ambiguous with the other
+/// `fails saying "…" …` steps, whose text also holds quotes.
+#[then(regex = r#"^the command fails saying "((?:\[sources\] )?min-age-days.+)"$"#)]
+async fn the_command_fails_saying(world: &mut CliWorld, text: String) {
+    world.assert_failed();
+    let stderr = &world.output().stderr;
+    assert!(
+        stderr.contains(&text),
+        "{text:?} is not in stderr:\n{stderr}"
+    );
+}
+
 #[when("the manifest is read")]
 async fn manifest_is_read(world: &mut CliWorld) {
     let read = project::read(&world.manifest_path()).map_err(|why| format!("{why:#}"));

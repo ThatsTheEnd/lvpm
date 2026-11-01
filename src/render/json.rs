@@ -212,6 +212,25 @@ mod tests {
     }
 
     #[test]
+    fn a_held_back_version_has_its_release_and_eligible_instants_as_rfc_3339() {
+        let released = lvpm_core::released::parse("Wed, 28 Oct 2026 11:46:49 GMT").unwrap();
+        assert_eq!(
+            serde_json::json!(Event::HeldBack {
+                name: "alpha".into(),
+                version: "1.1".into(),
+                chosen: "1.0".into(),
+                released,
+                eligible: lvpm_core::released::eligible_at(released, 14),
+                min_age_days: 14,
+            }),
+            serde_json::json!({"event": "held_back", "data":
+                {"name": "alpha", "version": "1.1", "chosen": "1.0",
+                 "released": "2026-10-28T11:46:49Z", "eligible": "2026-11-11T11:46:49Z",
+                 "min_age_days": 14}})
+        );
+    }
+
+    #[test]
     fn no_labview_is_an_event_with_no_data() {
         assert_eq!(
             serde_json::json!(Event::InitNoLabview),
