@@ -123,11 +123,12 @@ Background:
       | gives [dependency-groups.ci] "ci_tools" "1.0"     | [dependency-groups.ci] "ci_tools" "1.0" excludes locked 2.0 |
 
   # AC3, AC6
-  Scenario: lock --upgrade raises a group floor
-    Given lvpm.toml has [dependency-groups.ci] "ci_tools" ">=1.0" and lvpm.lock holds "ci_tools" 1.0
-    When I run "lvpm lock --upgrade"
+  # Built as --upgrade-package: plain --upgrade never rewrites the manifest.
+  Scenario: lock --upgrade-package moves a group's pin and rewrites it
+    Given lvpm.toml has [dependency-groups.ci] "ci_tools" "1.0" and lvpm.lock holds "ci_tools" 1.0
+    When I run "lvpm lock --upgrade-package ci_tools@2.0"
     Then lvpm.lock gives "ci_tools" 2.0 groups ["ci"]
-    And [dependency-groups.ci] says "ci_tools" = ">=2.0"
+    And [dependency-groups.ci] says "ci_tools" = "2.0"
 
   # AC9
   Scenario: a format 1 lock is stale
@@ -435,12 +436,12 @@ graph TD
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: Manifest reads dependency groups
-  - [ ] Step 1.1: Parse `[dependency-groups.<name>]` into `Project::groups`
+- [x] Slice 1: Manifest reads dependency groups
+  - [x] Step 1.1: Parse `[dependency-groups.<name>]` into `Project::groups`
 
 #### Wave 2
-- [ ] Slice 2: Lock records groups (format 2)
-  - [ ] Step 2.1: Tables, `groups` in the lock, format 2, per-table staleness
+- [x] Slice 2: Lock records groups (format 2)
+  - [x] Step 2.1: Tables, `groups` in the lock, format 2, per-table staleness
 
 #### Wave 3
 - [ ] Slice 3: `lvpm sync --group`
