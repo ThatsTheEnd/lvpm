@@ -139,7 +139,7 @@ struct SyncArgs {
     /// LabVIEW runs headless (LV_RTE_HEADLESS is set) and --locked is the default.
     #[arg(long)]
     no_locked: bool,
-    /// Leave out the dev group
+    /// Leave out the dev group, and uninstall its packages if they are installed
     #[arg(long)]
     no_dev: bool,
     /// Also install this dependency group (repeatable); [dependencies] and dev are installed by default
@@ -150,7 +150,11 @@ struct SyncArgs {
 impl SyncArgs {
     /// `--group dev` with `--no-dev`: dev is both asked for and left out.
     fn asks_for_and_against_dev(&self) -> bool {
-        self.no_dev && self.group.iter().any(|g| g.eq_ignore_ascii_case("dev"))
+        self.no_dev
+            && self
+                .group
+                .iter()
+                .any(|g| lvpm_core::project::is_dev_group(g))
     }
 
     fn options(&self, apply: &ApplyArgs, headless: bool) -> SyncOptions {
@@ -826,11 +830,11 @@ fn run(cli: &Cli) -> Result<Report> {
 /// The table `--dev` and `--group` name. `--group dev` in any case is
 /// `--dev`; any other group name is checked here, before anything is read.
 fn dependency_table(dev: bool, group: Option<&str>) -> Result<DependencyTable> {
-    let dev = dev || group.is_some_and(|group| group.eq_ignore_ascii_case("dev"));
-    if let (false, Some(group)) = (dev, group) {
+    let table = DependencyTable::from_flags(dev, group);
+    if let DependencyTable::Group(group) = &table {
         lvpm_core::project::valid_group_name(group)?;
     }
-    Ok(DependencyTable::from_flags(dev, group))
+    Ok(table)
 }
 
 fn cmd_add(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {

@@ -38,7 +38,7 @@ struct Dependency<'a> {
     name: &'a str,
     /// `owner/repo`.
     repo: &'a str,
-    /// What `[dependencies]` and `[dev-dependencies]` ask of it.
+    /// What the manifest's dependency tables ask of it.
     constraints: Vec<&'a Constraint>,
 }
 

@@ -38,14 +38,18 @@ impl DependencyTable {
     pub fn group(&self) -> Option<&str> {
         match self {
             DependencyTable::Dependencies => None,
-            DependencyTable::DevDependencies => Some("dev"),
+            DependencyTable::DevDependencies => Some(crate::project::DEV_GROUP),
             DependencyTable::Group(name) => Some(name),
         }
     }
 
-    /// The table `--dev` and `--group <name>` ask for; `dev` wins over `group`.
+    /// The table `--dev` and `--group <name>` ask for; `dev` wins over `group`,
+    /// and `--group dev` in any case is `--dev`.
     pub fn from_flags(dev: bool, group: Option<&str>) -> DependencyTable {
-        match (dev, group) {
+        match (
+            dev || group.is_some_and(crate::project::is_dev_group),
+            group,
+        ) {
             (true, _) => DependencyTable::DevDependencies,
             (false, Some(name)) => DependencyTable::Group(name.to_string()),
             (false, None) => DependencyTable::Dependencies,

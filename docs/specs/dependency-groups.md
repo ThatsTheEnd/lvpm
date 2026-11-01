@@ -120,7 +120,7 @@ need is not installed, and is taken out when it is. `lvpm add/remove --group
 | Package reached by both dev and ci, not main | `inferable` | inference | Generalises today's `dev`: wanted when any of its groups is selected |
 | Empty group table | `inferable` | inference | Valid, defines the group; `--group` on it is no error |
 | Same package in a group and main with different constraints | `inferable` | inference | Same as dev+main today: both go to the solver |
-| `lock --upgrade` rewrites group constraints | `inferable` | inference | `constraint_updates` already covers every table it knows |
+| `lock --upgrade-package` rewrites group constraints | `inferable` | inference | `constraint_updates` already covers every table it knows; plain `--upgrade` never rewrites the manifest (build, 2026-11-01) |
 | Groups on global `install` / venv-less install | `inferable` | inference | Issue scopes groups to sync/add/remove; out of scope |
 | v1 lock compatibility | `inferable` | inference | Existing `FormatOutdated` path handles it |
 | Completeness sweep, group entity: create (add/manifest), read (sync/lock), update (lock --upgrade), delete (remove, hand edit → stale) | `inferable` | inference | All covered by AC 1, 3, 6; auth/audit n/a (local CLI); errors AC 4, 8 |

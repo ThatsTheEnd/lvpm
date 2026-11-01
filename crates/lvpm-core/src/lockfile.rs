@@ -210,7 +210,7 @@ impl Lockfile {
             .or_else(|| self.dependencies_changed(project))
     }
 
-    fn format_is_outdated(&self) -> Option<StaleReason> {
+    pub(crate) fn format_is_outdated(&self) -> Option<StaleReason> {
         (self.version < FORMAT_VERSION).then_some(StaleReason::FormatOutdated)
     }
 

@@ -181,14 +181,15 @@ pub enum EditError {
     /// A package was written `name@` with nothing after the `@`.
     #[error("a constraint is expected after \"@\" in \"{name}@\"")]
     EmptyConstraint { name: String },
-    /// `remove` names a package that is in neither dependency table.
+    /// `remove` names a package that is in no dependency table.
     #[error("{name} is not in lvpm.toml")]
     NotADependency { name: String },
     /// `remove` names a package that is not in the table asked for, `[dependency-groups.<group>]`.
     #[error("{name} is not in [dependency-groups.{group}]")]
     NotInGroup { name: String, group: String },
     /// `remove` names a package that is in other dependency tables, every one
-    /// that holds it, in manifest order.
+    /// that holds it: `[dependencies]`, `[dev-dependencies]`, then the groups
+    /// in file order.
     #[error("{name} is in {}", bracketed(.found_in))]
     InOtherTable {
         name: String,

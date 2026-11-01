@@ -80,11 +80,7 @@ pub fn remove(
 ) -> Result<(), EditError> {
     let prepared = Prepared::of(env)?;
     if let DependencyTable::Group(group) = &table {
-        let asked = Selection {
-            groups: vec![group.clone()],
-            ..Selection::default()
-        };
-        refuse_unknown_groups(&prepared.found.1, &asked)?;
+        refuse_unknown_groups(&prepared.found.1, std::slice::from_ref(group))?;
     }
     let edit = prepared.take_out(&table, name)?;
     let dest = env.destination()?;
@@ -384,7 +380,15 @@ fn commit(
             true => env.sink.emit(Event::SyncNothingToDo),
             false => {
                 let mut session = InstallSession::new(dest);
-                let applied = apply_sync(env, &mut session, &lock, &plan, planned, &sync_options)?;
+                let applied = apply_sync(
+                    env,
+                    &mut session,
+                    &lock,
+                    &plan,
+                    &selection,
+                    planned,
+                    &sync_options,
+                )?;
                 finish(env, &mut session, &applied, options)?;
             }
         }
@@ -1021,6 +1025,22 @@ mod tests {
         );
         assert_eq!(world.manifest(), manifest);
         assert_eq!(world.lock().unwrap(), lock);
+    }
+
+    #[test]
+    fn a_group_add_that_fails_part_way_counts_the_group_package_as_left() {
+        let world = World::new("restore-group", PROJECT);
+        std::fs::create_dir_all(world.root.join("dest/LabVIEW").join(payload_path("gamma")))
+            .unwrap();
+        let sink = Recorder::default();
+        let why = add(&world.env(&sink), "gamma", ci(), &InstallOptions::default()).unwrap_err();
+
+        assert!(
+            matches!(&why, EditError::Sync(SyncError::Incomplete { done, left, .. })
+                if !done.iter().any(|step| step.name() == "gamma")
+                    && left.iter().any(|step| step.name() == "gamma")),
+            "{why:?}"
+        );
     }
 
     #[test]

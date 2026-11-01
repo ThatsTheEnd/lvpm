@@ -493,7 +493,7 @@ pub(super) fn lv_gate(labview: &str) -> Result<f64, LockError> {
     Ok(f64::from(crate::project::labview_year(labview)? - 2000))
 }
 
-/// The solver's answer for the manifest's direct and dev dependencies and the
+/// The solver's answer for every dependency table of the manifest and the
 /// versions in `pins`, keeping the versions in `preferences` where they still
 /// fit. The packages `moving` names are settled first: what they need moves a
 /// package that is held at its locked version, and not the other way round.

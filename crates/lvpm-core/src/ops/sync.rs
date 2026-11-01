@@ -22,6 +22,7 @@ use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
 use crate::install::{self, Manifest};
 use crate::lockfile::{self, LockedPackage, Lockfile};
+use crate::project::{DEV_GROUP, is_dev_group};
 use crate::project::{Project, name_key, same_name};
 use crate::version::Version;
 use std::collections::{HashMap, HashSet};
@@ -104,7 +105,7 @@ impl SyncOptions {
         Selection {
             no_dev: self.no_dev,
             groups: (self.groups.iter())
-                .map(|group| match group.eq_ignore_ascii_case(DEV_GROUP) {
+                .map(|group| match is_dev_group(group) {
                     true => DEV_GROUP.to_string(),
                     false => group.clone(),
                 })
@@ -114,15 +115,13 @@ impl SyncOptions {
     }
 }
 
-/// The group the packages of `[dev-dependencies]` are in.
-const DEV_GROUP: &str = "dev";
-
 /// Which of the lock's packages a sync puts on disk: those `[dependencies]`
 /// needs, those dev needs unless `no_dev`, and those a selected group needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Selection {
     pub no_dev: bool,
-    /// Groups other than dev, as the manifest spells them.
+    /// The selected groups as the manifest spells them, `dev` in its one
+    /// spelling. Dev is selected by `no_dev` alone: `wants` never looks it up here.
     pub groups: Vec<String>,
     /// Keep an installed package the lock lists, wanted or not: a sync that
     /// installs only part of the lock takes nothing out but what the lock drops.
@@ -155,7 +154,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
     }
     let found = locking::find_manifest(env)?;
     let (manifest_path, project) = &found;
-    refuse_unknown_groups(project, &opts.selection())?;
+    refuse_unknown_groups(project, &opts.selection().groups)?;
     env.sink.emit(Event::PhaseStarted {
         phase: Phase::Resolve,
     });
@@ -180,7 +179,8 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
         });
     }
 
-    let plan = plan_sync(&lock, &install::list_installed(&store)?, &opts.selection());
+    let selection = opts.selection();
+    let plan = plan_sync(&lock, &install::list_installed(&store)?, &selection);
     if first_sync {
         announce_migration(env, &plan);
     }
@@ -198,7 +198,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
 
     let planned = fetch_locked(env, project, &plan.wanted)?;
     let mut session = InstallSession::new(dest);
-    let applied = apply_sync(env, &mut session, &lock, &plan, planned, opts)?;
+    let applied = apply_sync(env, &mut session, &lock, &plan, &selection, planned, opts)?;
     finish(env, &mut session, &applied, &opts.install)?;
     Ok(())
 }
@@ -206,17 +206,13 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
 /// Fail, before any lock is read or written, when a selected group is not dev
 /// or a `[dependency-groups]` table of the manifest. `remove --group` asks the
 /// same of the group it takes an entry out of.
-pub(super) fn refuse_unknown_groups(
-    project: &Project,
-    selection: &Selection,
-) -> Result<(), SyncError> {
+pub(super) fn refuse_unknown_groups(project: &Project, groups: &[String]) -> Result<(), SyncError> {
     let mut defined: Vec<&str> = (project.groups.iter())
         .map(|(name, _)| name.as_str())
         .collect();
     defined.push(DEV_GROUP);
     defined.sort_unstable();
-    match selection
-        .groups
+    match groups
         .iter()
         .find(|group| !defined.contains(&group.as_str()))
     {
@@ -245,8 +241,8 @@ fn settle_lock(
         LockPolicy::Frozen => {
             let lock = locking::read_lock(lock_path)?;
             // An older format reads its own markers (v1 `dev = true`) as main, so it is never used as it is.
-            if lock.version < lockfile::FORMAT_VERSION {
-                return Err(LockError::Stale(lockfile::StaleReason::FormatOutdated).into());
+            if let Some(reason) = lock.format_is_outdated() {
+                return Err(LockError::Stale(reason).into());
             }
             Ok((warn_unresolved(env, lock), false))
         }
@@ -346,6 +342,7 @@ pub fn apply_sync(
     session: &mut InstallSession,
     lock: &Lockfile,
     plan: &SyncPlan,
+    selection: &Selection,
     planned: Vec<PlannedPackage>,
     opts: &SyncOptions,
 ) -> Result<Applied, SyncError> {
@@ -357,7 +354,7 @@ pub fn apply_sync(
         dry_run: false,
     });
     change(env, session, plan, planned, opts)
-        .map_err(|cause| incomplete(session, lock, plan, opts, &cause))
+        .map_err(|cause| incomplete(session, lock, plan, selection, &cause))
 }
 
 fn change(
@@ -400,11 +397,11 @@ fn incomplete(
     session: &InstallSession,
     lock: &Lockfile,
     plan: &SyncPlan,
-    opts: &SyncOptions,
+    selection: &Selection,
     cause: &anyhow::Error,
 ) -> SyncError {
     let left = match install::list_installed(session.store()) {
-        Ok(installed) => plan_sync(lock, &installed, &opts.selection()).steps,
+        Ok(installed) => plan_sync(lock, &installed, selection).steps,
         Err(_) => plan.steps.clone(),
     };
     let pending: HashSet<&str> = left.iter().map(SyncStep::name).collect();

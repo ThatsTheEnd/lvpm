@@ -339,6 +339,14 @@ pub(crate) fn labview_minimum(text: &str) -> Result<String> {
     }
 }
 
+/// The group the packages of `[dev-dependencies]` are in.
+pub const DEV_GROUP: &str = "dev";
+
+/// Whether `name` names the dev group, which is spelled any case.
+pub fn is_dev_group(name: &str) -> bool {
+    name.eq_ignore_ascii_case(DEV_GROUP)
+}
+
 /// Whether `name` can name a dependency group: letters, digits, `-` and `_`.
 pub fn valid_group_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -364,7 +372,7 @@ fn parse_groups(
         .into_iter()
         .map(|(name, value)| {
             valid_group_name(&name).context("[dependency-groups]")?;
-            if name.eq_ignore_ascii_case("dev") {
+            if is_dev_group(&name) {
                 bail!(
                     "[dependency-groups.{name}] is not allowed: the group dev is [dev-dependencies]"
                 );

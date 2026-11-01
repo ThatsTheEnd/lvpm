@@ -334,6 +334,30 @@ mod tests {
     }
 
     #[test]
+    fn an_uninstalled_package_still_listed_names_its_table() {
+        for (table, dev, group) in [
+            ("[dev-dependencies]", true, None),
+            ("[dependency-groups.ci]", false, Some("ci".to_string())),
+        ] {
+            let (dir, _) = scratch_with_alpha("still-listed");
+            let manifest = format!("[project]\nlabview = \">=2024\"\n\n{table}\nalpha = \"*\"\n");
+            std::fs::write(dir.join("lvpm.toml"), manifest).unwrap();
+            let sink = Recorder::default();
+            uninstall(&env_for(&sink, &dir), Some("alpha"), false).unwrap();
+            let events = sink.0.lock().unwrap().clone();
+            assert!(
+                events.contains(&Event::UninstalledStillListed {
+                    name: "alpha".into(),
+                    dev,
+                    group,
+                }),
+                "{table}: {events:?}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
     fn a_headless_uninstall_from_the_installation_skips_the_palette_refresh() {
         let dir = crate::ops::testing::scratch_dir("uninstall-headless");
         let fake = crate::ops::testing::FakeInstallation::new(&dir);

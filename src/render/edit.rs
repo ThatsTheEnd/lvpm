@@ -156,7 +156,7 @@ fn other_table_hints(name: &str, found_in: &[DependencyTable]) -> String {
         [only] => {
             let command = remove_command(name, only);
             match flag_for(only).as_str() {
-                "" => format!("next: leave out --dev: `{command}`"),
+                "" => format!("next: `{command}` removes it from [dependencies]"),
                 flag => format!("next: use {flag}: `{command}`"),
             }
         }
@@ -392,7 +392,7 @@ mod tests {
         });
         assert_eq!(
             in_normal,
-            "beta is in [dependencies]\nnext: leave out --dev: `lvpm remove beta`"
+            "beta is in [dependencies]\nnext: `lvpm remove beta` removes it from [dependencies]"
         );
     }
 
