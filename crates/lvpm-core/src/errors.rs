@@ -181,14 +181,19 @@ pub enum EditError {
     /// A package was written `name@` with nothing after the `@`.
     #[error("a constraint is expected after \"@\" in \"{name}@\"")]
     EmptyConstraint { name: String },
-    /// `remove` names a package that is in neither dependency table.
+    /// `remove` names a package that is in no dependency table.
     #[error("{name} is not in lvpm.toml")]
     NotADependency { name: String },
-    /// `remove` names a package that is in the other dependency table.
-    #[error("{name} is in [{}]", .found_in.key())]
+    /// `remove` names a package that is not in the table asked for, `[dependency-groups.<group>]`.
+    #[error("{name} is not in [dependency-groups.{group}]")]
+    NotInGroup { name: String, group: String },
+    /// `remove` names a package that is in other dependency tables, every one
+    /// that holds it: `[dependencies]`, `[dev-dependencies]`, then the groups
+    /// in file order.
+    #[error("{name} is in {}", bracketed(.found_in))]
     InOtherTable {
         name: String,
-        found_in: DependencyTable,
+        found_in: Vec<DependencyTable>,
     },
     /// Anything else that went wrong: its own text.
     #[error(transparent)]
@@ -359,6 +364,20 @@ fn not_found(token_source: Option<TokenSource>) -> String {
     }
 }
 
+/// The tables as their headers read, in a sentence: `[a]`, `[a] and [b]`,
+/// `[a], [b] and [c]`.
+fn bracketed(tables: &[DependencyTable]) -> String {
+    let headers: Vec<String> = tables
+        .iter()
+        .map(|table| format!("[{}]", table.key()))
+        .collect();
+    match headers.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
 /// A locked archive that sync could not get as the lock has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedArchiveProblem {
@@ -386,6 +405,34 @@ pub enum ArchiveFault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_found_in_several_tables_names_each_in_one_sentence() {
+        let in_tables = |found_in: Vec<DependencyTable>| {
+            EditError::InOtherTable {
+                name: "beta".into(),
+                found_in,
+            }
+            .to_string()
+        };
+        let group = |name: &str| DependencyTable::Group(name.into());
+        assert_eq!(
+            in_tables(vec![DependencyTable::DevDependencies]),
+            "beta is in [dev-dependencies]"
+        );
+        assert_eq!(
+            in_tables(vec![DependencyTable::Dependencies, group("ci")]),
+            "beta is in [dependencies] and [dependency-groups.ci]"
+        );
+        assert_eq!(
+            in_tables(vec![
+                DependencyTable::Dependencies,
+                DependencyTable::DevDependencies,
+                group("ci")
+            ]),
+            "beta is in [dependencies], [dev-dependencies] and [dependency-groups.ci]"
+        );
+    }
 
     #[test]
     fn a_cancel_is_one_variant_at_every_level_and_says_only_cancelled() {

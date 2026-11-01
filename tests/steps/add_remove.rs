@@ -8,7 +8,7 @@
 //! `dest` or the project's venv, and the sandbox refuses a command that would
 //! do otherwise (`real_installation_risk`).
 
-use super::sync::printed_plain;
+use super::sync::{printed_plain, quoted};
 use crate::CliWorld;
 use crate::support::events::RecordingSink;
 use crate::support::feed::BROKEN_FEED_DIR;
@@ -62,7 +62,7 @@ fn set_up_project(sandbox: &Sandbox) {
     sandbox.use_local_project(Some(PROJECT_LABVIEW));
     manifest_edit::set_file(
         &sandbox.work_dir().join(MANIFEST_FILE),
-        DependencyTable::Dependencies,
+        &DependencyTable::Dependencies,
         "beta",
         ">=1.0",
     )
@@ -801,4 +801,125 @@ async fn both_worlds_are_identical(world: &mut CliWorld) {
         twin.sandbox.list_files(VENV_DIR),
         "the venvs"
     );
+}
+
+// ---- dependency groups ----
+
+#[given("a current lvpm.lock")]
+async fn a_current_lock(world: &mut CliWorld) {
+    world.lock_the_project();
+    world.note_the_project();
+}
+
+/// The entries of `[dependency-groups.<group>]`, none when the manifest has no such table.
+fn group_entries(manifest: &str, group: &str) -> Vec<(String, String)> {
+    let parsed: toml::Table = manifest.parse().expect("the manifest is TOML");
+    parsed
+        .get("dependency-groups")
+        .and_then(|groups| groups.get(group))
+        .and_then(toml::Value::as_table)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(name, value)| (name.clone(), value.as_str().unwrap_or_default().into()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One quoted phrase, as a sentence: the other steps of this name take several
+/// parts, a manifest line, or a single word (`first`).
+#[then(regex = r#"^the command fails naming "([^"\[][^"]* [^"]*)"$"#)]
+async fn fails_naming_a_phrase(world: &mut CliWorld, said: String) {
+    world.assert_failed();
+    let printed = world.printed();
+    assert!(printed.contains(&said), "{said:?} is not in:\n{printed}");
+}
+
+#[then(regex = r#"^the manifest-edited event has "dev": (true|false) and "group": "([^"]+)"$"#)]
+async fn the_manifest_edited_event_has(world: &mut CliWorld, dev: String, group: String) {
+    world.assert_succeeded();
+    let events: Vec<serde_json::Value> = world
+        .output()
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a JSON line"))
+        .collect();
+    let edited = events
+        .iter()
+        .find(|event| event["event"] == "manifest_edited")
+        .unwrap_or_else(|| panic!("no manifest_edited event in {events:?}"));
+    assert_eq!(edited["data"]["dev"], dev == "true", "{edited}");
+    assert_eq!(edited["data"]["group"], group, "{edited}");
+}
+
+/// The result is compared with another command's, run on the project as it
+/// was at the start: the manifest and the lock are put back first.
+#[then(
+    regex = r#"^lvpm\.toml and lvpm\.lock are byte-identical to the result of "([^"]+)" from the same start$"#
+)]
+async fn the_same_result_as_another_command(world: &mut CliWorld, other: String) {
+    world.assert_succeeded();
+    let result = (world.manifest_bytes(), world.lock_bytes());
+    let manifest = world.sandbox.work_dir().join(MANIFEST_FILE);
+    std::fs::write(manifest, &world.noted().manifest).expect("put the manifest back");
+    match world.lock.before.clone() {
+        Some(lock) => std::fs::write(world.lock_path(), lock).expect("put the lock back"),
+        None => std::fs::remove_file(world.lock_path()).expect("remove the lock"),
+    }
+    world.run(&other, None);
+    world.assert_succeeded();
+    assert_eq!(
+        String::from_utf8_lossy(&result.0),
+        String::from_utf8_lossy(&world.manifest_bytes()),
+        "lvpm.toml differs"
+    );
+    assert_eq!(
+        result.1.as_deref().map(String::from_utf8_lossy),
+        world.lock_bytes().as_deref().map(String::from_utf8_lossy),
+        "lvpm.lock differs"
+    );
+}
+
+#[then(regex = r#"^"([^"]+)" is gone from \[dependency-groups\.([\w-]+)\], lvpm\.lock and dest$"#)]
+async fn gone_from_the_group_the_lock_and_dest(world: &mut CliWorld, name: String, group: String) {
+    world.assert_succeeded();
+    let entries = group_entries(&world.manifest_text(), &group);
+    assert!(
+        entries.iter().all(|(entry, _)| *entry != name),
+        "{entries:?}"
+    );
+    assert!(!world.is_locked(&name), "{name} is still locked");
+    assert!(!world.is_installed(&name), "{name} is still installed");
+}
+
+/// `the command fails saying "beta" is in [a] and [b], with one next line
+/// each: "lvpm remove beta" and "lvpm remove beta --group ci"`.
+#[then(
+    regex = r#"^the command fails saying "([^"]+)" is in (.+), with one next line each: ("[^"]+"(?: and "[^"]+")*)$"#
+)]
+async fn fails_listing_every_table_holding_it(
+    world: &mut CliWorld,
+    name: String,
+    tables: String,
+    commands: String,
+) {
+    world.assert_failed();
+    let printed = printed_plain(world);
+    let said = format!("{name} is in {tables}");
+    assert!(printed.contains(&said), "{said:?} is not in:\n{printed}");
+    let commands = quoted(&commands);
+    let next_lines: Vec<&str> = printed
+        .lines()
+        .filter(|line| line.starts_with("next: "))
+        .collect();
+    assert_eq!(next_lines.len(), commands.len(), "{printed}");
+    for command in commands {
+        // What follows the command keeps `lvpm remove beta` from matching `... --group ci`.
+        let hint = format!("next: {command} removes it");
+        assert!(
+            next_lines.iter().any(|line| line.starts_with(&hint)),
+            "{hint:?} is not a line of:\n{printed}"
+        );
+    }
 }

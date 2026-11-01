@@ -342,7 +342,7 @@ fn manifest_text(root: &Path, year: Option<u32>, seed: &Seed) -> Result<String, 
         (DependencyTable::DevDependencies, &seed.dev_deps),
     ] {
         for (name, constraint) in entries {
-            text = manifest_edit::set(&text, table, name, constraint)?;
+            text = manifest_edit::set(&text, &table, name, constraint)?;
         }
     }
     match &seed.nipm {

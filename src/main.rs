@@ -139,13 +139,24 @@ struct SyncArgs {
     /// LabVIEW runs headless (LV_RTE_HEADLESS is set) and --locked is the default.
     #[arg(long)]
     no_locked: bool,
-    /// Leave out the packages that only dev dependencies need, and uninstall
-    /// them if they are installed.
+    /// Leave out the dev group, and uninstall its packages if they are installed
     #[arg(long)]
     no_dev: bool,
+    /// Also install this dependency group (repeatable); [dependencies] and dev are installed by default
+    #[arg(long, value_name = "NAME")]
+    group: Vec<String>,
 }
 
 impl SyncArgs {
+    /// `--group dev` with `--no-dev`: dev is both asked for and left out.
+    fn asks_for_and_against_dev(&self) -> bool {
+        self.no_dev
+            && self
+                .group
+                .iter()
+                .any(|g| lvpm_core::project::is_dev_group(g))
+    }
+
     fn options(&self, apply: &ApplyArgs, headless: bool) -> SyncOptions {
         let strictness = strictness(
             headless,
@@ -159,6 +170,7 @@ impl SyncArgs {
             lock: strictness.policy,
             headless_implied: strictness.implied_by_headless,
             no_dev: self.no_dev,
+            groups: self.group.clone(),
             install: apply.options(false, false),
         }
     }
@@ -198,7 +210,7 @@ enum Cmd {
     /// --global, --prefix or --labview-version say where it goes.
     Install {
         /// Package to install. Omit it in a project to sync the project.
-        #[arg(conflicts_with_all = ["locked", "frozen", "no_locked", "no_dev"])]
+        #[arg(conflicts_with_all = ["locked", "frozen", "no_locked", "no_dev", "group"])]
         package: Option<String>,
         /// Not supported with a lock: lvpm.lock always holds the full set.
         #[arg(long, value_name = "FILE", conflicts_with = "package")]
@@ -237,6 +249,9 @@ enum Cmd {
         /// Add it to [dev-dependencies].
         #[arg(long)]
         dev: bool,
+        /// Add it to [dependency-groups.<NAME>], which is made if it is new.
+        #[arg(long, value_name = "NAME", conflicts_with = "dev")]
+        group: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
     },
@@ -250,6 +265,9 @@ enum Cmd {
         /// It is in [dev-dependencies].
         #[arg(long)]
         dev: bool,
+        /// It is in [dependency-groups.<NAME>].
+        #[arg(long, value_name = "NAME", conflicts_with = "dev")]
+        group: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
     },
@@ -570,6 +588,16 @@ fn main() -> std::process::ExitCode {
             )
             .exit();
     }
+    if let Cmd::Sync { sync, .. } | Cmd::Install { sync, .. } = &cli.cmd
+        && sync.asks_for_and_against_dev()
+    {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--group dev and --no-dev cannot be combined: --no-dev leaves out the dev group",
+            )
+            .exit();
+    }
     if let Cmd::Tui = cli.cmd {
         if tui_gets_options(&cli) {
             Cli::command()
@@ -653,7 +681,7 @@ fn run(cli: &Cli) -> Result<Report> {
                     env.sink.emit(Event::InstallAddsToProject {
                         package: spec.to_string(),
                     });
-                    cmd_add(&env, spec, false, apply)
+                    cmd_add(&env, spec, DependencyTable::Dependencies, apply)
                 }
                 (InstallMode::Add | InstallMode::Additive, package) => {
                     ops::install::install(&env, package, &apply.options(*no_deps, *allow_downgrade))
@@ -664,13 +692,27 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Add {
             package,
             dev,
+            group,
             apply,
-        } => cmd_add(&env, package, *dev, apply).map(|()| Report::done("add")),
+        } => cmd_add(
+            &env,
+            package,
+            dependency_table(*dev, group.as_deref())?,
+            apply,
+        )
+        .map(|()| Report::done("add")),
         Cmd::Remove {
             package,
             dev,
+            group,
             apply,
-        } => cmd_remove(&env, package, *dev, apply).map(|()| Report::done("remove")),
+        } => cmd_remove(
+            &env,
+            package,
+            dependency_table(*dev, group.as_deref())?,
+            apply,
+        )
+        .map(|()| Report::done("remove")),
         Cmd::Sync { apply, sync } => {
             cmd_sync(&env, &sync.options(apply, env.headless)).map(|()| Report::done("sync"))
         }
@@ -785,31 +827,24 @@ fn run(cli: &Cli) -> Result<Report> {
     }
 }
 
-fn dependency_table(dev: bool) -> DependencyTable {
-    match dev {
-        true => DependencyTable::DevDependencies,
-        false => DependencyTable::Dependencies,
+/// The table `--dev` and `--group` name. `--group dev` in any case is
+/// `--dev`; any other group name is checked here, before anything is read.
+fn dependency_table(dev: bool, group: Option<&str>) -> Result<DependencyTable> {
+    let table = DependencyTable::from_flags(dev, group);
+    if let DependencyTable::Group(group) = &table {
+        lvpm_core::project::valid_group_name(group)?;
     }
+    Ok(table)
 }
 
-fn cmd_add(env: &OpEnv, package: &str, dev: bool, apply: &ApplyArgs) -> Result<()> {
-    ops::add_remove::add(
-        env,
-        package,
-        dependency_table(dev),
-        &apply.options(false, false),
-    )
-    .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
+fn cmd_add(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {
+    ops::add_remove::add(env, package, table, &apply.options(false, false))
+        .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
 }
 
-fn cmd_remove(env: &OpEnv, package: &str, dev: bool, apply: &ApplyArgs) -> Result<()> {
-    ops::add_remove::remove(
-        env,
-        package,
-        dependency_table(dev),
-        &apply.options(false, false),
-    )
-    .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
+fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {
+    ops::add_remove::remove(env, package, table, &apply.options(false, false))
+        .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
 }
 
 fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {

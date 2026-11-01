@@ -493,6 +493,15 @@ async fn doc_mentions(_: &mut CliWorld, doc: String, text: String) {
     );
 }
 
+#[then(regex = r#"^docs/(usage|manifest)\.md does not mention "([^"]+)"$"#)]
+async fn doc_does_not_mention(_: &mut CliWorld, doc: String, text: String) {
+    let file = format!("docs/{doc}.md");
+    assert!(
+        !repo_file(&file).contains(&text),
+        "{file} still mentions {text}"
+    );
+}
+
 #[then(regex = r#"^docs/cli\.md does not list ([a-z]+) as missing$"#)]
 async fn cli_does_not_list_as_missing(_: &mut CliWorld, command: String) {
     let cli = repo_file("docs/cli.md");

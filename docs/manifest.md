@@ -13,14 +13,12 @@ at the end and in
 [roadmap.md](roadmap.md#the-manifest-and-the-lockfile).
 
 > **This fork (2026-10-30).** This file came in with the upstream merge
-> (Flydroid/lvpm). Named dependency groups (`[dependencies.<name>]`,
-> `include-groups`, `--with` / `--without` / `--only`) are upstream's and are
-> **not built here yet**: they are slice S11 in
-> [vision/build-slices.md](vision/build-slices.md), on the syntax this file
-> describes. Here `[dev-dependencies]` is lvpm's own table (synced by
-> default, skipped with `--no-dev`, see [usage.md](usage.md)), and a
-> `vipm.toml`'s `[dev-dependencies]` is read into it. Where this file says
-> "group `dev`" or `--with dev`, read `[dev-dependencies]` until S11 lands.
+> (Flydroid/lvpm). Named dependency groups are built here as
+> `[dependency-groups.<name>]` tables, as in uv, not as upstream's
+> `[dependencies.<name>]` ([why](vision/build-slices.md#slice-s11-dependency-groups)).
+> `[dev-dependencies]` is the group `dev`: synced by default, skipped with
+> `--no-dev` (see [usage.md](usage.md)). A `vipm.toml`'s `[dev-dependencies]`
+> is read into it.
 
 ## A complete example
 
@@ -40,7 +38,7 @@ delacor_lib_qmh = "7.1.2.1547"    # exactly this version
 oglib_error = ">=6.0.1"           # the newest version satisfying the floor
 labview_open_source_lib_serializer = { github = "LabVIEW-Open-Source/Serializer", version = ">=1.2" }  # from that repo's releases
 
-[dependencies.test]                # installed only with --with test
+[dependency-groups.test]           # installed only with --group test
 jki_lib_caraya = "*"              # the newest version
 
 [nipm.dependencies]               # NI Package Manager packages: reported, not installed
@@ -243,8 +241,8 @@ Tokens, rate limits and the commands that call GitHub are in
 
 ### How the manifest resolves
 
-`lvpm install` with no package name installs the selected groups (only
-`[dependencies]` by default, see
+`lvpm install` with no package name installs the selected tables
+(`[dependencies]` and `dev`, plus any `--group`, see
 [named dependency groups](#named-dependency-groups)) as one plan with one relink
 pass:
 
@@ -271,60 +269,62 @@ project, `install` stays additive. See [usage.md](usage.md#the-lock-file).
 
 ## Named dependency groups
 
-> Not built in this fork yet: slice S11. This section is the target syntax.
-
 Named sets of packages the project needs only sometimes: test frameworks,
 CI tooling, build tools. They belong to the project and never become package
-metadata (as in [PEP 735](https://peps.python.org/pep-0735/)). Each group is
-a nested table under `[dependencies]` with the shape of `[dependencies]`:
+metadata (as in [PEP 735](https://peps.python.org/pep-0735/) and uv).
+`[dev-dependencies]` is the group `dev`; every other group is a table
+`[dependency-groups.<name>]` with the shape of `[dependencies]`:
 
 ```toml
-[dependencies]                    # the group "main"
+[dependencies]
 delacor_lib_qmh = "7.1.2.1547"
 
-[dependencies.test]
+[dev-dependencies]                # the group "dev"
 jki_lib_caraya = "*"
+
+[dependency-groups.ci]
+ni_vi_analyzer_tests = "1.2.0.3"
 oglib_error = ">=6.0"
 
-[dependencies.ci]
-include-groups = ["test"]         # everything in test, plus:
-ni_vi_analyzer_tests = "1.2.0.3"
-
-[dependencies.build]
+[dependency-groups.build]
 vipm_package_builder = "*"
 ```
 
 - **Same syntax as `[dependencies]`.** A group line takes the same
-  constraints with the same meaning, so a line can move between tables
-  unchanged.
-- **`include-groups`** is the one reserved key: an array of group names whose
-  packages this group takes too. An unknown name is an error when the
-  manifest is read; a cycle is an error naming it (`a -> b -> a`) when the
-  group is selected.
-- **`main`** is the name of `[dependencies]` on the command line, so no group
-  may be called that.
-- A package named in more than one selected table must ask for the same
-  version in each; otherwise the error names both tables.
+  constraints, including the GitHub table form, so a line can move between
+  tables unchanged.
+- **Names** are letters, digits, `-` and `_`. `dev` is always `[dev-dependencies]`,
+  so `[dependency-groups.dev]` (in any case) is an error naming it. An empty
+  table defines a group with no packages.
+- **One lock.** A package named in several tables is resolved once. `lvpm.lock`
+  records, per package, the groups that alone need it
+  ([usage.md](usage.md#the-lock-file)).
 
-Only `main` is installed by default. The `install` flags choose more, each
-taking a comma-separated list:
+`lvpm sync` (and a bare `lvpm install`, which is `sync`) installs
+`[dependencies]` and `dev`. The flags choose more or less:
 
-| Command                          | Installs                                      |
-| -------------------------------- | --------------------------------------------- |
-| `lvpm install`                   | main                                          |
-| `lvpm install --with test`       | main + test                                   |
-| `lvpm install --with ci`         | main + test + ci (`ci` includes `test`)       |
-| `lvpm install --with ci --without test` | main + ci                              |
-| `lvpm install --only test`       | test only, no `[dependencies]`                |
-| `lvpm install --only main,build` | main + build                                  |
-| `lvpm install --without main --with build` | build only                          |
+| Command                              | Installs                          |
+| ------------------------------------ | --------------------------------- |
+| `lvpm sync`                          | `[dependencies]` + dev            |
+| `lvpm sync --group ci`               | `[dependencies]` + dev + ci       |
+| `lvpm sync --no-dev`                 | `[dependencies]` only             |
+| `lvpm sync --no-dev --group ci`      | `[dependencies]` + ci             |
+| `lvpm sync --group ci --group build` | `[dependencies]` + dev + ci + build |
 
-`--without` applies after includes are expanded. `--only` replaces the
-default and cannot be combined with `--with` or `--without`; none of the
-three apply to a single-package `lvpm install <name>`. Each flag may also be
-repeated (`--with test --with build` is `--with test,build`); names are
-trimmed, empty entries ignored, and group names are case-sensitive. The
-install banner names the groups in effect and lists the ones not selected.
+`--group` is repeatable. `--group dev --no-dev` is refused, and a `--group`
+the manifest does not define fails before anything changes, listing the
+defined groups (`dev` is always one). A package that `[dependencies]` needs is
+installed whatever the flags; one that only unselected groups need is
+uninstalled, and the plan names those groups.
+
+`lvpm add <pkg> --group ci` writes the package under `[dependency-groups.ci]`,
+creating the table when it is missing and saying so; `lvpm remove <pkg> --group ci`
+takes it out. `--dev` is `--group dev`; `--dev` with `--group` is refused.
+If the package is in other tables than the one asked for, the error names every
+table that holds it, with the flag for each. `add` and `remove` install
+`[dependencies]`, dev and the edited group, and never uninstall a package the new
+lock still lists, so tooling installed by `lvpm sync --group ci` survives a later
+`lvpm add x`. Plain `lvpm sync` is the exact one.
 
 ## `[nipm.dependencies]`
 
@@ -342,9 +342,8 @@ key such as `labveiw` is silently ignored; check the install banner, which
 echoes the manifest path, project name, groups and `labview` minimum it read.
 Inside a dependency table the rule is the opposite: an unknown key is refused
 ([above](#a-dependency-from-github)), because ignoring it would drop what you
-asked for. (Upstream: `[dev-dependencies]` in an `lvpm.toml` is ignored there and
-`[dependencies.dev]` is used instead. In this fork `[dev-dependencies]` is
-read; see the note at the top.)
+asked for. (Upstream ignores `[dev-dependencies]` in an `lvpm.toml` and reads
+`[dependencies.dev]`; here `[dev-dependencies]` is the group `dev`.)
 
 ## Compatibility with `vipm.toml`
 
@@ -396,7 +395,7 @@ and the rest is named as not used, as above.
 | `[project] labview-bitness`                          | Not used. lvpm takes bitness from the selected LabVIEW installation.                            |
 | `[project] description`, `authors`, `license`, ...   | Not used.                                                                                        |
 | `[dependencies] name = "1.2.3.4"`                    | Read as an exact pin. Empty versions and operators (`>=`, `*`, ...) are rejected: VIPM documents exact versions only. |
-| `[dev-dependencies]`                                 | Read as lvpm's `[dev-dependencies]`, exact pins. (Upstream: the group `dev`, `--with dev`.)     |
+| `[dev-dependencies]`                                 | Read as lvpm's `[dev-dependencies]`, the group `dev`, exact pins.                                |
 | `[nipm.dependencies]` (string or `{ version, feed }`) | Names reported, not installed.                                                                   |
 | `[nipm.dev-dependencies]`, `[nipm.feeds]`            | Not used.                                                                                        |
 | `[build.*]`                                          | Not used. Building is out of lvpm's scope.                                                      |
@@ -409,7 +408,7 @@ and the rest is named as not used, as above.
 | `"=x"`, `"^x"`, `"~x"`                 | Planned in lvpm; not documented for VIPM, which expects a plain version. Likely rejected. |
 | `">=x.y"`, `"*"`, `""`                 | Not compatible: VIPM requires an exact version and rejects empty strings when loading.     |
 | `[project] labview`                    | Not read: VIPM's key is `labview-version`, and it is a pin rather than a minimum.         |
-| `[dependencies.<name>]` group tables   | VIPM documents exact-version strings only under `[dependencies]`; nested group tables are not documented and likely rejected. |
+| `[dependency-groups.<name>]` tables    | Not documented for `vipm.toml`; likely rejected.                                            |
 | `[sources]`                            | Not documented for `vipm.toml`; VIPM configures repositories in the application. Unknown. |
 | `[nipm.dependencies]` strings          | Compatible.                                                                                 |
 
@@ -428,8 +427,8 @@ and the rest is named as not used, as above.
   compatibility layer already turns VIPM's bare versions into exact pins, so
   it keeps VIPM's meaning either way.
 - **Dev dependencies.** VIPM installs `[dev-dependencies]` only with
-  `vipm install --dev`. This fork's lvpm syncs them by default and skips them
-  with `--no-dev`; upstream installs its `dev` group only with `--with dev`.
+  `vipm install --dev`. lvpm syncs them by default, as uv does, and skips them
+  with `--no-dev`.
 - **Installation target.** VIPM installs into the LabVIEW installation. lvpm
   installs into the project's venv by default, and refuses to install into
   the machine from inside a project without a venv (except headless).
@@ -443,7 +442,7 @@ conversion reads `labview-version`, `[dependencies]` and
 `[dev-dependencies]` with VIPM's meaning, so nothing needs duplicating.
 lvpm-only settings cannot go in it: the conversion rejects floors and `*`,
 reports `[sources]` as not used and requires every `[dependencies]` entry to
-be an exact-version string. Nested lvpm group tables are therefore not usable
+be an exact-version string. lvpm's `[dependency-groups]` tables are therefore not usable
 in a `vipm.toml`; VIPM's handling of them is undocumented.
 
 The reverse, an `lvpm.toml` that VIPM also reads, works only within the
@@ -466,9 +465,8 @@ ni-daqmx-labview-support = "26.0"
 
 VIPM would have to be pointed at it as a path (`vipm install
 ./path/to/lvpm.toml`); VIPM's CLI accepts a manifest path, but its handling
-of the `lvpm.toml` name is undocumented. In this fork both tools read
-`[dev-dependencies]`; upstream's `lvpm.toml` reads `[dependencies.dev]`
-instead.
+of the `lvpm.toml` name is undocumented. Both tools read
+`[dev-dependencies]`.
 
 This stops working once bare versions become carets in lvpm: the same line
 would pin in VIPM and float in lvpm. The `vipm.toml` route above is
@@ -504,17 +502,9 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
     `lvpm add`), as in `cargo add`; it is not written in the manifest.
     `lvpm add` writes `=x` when given a version and a caret on the resolved
     version otherwise, as `cargo add` does.
-- **Dependency groups** (S11, not built in this fork; upstream has groups and
-  `--with` / `--without` / `--only`, see [named dependency groups](#named-dependency-groups)):
-  - **Open decision: default groups.** Only `main` installs by default.
-    Whether a `dev` group (or a `[project] default-groups` list) should be
-    installed by default, as uv does, is undecided. VIPM installs its dev
-    dependencies only with `--dev`; this fork syncs `[dev-dependencies]` by
-    default (`--no-dev` skips them).
-  - `lvpm add <pkg> --group <g>` writes into that group's table.
-  - `lvpm.lock` records every group's packages, each tagged with its groups,
-    so changing the selection never re-resolves. `lvpm sync` uninstalls
-    packages that only unselected groups need.
+- **More group controls**: `include-groups`, `--only-group`, `--all-groups`, a
+  configurable default set (`[project] default-groups`), and groups on a global
+  `lvpm install`. Groups are built ([above](#named-dependency-groups)).
 - **More per-dependency keys**: `{ version = "...", hooks = "run", index = "..." }`.
   `version` and `github` are built ([above](#a-dependency-from-github)).
 - **`[venv]` overrides**: `dir`, `vi-server-port`, `bitness`.

@@ -299,7 +299,7 @@ impl Rewrite {
         let mut text = std::fs::read_to_string(path)
             .with_context(|| format!("reading manifest {}", path.display()))?;
         for update in &updates {
-            text = manifest_edit::set(&text, update.table, &update.name, &update.to)?;
+            text = manifest_edit::set(&text, &update.table, &update.name, &update.to)?;
         }
         let project = crate::project::parse(&text)
             .with_context(|| format!("parsing the new manifest for {}", path.display()))?;
@@ -321,30 +321,27 @@ fn constraint_updates(
     raw: &str,
     version: &Version,
 ) -> Vec<ManifestUpdate> {
-    [
-        (DependencyTable::Dependencies, &project.dependencies),
-        (DependencyTable::DevDependencies, &project.dev_dependencies),
-    ]
-    .into_iter()
-    .flat_map(|(table, entries)| {
-        entries
-            .iter()
-            .filter(|(entry, _)| same_name(entry, name))
-            .filter_map(move |(entry, constraint)| {
-                let to = match constraint {
-                    Constraint::Exact(pinned) if pinned != version => raw.to_string(),
-                    Constraint::AtLeast(floor) if version < floor => format!(">={raw}"),
-                    _ => return None,
-                };
-                Some(ManifestUpdate {
-                    table,
-                    name: entry.clone(),
-                    from: lockfile::constraint_text(constraint),
-                    to,
+    project
+        .tables()
+        .flat_map(|(table, entries)| {
+            entries
+                .iter()
+                .filter(|(entry, _)| same_name(entry, name))
+                .filter_map(move |(entry, constraint)| {
+                    let to = match constraint {
+                        Constraint::Exact(pinned) if pinned != version => raw.to_string(),
+                        Constraint::AtLeast(floor) if version < floor => format!(">={raw}"),
+                        _ => return None,
+                    };
+                    Some(ManifestUpdate {
+                        table: table.clone(),
+                        name: entry.clone(),
+                        from: lockfile::constraint_text(constraint),
+                        to,
+                    })
                 })
-            })
-    })
-    .collect()
+        })
+        .collect()
 }
 
 /// The lock the manifest resolves to now, and how it differs from `previous`,
@@ -507,7 +504,7 @@ pub(super) fn lv_gate(labview: &str) -> Result<f64, LockError> {
     Ok(f64::from(crate::project::labview_year(labview)? - 2000))
 }
 
-/// The solver's answer for the manifest's direct and dev dependencies and the
+/// The solver's answer for every dependency table of the manifest and the
 /// versions in `pins`, keeping the versions in `preferences` where they still
 /// fit. The packages `moving` names are settled first: what they need moves a
 /// package that is held at its locked version, and not the other way round.
@@ -521,9 +518,8 @@ fn resolve(
     gate: f64,
 ) -> Result<Resolution, LockError> {
     let constraints: Vec<_> = project
-        .dependencies
-        .iter()
-        .chain(&project.dev_dependencies)
+        .tables()
+        .flat_map(|(_, entries)| entries)
         .chain(pins)
         .cloned()
         .collect();
@@ -562,10 +558,7 @@ fn name_pins(mut conflict: Conflict, project: &Project, pins: &[(String, Constra
         let is_pin = |(name, constraint): &(String, Constraint)| {
             same_name(name, package) && wanted_by(constraint) == *wanted
         };
-        let says_so = project
-            .dependencies
-            .iter()
-            .chain(&project.dev_dependencies)
+        let says_so = (project.tables().flat_map(|(_, entries)| entries))
             .any(|(name, constraint)| same_name(name, package) && wanted_by(constraint) == *wanted);
         if let Some((name, Constraint::Exact(version))) = pins.iter().find(|pin| is_pin(pin))
             && !says_so
@@ -696,7 +689,13 @@ fn build(
     hashes: &HashMap<String, String>,
     feeds: &[(String, String)],
 ) -> Lockfile {
-    let direct = reachable_from_dependencies(project, resolution);
+    let reached: Vec<(Option<String>, HashSet<String>)> = project
+        .tables()
+        .map(|(table, entries)| {
+            let group = table.group().map(str::to_string);
+            (group, reachable_from(entries, resolution))
+        })
+        .collect();
     let packages = resolution
         .packages
         .iter()
@@ -710,7 +709,7 @@ fn build(
                 None => index::source_of(&entry.url, feeds),
             },
             requires: locked_requirements(entry, resolution),
-            dev: !direct.contains(key),
+            groups: groups_needing(key, &reached),
         })
         .collect();
     let unresolved = resolution
@@ -741,15 +740,31 @@ fn locked_requirements(entry: &Entry, resolution: &Resolution) -> Vec<String> {
         .collect()
 }
 
-/// Every package, by lowercased name, that `[dependencies]` needs directly or
-/// through other packages. What is left over is needed only for development.
-fn reachable_from_dependencies(project: &Project, resolution: &Resolution) -> HashSet<String> {
-    let mut reached = HashSet::new();
-    let mut pending: Vec<String> = project
-        .dependencies
+/// The tables other than `[dependencies]` that need the package `key`, sorted,
+/// given what each table reaches (`None` is `[dependencies]`); none at all
+/// when `[dependencies]` needs it, since every selection installs it then.
+fn groups_needing(key: &str, reached: &[(Option<String>, HashSet<String>)]) -> Vec<String> {
+    if reached
         .iter()
-        .map(|(name, _)| name_key(name))
+        .any(|(group, keys)| group.is_none() && keys.contains(key))
+    {
+        return Vec::new();
+    }
+    let mut groups: Vec<String> = reached
+        .iter()
+        .filter(|(_, keys)| keys.contains(key))
+        .filter_map(|(group, _)| group.clone())
         .collect();
+    groups.sort();
+    groups.dedup();
+    groups
+}
+
+/// Every package, by lowercased name, that one table's `entries` need directly
+/// or through other packages.
+fn reachable_from(entries: &[(String, Constraint)], resolution: &Resolution) -> HashSet<String> {
+    let mut reached = HashSet::new();
+    let mut pending: Vec<String> = entries.iter().map(|(name, _)| name_key(name)).collect();
     while let Some(key) = pending.pop() {
         let Some(entry) = resolution.packages.get(&key) else {
             continue;
@@ -894,7 +909,7 @@ mod tests {
             md5: None,
             source: source.into(),
             requires: Vec::new(),
-            dev: false,
+            groups: Vec::new(),
         };
         let mut github = entry("pkg", "1.0", &[], "http://api/assets/1");
         github.source = index::github_source("o/r");
@@ -947,6 +962,17 @@ mod tests {
         }
     }
 
+    /// Each locked package with the groups the lock gives it.
+    fn groups_of(lock: &Lockfile) -> Vec<(&str, Vec<&str>)> {
+        lock.packages
+            .iter()
+            .map(|package| {
+                let groups = package.groups.iter().map(String::as_str).collect();
+                (package.name.as_str(), groups)
+            })
+            .collect()
+    }
+
     #[test]
     fn only_what_dev_dependencies_need_is_marked_dev() {
         let project = manifest(
@@ -963,23 +989,99 @@ mod tests {
             Vec::new(),
         );
         let lock = build(&project, "2024", &resolution, &hashes(&resolution), &[]);
-        let dev: Vec<(&str, bool)> = lock
-            .packages
-            .iter()
-            .map(|package| (package.name.as_str(), package.dev))
-            .collect();
         // alpha and shared are needed by `beta`, a direct dependency, even
         // though dev dependencies need them too; helper only by caraya.
         assert_eq!(
-            dev,
+            groups_of(&lock),
             [
-                ("alpha", false),
-                ("beta", false),
-                ("caraya", true),
-                ("helper", true),
-                ("shared", false)
+                ("alpha", vec![]),
+                ("beta", vec![]),
+                ("caraya", vec!["dev"]),
+                ("helper", vec!["dev"]),
+                ("shared", vec![])
             ]
         );
+    }
+
+    /// `beta` and `ci_tools` need `alpha`; `caraya` needs `helper`.
+    fn grouped_resolution() -> Resolution {
+        resolution(
+            vec![
+                entry("alpha", "2.0", &[], "a"),
+                entry("beta", "1.0", &["alpha"], "b"),
+                entry("caraya", "1.0", &["helper"], "c"),
+                entry("ci_tools", "1.0", &["alpha"], "t"),
+                entry("docs_tools", "1.0", &[], "d"),
+                entry("helper", "1.0", &[], "h"),
+            ],
+            Vec::new(),
+        )
+    }
+
+    /// The groups the lock gives each package of `grouped_resolution` for `tables`.
+    fn locked_groups(tables: &str) -> Vec<(String, Vec<String>)> {
+        let resolution = grouped_resolution();
+        let lock = build(
+            &manifest(tables),
+            "2024",
+            &resolution,
+            &hashes(&resolution),
+            &[],
+        );
+        (lock.packages.into_iter())
+            .map(|package| (package.name, package.groups))
+            .collect()
+    }
+
+    #[test]
+    fn a_package_dev_and_a_group_both_need_has_both_groups_sorted_whatever_the_manifest_order() {
+        let dev_first = locked_groups(
+            "[dev-dependencies]
+caraya = \"*\"
+
+[dependency-groups.ci]
+ci_tools = \"*\"
+caraya = \"*\"
+",
+        );
+        let ci_first = locked_groups(
+            "[dependency-groups.ci]
+ci_tools = \"*\"
+caraya = \"*\"
+
+[dev-dependencies]
+caraya = \"*\"
+",
+        );
+        let both = |name: &str| (name.to_string(), vec!["ci".to_string(), "dev".to_string()]);
+        assert_eq!(dev_first, ci_first);
+        assert!(dev_first.contains(&both("caraya")), "{dev_first:?}");
+        assert!(dev_first.contains(&both("helper")), "{dev_first:?}");
+        assert!(
+            dev_first.contains(&("ci_tools".to_string(), vec!["ci".to_string()])),
+            "{dev_first:?}"
+        );
+    }
+
+    #[test]
+    fn what_dependencies_needs_has_no_groups_however_many_groups_need_it_too() {
+        let project = manifest(
+            "[dependencies]\nbeta = \"*\"\n\n[dev-dependencies]\nci_tools = \"*\"\n\n\
+             [dependency-groups.ci]\nci_tools = \"*\"\n\n[dependency-groups.docs]\ndocs_tools = \"*\"\n",
+        );
+        let resolution = grouped_resolution();
+        let lock = build(&project, "2024", &resolution, &hashes(&resolution), &[]);
+        let groups = groups_of(&lock);
+        assert!(groups.contains(&("alpha", vec![])), "{groups:?}");
+        assert!(groups.contains(&("beta", vec![])), "{groups:?}");
+        assert!(
+            groups.contains(&("ci_tools", vec!["ci", "dev"])),
+            "{groups:?}"
+        );
+        assert!(groups.contains(&("docs_tools", vec!["docs"])), "{groups:?}");
+        let text = lock.to_toml().unwrap();
+        assert!(!text.contains("dev = "), "{text}");
+        assert!(text.contains("version = 2"), "{text}");
     }
 
     #[test]
@@ -1050,7 +1152,7 @@ mod tests {
                 md5: None,
                 source: LOCAL_SOURCE.to_string(),
                 requires: Vec::new(),
-                dev: false,
+                groups: Vec::new(),
             })
             .collect();
         lock
@@ -1389,15 +1491,17 @@ mod tests {
     fn a_package_in_both_tables_and_what_only_it_needs_are_not_dev() {
         let project = ProjectDir::new("both-dev", BOTH_TABLES, GAMMAS);
         let lock = lock(&project.env(&Recorder::default())).unwrap();
-        let dev: Vec<(&str, bool)> = lock
-            .packages
-            .iter()
-            .map(|package| (package.name.as_str(), package.dev))
-            .collect();
         // helper is needed by gamma (normal) as well as by caraya (dev).
-        assert_eq!(dev, [("caraya", true), ("gamma", false), ("helper", false)]);
+        assert_eq!(
+            groups_of(&lock),
+            [
+                ("caraya", vec!["dev"]),
+                ("gamma", vec![]),
+                ("helper", vec![])
+            ]
+        );
         let text = lock.to_toml().unwrap();
-        assert_eq!(text.matches("dev = true").count(), 1, "{text}");
+        assert_eq!(text.matches("groups = [\"dev\"]").count(), 1, "{text}");
     }
 
     #[test]

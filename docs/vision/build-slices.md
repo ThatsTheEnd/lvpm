@@ -93,8 +93,9 @@ These are hard to undo, so settle them as ADRs (`/adr-tools`) before S1 starts:
    - **The manifest.** ADR 1 makes upstream's `labview = "2025"` an error,
      and upstream has users. Upstream PR #16 also adds
      `[dependency-groups]` with `--with`, `include-groups` and `main`. ADR 1
-     keeps `[dev-dependencies]` as the group `dev`. S11 now builds groups on
-     upstream's syntax; the 2026-10-30 merge left upstream's group code out for it.
+     keeps `[dev-dependencies]` as the group `dev`. S11 builds groups as
+     `[dependency-groups.<name>]` rather than upstream's `[dependencies.<name>]`;
+     the 2026-10-30 merge left upstream's group code out.
    - **The core/CLI split and hooks.** Upstream's `refactor-main.md` (PR #15)
      plans its own split of `main.rs` and an event layer. This fork already
      has `crates/lvpm-core` and `events.rs` ([ADR 5](../adr/0005-core-and-cli-split.md)).
@@ -613,59 +614,58 @@ plus `sync`, or is left out with a README note saying why.
 
 ### Slice S11: Dependency groups
 
+**Built** to [docs/specs/dependency-groups.md](../specs/dependency-groups.md) (#75).
+
 **Depends-on:** none
 **Files:** `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/vipm_interop.rs`, `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/manifest_edit.rs`, `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/ops/add_remove.rs`, `crates/lvpm-core/src/ops/uninstall.rs`, `crates/lvpm-core/src/events.rs`, `src/main.rs`, `src/render/install.rs`, `docs/manifest.md`, `tests/features/lvpm-lockfile/`
 
 Goal: CI installs tooling a developer doesn't need, and the other way round,
-from one lock — on **upstream's syntax** (Flydroid/lvpm), so the two
-manifests stay one format.
+from one lock, on the uv / PEP 735 model that [ADR 1](../adr/0001-manifest-project-and-distribution.md)
+chose.
 
-**Upstream already built this; port it by hand.** The 2026-10-30 merge of
-`upstream/main` left the group code out, because it was written against
-upstream's monolithic `src/` and `install`-only model, not our core, lock
-and sync. Git counts these commits as merged, so `git merge` and
-`git cherry-pick` will not bring them again: read them with `git show` and
-re-implement them in `lvpm-core`.
-
-| Upstream commit | What to take |
-| --- | --- |
-| `acf482e` feat(manifest): add dependency groups with --with, --without and --only | `Group`, `Project::groups`, `Project::select` → `Selection`, include expansion and cycle error, the conflicting-version error naming both tables, `GroupArgs` and the flag parsing |
-| `08f8682` feat(manifest): nest dependency groups under dependencies | the `[dependencies.<name>]` table shape and `include-groups` as its reserved key (replaces `[dependency-groups]`) |
-| `1f6c658` feat(vipm): read vipm.toml dev-dependencies as group dev | `vipm_interop` maps `[dev-dependencies]` to the group `dev` (today it fills our `dev_dependencies`) |
-| `8f3bfb2` test(manifest): cover dependency group selection and flag parsing | the unit tests for `select` and the flags |
-
-The syntax and the flag table are in
-[manifest.md](../manifest.md#named-dependency-groups).
+**Not upstream's syntax.** Upstream (Flydroid/lvpm) built groups as
+`[dependencies.<name>]` tables with `include-groups` and `--with` / `--without` /
+`--only`. This fork builds `[dependency-groups.<name>]` beside
+`[dev-dependencies]` instead, because `[dependencies.<name>]` is also how TOML
+spells a table-form dependency: `[dependencies.test]` with `version = "*"` is a
+package called `test`, so a group and a package cannot share the header. ADR 1
+also keeps `[dev-dependencies]` as the group `dev`. The 2026-10-30 merge left
+upstream's group code out, and none of it was ported. A manifest with groups is
+not one upstream reads; this is on the upstream agenda above.
 
 In scope:
-- `[dependencies.<name>]` tables shaped like `[dependencies]`, with the one
-  reserved key `include-groups = [...]`; `main` names `[dependencies]` and
-  cannot be a group name.
-- `--with`, `--without`, `--only` (comma-separated or repeated) on `install`
-  and `sync`; `--without` applies after includes are expanded; `--only`
-  excludes the other two.
-- `[dev-dependencies]` becomes the group `dev`: read it as
-  `[dependencies.dev]`, keep `--dev` on `add/remove` as `--group dev`, keep
-  `--no-dev` as `--without dev`.
-- The lockfile records, per package, the groups that are the only ones
-  needing it (today's `dev = true` generalised).
-- `lvpm add/remove --group <name>` writes into that group's table.
+- `[dependency-groups.<name>]` tables shaped like `[dependencies]`; names are
+  `[A-Za-z0-9_-]+`; `[dependency-groups.dev]` in any case is refused.
+- `[dev-dependencies]` is the group `dev`, installed by default; a `vipm.toml`'s
+  `[dev-dependencies]` still maps to it.
+- `lvpm sync` and a bare `lvpm install`: `--group <name>` (repeatable) adds a
+  group, `--no-dev` drops `dev`, `--group dev --no-dev` is refused, an unknown
+  group fails listing the defined ones, and a package that only unselected groups
+  need is uninstalled.
+- Lock format 2: per package `groups = [...]`, the groups that alone need it,
+  replacing `dev = true`. A format 1 lock is out of date.
+- `lvpm add/remove --group <name>` writes into that group's table, creating it;
+  `--dev` is `--group dev`. They install `[dependencies]`, dev and that group and
+  never uninstall a package the new lock still lists.
+- `--json` events keep `dev` and add `group` and `created_table` where they apply.
 
-Out of scope: a configurable default set of groups (`[project] default-groups`).
+Out of scope: `include-groups`, `--with` / `--without` / `--only`, `--only-group`,
+`--all-groups`, a configurable default set of groups (`[project] default-groups`),
+groups on a global `lvpm install`, installing a `vipm.toml`'s packages.
 
 Acceptance criteria:
-- [ ] `lvpm sync --with ci` installs the `ci` group and everything it includes; `lvpm sync` alone leaves it out and removes it if installed.
+- [ ] `lvpm sync --group ci` installs the `ci` group; `lvpm sync` alone leaves it out and removes it if installed.
 - [ ] A package that `[dependencies]` and `ci` both need is installed by every `sync`.
-- [ ] Two selected tables asking for different versions of one package fail, naming both tables.
-- [ ] An `include-groups` cycle fails naming it (`a -> b -> a`); an unknown group name fails when the manifest is read.
-- [ ] Adding or removing a group entry makes the lock stale, as a dependency change does today.
-- [ ] A manifest with both `[dev-dependencies]` and `[dependencies.dev]` fails with a message naming both.
-- [ ] `lvpm install --manifest vipm.toml --with dev` installs a `vipm.toml`'s `[dev-dependencies]`.
-- [ ] Every existing dev scenario still passes, with `--no-dev` meaning `--without dev`.
+- [ ] Adding or removing a group entry makes the lock stale, naming the entry and `[dependency-groups.<name>]`.
+- [ ] A manifest with `[dependency-groups.dev]` fails with a message naming `[dev-dependencies]`.
+- [ ] `lvpm sync --group nope` fails naming `nope` and changes nothing.
+- [ ] `lvpm add pkg --group ci` and `lvpm remove pkg --group ci` edit `[dependency-groups.ci]`.
+- [ ] A format 1 lock is refused by `lock --check`, `sync --locked` and `sync --frozen`, and `lvpm lock` rewrites it as format 2.
+- [ ] Every existing dev scenario still passes.
 
-Demo: a pilot project with a `ci` group; `lvpm sync` on a dev machine, `lvpm sync --with ci` in CI.
+Demo: a pilot project with a `ci` group; `lvpm sync` on a dev machine, `lvpm sync --group ci` in CI.
 
-Decide in `/specs`: whether `dev` installs by default (today `[dev-dependencies]` does; upstream installs only `main`); the lockfile field's name and shape.
+Decided in `/specs`: `dev` installs by default, as today and as uv does; the lockfile field is `groups`, in format 2.
 
 ### Slice S12: Install hooks off by default
 

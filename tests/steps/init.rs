@@ -60,7 +60,7 @@ impl CliWorld {
     }
 
     fn init_output(&self) -> &Output {
-        self.init.output.as_ref().expect("a command ran")
+        (self.init.output.as_ref().or(self.last_output.as_ref())).expect("a command ran")
     }
 
     /// Run `command_line` (`lvpm init ...`) in `cwd`, as "it succeeds" and "it

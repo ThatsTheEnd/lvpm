@@ -106,6 +106,10 @@ Done:
   lock and sync in one step.
 - **`[dev-dependencies]`** — test and CI tooling, synced by default and
   skipped with `--no-dev`.
+- **Named dependency groups** (`[dependency-groups.<name>]`, with
+  `[dev-dependencies]` as the group `dev`) — `lvpm sync --group <name>` and
+  `lvpm add/remove --group <name>`; the lock records each package's groups.
+  Slice S11 in [vision/build-slices.md](vision/build-slices.md).
 - Headless machines act as `--locked`: a missing or stale lock fails the job.
 - **`vipm.toml` conversion** — for `lvpm venv create --manifest vipm.toml`
   (installing its packages is still to do: lock and sync read only `lvpm.toml`): `labview-version`, exact `[dependencies]`,
@@ -115,10 +119,6 @@ Done:
 
 Still to do:
 
-- **Named dependency groups** (`[dependencies.<name>]`, `include-groups`,
-  `--with` / `--without` / `--only`) — built upstream, not ported yet; it is
-  slice S11 in [vision/build-slices.md](vision/build-slices.md), on upstream's
-  syntax.
 - **Constraint grammar (Cargo)** — bare and `^` caret, `~` tilde, `=` exact,
   `>=` floor, `*` newest. Breaking: a bare version is exact today.
 - Per-dependency tables: `{ version = "...", hooks = "run", source = "local" }`.

@@ -85,13 +85,29 @@ fn step_line(step: &SyncStep) -> String {
             name,
             version,
             reason,
+            groups,
         } => {
             let why = match reason {
-                RemoveReason::NotInLock => "not in lvpm.lock",
-                RemoveReason::DevOnly => "only dev dependencies need it, and --no-dev is given",
+                RemoveReason::NotInLock => "not in lvpm.lock".to_string(),
+                RemoveReason::DevOnly => {
+                    "only dev dependencies need it, and --no-dev is given".to_string()
+                }
+                RemoveReason::GroupsOnly => groups_only(groups),
             };
             format!("remove {name} {version} ({why})")
         }
+    }
+}
+
+/// Why a package only unselected groups need is removed.
+fn groups_only(groups: &[String]) -> String {
+    match groups {
+        [one] => format!("only the group {one} needs it, and it is not selected"),
+        [rest @ .., last] => format!(
+            "only the groups {} and {last} need it, and none is selected",
+            rest.join(", ")
+        ),
+        [] => "no selected group needs it".to_string(),
     }
 }
 
@@ -242,6 +258,16 @@ mod tests {
             name: name.into(),
             version: version.into(),
             reason,
+            groups: Vec::new(),
+        }
+    }
+
+    fn remove_for_groups(name: &str, groups: &[&str]) -> SyncStep {
+        SyncStep::Remove {
+            name: name.into(),
+            version: "1.0".into(),
+            reason: RemoveReason::GroupsOnly,
+            groups: groups.iter().map(|group| group.to_string()).collect(),
         }
     }
 
@@ -277,6 +303,43 @@ mod tests {
         assert_eq!(
             step_line(&remove("caraya", "1.0", RemoveReason::DevOnly)),
             "remove caraya 1.0 (only dev dependencies need it, and --no-dev is given)"
+        );
+    }
+
+    #[test]
+    fn a_removal_for_one_group_names_it() {
+        assert_eq!(
+            step_line(&remove_for_groups("ci_tools", &["ci"])),
+            "remove ci_tools 1.0 (only the group ci needs it, and it is not selected)"
+        );
+    }
+
+    #[test]
+    fn a_removal_for_several_groups_names_them_all() {
+        assert_eq!(
+            step_line(&remove_for_groups("caraya", &["ci", "docs"])),
+            "remove caraya 1.0 (only the groups ci and docs need it, and none is selected)"
+        );
+        assert_eq!(
+            step_line(&remove_for_groups("caraya", &["ci", "dev", "docs"])),
+            "remove caraya 1.0 (only the groups ci, dev and docs need it, and none is selected)"
+        );
+    }
+
+    #[test]
+    fn a_removal_for_groups_is_json_with_a_string_reason_and_the_groups_only_then() {
+        assert_eq!(
+            serde_json::to_value(remove_for_groups("ci_tools", &["ci", "dev"])).unwrap(),
+            serde_json::json!({
+                "step": "remove", "name": "ci_tools", "version": "1.0",
+                "reason": "groups_only", "groups": ["ci", "dev"],
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(remove("gamma", "1.0", RemoveReason::NotInLock)).unwrap(),
+            serde_json::json!({
+                "step": "remove", "name": "gamma", "version": "1.0", "reason": "not_in_lock",
+            })
         );
     }
 
@@ -427,7 +490,7 @@ mod tests {
         let stale = error(&SyncError::Lock(LockError::Stale(
             lvpm_core::lockfile::StaleReason::DependencyAdded {
                 name: "gamma".into(),
-                dev: false,
+                table: lvpm_core::manifest_edit::DependencyTable::Dependencies,
             },
         )));
         assert_eq!(

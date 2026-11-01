@@ -139,7 +139,7 @@ async fn add_a_dev_dependency(world: &mut CliWorld, name: String, constraint: St
 #[when(expr = "I remove the dependency {string}")]
 async fn remove_a_dependency(world: &mut CliWorld, name: String) {
     let path = world.sandbox.work_dir().join(MANIFEST_FILE);
-    manifest_edit::remove_file(&path, DependencyTable::Dependencies, &name)
+    manifest_edit::remove_file(&path, &DependencyTable::Dependencies, &name)
         .expect("remove the dependency from the manifest");
     world.changed_project();
 }
@@ -237,7 +237,7 @@ async fn the_lock_is_not_toml(world: &mut CliWorld) {
 
 #[given("lvpm.lock declares lock-format version 0")]
 async fn the_lock_is_in_an_older_format(world: &mut CliWorld) {
-    world.edit_lock(|text| replaced(text, "version = 1\n", "version = 0\n"));
+    world.edit_lock(|text| replaced(text, "version = 2\n", "version = 0\n"));
 }
 
 /// The index and the archives were cached when the project was locked, so the

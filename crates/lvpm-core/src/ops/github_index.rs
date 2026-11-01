@@ -38,7 +38,7 @@ struct Dependency<'a> {
     name: &'a str,
     /// `owner/repo`.
     repo: &'a str,
-    /// What `[dependencies]` and `[dev-dependencies]` ask of it.
+    /// What the manifest's dependency tables ask of it.
     constraints: Vec<&'a Constraint>,
 }
 
@@ -83,10 +83,7 @@ pub(super) fn with_github(
         let dependency = Dependency {
             name,
             repo,
-            constraints: project
-                .dependencies
-                .iter()
-                .chain(&project.dev_dependencies)
+            constraints: (project.tables().flat_map(|(_, entries)| entries))
                 .filter(|(entry, _)| same_name(entry, name))
                 .map(|(_, constraint)| constraint)
                 .collect(),
@@ -394,6 +391,7 @@ mod tests {
                 sources: Vec::new(),
                 dependencies: Default::default(),
                 dev_dependencies: Default::default(),
+                dependency_groups: Default::default(),
                 github: Default::default(),
                 min_age_days: 0,
             },
@@ -404,7 +402,7 @@ mod tests {
                 md5: None,
                 source: source.into(),
                 requires: Vec::new(),
-                dev: false,
+                groups: Vec::new(),
             }],
             unresolved: Vec::new(),
         }

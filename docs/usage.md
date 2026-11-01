@@ -10,8 +10,8 @@
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
-| `lvpm add <name>[@<constraint>]` / `--dev`           | Add a dependency to `lvpm.toml`, lock and sync                                                                                               |
-| `lvpm remove <name>` / `--dev`                       | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
+| `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
+| `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
 | `lvpm uninstall <name>` / `--all`                    | Remove exactly the files that were installed and prune empty folders                                                                         |
 | `lvpm list`                                          | What lvpm has installed into the selected target, and which hooks it did not run                                                             |
@@ -180,8 +180,11 @@ delacor_lib_qmh = "7.1.2.1547"    # exactly this version
 oglib_error = ">=6.0.1"           # the newest version satisfying the floor
 jki_lib_state_machine = "*"       # the newest version
 
-[dev-dependencies]                # test and CI tooling; same syntax; skipped with --no-dev
+[dev-dependencies]                # the group dev: test tooling; same syntax; skipped with --no-dev
 jki_lib_caraya = "*"
+
+[dependency-groups.ci]            # installed only with --group ci
+ni_vi_analyzer_tests = "1.2.0.3"
 
 [nipm.dependencies]               # NI Package Manager packages: reported, not installed
 ni-daqmx-labview-support = "26.0"
@@ -218,13 +221,21 @@ manifest as it is. A requirement that no source lists is recorded as
 unresolved and reported as a warning; a direct dependency that cannot be found
 fails. Constraints are exact (`7.1.2.1547`), `>=` or `*`.
 
-**Out of date.** A lock is out of date when a dependency was added or removed,
-a constraint no longer admits the locked version, `labview` changed, the
+**Out of date.** A lock is out of date when a dependency was added or removed
+in any table, a constraint no longer admits the locked version, `labview` changed, the
 hosted `[sources]` changed, including their order, or a dependency's `github`
 repo was added, removed or changed. New releases upstream do not make it so, and
 neither does the per-user `sources.local`. `lvpm lock --check` writes nothing:
 it exits 0 if `lvpm.lock` exists and is current, and otherwise exits non-zero
 with the reason on one line. It reads no source, so it is cheap.
+
+**Lock format.** The lock says which groups alone need a package:
+`groups = ["ci", "dev"]`; a package that `[dependencies]` needs has no `groups`.
+Before groups, a dev-only package was marked
+`dev = true`. Such a lock, format 1, is out of date: `lvpm lock --check`,
+`lvpm sync --locked` (the default on a headless machine) and `lvpm sync --frozen`
+refuse it and name `lvpm lock`. `lvpm lock`, a plain `lvpm sync`, `add` and
+`remove` write it again as format 2; commit the result.
 
 **Syncing.** `lvpm sync` installs what is missing, replaces what is at another
 version, and uninstalls the lvpm-installed packages the lock does not list. It
@@ -236,7 +247,18 @@ does, sync fails naming the package, version and SHA-256, and tells you to
 `lvpm cache add <file>` the archive or point `sources.local` at a folder that
 has it. The destination is the project's venv, or the LabVIEW installation
 with `--global`. Packages from `[dev-dependencies]` are synced too; `--no-dev`
-leaves them out and uninstalls them if they are there.
+leaves them out and uninstalls them if they are there. `--group <name>` (repeat
+it for more) also syncs a `[dependency-groups.<name>]`, and a package that only
+unselected groups need is uninstalled; a name the manifest does not define fails
+and lists the defined ones. `--group dev` with `--no-dev` is refused. A bare
+`lvpm install` takes the same flags. Groups are described in
+[manifest.md](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#named-dependency-groups).
+
+```console
+$ lvpm sync                         # [dependencies] and dev
+$ lvpm sync --group ci              # and the ci group; CI would run this
+$ lvpm sync --no-dev                # [dependencies] only
+```
 
 With no lock, or an out-of-date one, `lvpm sync` makes a new one first. To
 refuse that instead:
@@ -254,13 +276,19 @@ refuse that instead:
 $ lvpm add oglib_error              # writes oglib_error = ">=<the version it locked>"
 $ lvpm add "gamma@>=0.5"            # with a constraint
 $ lvpm add --dev jki_lib_caraya     # into [dev-dependencies]
-$ lvpm remove gamma                 # --dev if it is in [dev-dependencies]
+$ lvpm add --group ci ci_tools      # into [dependency-groups.ci], made if it is new
+$ lvpm remove gamma                 # --dev or --group ci if it is in another table
 ```
 
 `add` and `remove` edit `lvpm.toml` (comments and layout stay), then lock and
 sync. If the lock or the sync fails, `lvpm.toml` and `lvpm.lock` are put back
 as they were. A package that another one still requires stays in the lock
-after `remove`, and the output says so.
+after `remove`, and the output says so. They install `[dependencies]`, dev and
+the group they edit, and never uninstall a package the new lock still lists, so
+what `lvpm sync --group ci` installed stays; plain `lvpm sync` is the exact one.
+`--dev` is `--group dev`. A misspelt `--group` on `add` makes a new group, and
+says `created [dependency-groups.<name>], a new group`. With `--json` the events
+keep `dev` and add `group`, and `created_table`, when they apply.
 
 **Quote a constraint.** PowerShell and cmd read `>` as a redirect, so
 `lvpm add gamma@>=0.5` sends lvpm's output into a file named `=0.5` and hands

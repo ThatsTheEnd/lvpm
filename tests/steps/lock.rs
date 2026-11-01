@@ -66,7 +66,7 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
 fn add_dependency(sandbox: &Sandbox, table: DependencyTable, name: &str, constraint: &str) {
     manifest_edit::set_file(
         &sandbox.work_dir().join(MANIFEST_FILE),
-        table,
+        &table,
         name,
         constraint,
     )
@@ -462,6 +462,11 @@ async fn both_locks_are_identical(world: &mut CliWorld) {
     );
 }
 
+#[then("lvpm.lock does not exist")]
+async fn the_lock_does_not_exist(world: &mut CliWorld) {
+    assert!(world.lock_bytes().is_none(), "lvpm.lock exists");
+}
+
 #[then("no lvpm.lock contains either temp root's path")]
 async fn no_lock_has_a_temp_root(world: &mut CliWorld) {
     let other = world.lock.other.as_ref().expect("a second world");
@@ -669,18 +674,15 @@ async fn each_entry_is_local(world: &mut CliWorld) {
 
 #[then(r#""caraya" is in lvpm.lock marked as needed only for development"#)]
 async fn caraya_is_dev_only(world: &mut CliWorld) {
-    assert_eq!(world.locked_package("caraya")["dev"].as_bool(), Some(true));
+    let groups = world.locked_package("caraya")["groups"].clone();
+    assert_eq!(groups.to_string(), r#"["dev"]"#);
 }
 
 #[then(r#""beta" and "alpha" are not marked"#)]
 async fn beta_and_alpha_are_not_marked(world: &mut CliWorld) {
     for name in ["beta", "alpha"] {
         let package = world.locked_package(name);
-        assert_ne!(
-            package.get("dev").and_then(toml::Value::as_bool),
-            Some(true),
-            "{name}"
-        );
+        assert!(package.get("groups").is_none(), "{name}");
     }
 }
 

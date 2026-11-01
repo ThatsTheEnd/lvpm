@@ -12,7 +12,10 @@ use super::install::{InstallOptions, announce_target, finish};
 use super::lock::{self as locking, Moving, announce_written, write_manifest_and_lock};
 use super::session::InstallSession;
 use super::snapshot::restoring_on_failure;
-use super::sync::{SyncOptions, announce_migration, apply_sync, fetch_locked, plan_sync};
+use super::sync::{
+    Selection, SyncOptions, announce_migration, apply_sync, fetch_locked, plan_sync,
+    refuse_unknown_groups,
+};
 use crate::errors::{EditError, LockError, SyncError};
 use crate::events::{Event, ManifestEdit, Phase};
 use crate::index::Index;
@@ -48,15 +51,15 @@ pub fn add(
     // narrowed constraint on a GitHub dependency is judged as written; with no
     // constraint given, as `*`, which `floor` then narrows.
     let asked = request.constraint.as_deref().unwrap_or("*");
-    let edit = prepared.set(table, &request.name, asked)?;
+    let edit = prepared.set(&table, &request.name, asked)?;
     let edited = (prepared.found.0.clone(), edit.project.clone());
     let moving = Moving::Nothing;
     let index = locking::load_index(env, Some(&edited), prepared.previous.as_ref(), &moving)?;
     let edit = match request.constraint {
         Some(_) => edit,
         None => {
-            let floor = floor(env, &prepared, &index, table, &request.name)?;
-            prepared.set(table, &request.name, &floor)?
+            let floor = floor(env, &prepared, &index, &table, &request.name)?;
+            prepared.set(&table, &request.name, &floor)?
         }
     };
     commit(env, prepared, edit, &index, dest, options)
@@ -76,7 +79,10 @@ pub fn remove(
     options: &InstallOptions,
 ) -> Result<(), EditError> {
     let prepared = Prepared::of(env)?;
-    let edit = prepared.take_out(table, name)?;
+    if let DependencyTable::Group(group) = &table {
+        refuse_unknown_groups(&prepared.found.1, std::slice::from_ref(group))?;
+    }
+    let edit = prepared.take_out(&table, name)?;
     let dest = env.destination()?;
     announce_project(env, &prepared, &dest);
 
@@ -144,18 +150,20 @@ impl Prepared {
     }
 
     /// The entry of `table` called `name` in any case, as the manifest has it.
-    fn entry(&self, table: DependencyTable, name: &str) -> Option<&(String, Constraint)> {
-        let entries = match table {
-            DependencyTable::Dependencies => &self.found.1.dependencies,
-            DependencyTable::DevDependencies => &self.found.1.dev_dependencies,
-        };
+    fn entry(&self, table: &DependencyTable, name: &str) -> Option<&(String, Constraint)> {
+        let (_, entries) = self.found.1.tables().find(|(listed, _)| listed == table)?;
         entries
             .iter()
             .find(|(entry, _)| project::same_name(entry, name))
     }
 
     /// The manifest with `name` in `table` asking for `constraint`.
-    fn set(&self, table: DependencyTable, name: &str, constraint: &str) -> Result<Edit, EditError> {
+    fn set(
+        &self,
+        table: &DependencyTable,
+        name: &str,
+        constraint: &str,
+    ) -> Result<Edit, EditError> {
         let (key, change) = match self.entry(table, name) {
             Some((entry, old)) => {
                 let from = constraint_text(old);
@@ -175,33 +183,49 @@ impl Prepared {
             ),
         };
         let text = manifest_edit::set(&self.text, table, key, constraint)?;
-        Edit::of(text, change, table)
+        Edit::of(text, change, table, self.is_new_group(table))
+    }
+
+    /// The table is a `[dependency-groups]` table the manifest does not have yet.
+    fn is_new_group(&self, table: &DependencyTable) -> bool {
+        matches!(table, DependencyTable::Group(group)
+            if !self.found.1.groups.iter().any(|(name, _)| name == group))
     }
 
     /// The manifest without `name` in `table`; the error says where the name
     /// is when it is not there.
-    fn take_out(&self, table: DependencyTable, name: &str) -> Result<Edit, EditError> {
+    fn take_out(&self, table: &DependencyTable, name: &str) -> Result<Edit, EditError> {
         let Some((entry, constraint)) = self.entry(table, name) else {
-            let other = match table {
-                DependencyTable::Dependencies => DependencyTable::DevDependencies,
-                DependencyTable::DevDependencies => DependencyTable::Dependencies,
-            };
-            return Err(match self.entry(other, name) {
-                Some(_) => EditError::InOtherTable {
-                    name: name.to_string(),
-                    found_in: other,
-                },
-                None => EditError::NotADependency {
-                    name: name.to_string(),
-                },
-            });
+            return Err(self.not_in(table, name));
         };
         let change = ManifestEdit::Removed {
             name: entry.clone(),
             constraint: constraint_text(constraint),
         };
         let text = manifest_edit::remove(&self.text, table, entry)?;
-        Edit::of(text, Some(change), table)
+        Edit::of(text, Some(change), table, false)
+    }
+
+    /// Why `name` is not in `table`: every other table that holds it, else none.
+    fn not_in(&self, table: &DependencyTable, name: &str) -> EditError {
+        let found_in: Vec<DependencyTable> = (self.found.1.tables())
+            .filter(|(listed, entries)| {
+                listed != table
+                    && entries
+                        .iter()
+                        .any(|(entry, _)| project::same_name(entry, name))
+            })
+            .map(|(listed, _)| listed)
+            .collect();
+        let name = name.to_string();
+        match table {
+            _ if !found_in.is_empty() => EditError::InOtherTable { name, found_in },
+            DependencyTable::Group(group) => EditError::NotInGroup {
+                name,
+                group: group.clone(),
+            },
+            _ => EditError::NotADependency { name },
+        }
     }
 }
 
@@ -213,20 +237,28 @@ struct Edit {
     change: Option<ManifestEdit>,
     /// The entry is in `[dev-dependencies]`.
     dev: bool,
+    /// The entry is in `[dependency-groups.<group>]`.
+    group: Option<String>,
+    /// The edit made that group's table.
+    created_table: bool,
 }
 
 impl Edit {
     fn of(
         text: String,
         change: Option<ManifestEdit>,
-        table: DependencyTable,
+        table: &DependencyTable,
+        created_table: bool,
     ) -> Result<Edit, EditError> {
         let project = project::parse(&text).context("parsing the new manifest")?;
+        let (dev, group) = table.flags();
         Ok(Edit {
             text,
             project,
             change,
-            dev: table == DependencyTable::DevDependencies,
+            dev,
+            group,
+            created_table,
         })
     }
 }
@@ -238,7 +270,7 @@ fn floor(
     env: &OpEnv,
     prepared: &Prepared,
     index: &Index,
-    table: DependencyTable,
+    table: &DependencyTable,
     name: &str,
 ) -> Result<String, EditError> {
     let project = &prepared.found.1;
@@ -303,7 +335,14 @@ fn commit(
     }
     // Locking warns about the requirements no source lists.
     let (lock, changes) = locking::relock_with(env, &edit.project, index, previous.as_ref())?;
-    let plan = plan_sync(&lock, &install::list_installed(&dest.store())?, false);
+    // The edited group is installed with the default selection. A package the
+    // lock lists stays where it is: only what the lock drops goes.
+    let selection = Selection {
+        groups: edit.group.iter().cloned().collect(),
+        keep_listed: true,
+        ..Selection::default()
+    };
+    let plan = plan_sync(&lock, &install::list_installed(&dest.store())?, &selection);
     if lock_missing {
         announce_migration(env, &plan);
     }
@@ -341,7 +380,15 @@ fn commit(
             true => env.sink.emit(Event::SyncNothingToDo),
             false => {
                 let mut session = InstallSession::new(dest);
-                let applied = apply_sync(env, &mut session, &lock, &plan, planned, &sync_options)?;
+                let applied = apply_sync(
+                    env,
+                    &mut session,
+                    &lock,
+                    &plan,
+                    &selection,
+                    planned,
+                    &sync_options,
+                )?;
                 finish(env, &mut session, &applied, options)?;
             }
         }
@@ -372,6 +419,8 @@ fn announce_edit(env: &OpEnv, edit: &Edit, lock: &Lockfile, dry_run: bool) {
     env.sink.emit(Event::ManifestEdited {
         edit: change.clone(),
         dev: edit.dev,
+        group: edit.group.clone(),
+        created_table: edit.created_table,
         dry_run,
     });
     if let ManifestEdit::Removed { name, .. } = change {
@@ -461,7 +510,7 @@ mod tests {
     fn a_new_entry_goes_at_the_end_of_its_table_and_nothing_else_changes() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "gamma", ">=1.0")
+            .set(&DependencyTable::Dependencies, "gamma", ">=1.0")
             .unwrap();
         assert_eq!(
             edit.text,
@@ -482,7 +531,7 @@ mod tests {
     fn an_entry_that_is_there_is_updated_under_its_own_spelling() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "beta", ">=0.5")
+            .set(&DependencyTable::Dependencies, "beta", ">=0.5")
             .unwrap();
         assert_eq!(edit.text, MANIFEST.replace(">=1.0", ">=0.5"));
         assert_eq!(
@@ -499,7 +548,7 @@ mod tests {
     fn the_constraint_an_entry_already_has_is_no_change() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::Dependencies, "Beta", ">=1.0")
+            .set(&DependencyTable::Dependencies, "Beta", ">=1.0")
             .unwrap();
         assert_eq!(edit.text, MANIFEST);
         assert_eq!(edit.change, None);
@@ -509,7 +558,7 @@ mod tests {
     fn a_dev_entry_goes_to_the_dev_table() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(DependencyTable::DevDependencies, "delta", "1.0")
+            .set(&DependencyTable::DevDependencies, "delta", "1.0")
             .unwrap();
         assert!(edit.dev);
         assert_eq!(edit.project.dev_dependencies.len(), 2);
@@ -520,7 +569,7 @@ mod tests {
     fn a_removal_takes_only_the_entrys_line_and_names_it_as_the_manifest_does() {
         let project = prepared(MANIFEST);
         let edit = project
-            .take_out(DependencyTable::Dependencies, "BETA")
+            .take_out(&DependencyTable::Dependencies, "BETA")
             .unwrap();
         assert_eq!(edit.text, MANIFEST.replace("Beta = \">=1.0\" # keep\n", ""));
         assert_eq!(
@@ -537,20 +586,87 @@ mod tests {
         let project = prepared(MANIFEST);
         let refused = |table, name: &str| project.take_out(table, name).err().unwrap();
         assert!(matches!(
-            refused(DependencyTable::Dependencies, "zeta"),
+            refused(&DependencyTable::Dependencies, "zeta"),
             EditError::NotADependency { name } if name == "zeta"
         ));
-        let in_dev = refused(DependencyTable::Dependencies, "caraya");
+        let in_dev = refused(&DependencyTable::Dependencies, "caraya");
         assert!(matches!(
             &in_dev,
-            EditError::InOtherTable {
-                found_in: DependencyTable::DevDependencies,
-                ..
-            }
+            EditError::InOtherTable { found_in, .. }
+                if *found_in == [DependencyTable::DevDependencies]
         ));
         assert_eq!(in_dev.to_string(), "caraya is in [dev-dependencies]");
-        let in_normal = refused(DependencyTable::DevDependencies, "beta");
+        let in_normal = refused(&DependencyTable::DevDependencies, "beta");
         assert_eq!(in_normal.to_string(), "beta is in [dependencies]");
+    }
+
+    fn ci() -> DependencyTable {
+        DependencyTable::Group("ci".to_string())
+    }
+
+    const IN_EVERY_TABLE: &str = "[project]\nlabview = \">=2024\"\n\n[dependencies]\nbeta = \"*\"\n\n\
+                                  [dev-dependencies]\nbeta = \"*\"\n\n[dependency-groups.ci]\n\
+                                  beta = \"*\"\n";
+
+    #[test]
+    fn a_name_that_is_not_in_the_table_is_listed_with_every_other_table_that_holds_it() {
+        let project = prepared(IN_EVERY_TABLE);
+        let why = project
+            .take_out(&DependencyTable::Group("docs".into()), "beta")
+            .err()
+            .unwrap();
+        assert_eq!(
+            why.to_string(),
+            "beta is in [dependencies], [dev-dependencies] and [dependency-groups.ci]"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_in_no_table_is_told_apart_for_a_group_and_for_the_others() {
+        let project = prepared(IN_EVERY_TABLE);
+        let why = project.take_out(&ci(), "zeta").err().unwrap();
+        assert!(
+            matches!(&why, EditError::NotInGroup { name, group } if name == "zeta" && group == "ci"),
+            "{why:?}"
+        );
+        assert_eq!(why.to_string(), "zeta is not in [dependency-groups.ci]");
+        let why = project
+            .take_out(&DependencyTable::DevDependencies, "zeta")
+            .err()
+            .unwrap();
+        assert!(matches!(why, EditError::NotADependency { .. }), "{why:?}");
+    }
+
+    #[test]
+    fn an_entry_of_a_group_that_is_not_there_yet_says_the_edit_made_its_table() {
+        let project = prepared(MANIFEST);
+        let edit = project.set(&ci(), "gamma", "*").unwrap();
+        assert_eq!(
+            (edit.dev, edit.group.as_deref(), edit.created_table),
+            (false, Some("ci"), true)
+        );
+        assert_eq!(edit.project.groups.len(), 1);
+
+        let again = prepared(&edit.text);
+        let edit = again.set(&ci(), "delta", "*").unwrap();
+        assert_eq!(
+            (edit.dev, edit.group.as_deref(), edit.created_table),
+            (false, Some("ci"), false)
+        );
+        let edit = again.take_out(&ci(), "gamma").unwrap();
+        assert!(!edit.created_table);
+    }
+
+    #[test]
+    fn no_other_table_is_a_new_group() {
+        let project = prepared(MANIFEST);
+        for table in [
+            DependencyTable::Dependencies,
+            DependencyTable::DevDependencies,
+        ] {
+            let edit = project.set(&table, "delta", "*").unwrap();
+            assert_eq!((edit.group, edit.created_table), (None, false));
+        }
     }
 
     // ---- the whole operations, on real files in a scratch destination ----
@@ -714,6 +830,8 @@ mod tests {
                 constraint: ">=1.0".into()
             },
             dev: false,
+            group: None,
+            created_table: false,
             dry_run: false
         }));
     }
@@ -910,6 +1028,22 @@ mod tests {
     }
 
     #[test]
+    fn a_group_add_that_fails_part_way_counts_the_group_package_as_left() {
+        let world = World::new("restore-group", PROJECT);
+        std::fs::create_dir_all(world.root.join("dest/LabVIEW").join(payload_path("gamma")))
+            .unwrap();
+        let sink = Recorder::default();
+        let why = add(&world.env(&sink), "gamma", ci(), &InstallOptions::default()).unwrap_err();
+
+        assert!(
+            matches!(&why, EditError::Sync(SyncError::Incomplete { done, left, .. })
+                if !done.iter().any(|step| step.name() == "gamma")
+                    && left.iter().any(|step| step.name() == "gamma")),
+            "{why:?}"
+        );
+    }
+
+    #[test]
     fn a_lock_that_did_not_exist_is_removed_again_when_the_sync_fails() {
         let world = World::new("restore-new", PROJECT);
         std::fs::create_dir_all(world.root.join("dest/LabVIEW").join(payload_path("gamma")))
@@ -1020,6 +1154,81 @@ mod tests {
         assert!(matches!(&why, EditError::Cancelled), "{why:?}");
         assert_eq!(world.manifest(), manifest);
         assert_eq!(world.lock().unwrap(), lock);
+    }
+
+    #[test]
+    fn adding_to_a_new_group_makes_its_table_locks_and_installs_it_and_a_later_add_keeps_it() {
+        let world = World::new("group-add", PROJECT);
+        let sink = Recorder::default();
+        add(&world.env(&sink), "gamma", ci(), &InstallOptions::default()).unwrap();
+        assert_eq!(
+            world.manifest(),
+            format!("{PROJECT}\n[dependency-groups.ci]\ngamma = \">=1.0\"\n")
+        );
+        let expected = ["alpha 2.0", "beta 1.0", "gamma 1.0"];
+        assert_eq!(world.locked(), expected);
+        assert_eq!(world.installed(), expected);
+        assert!(sink.events().contains(&Event::ManifestEdited {
+            edit: ManifestEdit::Added {
+                name: "gamma".into(),
+                constraint: ">=1.0".into()
+            },
+            dev: false,
+            group: Some("ci".into()),
+            created_table: true,
+            dry_run: false
+        }));
+
+        // The default selection does not name ci, and gamma stays: the lock lists it.
+        run_add(&world, "alpha", &InstallOptions::default()).unwrap();
+        assert_eq!(world.installed(), expected);
+    }
+
+    #[test]
+    fn a_group_nobody_installs_by_default_is_not_installed_by_an_add_to_another_table() {
+        let manifest = format!("{PROJECT}\n[dependency-groups.ci]\ngamma = \"*\"\n");
+        let world = World::new("group-apart", &manifest);
+        run_add(&world, "alpha", &InstallOptions::default()).unwrap();
+        assert_eq!(world.locked(), ["alpha 2.0", "beta 1.0", "gamma 1.0"]);
+        assert_eq!(world.installed(), ["alpha 2.0", "beta 1.0"]);
+    }
+
+    #[test]
+    fn removing_from_a_group_takes_the_package_out_of_the_lock_and_the_destination() {
+        let world = World::new("group-remove", PROJECT);
+        let sink = Recorder::default();
+        let env = world.env(&sink);
+        add(&env, "gamma", ci(), &InstallOptions::default()).unwrap();
+        remove(&env, "gamma", ci(), &InstallOptions::default()).unwrap();
+        assert_eq!(
+            world.manifest(),
+            format!("{PROJECT}\n[dependency-groups.ci]\n")
+        );
+        assert_eq!(world.locked(), ["alpha 2.0", "beta 1.0"]);
+        assert_eq!(world.installed(), ["alpha 2.0", "beta 1.0"]);
+    }
+
+    #[test]
+    fn removing_from_a_group_the_manifest_does_not_have_changes_nothing_and_says_which_are_defined()
+    {
+        let manifest = format!("{PROJECT}\n[dependency-groups.ci]\ngamma = \"*\"\n");
+        let world = World::new("group-unknown", &manifest);
+        let sink = Recorder::default();
+        let why = remove(
+            &world.env(&sink),
+            "gamma",
+            DependencyTable::Group("nope".into()),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(why, EditError::Sync(_)), "{why:?}");
+        assert_eq!(
+            why.to_string(),
+            "unknown group 'nope'; defined groups: ci, dev"
+        );
+        assert!(sink.events().is_empty(), "{:?}", sink.events());
+        assert_eq!(world.manifest(), manifest);
+        assert_eq!(world.lock(), None);
     }
 
     #[test]
