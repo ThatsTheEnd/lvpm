@@ -825,6 +825,7 @@ mod tests {
                 .collect(),
             lv_min: None,
             source: String::new(),
+            released: None,
         }
     }
 

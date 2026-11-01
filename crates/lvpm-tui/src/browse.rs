@@ -300,6 +300,7 @@ mod tests {
             requires: Vec::new(),
             lv_min: Some(lv_min),
             source: String::new(),
+            released: None,
         }
     }
 

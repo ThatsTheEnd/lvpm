@@ -579,6 +579,7 @@ impl<'a> Search<'a> {
                 requires: Vec::new(),
                 lv_min: None,
                 source: String::new(),
+                released: None,
             },
             expected_sha256: Some(self.sha256()),
         }

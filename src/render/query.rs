@@ -228,6 +228,7 @@ mod tests {
             requires: Vec::new(),
             lv_min: None,
             source: String::new(),
+            released: None,
         }
     }
 
