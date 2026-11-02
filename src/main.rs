@@ -59,7 +59,9 @@ struct Cli {
     json: bool,
 
     /// Answer yes to every prompt.
-    #[arg(long, short = 'y', global = true, env = "LVPM_YES")]
+    // Derive gives a `bool` clap's strict true/false parser, which would refuse
+    // LVPM_YES=1 and LVPM_YES=; the falsey parser is what a flag gets by default.
+    #[arg(long, short = 'y', global = true, env = "LVPM_YES", value_parser = clap::builder::FalseyValueParser::new())]
     yes: bool,
 
     #[command(subcommand)]
