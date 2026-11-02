@@ -112,7 +112,7 @@ Feature: lvpm check finds broken links without LabVIEW
     And stdout ends with "VIs checked: 0, problems: 0, links not checked: 0"
     And stderr has a line starting "warning: no VIs under "
 
-  Scenario: the venv's files and dot-folders are not walked
+  Scenario: dot-folders, the venv among them, are not walked
     Given a check project holding "Good.vi", "Helper.vi" and "Lib.lvlib"
     And the venv holds an installed package containing "Broken.vi"
     And the project holds "Broken.vi" in folder ".hidden"

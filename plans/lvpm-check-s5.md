@@ -694,9 +694,9 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
   - [x] Step 1.4: Linker tables, compiled-code flag and `.llb` members
 
 #### Wave 2
-- [ ] Slice 2: `lvpm check` on the project's own files
-  - [ ] Step 2.1: The `check` op, its walk and the broken-link rule
-  - [ ] Step 2.2: The CLI command, its output and the feature file
+- [x] Slice 2: `lvpm check` on the project's own files
+  - [x] Step 2.1: The `check` op, its walk and the broken-link rule
+  - [x] Step 2.2: The CLI command, its output and the feature file
   - [ ] Step 2.3: Save version and compiled-code rules
 
 #### Wave 3

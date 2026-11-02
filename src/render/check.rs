@@ -13,7 +13,8 @@ use std::path::Path;
 pub fn listing(checked: &Checked) -> String {
     let mut text = String::new();
     for finding in &checked.findings {
-        text.push_str(&format!("{}: {}\n", finding.vi, what(&finding.problem)));
+        let vi = one_line(&finding.vi);
+        text.push_str(&format!("{vi}: {}\n", what(&finding.problem)));
     }
     // `Problem`'s order is the rule order, so sorting puts the advice in it.
     let mut problems: Vec<&Problem> = checked.findings.iter().map(|f| &f.problem).collect();
@@ -45,10 +46,13 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
                 folder,
                 installation,
             } => format!(
-                "{folder} (the bound installation {} is not on this machine)",
-                installation.display()
+                "{} (the bound installation {} is not on this machine)",
+                one_line(folder),
+                one_line(&installation.display().to_string())
             ),
-            Unchecked::Root(root) => format!("{root} (lvpm does not resolve this root)"),
+            Unchecked::Root(root) => {
+                format!("{} (lvpm does not resolve this root)", one_line(root))
+            }
         };
         text.push_str(&format!("warning: links not checked: {count} into {why}\n"));
     }
@@ -59,7 +63,10 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
         );
     }
     if checked.vis == 0 {
-        let under = dir.map_or_else(|| "the project".to_string(), |d| d.display().to_string());
+        let under = dir.map_or_else(
+            || "the project".to_string(),
+            |d| one_line(&d.display().to_string()),
+        );
         text.push_str(&format!("warning: no VIs under {under}\n"));
     }
     printable(text)
@@ -100,6 +107,11 @@ fn finding(finding: &Finding) -> Value {
     })
 }
 
+/// A name from a file, kept on its line: a newline in it could forge a line.
+fn one_line(name: &str) -> String {
+    name.replace(['\n', '\r'], "?")
+}
+
 /// What a finding says after the VI's name.
 fn what(problem: &Problem) -> String {
     match problem {
@@ -111,7 +123,7 @@ fn what(problem: &Problem) -> String {
             format!("saved in LabVIEW {saved}, newer than the minimum {minimum}")
         }
         Problem::NotSeparated => "compiled code is not separated from the source".to_string(),
-        Problem::NotFound { link } => format!("link not found: {link}"),
+        Problem::NotFound { link } => format!("link not found: {}", one_line(link)),
     }
 }
 
@@ -160,6 +172,16 @@ mod tests {
             saves_checked: true,
             findings,
         }
+    }
+
+    #[test]
+    fn a_newline_in_a_name_cannot_forge_a_line() {
+        let forged = "x\nVIs checked: 0, problems: 0, links not checked: 0";
+        let mut run = checked(1, vec![gone("A\nB.vi", forged)]);
+        run.not_checked
+            .insert(Unchecked::Root("<a\nnext: y>".into()), 1);
+        assert_eq!(listing(&run).lines().count(), 3);
+        assert_eq!(warnings(&run, None).lines().count(), 1);
     }
 
     #[test]
