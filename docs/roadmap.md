@@ -167,10 +167,18 @@ records) and make it first-class. An earlier Python prototype,
   non-zero otherwise. The post-relink correctness gate.
 - `lvpm tree [DIR|VI]` — the dependency graph as text, `--cycles`, `--dot` /
   `--mermaid`.
-- Known gaps in that prototype to close in the implementation: it misses the `PTH0`
-  flavour old OpenG packages use (reports "no linker tables" on every VI in
-  `oglib_*`); `resolvable()` accepts a path if _any_ ancestor directory exists,
-  so shadowing cases pass; `.llb` archive members are skipped entirely.
+- `lvpm check [DIR]` is done ([Checking a project](usage.md#checking-a-project)).
+  Of the known gaps in the prototype, two are closed: a link resolves only
+  when the file exists (no "any ancestor exists" rule, so shadowing cases no
+  longer pass), and `.llb` archive members are read and must be listed. One is
+  still open: the `PTH0` flavour old OpenG packages use is not read (the
+  prototype reported "no linker tables" on every VI in `oglib_*`; `lvpm check`
+  reports the table as not readable). It waits for a sample, in
+  [#108](https://github.com/ThatsTheEnd/lvpm/issues/108).
+- Open from the pilots: a link to an item stored inside another file (a class's
+  private data control in its `.lvclass`), and an absolute link saved on
+  another machine, are reported as `link not found`; pilots A and B do not pass
+  yet (`tests/features/build-slices/README.md`).
 
 ## Packaging and distribution (from idea.txt)
 

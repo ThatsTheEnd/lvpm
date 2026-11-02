@@ -293,3 +293,9 @@ Feature: lvpm check finds broken links without LabVIEW
     When lvpm check runs
     Then it exits 0
     And stdout reports at least 25 VIs checked and 0 problems
+
+  Scenario: PROVENANCE records the linker format
+    Then PROVENANCE.md has a section titled "Linker format" that names LabVIEW 2026 and the fixture set
+
+  Scenario: usage lists check
+    Then docs/usage.md has a line starting "lvpm check"

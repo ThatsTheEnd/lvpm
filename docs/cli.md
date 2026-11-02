@@ -195,7 +195,7 @@ Proposed:
 | 3 | partly done: `uninstall --all`, `relink --all`, `run-hooks --all` with some failures; `install` with unresolved dependencies skipped |
 | 4 | the target is busy (another lvpm holds its lock, roadmap *Concurrent callers*, with `--no-wait`) |
 
-`lvpm check` (planned) exits 1 when it finds a problem.
+`lvpm check` exits 1 when it finds a problem, and 0 when it finds none; its findings are a normal result, listed on stdout (or in `--json`), not an error. A missing venv, a `DIR` that does not exist and an unreadable `top-level-library` are errors, also exit 1.
 
 ### 13. Smaller items
 
@@ -215,7 +215,7 @@ Proposed:
 | `update [<pkg>]` | re-resolve and rewrite `lvpm.lock` | roadmap, lockfile |
 | `outdated` | installed versions against the newest the constraints allow | new; needs the lockfile |
 | `info <pkg>` | versions, dependencies, source, license, description before installing | new; the TUI's Browse details need the same |
-| `check [DIR]` / `tree [DIR\|VI]` | dependency check and graph | roadmap, dependency analysis |
+| `tree [DIR\|VI]` | dependency graph | roadmap, dependency analysis (`check [DIR]` is done: [Checking a project](usage.md#checking-a-project)) |
 | `venv rebind` | wipe and bind to another LabVIEW | roadmap, venvs |
 | `cache list \| remove \| prune` | complete the cache group | README, known gaps |
 | `config list` / `unset` | see item 8 | new |

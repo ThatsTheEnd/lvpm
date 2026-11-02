@@ -651,3 +651,25 @@ async fn usage_names_github_terms(_: &mut CliWorld, quoted: String) {
         );
     }
 }
+
+#[then(
+    regex = r#"^PROVENANCE\.md has a section titled "([^"]+)" that names LabVIEW 2026 and the fixture set$"#
+)]
+async fn provenance_names_the_fixtures(_: &mut CliWorld, title: String) {
+    let section = section_of(&repo_file("PROVENANCE.md"), &title);
+    for wanted in ["LabVIEW 2026", "tests/fixtures/check/"] {
+        assert!(
+            section.contains(wanted),
+            "the {title} section does not name {wanted}"
+        );
+    }
+}
+
+#[then(regex = r#"^docs/usage\.md has a line starting "([^"]+)"$"#)]
+async fn usage_has_a_line_starting(_: &mut CliWorld, start: String) {
+    let guide = repo_file("docs/usage.md");
+    assert!(
+        guide.lines().any(|line| line.starts_with(&start)),
+        "no line of docs/usage.md starts with {start:?}"
+    );
+}

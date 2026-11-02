@@ -370,6 +370,29 @@ Demo: break a link in pilot A; `lvpm check` names the VI and the link.
 Decide in `/specs`: where the fixture VIs come from, given PROVENANCE rules;
 the minimum LabVIEW comes from `[project] labview`.
 
+What S5b and `lvpm tree` can reuse, as S5 left it:
+- `linker::ViFacts::read(bytes)` gives a VI's links (`LinkPath`: kind, components),
+  save year and compiled-code flag, or `LinkerError::Unreadable { block, offset }`;
+  `linker::llb_members` lists an `.llb`. Neither needs LabVIEW.
+- `ops::check::check(env, dir)` returns `Checked`: the VI count, the links not
+  looked for with their cause, and `Finding`s (`Problem::{NotResource,
+  Unreadable, TooNew, NotSeparated, NotFound, Undeclared}`), sorted and
+  rendered by `src/render/check.rs`. S5b can call it on the library folder and
+  refuse on any finding; it is a result, not an `Err`.
+- Resolution (relative to the VI file, `<vilib>` in the installation then each
+  venv package, through an `.llb`) and attribution (a file listed by a venv
+  install record belongs to that package) are private to `ops/check.rs`.
+  `lvpm tree` needs the same file for each link, so it should lift them out
+  rather than copy them; the graph is those link-to-file edges, with the
+  package for each edge already known.
+- `check` returns the packages a VI may not use, not every package it uses, so
+  S5b's "infer dependencies from the links" needs the owner of each resolved
+  link too: a small addition in the same file.
+- Open from the pilots, see tests/features/build-slices/README.md: a link into
+  an item stored inside another file (a class's data control in its `.lvclass`)
+  and an absolute link saved on another machine are reported as not found.
+  S5b's gate on pilot A fails until that is settled.
+
 ### Slice S5b: `lvpm build` runs the check
 
 **Depends-on:** S1, S5
