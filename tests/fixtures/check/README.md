@@ -32,3 +32,13 @@ their callers, then delete `Sub/Gone.vi` and remove `Removed.vi` from the
 Made at run time by the test support, not committed: a VI whose `LIvi`
 (or `LIfp`, `LIbd`) section size runs past the end of the file, and `x.vi`
 holding the text `not a VI`.
+
+## Pilot spike
+
+Read from the VIs in the committed pilot `.vip`s (scratch scripts and the
+reader itself, 2026-11-02): all pilot links use one `PTH0` flavour, and no
+pilot holds an `.llb`. `LVSR` bit `0x400` is set on every pilot library file;
+the one exception is `PostInstall.vi`, a VIPM build hook. Pilot A was saved in
+2016 and pilot B in 2013. The reader ran over all 216 pilot VIs: 0 unreadable,
+1034 links, and `LIfp` holds links in the pilots (it is empty only in the
+fixtures above).

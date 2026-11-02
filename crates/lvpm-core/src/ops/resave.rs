@@ -137,8 +137,12 @@ pub(crate) fn is_lv_file(path: &Path) -> bool {
 /// with no LabVIEW: 26 for LabVIEW 2026. None for a file that is not one, is
 /// cut short, or was saved before LabVIEW 9.
 pub(crate) fn saved_major(path: &Path) -> Option<u32> {
-    let bytes = std::fs::read(path).ok()?;
-    Some(Rsrc::read(&bytes).ok()?.save_year()? - 2000)
+    major_of(&std::fs::read(path).ok()?)
+}
+
+/// [`saved_major`] of a file's bytes.
+fn major_of(bytes: &[u8]) -> Option<u32> {
+    Some(Rsrc::read(bytes).ok()?.save_year()? - 2000)
 }
 
 /// One LabVIEW for a run's resaves, started for the first package that needs
@@ -870,12 +874,7 @@ mod tests {
         assert_eq!(planned(&sink.events()), None);
     }
 
-    /// The saved major of RSRC bytes, as `saved_major` has it for a file.
-    fn read_major(b: &[u8]) -> Option<u32> {
-        Some(Rsrc::read(b).ok()?.save_year()? - 2000)
-    }
-
-    /// The smallest RSRC file `read_major` reads: one `vers` resource, id 4,
+    /// The smallest RSRC file `major_of` reads: one `vers` resource, id 4,
     /// whose first bytes are `version` (binary-coded decimal).
     fn rsrc(version: [u8; 4]) -> Vec<u8> {
         let be = |n: u32| n.to_be_bytes();
@@ -905,19 +904,19 @@ mod tests {
         let real = |p: &str| saved_major(&Path::new(env!("CARGO_MANIFEST_DIR")).join(p));
         assert_eq!(real("src/lv-src/relink-package.vi"), Some(20));
         assert_eq!(real("../../tests/fixtures/hooks/PostInstall.vi"), Some(26));
-        assert_eq!(read_major(&rsrc([0x13, 0x01, 0x80, 0x00])), Some(13));
-        assert_eq!(read_major(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
-        assert_eq!(read_major(b"PAYLOAD a.vi"), None);
+        assert_eq!(major_of(&rsrc([0x13, 0x01, 0x80, 0x00])), Some(13));
+        assert_eq!(major_of(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
+        assert_eq!(major_of(b"PAYLOAD a.vi"), None);
         let whole = rsrc([0x26, 0x31, 0x80, 0x01]);
-        // The section's last field is never read, so cut only before it.
-        for cut in 0..whole.len() - 4 {
-            assert_eq!(read_major(&whole[..cut]), None, "cut at {cut}");
+        // Every field is read, so a cut anywhere is None.
+        for cut in 0..whole.len() {
+            assert_eq!(major_of(&whole[..cut]), None, "cut at {cut}");
         }
         // A huge section count with no id 4 runs off the end, not forever.
         let mut endless = whole.clone();
         endless[100..104].copy_from_slice(&u32::MAX.to_be_bytes());
         endless[108..112].copy_from_slice(&5u32.to_be_bytes());
-        assert_eq!(read_major(&endless), None);
+        assert_eq!(major_of(&endless), None);
     }
 
     fn saved_in(repo: &Path, name: &str, members: &[(&str, Vec<u8>)]) {

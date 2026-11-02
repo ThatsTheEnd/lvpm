@@ -3,6 +3,7 @@
 //! linker tables and VI Server's wire format share.
 
 use anyhow::{Result, bail, ensure};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Why a file's bytes could not be read as an RSRC container.
@@ -19,6 +20,16 @@ pub enum LinkerError {
     /// `offset` is the file byte where that section or record starts.
     #[error("{block} not readable at byte {offset}")]
     Unreadable { block: &'static str, offset: usize },
+}
+
+/// A name as LabVIEW wrote it: UTF-8 when it is valid, and otherwise in the
+/// system codepage, read byte for byte as Latin-1. That is lossless, so two
+/// different names stay different, which a lossy UTF-8 decode would not do.
+fn lv_name(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
+    }
 }
 
 /// `at + by`, an error rather than a wrap where `usize` is 32 bits.
@@ -105,6 +116,11 @@ impl<'a> Rsrc<'a> {
                     offset,
                     data: bytes,
                 });
+                // Kinds may share one entry list, so the count of blocks is not
+                // bounded by the file's size unless it is bounded here.
+                if blocks.len() * 20 > b.len() {
+                    return Err(LinkerError::Truncated { at: entry.pos });
+                }
             }
         }
         Ok(Rsrc { blocks })
@@ -137,10 +153,10 @@ impl<'a> Rsrc<'a> {
     /// Every file a VI links to, from its three linker tables, once each. The
     /// empty paths LabVIEW writes after most links are not links.
     pub fn links(&self) -> Result<Vec<LinkPath>, LinkerError> {
-        let mut links = Vec::new();
+        let (mut links, mut seen) = (Vec::new(), HashSet::new());
         for table in ["LIvi", "LIfp", "LIbd"] {
             for path in self.table_paths(table)? {
-                if !links.contains(&path) {
+                if seen.insert(path.clone()) {
                     links.push(path);
                 }
             }
@@ -203,7 +219,12 @@ impl ViFacts {
         let rsrc = Rsrc::read(bytes)?;
         let separate_compiled = rsrc.separate_compiled().ok_or(LinkerError::Unreadable {
             block: "LVSR",
-            offset: 0,
+            // where the section is when it is there but too short to hold the flags
+            offset: rsrc
+                .blocks
+                .iter()
+                .find(|b| &b.kind == b"LVSR")
+                .map_or(0, |b| b.offset),
         })?;
         Ok(ViFacts {
             save_year: rsrc.save_year(),
@@ -233,7 +254,7 @@ pub fn llb_members(bytes: &[u8]) -> Result<Vec<String>, LinkerError> {
         let mut names = Vec::new();
         for _ in 0..cursor.u16()? {
             let len = cursor.take(1)?[0] as usize;
-            names.push(String::from_utf8_lossy(cursor.take(len)?).into_owned());
+            names.push(lv_name(cursor.take(len)?));
         }
         Ok::<_, LinkerError>(names)
     })();
@@ -244,7 +265,7 @@ pub fn llb_members(bytes: &[u8]) -> Result<Vec<String>, LinkerError> {
 }
 
 /// Where a link's path starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Kind {
     Absolute,
     Relative,
@@ -256,7 +277,7 @@ pub enum Kind {
 }
 
 /// A symbolic path's root, as LabVIEW writes it between angle brackets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Root {
     ViLib,
     UserLib,
@@ -276,7 +297,7 @@ impl Root {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Component {
     Name(String),
     /// One folder up: an empty component of a relative path.
@@ -284,7 +305,7 @@ pub enum Component {
 }
 
 /// The path a `PTH0` record holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LinkPath {
     pub kind: Kind,
     pub components: Vec<Component>,
@@ -349,7 +370,7 @@ pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
     let mut names: Vec<String> = Vec::with_capacity(levels as usize);
     for _ in 0..levels {
         let n = body.take(1)?[0] as usize;
-        names.push(String::from_utf8_lossy(body.take(n)?).into_owned());
+        names.push(lv_name(body.take(n)?));
     }
     // shortcut: any kind but 0 and 2 reads as relative, as it always did here
     // (3 is a UNC path); give it a Kind of its own when a link uses one.
@@ -634,6 +655,77 @@ mod tests {
         assert!(facts.separate_compiled);
         assert_eq!(facts.links, [rel(&["Lib.lvlib"]), rel(&["Helper.vi"])]);
         assert_eq!(ViFacts::read(b"not a VI"), Err(LinkerError::NotResource));
+    }
+
+    #[test]
+    fn kinds_sharing_one_entry_list_cannot_make_more_blocks_than_the_file_holds() {
+        let (kinds, entries) = (100u32, 100u32);
+        let be = |n: u32| n.to_be_bytes();
+        let mut b = b"RSRC\r\n\0\x03LVINLBVW".to_vec();
+        b.extend([be(32), be(0), be(0), be(0)].concat()); // info at 32
+        b.extend([0; 44]);
+        b.extend(be(48)); // the directory starts here, at 80
+        b.extend(be(kinds - 1));
+        for _ in 0..kinds {
+            b.extend(b"abcd");
+            b.extend(be(entries - 1));
+            b.extend(be(4 + 12 * kinds)); // every kind points at the same list
+        }
+        b.extend(vec![0; 20 * entries as usize]);
+        assert!(b.len() < 20 * (kinds * entries) as usize);
+        assert!(matches!(Rsrc::read(&b), Err(LinkerError::Truncated { .. })));
+    }
+
+    #[test]
+    fn names_in_the_system_codepage_stay_distinct() {
+        let path = |name: &[u8]| {
+            [
+                b"PTH0".as_slice(),
+                &(6 + name.len() as u32).to_be_bytes(),
+                &[0, 1, 0, 2, 0, name.len() as u8],
+                name,
+            ]
+            .concat()
+        };
+        let table = [
+            b"\0\x01LVIN\0\0\0\x02".to_vec(),
+            path(b"M\xE4.vi"),
+            path(b"M\xF6.vi"),
+        ]
+        .concat();
+        let rsrc = Rsrc {
+            blocks: [b"LIvi", b"LIfp", b"LIbd"]
+                .map(|kind| Block {
+                    kind: *kind,
+                    id: 0,
+                    offset: 0,
+                    data: Some(if kind == b"LIvi" {
+                        &table
+                    } else {
+                        b"\0\x01FPHP\0\0\0\0\0\x03"
+                    }),
+                })
+                .to_vec(),
+        };
+        assert_eq!(
+            rsrc.links().unwrap(),
+            [rel(&["M\u{e4}.vi"]), rel(&["M\u{f6}.vi"])]
+        );
+    }
+
+    #[test]
+    fn an_lvsr_too_short_for_its_flags_is_reported_where_it_is() {
+        for size in [0u32, 8, u32::MAX] {
+            let (mut bytes, offset) = size_past_the_end(project_vi("Good.vi"), b"LVSR");
+            bytes[offset..offset + 4].copy_from_slice(&size.to_be_bytes());
+            assert_eq!(
+                ViFacts::read(&bytes),
+                Err(LinkerError::Unreadable {
+                    block: "LVSR",
+                    offset
+                })
+            );
+        }
     }
 
     fn project_vi(name: &str) -> Vec<u8> {
