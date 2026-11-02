@@ -204,7 +204,7 @@ acceptance coverage:
 | `Good.vi` save version | 2026; a pilot VI from the committed `.vip`: 2013 |
 | compiled-code flag | `Good.vi` true, `NotSeparated.vi` false |
 | `Archive.llb` members | exactly `InLlb.vi` |
-| `LIvi` size set past the end | `Err(Unreadable { block: "LIvi", offset: <that section's data offset> })` |
+| `LIvi` size set past the end | `Err(Unreadable { block: "LIvi", offset: <that section's offset (its size field)> })` |
 | `not a VI` text | `Err(NotResource)` |
 | major below 9 in `vers` | `save_year` is `None` (LabVIEW 8.x and older are not years; the too-new rule passes them) |
 
@@ -687,11 +687,11 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: The linker-table reader
-  - [ ] Step 1.1: Make and commit the fixture VIs
-  - [ ] Step 1.2: RSRC block walker and save version
-  - [ ] Step 1.3: Move the PTH0 codec (no behaviour change)
-  - [ ] Step 1.4: Linker tables, compiled-code flag and `.llb` members
+- [x] Slice 1: The linker-table reader
+  - [x] Step 1.1: Make and commit the fixture VIs
+  - [x] Step 1.2: RSRC block walker and save version
+  - [x] Step 1.3: Move the PTH0 codec (no behaviour change)
+  - [x] Step 1.4: Linker tables, compiled-code flag and `.llb` members
 
 #### Wave 2
 - [ ] Slice 2: `lvpm check` on the project's own files
