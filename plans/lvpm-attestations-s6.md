@@ -26,18 +26,18 @@ can refuse unattested releases or releases attested by an untrusted repository.
 
 ## Acceptance Criteria
 
-- [ ] AC1 An attested GitHub release locks. Its lock entry has `signer = "<SAN>"` and `subject = "https://github.com/<owner>/<repo>"`.
+- [ ] AC1 An attested GitHub release locks. Its lock entry has `signer` and `subject` set verbatim from gh's JSON: the certificate SAN (workflow URL with `@ref`) and `sourceRepositoryURI`. AC1 is met by the fixture-backed tests; the real template-built release is a post-merge demo.
 - [ ] AC2 With `require-signature = true`, an unattested GitHub release is refused. `lvpm lock` exits 1 and leaves any existing `lvpm.lock` byte-identical. The error names every refused package and contains `has no attestation`.
 - [ ] AC3 With `trusted-publishers = ["https://github.com/a/*"]`:
   - an attestation from `https://github.com/b/x` is refused, and the error names that repository, its workflow and the configured patterns;
   - one from `https://github.com/A/x` locks, because matching ignores case;
   - an unattested release is refused even with `require-signature` off (Q10).
-- [ ] AC4 An attestation that `gh` rejects is refused with no `[policy]`, and the error carries gh's trimmed stderr.
-- [ ] AC5 With the policy off and the check unavailable, the package locks without `signer` and one trailing warning names it and the cause. When the policy requires an attestation, the same case is an error with a hint for that cause.
-- [ ] AC6 Feed, local-path and vipm.io/NI packages lock as before under a policy that requires an attestation, and the verifier is never called.
+- [ ] AC4 With a GitHub token, an attestation that `gh` rejects is refused with no `[policy]`, and the error carries gh's stderr as pinned (ANSI stripped, first 5 lines, indented 4). Without a token gh cannot run, so the outcome is unchecked (AC5).
+- [ ] AC5 With the policy off and the outcome unchecked (any reason in the classifier), the package locks without `signer`, and after the summary one warning line per distinct reason names the packages and carries that reason's hint. When the policy requires an attestation, the same case is an error with a hint for that cause.
+- [ ] AC6 Feed, local-path and vipm.io/NI packages lock as before under a policy that requires an attestation, and neither the attestations API nor the gh runner is invoked (the fakes record zero calls).
 - [ ] AC7 Adding, changing or removing `[policy]` makes `lvpm lock --check` report a stale lock. An old lock with no policy stays fresh for a manifest with no `[policy]` or an explicitly default one.
-- [ ] AC8 A `[policy]` with an unknown key, a wrong type, or a pattern not starting with `https://github.com/` fails to parse, and the error names the key.
-- [ ] AC9 The template job grants `id-token: write` and `attestations: write`. It runs `actions/attest-build-provenance@v2` with `subject-path: dist/*.lvpkg` before the upload step.
+- [ ] AC8 A `[policy]` with an unknown key, a wrong type, or a pattern not starting with `https://github.com/` (compared case-insensitively) fails to parse, and the error names the key.
+- [ ] AC9 The template's release job has `id-token: write` and `attestations: write` in its job-level `permissions:`. It has a step `uses: actions/attest-build-provenance@v2` with `with: subject-path: dist/*.lvpkg`, placed before the step that runs `gh release upload`.
 
 ### Rules, decided
 
@@ -77,7 +77,7 @@ can refuse unattested releases or releases attested by an untrusted repository.
 Every refusal is collected, and `lvpm lock` prints them all, then exits 1:
 
 ```
-error: lvpm refused 2 packages under [policy]:
+error: lvpm refused 2 packages:
   serializer 1.2.0 from github.com/b/x has no attestation
     hint: ask the publisher to build with the lvpm release template
   helper 0.3.0 was attested by repository https://github.com/b/x (workflow https://github.com/b/x/.github/workflows/release.yml@refs/tags/v0.3.0)
@@ -101,6 +101,9 @@ error: lvpm refused 2 packages under [policy]:
 - Parse errors name the key:
   - `lvpm.toml: [policy] has unknown key \`trusted-publisher\` (expected require-signature, trusted-publishers)`
   - `lvpm.toml: [policy] trusted-publishers entry \`github.com/a/*\` must start with https://github.com/`
+- Invalid with exit 0: `the attestation of <name> <version> from github.com/<repo> does not verify: unrecognised gh output` or `...: gh's attestation does not match the archive`, with the same hint as AC4.
+- `GitHub refused the attestation lookup (HTTP 403)` → `check that your token can read <owner>/<repo>`.
+- `policy = 1`: `lvpm.toml: policy must be a table`.
 - Wrong type: `lvpm.toml: [policy] require-signature must be true or false`, `lvpm.toml: [policy] trusted-publishers must be a list of URL patterns`.
 - The header pluralises: `refused 1 package`, `refused 2 packages`.
 - While checking, the existing progress line reads `checking attestation of <name> <version>`.
@@ -333,7 +336,7 @@ Feature: S6 — attestations at lock time
     And lvpm.lock is byte-identical to before
   @unit
   Scenario: a forged attestation is refused with no policy
-    Given the manifest has no [policy]
+    Given the manifest has no [policy] and lvpm has a GitHub token
     And a GitHub dependency the API attests and gh rejects with "verification failed"
     When the project is locked
     Then the error contains "does not verify" and "verification failed"
@@ -356,7 +359,7 @@ Feature: S6 — attestations at lock time
   Scenario Outline: non-GitHub packages are never checked
     Given require-signature = true and a <source> dependency
     When the project is locked
-    Then it locks and the verifier was not called
+    Then it locks and the attestations API and gh runner recorded zero calls
     Examples:
       | source       |
       | hosted feed  |
@@ -391,6 +394,7 @@ Feature: S6 — attestations at lock time
       | lvpm has no GitHub token                       |
       | GitHub rate limit reached (60/h without a token) |
       | could not reach GitHub                         |
+      | GitHub refused the attestation lookup (HTTP 403) |
   @unit
   Scenario: gh's stderr is stripped, cut and indented
     Given gh's stderr is 8 lines, some with ANSI colour codes
