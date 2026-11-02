@@ -2,8 +2,9 @@ name: Publish the package
 
 # A file to copy, not an org template: put it in .github/workflows/ of the
 # repository that holds your package (docs/usage.md, "GitHub dependencies").
-# Pushing a tag builds dist/<name>-<version>.lvpkg with `lvpm build`, which needs
-# no LabVIEW, and attaches it to that tag's release. Another project then
+# Pushing a tag builds dist/<name>-<version>.lvpkg with `lvpm build --no-check`,
+# which needs no LabVIEW, and attaches it to that tag's release. The build is not
+# checked: run `lvpm build` where the project has a venv. Another project then
 # depends on it with
 #   <name> = { github = "owner/repo", version = ">=1.0" }
 # The repository needs an lvpm.toml with [project] and [distribution].
@@ -17,8 +18,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The lvpm that builds. Raise it to build with a newer one.
-  LVPM_VERSION: "0.15.0"
+  # The lvpm that builds. Raise it to build with a newer one. `--no-check`
+  # needs the first release after 0.22.0; release-please raises this pin.
+  LVPM_VERSION: "0.22.0" # x-release-please-version
 
 jobs:
   publish:
@@ -46,7 +48,10 @@ jobs:
           tar -xzf "$archive" -C lvpm-bin lvpm
           echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
       - name: Build the package
-        run: lvpm build
+        run: |
+          # This runner has no LabVIEW, so no venv to check the library against.
+          echo "::warning::unchecked build (no LabVIEW on this runner; run lvpm build locally to check)"
+          lvpm build --no-check
       - name: Attest the package
         uses: actions/attest-build-provenance@v2
         with:

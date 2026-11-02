@@ -608,6 +608,8 @@ async fn template_pins_lvpm(_: &mut CliWorld) {
         .iter()
         .find_map(|line| line.strip_prefix("LVPM_VERSION:"))
         .expect("the template has no LVPM_VERSION");
+    // release-please's marker comment may follow the value.
+    let pin = pin.split(" #").next().unwrap_or(pin);
     let version = pin.trim().trim_matches(['"', '\'']);
     let parts: Vec<_> = version.split('.').collect();
     assert!(
@@ -748,5 +750,46 @@ async fn usage_has_a_line_starting(_: &mut CliWorld, start: String) {
     assert!(
         guide.lines().any(|line| line.starts_with(&start)),
         "no line of docs/usage.md starts with {start:?}"
+    );
+}
+
+#[then(regex = r#"^docs/usage\.md contains "([^"]+)", "([^"]+)", "([^"]+)", and "([^"]+)"$"#)]
+async fn usage_describes_the_build_check(
+    _: &mut CliWorld,
+    checks: String,
+    needs: String,
+    counted: String,
+    flag: String,
+) {
+    let section = section_of(&repo_file("docs/usage.md"), "Building a package");
+    // Prose wraps: compare with every run of whitespace as one space.
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for wanted in [checks, needs, counted, flag] {
+        assert!(
+            section.contains(&wanted),
+            "the Building a package section of docs/usage.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[then(regex = r#"^the release template runs "([^"]+)" after printing "([^"]+)"$"#)]
+async fn template_builds_unchecked(_: &mut CliWorld, command: String, warning: String) {
+    let lines = template_lines();
+    let warned = lines
+        .iter()
+        .position(|line| line.contains(&warning))
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} prints no `{warning}`"));
+    let built = lines
+        .iter()
+        .position(|line| *line == command)
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} has no line `{command}`"));
+    assert!(warned < built, "the warning comes after `{command}`");
+}
+
+#[then(regex = r#"^no line of the release template is "([^"]+)"$"#)]
+async fn template_has_no_line(_: &mut CliWorld, command: String) {
+    assert!(
+        !template_lines().contains(&command),
+        "{RELEASE_TEMPLATE} has a line `{command}`"
     );
 }

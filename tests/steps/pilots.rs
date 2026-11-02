@@ -349,7 +349,9 @@ fn build_pilot_a_in_sandbox(world: &mut CliWorld) {
         &dir.join(PILOT_A_SUBTREE),
     );
     std::fs::write(dir.join(MANIFEST_FILE), PILOT_A_MANIFEST).expect("write pilot A's manifest");
-    let output = world.sandbox.run_lvpm_in(&dir, &["build"], None);
+    let output = world
+        .sandbox
+        .run_lvpm_in(&dir, &["build", "--no-check"], None);
     assert_eq!(
         output.exit_code, 0,
         "lvpm build failed in pilot A: {output:?}"

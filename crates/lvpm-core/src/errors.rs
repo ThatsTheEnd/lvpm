@@ -252,12 +252,15 @@ pub enum InitError {
     Other(#[from] anyhow::Error),
 }
 
-/// Why `check` read no VI.
+/// Why `check` read no VI, or why `build` stopped.
 #[derive(Debug, thiserror::Error)]
 pub enum CheckError {
     /// The folder to check is not there, as it was written.
     #[error("folder {} does not exist", .0.display())]
     NoDir(PathBuf),
+    /// The project at this folder has no venv to check against.
+    #[error("no venv in {} — `lvpm venv create` makes one", .0.display())]
+    NoVenv(PathBuf),
     /// The operation's token was cancelled; nothing was written.
     #[error("cancelled")]
     Cancelled,

@@ -21,7 +21,7 @@ use crate::linker::{self, Component, Kind, LinkPath, LinkerError, ViFacts};
 use crate::manifest_edit::DependencyTable;
 use crate::ops::OpEnv;
 use crate::project::{Project, same_name};
-use crate::venv::{self, Bound};
+use crate::venv::{self, Bound, Found};
 use crate::{distribution, install, lvlib, paths, project, target};
 use anyhow::{Context, Result, anyhow};
 use std::cell::RefCell;
@@ -106,15 +106,58 @@ impl Checked {
     pub fn not_checked_total(&self) -> usize {
         self.not_checked.values().sum()
     }
+
+    /// Whether no VI broke a rule.
+    pub fn passed(&self) -> bool {
+        self.findings.is_empty()
+    }
 }
 
-/// Read every `.vi .vit .ctl .ctt` under `dir` (the project root when None; a
+/// What a check of the library `[distribution]` names found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Library {
+    /// The check of the library's members.
+    pub checked: Checked,
+    /// The `[dependencies]` no member links into, in manifest order.
+    pub unused: Vec<String>,
+}
+
+/// [`check`] for the library's members only, and which of the declared
+/// dependencies none of them uses.
+pub fn check_library(env: &OpEnv) -> Result<Library, CheckError> {
+    run(env, None, Scope::Members)
+}
+
+/// Read every `.vi .vit .vim .ctl .ctt` under `dir` (the project root when None; a
 /// relative one is taken from the directory the command ran in) and say which
 /// links lead nowhere. Findings are a result, not an error.
 pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
+    Ok(run(env, dir, Scope::All)?.checked)
+}
+
+/// Which of the VIs under the folder a check reads.
+#[derive(Clone, Copy)]
+enum Scope {
+    All,
+    /// Only the members of the library `[distribution]` names, read where the
+    /// library lists them: a build packages those, wherever they are.
+    Members,
+}
+
+/// [`check`] and [`check_library`]: the check of the VIs in `scope`, and the
+/// `[dependencies]` none of them links into.
+fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckError> {
     let repo = match &env.flags.project {
         Some(repo) => env.cwd.join(repo),
-        None => venv::locate(&env.cwd, &env.config.venv_dir)?.ok_or_else(|| {
+        None => match scope {
+            Scope::All => venv::locate(&env.cwd, &env.config.venv_dir)?,
+            // With no venv the binding check below says so.
+            Scope::Members => match venv::probe(&env.cwd, &env.config.venv_dir) {
+                Found::Venv(dir) | Found::ManifestOnly(dir) => Some(dir),
+                Found::Nothing => None,
+            },
+        }
+        .ok_or_else(|| {
             anyhow!(
                 "no {} at or above {}",
                 project::FILE_NAME,
@@ -125,11 +168,21 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     // Every path below is taken from these two, so a `..` in either is
     // settled here, once: `join` and `shown` work on names, not on `..`.
     let repo = lexical(&repo);
+    if !venv::binding_path(&repo.join(&env.config.venv_dir)).is_file() {
+        return Err(CheckError::NoVenv(repo));
+    }
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     env.check_bitness(&bound.target)?;
     let (_, manifest) = env
         .manifest_for(None, Some(&bound.repo))?
         .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
+    if matches!(scope, Scope::Members) && manifest.distribution.is_none() {
+        return Err(anyhow!(
+            "no [distribution] in {}: nothing says which VIs are the library",
+            project::FILE_NAME
+        )
+        .into());
+    }
     let minimum = manifest
         .labview
         .as_deref()
@@ -145,18 +198,34 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
         return Err(CheckError::NoDir(dir.map_or(start, Path::to_path_buf)));
     }
     let members = members(&manifest, &bound.repo)?;
-    let mut files = Vec::new();
-    let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
-    walk(&start, &venv, &mut files)?;
+    let files: Vec<_> = match scope {
+        Scope::All => {
+            let mut files = Vec::new();
+            let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
+            walk(&start, &venv, &mut files)?;
+            let keys: HashSet<_> = members.iter().map(|file| key(file)).collect();
+            (files.into_iter())
+                .map(|file| {
+                    let member = keys.contains(&key(&file));
+                    (file, member)
+                })
+                .collect()
+        }
+        Scope::Members => (members.into_iter())
+            .filter(|file| is_vi_file(file))
+            .map(|file| (file, true))
+            .collect(),
+    };
 
     let search = Search::of(&bound)?;
+    let mut seen = Seen::default();
     let mut checked = Checked {
         vis: files.len(),
         not_checked: BTreeMap::new(),
         saves_checked: minimum.is_some(),
         findings: Vec::new(),
     };
-    for file in &files {
+    for (file, member) in &files {
         if env.cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
@@ -164,7 +233,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
         let vi = shown(&bound.repo, file);
         let uses = Uses {
             project: &manifest,
-            member: members.contains(&key(file)),
+            member: *member,
         };
         let broken = problems(
             &bytes,
@@ -173,7 +242,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
             &uses,
             &bound.repo,
             minimum,
-            &mut checked.not_checked,
+            &mut seen,
         );
         checked
             .findings
@@ -183,17 +252,42 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
             }));
     }
     in_order(&mut checked.findings);
-    Ok(checked)
+    let unused = unused(&manifest, &seen);
+    checked.not_checked = seen.not_checked;
+    Ok(Library { checked, unused })
 }
 
-/// The files of the library `[distribution]` names, as [`key`]s; none when the
-/// manifest has no such table.
-fn members(manifest: &Project, repo: &Path) -> Result<HashSet<PathBuf>> {
+/// What the links of the VIs read so far led to.
+#[derive(Default)]
+struct Seen {
+    /// How many links were not looked for, for each cause.
+    not_checked: BTreeMap<Unchecked, usize>,
+    /// The packages a link led into.
+    used: HashSet<String>,
+}
+
+/// The `[dependencies]` no link in `seen` led into, in manifest order.
+fn unused(manifest: &Project, seen: &Seen) -> Vec<String> {
+    // A link that was not looked for, whatever the cause, may lead into any package, so none is unused.
+    if !seen.not_checked.is_empty() {
+        return Vec::new();
+    }
+    // shortcut: a package loaded by path at run time has no link and is reported unused; a manifest opt-out would fix it if users ask.
+    (manifest.dependencies.iter())
+        .map(|(name, _)| name)
+        .filter(|name| !seen.used.iter().any(|package| same_name(name, package)))
+        .cloned()
+        .collect()
+}
+
+/// The files of the library `[distribution]` names; none when the manifest has
+/// no such table.
+fn members(manifest: &Project, repo: &Path) -> Result<Vec<PathBuf>> {
     let Some(dist) = &manifest.distribution else {
-        return Ok(HashSet::new());
+        return Ok(Vec::new());
     };
     let library = repo.join(distribution::top_level_library(dist, repo)?);
-    Ok(lvlib::members(&library)?.iter().map(|p| key(p)).collect())
+    lvlib::members(&library)
 }
 
 /// A path as files are compared by: separators, `.` and `..` settled and, on
@@ -264,12 +358,13 @@ fn walk(dir: &Path, venv: &[PathBuf], out: &mut Vec<PathBuf>) -> Result<()> {
 
 fn is_vi_file(path: &Path) -> bool {
     path.extension().is_some_and(|ext| {
-        ["vi", "vit", "ctl", "ctt"].contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+        ["vi", "vit", "vim", "ctl", "ctt"]
+            .contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
     })
 }
 
 /// What one VI's bytes break. A link that is looked for and not found is a
-/// problem; one that cannot be looked for is counted in `unchecked`. `minimum`
+/// problem; one that cannot be looked for is counted in `seen`. `minimum`
 /// is the oldest LabVIEW the project is for, when it says.
 fn problems(
     bytes: &[u8],
@@ -278,19 +373,12 @@ fn problems(
     uses: &Uses,
     repo: &Path,
     minimum: Option<u32>,
-    unchecked: &mut BTreeMap<Unchecked, usize>,
+    seen: &mut Seen,
 ) -> Vec<Problem> {
     match ViFacts::read(bytes) {
         Ok(facts) => {
             let mut found = save_problems(&facts, minimum);
-            found.extend(link_problems(
-                &facts.links,
-                vi,
-                search,
-                uses,
-                repo,
-                unchecked,
-            ));
+            found.extend(link_problems(&facts.links, vi, search, uses, repo, seen));
             found
         }
         // A header or directory that runs out is a cut-short file.
@@ -325,15 +413,18 @@ fn link_problems(
     search: &Search,
     uses: &Uses,
     repo: &Path,
-    unchecked: &mut BTreeMap<Unchecked, usize>,
+    seen: &mut Seen,
 ) -> Vec<Problem> {
     let mut found = Vec::new();
     for link in links {
         match resolve(link, vi, search) {
             Resolved::File(file) => {
-                if let Some(package) = search.owner(&file)
-                    && let Some(only_in) = uses.barred(package)
-                {
+                let Some(package) = search.owner(&file) else {
+                    seen.used.extend(search.shadowed(&file).map(str::to_string));
+                    continue;
+                };
+                seen.used.insert(package.to_string());
+                if let Some(only_in) = uses.barred(package) {
                     found.push(Problem::Undeclared {
                         link: shown_link(link, vi, repo),
                         package: package.to_string(),
@@ -345,7 +436,7 @@ fn link_problems(
             Resolved::NotFound => found.push(Problem::NotFound {
                 link: shown_link(link, vi, repo),
             }),
-            Resolved::NotChecked(why) => *unchecked.entry(why).or_default() += 1,
+            Resolved::NotChecked(why) => *seen.not_checked.entry(why).or_default() += 1,
         }
     }
     found
@@ -401,6 +492,13 @@ impl Search {
             .ancestors()
             .find_map(|path| self.owners.get(&key(path)));
         owner.map(String::as_str)
+    }
+
+    /// The packages that hold a copy of `file`, one of the installation's, which
+    /// is looked for first: LabVIEW loads it and not theirs, but they are used.
+    fn shadowed<'a>(&'a self, file: &'a Path) -> impl Iterator<Item = &'a str> {
+        let below = file.strip_prefix(&self.installation).ok();
+        (self.packages.iter()).filter_map(move |tree| self.owner(&tree.join(below?)))
     }
 }
 
@@ -586,6 +684,7 @@ mod tests {
     use crate::events::NullSink;
     use crate::linker::{Block, Rsrc, decode_pth0, encode_pth0};
     use crate::ops::testing;
+    use crate::project::Constraint;
     use crate::target::LvTarget;
 
     #[test]
@@ -737,6 +836,10 @@ mod tests {
 
         fn check_in(&self, dir: &str) -> Result<Checked, CheckError> {
             check(&self.env(), Some(Path::new(dir)))
+        }
+
+        fn check_library(&self) -> Library {
+            check_library(&self.env()).unwrap()
         }
     }
 
@@ -1255,10 +1358,10 @@ mod tests {
             resolve(&stale, &vi, &search),
             Resolved::NotChecked(Unchecked::Absolute)
         );
-        let mut unchecked = BTreeMap::new();
-        let found = link_problems(&[stale], &vi, &search, &nobody(), &dir, &mut unchecked);
+        let mut seen = Seen::default();
+        let found = link_problems(&[stale], &vi, &search, &nobody(), &dir, &mut seen);
         assert_eq!(found, []);
-        assert_eq!(unchecked, BTreeMap::from([(Unchecked::Absolute, 1)]));
+        assert_eq!(seen.not_checked, BTreeMap::from([(Unchecked::Absolute, 1)]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1349,13 +1452,13 @@ mod tests {
         };
         assert_eq!(resolve(&nothing, &vi, &search), Resolved::Skipped);
 
-        let mut unchecked = BTreeMap::new();
+        let mut seen = Seen::default();
         let links = [resource, nothing];
         assert_eq!(
-            link_problems(&links, &vi, &search, &nobody(), &dir, &mut unchecked),
+            link_problems(&links, &vi, &search, &nobody(), &dir, &mut seen),
             []
         );
-        assert_eq!(unchecked.values().sum::<usize>(), 1);
+        assert_eq!(seen.not_checked.values().sum::<usize>(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1382,7 +1485,7 @@ mod tests {
         .to_vec();
         let links = Rsrc { blocks }.links().unwrap();
         let (vi, search) = (dir.join("V.vi"), search_in(&dir));
-        let found = link_problems(&links, &vi, &search, &nobody(), &dir, &mut BTreeMap::new());
+        let found = link_problems(&links, &vi, &search, &nobody(), &dir, &mut Seen::default());
         assert_eq!(
             found,
             [Problem::NotFound {
@@ -1744,6 +1847,277 @@ mod tests {
         assert_eq!(search.owner(Path::new("/p/C.lvclass/C.ctl")), Some("pkg"));
         // a folder of that name owns nothing
         assert_eq!(search.owner(Path::new("/p/D/C.ctl")), None);
+    }
+
+    #[test]
+    fn a_library_check_reads_the_members_and_no_other_vi() {
+        let sandbox = Sandbox::with_packages("lib-members-only", "");
+        sandbox
+            .library_of(&["Helper.vi"])
+            .put("Helper.vi", "Helper.vi")
+            .put("Broken.vi", "Broken.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!((checked.vis, checked.findings), (1, vec![]));
+    }
+
+    #[test]
+    fn a_library_members_broken_link_is_a_finding() {
+        let sandbox = Sandbox::with_packages("lib-member-broken", "");
+        sandbox
+            .library_of(&["Broken.vi"])
+            .put("Broken.vi", "Broken.vi")
+            .mkdir("Sub");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.findings, [not_found("Broken.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_vi_of_a_class_of_the_library_is_a_member() {
+        let sandbox = Sandbox::with_packages("lib-class-member", "");
+        sandbox
+            .write(
+                "Lib.lvlib",
+                br#"<Library><Item Type="LVClass" Name="C.lvclass" URL="../C/C.lvclass"/></Library>"#,
+            )
+            .write(
+                "C/C.lvclass",
+                br#"<LVClass><Item Name="M.vi" Type="VI" URL="../M.vi"/></LVClass>"#,
+            )
+            .put("Broken.vi", "C/M.vi")
+            .put("Broken.vi", "Other.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.vis, 1);
+        assert_eq!(checked.findings, [not_found("C/M.vi", "C/Sub/Gone.vi")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_member_listed_in_another_case_is_still_checked() {
+        let sandbox = Sandbox::with_packages("lib-member-case", "");
+        sandbox
+            .library_of(&["good.vi"])
+            .put("Broken.vi", "Good.vi")
+            .mkdir("Sub");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.findings, [not_found("good.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_member_under_a_dot_folder_is_checked_though_a_walk_skips_it() {
+        let sandbox = Sandbox::with_packages("lib-dot-member", "");
+        sandbox
+            .library_of(&[".hidden/Broken.vi"])
+            .put("Broken.vi", ".hidden/Broken.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.vis, 1);
+        assert_eq!(
+            checked.findings,
+            [not_found(".hidden/Broken.vi", ".hidden/Sub/Gone.vi")]
+        );
+        assert_eq!(sandbox.check().vis, 0, "`lvpm check` still skips dot-names");
+    }
+
+    #[test]
+    fn a_library_check_with_no_venv_is_no_venv() {
+        let root = testing::scratch_dir("check-lib-no-venv");
+        let manifest = "[project]\n[distribution]\ntop-level-library = \"Lib.lvlib\"\n";
+        std::fs::write(root.join("lvpm.toml"), manifest).unwrap();
+        let no_venv = |root: &Path| {
+            let why = check_library(&testing::env(root)).unwrap_err();
+            assert!(matches!(why, CheckError::NoVenv(_)), "{why}");
+        };
+        no_venv(&root);
+        // A venv folder that was never bound is none either.
+        std::fs::create_dir_all(root.join(".lv-venv")).unwrap();
+        no_venv(&root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_vi_file_is_a_vi_vit_vim_ctl_or_ctt_in_any_case() {
+        for yes in ["A.vi", "A.VIT", "A.vim", "A.ctl", "A.Ctt"] {
+            assert!(is_vi_file(Path::new(yes)), "{yes}");
+        }
+        for no in ["A.lvlib", "A.lvclass", "A.txt", "vi"] {
+            assert!(!is_vi_file(Path::new(no)), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_dependency_no_member_links_into_is_unused() {
+        let sandbox = Sandbox::with_packages(
+            "lib-unused",
+            "[dependencies]\ncheck_fixture_dep = \"*\"\ncheck_fixture_other = \"*\"",
+        );
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, ["check_fixture_other"]);
+    }
+
+    #[test]
+    fn a_dependency_a_member_links_into_is_not_unused() {
+        let sandbox =
+            Sandbox::with_packages("lib-used", "[dependencies]\ncheck_fixture_dep = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dependency_named_in_another_case_than_its_package_is_not_unused() {
+        let sandbox =
+            Sandbox::with_packages("lib-used-case", "[dependencies]\nCheck_Fixture_DEP = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn one_vi_linking_into_a_declared_and_an_undeclared_package_uses_both_and_is_barred_from_one() {
+        let dir = testing::scratch_dir("check-resolve-two-packages");
+        let mut search = search_in(&dir);
+        for (package, rel) in [("dep", DEP), ("other", DEV)] {
+            let file = dir.join(package).join("1/vi.lib").join(rel);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "").unwrap();
+            search.packages.push(dir.join(package).join("1"));
+            search.owners.insert(key(&file), package.to_string());
+        }
+        let manifest = Project {
+            dependencies: vec![("dep".into(), Constraint::Any)],
+            ..Project::default()
+        };
+        let uses = Uses {
+            project: &manifest,
+            member: true,
+        };
+        let vilib = |rel: &str| {
+            let parts: Vec<_> = rel.split('/').collect();
+            link(Kind::Symbolic(linker::Root::ViLib), &parts)
+        };
+        let mut seen = Seen::default();
+        let found = link_problems(
+            &[vilib(DEP), vilib(DEV)],
+            &dir.join("V.vi"),
+            &search,
+            &uses,
+            &dir,
+            &mut seen,
+        );
+        let barred = Problem::Undeclared {
+            link: DEV_LINK.into(),
+            package: "other".into(),
+            only_in: None,
+        };
+        assert_eq!(found, [barred]);
+        let both = ["dep", "other"].map(String::from);
+        assert_eq!(seen.used, HashSet::from(both));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dependency_only_a_vi_outside_the_library_uses_is_unused() {
+        let sandbox = Sandbox::with_packages(
+            "lib-outside-use",
+            "[dependencies]
+check_fixture_dep = \"*\"",
+        );
+        sandbox
+            .library_of(&["Helper.vi"])
+            .put("Helper.vi", "Helper.vi")
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, ["check_fixture_dep"]);
+    }
+
+    #[test]
+    fn with_no_dependencies_declared_a_member_linking_into_a_package_is_undeclared_and_nothing_is_unused()
+     {
+        let sandbox = Sandbox::with_packages("lib-no-dependencies", "[dependencies]");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        let library = sandbox.check_library();
+        let barred = undeclared("UsesDep.vi", DEP_LINK, "check_fixture_dep", None);
+        assert_eq!(library.checked.findings, [barred]);
+        assert_eq!(library.unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn unused_dependencies_come_in_manifest_order() {
+        let sandbox = Sandbox::with_packages(
+            "lib-order",
+            "[dependencies]
+zeta = \"*\"
+alpha = \"*\"",
+        );
+        sandbox
+            .library_of(&["Helper.vi"])
+            .put("Helper.vi", "Helper.vi");
+        assert_eq!(sandbox.check_library().unused, ["zeta", "alpha"]);
+    }
+
+    #[test]
+    fn a_separator_is_not_folded_when_a_dependency_is_matched_to_its_package() {
+        let sandbox = Sandbox::with_packages(
+            "lib-separator",
+            "[dependencies]
+check_fixture-dep = \"*\"",
+        );
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, ["check_fixture-dep"]);
+    }
+
+    #[test]
+    fn nothing_is_unused_while_a_library_link_could_not_be_looked_for() {
+        let sandbox =
+            Sandbox::with_packages("lib-unchecked", "[dependencies]\ncheck_fixture_dep = \"*\"");
+        sandbox
+            .library_of(&["UsesNi.vi"])
+            .put("UsesNi.vi", "UsesNi.vi");
+        // The installation is not here, so the link may lead into any package.
+        assert_eq!(sandbox.check_library().unused, Vec::<String>::new());
+        // Found in the installation, it leads into none.
+        sandbox.installed(NI_FILE);
+        assert_eq!(sandbox.check_library().unused, ["check_fixture_dep"]);
+    }
+
+    #[test]
+    fn nothing_is_unused_while_any_link_was_not_looked_for() {
+        let manifest = project::parse(
+            "[project]\nname = \"x\"\nversion = \"1.0\"\n[dependencies]\nspare = \"*\"\n",
+        )
+        .unwrap();
+        let mut seen = Seen::default();
+        assert_eq!(unused(&manifest, &seen), ["spare"]);
+        for why in [
+            Unchecked::Absolute,
+            Unchecked::Unfollowed,
+            Unchecked::Root("<resource>".into()),
+        ] {
+            seen.not_checked = BTreeMap::from([(why, 1)]);
+            assert_eq!(unused(&manifest, &seen), Vec::<String>::new());
+        }
+    }
+
+    #[test]
+    fn a_dependency_whose_file_the_installation_holds_too_is_not_unused() {
+        let sandbox = Sandbox::with_packages(
+            "lib-shadowed",
+            "[dependencies]
+check_fixture_dep = \"*\"",
+        );
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi")
+            .installed(&format!("vi.lib/{DEP}"));
+        let library = sandbox.check_library();
+        assert_eq!(library.checked.findings, []);
+        assert_eq!(library.unused, Vec::<String>::new());
     }
 
     #[test]

@@ -40,6 +40,20 @@ pub fn listing(checked: &Checked) -> String {
 /// stderr: each cause of links not looked for, and what could not be said of
 /// the run. `dir` is the folder that was asked for, if one was.
 pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
+    let under = dir.map_or_else(
+        || "the project".to_string(),
+        |d| one_line(&d.display().to_string()),
+    );
+    warnings_with(checked, &format!("under {under}"))
+}
+
+/// [`warnings`] for a build, which checks the library's members, not a folder.
+pub fn member_warnings(checked: &Checked) -> String {
+    warnings_with(checked, "among the library's members")
+}
+
+/// The warnings, saying where no VI was found.
+fn warnings_with(checked: &Checked, no_vis_where: &str) -> String {
     let mut text = String::new();
     for (cause, count) in &checked.not_checked {
         let why = match cause {
@@ -70,19 +84,31 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
         );
     }
     if checked.vis == 0 {
-        let under = dir.map_or_else(
-            || "the project".to_string(),
-            |d| one_line(&d.display().to_string()),
-        );
-        text.push_str(&format!("warning: no VIs under {under}\n"));
+        text.push_str(&format!("warning: no VIs {no_vis_where}\n"));
     }
     printable(text)
+}
+
+/// stderr of a build: a line for each declared dependency that no member links
+/// into.
+pub fn unused(names: &[String]) -> String {
+    let lines: String = names
+        .iter()
+        .map(|name| {
+            format!(
+                "[dependencies] names {}, which no member links to \
+                 (ignore this if it is loaded by path at run time)\n",
+                one_line(name)
+            )
+        })
+        .collect();
+    printable(lines)
 }
 
 /// The `--json` result: the same shape whether the check passed or not.
 pub fn result(checked: &Checked) -> Value {
     json!({
-        "ok": checked.findings.is_empty(),
+        "ok": checked.passed(),
         "vis": checked.vis,
         "not_checked": checked.not_checked_total(),
         "findings": checked.findings.iter().map(finding).collect::<Vec<_>>(),
@@ -218,6 +244,19 @@ mod tests {
             .insert(Unchecked::Root("<a\nnext: y>".into()), 1);
         assert_eq!(listing(&run).lines().count(), 3);
         assert_eq!(warnings(&run, None).lines().count(), 1);
+    }
+
+    #[test]
+    fn each_unused_dependency_is_a_line_and_cannot_forge_another() {
+        let names = ["spare".to_string(), "b\nc".to_string()];
+        assert_eq!(
+            unused(&names),
+            "[dependencies] names spare, which no member links to \
+             (ignore this if it is loaded by path at run time)\n\
+             [dependencies] names b?c, which no member links to \
+             (ignore this if it is loaded by path at run time)\n"
+        );
+        assert_eq!(unused(&[]), "");
     }
 
     #[test]
@@ -438,6 +477,10 @@ mod tests {
         );
         assert_eq!(warnings(&none, None), "warning: no VIs under the project\n");
         assert_eq!(warnings(&checked(1, vec![]), None), "");
+        assert_eq!(
+            member_warnings(&none),
+            "warning: no VIs among the library's members\n"
+        );
     }
 
     #[test]

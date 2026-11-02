@@ -67,6 +67,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s4-github-docs.feature",
     "tests/features/build-slices/s6-attestations.feature",
     "tests/features/build-slices/s5-lvpm-check.feature",
+    "tests/features/build-slices/s5b-lvpm-build-check.feature",
     "tests/features/lvpm-venv-resave/slice-2-staged-install-with-resave.feature",
     "tests/features/sources/s13-first-source-wins.feature",
     "tests/features/lvpm-min-release-age/slice-1-versions-younger-than-the-limit-are-held-back.feature",

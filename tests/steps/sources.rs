@@ -665,7 +665,7 @@ impl CliWorld {
         self.set(&["project"], "name", name);
         self.set(&["project"], "version", version);
         self.set(&["distribution"], "display-name", display_name);
-        self.lvpm_build();
+        self.lvpm_build_unchecked();
         self.succeeded();
         let file = format!("dist/{name}-{version}.lvpkg");
         std::fs::read(self.work(&file)).expect("the built package")

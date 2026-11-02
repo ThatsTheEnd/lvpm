@@ -11,6 +11,7 @@ use crate::support::sandbox::LOCAL_PACKAGES_DIR;
 use cucumber::{given, then, when};
 use lvpm_core::config::Config;
 use lvpm_core::ops::OpEnv;
+use lvpm_core::ops::build::Outcome;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -29,7 +30,7 @@ pub struct BuildState {
     members: Vec<&'static str>,
     output: Option<Output>,
     /// A package's bytes as an earlier build left them.
-    earlier: Option<Vec<u8>>,
+    pub(super) earlier: Option<Vec<u8>>,
 }
 
 impl CliWorld {
@@ -44,7 +45,7 @@ impl CliWorld {
     }
 
     /// `rel`'s text with `item` added as the last item of its root element.
-    fn add_item(&self, rel: &str, close: &str, item: &str) {
+    pub(super) fn add_item(&self, rel: &str, close: &str, item: &str) {
         let text = std::fs::read_to_string(self.work(rel)).expect("read the library");
         self.put(rel, &text.replace(close, &format!("\t{item}\n{close}")));
     }
@@ -71,10 +72,17 @@ impl CliWorld {
         std::fs::write(self.work(MANIFEST_FILE), text).expect("write the manifest");
     }
 
-    pub(super) fn lvpm_build(&mut self) {
+    /// `lvpm build` as the S1, S2 and S7a scenarios mean it: their members are
+    /// text, not VIs, and they have no venv, so the member check is skipped.
+    pub(super) fn lvpm_build_unchecked(&mut self) {
+        self.lvpm_build_with(&["--no-check"]);
+    }
+
+    /// `lvpm build args...` for the manifest the scenario's table says.
+    pub(super) fn lvpm_build_with(&mut self, args: &[&str]) {
         self.write_build_manifest();
         let output = match self.build.no_labview {
-            false => self.sandbox.run_lvpm(&["build"], None),
+            false => self.sandbox.run_lvpm(&[&["build"], args].concat(), None),
             true => {
                 let sink = RecordingSink::default();
                 let config = Config {
@@ -83,7 +91,7 @@ impl CliWorld {
                     venv_dir: PathBuf::from(".lv-venv"),
                 };
                 let env = OpEnv::new(&sink, config, Vec::new(), self.sandbox.work_dir());
-                let built = lvpm_core::ops::build::build(&env);
+                let built = lvpm_core::ops::build::build(&env, !args.contains(&"--no-check"));
                 Output {
                     stdout: String::new(),
                     stderr: built
@@ -91,7 +99,10 @@ impl CliWorld {
                         .err()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_default(),
-                    exit_code: i32::from(built.is_err()),
+                    exit_code: match &built {
+                        Ok(Outcome::Refused(_)) | Err(_) => 1,
+                        Ok(_) => 0,
+                    },
                     tree: None,
                 }
             }
@@ -352,21 +363,21 @@ async fn unreadable(world: &mut CliWorld) {
 
 #[given(regex = r#"^dist holds a built "([^"]+)"$"#)]
 async fn built_before(world: &mut CliWorld, _package: String) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
     world.succeeded();
     world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
 }
 
 #[when("lvpm build runs")]
 async fn build_runs(world: &mut CliWorld) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
 }
 
 #[when(
     "lvpm build runs, every member's modification time is set to a different value, dist is emptied, and lvpm build runs again"
 )]
 async fn build_twice(world: &mut CliWorld) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
     world.succeeded();
     world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
     let then = SystemTime::now() - Duration::from_secs(86_400);
@@ -379,7 +390,7 @@ async fn build_twice(world: &mut CliWorld) {
             .expect("set a time");
     }
     std::fs::remove_dir_all(world.work(DIST)).expect("empty dist");
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
 }
 
 #[then(regex = r#"^it succeeds, prints the path of "([^"]+)", and dist holds no \.vip$"#)]

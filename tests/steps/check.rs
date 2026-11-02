@@ -73,16 +73,27 @@ impl CliWorld {
     /// is about, not every one the fixture lists.
     fn declaring_project(&self, spec: &str, holding: &str) {
         self.check_project(None, true, &manifest_tables(spec), holding);
+        self.install_fixture_packages();
+        let work = self.sandbox.work_dir();
+        if !work.join("Lib.lvlib").exists() {
+            self.put_fixture("Lib.lvlib", &work);
+        }
+        self.keep_held_members();
+    }
+
+    /// Both fixture packages, installed in the venv.
+    fn install_fixture_packages(&self) {
         for (package, rel) in [
             (PACKAGE, "Check Fixture/Dep.vi"),
             ("check_fixture_other", "Check Fixture Dev/DevDep.vi"),
         ] {
             self.install_in_venv(package, rel, &Path::new(PACKAGES).join(rel));
         }
+    }
+
+    /// `Lib.lvlib` without the members the project does not hold.
+    fn keep_held_members(&self) {
         let work = self.sandbox.work_dir();
-        if !work.join("Lib.lvlib").exists() {
-            self.put_fixture("Lib.lvlib", &work);
-        }
         let text = std::fs::read_to_string(work.join("Lib.lvlib")).expect("the library");
         let held = |line: &&str| match line.split_once("URL=\"../") {
             Some((_, rest)) => work
@@ -92,6 +103,46 @@ impl CliWorld {
         };
         let kept: Vec<&str> = text.lines().filter(held).collect();
         std::fs::write(work.join("Lib.lvlib"), kept.join("\n")).expect("trim the library");
+    }
+
+    /// A project a build can package: `Lib.lvlib` is `library`, and lists only
+    /// the members the scenario holds.
+    fn build_project(&self, labview: &str, library: &str, holding: &str) {
+        self.check_project(Some(labview), true, &distribution(library), holding);
+        self.keep_held_members();
+    }
+
+    /// The fixture VI `name`, listed by `Lib.lvlib`.
+    fn add_member(&self, name: &str) {
+        self.put_fixture(name, &self.sandbox.work_dir());
+        self.list_member(name);
+    }
+
+    /// `name`, a file in the project, listed by `Lib.lvlib`.
+    fn list_member(&self, name: &str) {
+        let item = format!("<Item Name=\"{name}\" Type=\"VI\" URL=\"../{name}\"/>");
+        self.add_item("Lib.lvlib", "</Library>", &item);
+    }
+
+    /// `text` added to `lvpm.toml`: a table the manifest does not have yet.
+    fn append_to_manifest(&self, text: &str) {
+        let path = self.sandbox.work_dir().join(MANIFEST_FILE);
+        let manifest = std::fs::read_to_string(&path).expect("read the manifest");
+        std::fs::write(path, format!("{manifest}\n{text}")).expect("write the manifest");
+    }
+
+    /// The `.lvpkg` files `lvpm build` left in `dist/`.
+    fn built_packages(&self) -> Vec<PathBuf> {
+        let dist = self.sandbox.work_dir().join("dist");
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dist)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "lvpkg"))
+            .collect();
+        found.sort();
+        found
     }
 
     /// What `lvpm venv create` leaves, as the venv of the project is bound to
@@ -371,11 +422,14 @@ async fn project_holds_in_folder(world: &mut CliWorld, name: String, folder: Str
     world.put_fixture(&name, &world.sandbox.work_dir().join(folder));
 }
 
-/// The `[distribution]` table of a project whose library is `library`.
+/// The `[distribution]` table of a project whose library is `library`, with
+/// the keys `lvpm build` needs besides it.
 fn distribution(library: &str) -> String {
     format!(
         "[distribution]
 top-level-library = \"{library}\"
+vendor = \"Vendor\"
+display-name = \"Check Lib\"
 "
     )
 }
@@ -426,6 +480,22 @@ async fn installed_from_the_pilot_archive(world: &mut CliWorld, package: String)
 #[given(regex = r#"^"([^"]+)" is deleted from the project$"#)]
 async fn deleted_from_the_project(world: &mut CliWorld, file: String) {
     std::fs::remove_file(world.sandbox.work_dir().join(file)).expect("delete the file");
+}
+
+/// The library file lists what it holds, so a build that finds a listed file
+/// missing stops before it checks anything: the demo takes the file out of
+/// the listing too, and its caller's link is then what breaks.
+#[given(regex = r#"^"([^"]+)" is no longer listed in "([^"]+)"$"#)]
+async fn no_longer_listed(world: &mut CliWorld, item: String, file: String) {
+    let path = world.sandbox.work_dir().join(file);
+    let text = std::fs::read_to_string(&path).expect("read the library file");
+    let from = text
+        .find(&format!("<Item Name=\"{item}\""))
+        .expect("the item is listed");
+    let to = from + text[from..].find("</Item>").expect("the item ends") + "</Item>".len();
+    let first = text[..from].rfind('\n').map_or(0, |at| at + 1);
+    let last = text[to..].find('\n').map_or(text.len(), |at| to + at + 1);
+    std::fs::write(&path, format!("{}{}", &text[..first], &text[last..])).expect("write it back");
 }
 
 // ---- running ----
@@ -584,4 +654,203 @@ async fn json_with_a_finding(
         (&found["vi"], &found["kind"], &found["link"]),
         (&json!(vi), &json!(kind), &json!(link))
     );
+}
+
+// ---- lvpm build runs the check ----
+
+#[given(
+    regex = r#"^a check project with labview "([^"]+)" and \[distribution\] naming "([^"]+)", holding (.+)$"#
+)]
+async fn build_project(world: &mut CliWorld, labview: String, library: String, holding: String) {
+    world.build_project(&labview, &library, &holding);
+}
+
+#[given(regex = r#"^"([^"]+)" is a member of "Lib\.lvlib" and the folder "([^"]+)" is empty$"#)]
+async fn member_and_empty_folder(world: &mut CliWorld, vi: String, folder: String) {
+    world.add_member(&vi);
+    std::fs::create_dir_all(world.sandbox.work_dir().join(folder)).expect("make the folder");
+}
+
+#[given(regex = r#"^"([^"]+)" is a member of "Lib\.lvlib" in the dot-folder "([^"]+)"$"#)]
+async fn member_in_a_dot_folder(world: &mut CliWorld, vi: String, folder: String) {
+    world.put_fixture(&vi, &world.sandbox.work_dir().join(&folder));
+    world.list_member(&format!("{folder}/{vi}"));
+}
+
+#[given(regex = r#"^"([^"]+)", a copy of "([^"]+)", is also a member$"#)]
+async fn copy_is_also_a_member(world: &mut CliWorld, copy: String, of: String) {
+    let work = world.sandbox.work_dir();
+    std::fs::copy(work.join(of), work.join(&copy)).expect("copy the VI");
+    world.list_member(&copy);
+}
+
+#[given(regex = r#"^the project also holds "([^"]+)", not a member$"#)]
+async fn holds_a_non_member(world: &mut CliWorld, vi: String) {
+    world.put_fixture(&vi, &world.sandbox.work_dir());
+}
+
+#[given(regex = r#"^\[dependencies\] names "([^"]+)"(?: and no member links into it)?$"#)]
+async fn dependencies_names(world: &mut CliWorld, package: String) {
+    world.append_to_manifest(&format!("[dependencies]\n{package} = \"*\"\n"));
+}
+
+#[given(
+    regex = r#"^member "([^"]+)" links into package "([^"]+)" installed in the venv, and (.+)$"#
+)]
+async fn member_links_into_a_package(
+    world: &mut CliWorld,
+    vi: String,
+    package: String,
+    declared: String,
+) {
+    assert_eq!(package, PACKAGE, "the fixture VIs link into {PACKAGE}");
+    world.add_member(&vi);
+    world.install_fixture_packages();
+    let table = match declared.as_str() {
+        "[dependencies] is empty" => return,
+        d if d.ends_with(" only in [dev-dependencies]") => "dev-dependencies",
+        d if d.ends_with(" in [dependencies]") => "dependencies",
+        other => panic!("no such declaration: {other}"),
+    };
+    world.append_to_manifest(&format!("[{table}]\n{package} = \"*\"\n"));
+}
+
+#[given(regex = r#"^the member "([^"]+)" (is saved in .+|keeps .+|has its LIvi .+|contains .+)$"#)]
+async fn member_is_broken(world: &mut CliWorld, vi: String, how: String) {
+    let path = world.sandbox.work_dir().join(&vi);
+    match how.as_str() {
+        "is saved in a LabVIEW newer than the minimum" => {
+            let manifest = world.sandbox.work_dir().join(MANIFEST_FILE);
+            let text = std::fs::read_to_string(&manifest).expect("read the manifest");
+            let lowered = text.replace("labview = \">=2026\"", "labview = \">=2025\"");
+            std::fs::write(manifest, lowered).expect("lower the minimum");
+        }
+        "keeps its compiled code" => {
+            let bytes = std::fs::read(Path::new(FIXTURES).join("NotSeparated.vi")).expect("a VI");
+            world.write(&path, &bytes);
+        }
+        "has its LIvi section size set past the end" => {
+            world.write(&path, &world.with_a_wild_livi(&vi));
+        }
+        c if c.starts_with("contains ") => {
+            world.write(&path, quoted(c)[0].as_bytes());
+        }
+        other => panic!("no such change to a member: {other}"),
+    }
+}
+
+#[given("the project has no venv")]
+async fn no_venv(world: &mut CliWorld) {
+    std::fs::remove_dir_all(world.sandbox.venv_dir()).expect("remove the venv");
+}
+
+#[given("dist holds a built package for this version")]
+async fn dist_holds_a_built_package(world: &mut CliWorld) {
+    world.run("lvpm build", None);
+    assert_eq!(world.checked().exit_code, 0, "{:?}", world.checked());
+    let packages = world.built_packages();
+    assert_eq!(packages.len(), 1, "{packages:?}");
+    world.build.earlier = Some(std::fs::read(&packages[0]).expect("the package"));
+}
+
+#[when(regex = r"^lvpm build( --no-check)? runs on it(?: with( --json))?$")]
+async fn build_runs_on_it(world: &mut CliWorld, no_check: String, json: String) {
+    world.run(&format!("lvpm build{no_check}{json}"), None);
+}
+
+impl CliWorld {
+    fn exited(&self, code: i32) {
+        let out = self.checked();
+        assert_eq!(out.exit_code, code, "{out:?}");
+    }
+
+    fn dist_holds_the_package(&self) {
+        let packages = self.built_packages();
+        assert_eq!(packages.len(), 1, "{packages:?}: {:?}", self.checked());
+    }
+}
+
+#[then("it exits 0, dist holds the package, and stderr is empty")]
+async fn built_with_no_stderr(world: &mut CliWorld) {
+    world.exited(0);
+    world.dist_holds_the_package();
+    assert_eq!(world.checked().stderr, "", "{:?}", world.checked());
+}
+
+#[then("it exits 0 and dist holds the package")]
+async fn built_and_dist_holds_the_package(world: &mut CliWorld) {
+    world.exited(0);
+    world.dist_holds_the_package();
+}
+
+#[then("it exits 1 and that package is byte-identical to before")]
+async fn refused_and_package_unchanged(world: &mut CliWorld) {
+    world.exited(1);
+    let packages = world.built_packages();
+    assert_eq!(packages.len(), 1, "{packages:?}");
+    let now = std::fs::read(&packages[0]).expect("the package");
+    assert!(
+        world.build.earlier.as_ref() == Some(&now),
+        "the package changed"
+    );
+}
+
+#[then(regex = r"^it exits 1 and dist holds no \.lvpkg$")]
+async fn refused_and_no_package(world: &mut CliWorld) {
+    world.exited(1);
+    world.no_package_in_dist();
+}
+
+#[then(regex = r#"^it exits 1, stdout has a line starting "([^"]+)", and dist holds no \.lvpkg$"#)]
+async fn refused_with_a_line(world: &mut CliWorld, start: String) {
+    world.exited(1);
+    stdout_has_a_line_starting(world, start).await;
+    world.no_package_in_dist();
+}
+
+#[then(regex = r#"^it exits 1, stderr names "([^"]+)" and "([^"]+)", and dist holds no \.lvpkg$"#)]
+async fn refused_naming(world: &mut CliWorld, first: String, second: String) {
+    world.exited(1);
+    stderr_says(world, first).await;
+    stderr_says(world, second).await;
+    world.no_package_in_dist();
+}
+
+#[then(regex = r#"^stderr has no line containing "([^"]+)"$"#)]
+async fn stderr_has_no_line_containing(world: &mut CliWorld, text: String) {
+    let out = world.checked();
+    assert!(!out.stderr.lines().any(|l| l.contains(&text)), "{out:?}");
+}
+
+#[then(regex = r#"^stderr's last line is "([^"]+)"$"#)]
+async fn stderr_last_line(world: &mut CliWorld, text: String) {
+    let out = world.checked();
+    assert_eq!(out.stderr.lines().last(), Some(text.as_str()), "{out:?}");
+}
+
+#[then("dist holds only that package")]
+async fn dist_holds_only_that_package(world: &mut CliWorld) {
+    let dist = world.sandbox.work_dir().join("dist");
+    let found: Vec<_> = std::fs::read_dir(dist).expect("dist").flatten().collect();
+    assert_eq!(found.len(), 1, "dist holds {found:?}");
+}
+
+#[then(regex = r#"^stderr is exactly "([^"]+)"$"#)]
+async fn stderr_is_exactly(world: &mut CliWorld, text: String) {
+    let out = world.checked();
+    assert_eq!(out.stderr.trim_end(), text, "{out:?}");
+}
+
+#[then(
+    regex = r#"^it exits 1, dist holds no \.lvpkg, and the JSON has "ok": false, "command": "build" and one finding for "([^"]+)"$"#
+)]
+async fn refused_as_json(world: &mut CliWorld, vi: String) {
+    world.exited(1);
+    world.no_package_in_dist();
+    let result = json_result(world);
+    assert_eq!(result["ok"], json!(false), "{result}");
+    assert_eq!(result["command"], json!("build"), "{result}");
+    let findings = result["findings"].as_array().expect("findings");
+    assert_eq!(findings.len(), 1, "{result}");
+    assert_eq!(findings[0]["vi"], json!(vi), "{result}");
 }

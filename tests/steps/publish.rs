@@ -69,7 +69,7 @@ impl CliWorld {
         if let Some(v) = version {
             self.set(&["project"], "version", v);
         }
-        self.lvpm_build();
+        self.lvpm_build_unchecked();
         self.succeeded();
     }
 

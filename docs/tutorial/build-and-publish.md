@@ -41,7 +41,9 @@ $ lvpm build
 ```
 
 writes `dist/hello_lvpm-0.1.0.lvpkg`. It needs no LabVIEW, and the same
-sources always give the same bytes. A build that fails names the key or file
+sources always give the same bytes. It checks the library's members first, so
+the project needs its venv (`lvpm venv create`, `lvpm sync`), or pass
+`--no-check`. A build that fails names the key or file
 at fault.
 
 A `.lvpkg` is lvpm's own format; VIPM does not read it

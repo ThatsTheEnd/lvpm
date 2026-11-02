@@ -101,6 +101,9 @@ $ lvpm build                                # dist/<name>-<version>.lvpkg, no La
 $ lvpm publish --to D:/feeds/packages        # copy it into a folder feed, never replacing
 ```
 
+`lvpm build` checks the library's members first, so it needs a venv
+(`lvpm venv create`, `lvpm sync`) or `--no-check`.
+
 ## Why
 
 LabVIEW packaging was open before it was closed. The **OpenG Package Tools**

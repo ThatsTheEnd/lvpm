@@ -406,6 +406,19 @@ What S5b and `lvpm tree` can reuse, as S5 left it:
 
 ### Slice S5b: `lvpm build` runs the check
 
+**Landed.** It differs from the text below in two ways: a `[dependencies]`
+entry that no member links to is a warning, not a failure (a package loaded by
+path at run time has no link), and `lvpm build --no-check` skips the check and
+needs no venv, which the release template uses on a runner without LabVIEW.
+A link into a package the manifest does not list still fails the build.
+Two rules the plan did not have: no unused dependency is reported while any
+member link went unchecked (such a link may lead into any package), and a
+declared package counts as used when the bound installation holds a copy of
+the linked file (`Search::shadowed`).
+S9 and S7a can reuse `ops::check::check_library` (the members' `Checked` and
+the unused dependencies, as a `Library`) and `ops::build::Outcome`
+(`Built` or `Refused(Library)`). The text below is the slice as it was planned.
+
 **Depends-on:** S1, S5
 **Files:** `crates/lvpm-core/src/ops/build.rs`, `src/main.rs`
 
