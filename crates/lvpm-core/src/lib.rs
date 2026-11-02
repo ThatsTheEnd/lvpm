@@ -30,6 +30,7 @@ pub mod spec;
 pub mod target;
 pub mod timefmt;
 pub mod venv;
+pub mod verify;
 pub mod version;
 pub mod vipc;
 pub mod vipm_interop;

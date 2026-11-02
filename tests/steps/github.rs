@@ -119,6 +119,11 @@ async fn the_pilot_b_project(world: &mut CliWorld) {
     world.pilot_b_project(PILOT_B_CONSTRAINT);
 }
 
+#[given("the pilot B project, locked")]
+async fn the_pilot_b_project_locked(world: &mut CliWorld) {
+    the_pilot_b_project_with_a_lock(world).await;
+}
+
 #[given(regex = r#"^the pilot B project, asking for version "([^"]+)"$"#)]
 async fn the_pilot_b_project_asking_for(world: &mut CliWorld, constraint: String) {
     world.pilot_b_project(&constraint);
@@ -316,6 +321,18 @@ async fn a_project_with_a_github_package_and_a_lock(
 ) {
     a_project_depending_on_a_github_package(world, name, repo, constraint).await;
     world.lock_is_current();
+}
+
+#[given(regex = r"^the manifest (?:has|gains) \[policy\] require-signature = true$")]
+async fn the_manifest_requires_a_signature(world: &mut CliWorld) {
+    world.edit_the_manifest_text(|text| {
+        format!(
+            "{text}
+[policy]
+require-signature = true
+"
+        )
+    });
 }
 
 #[given(regex = r#"^GH_TOKEN is "([^"]*)"$"#)]
@@ -737,6 +754,28 @@ async fn the_command_fails_naming_both_hashes(world: &mut CliWorld, name: String
     let now = sha256_hex(replaced.expect("other bytes were served"));
     for part in [name, locked, now] {
         assert!(report.contains(&part), "{part} is not in:\n{report}");
+    }
+}
+
+#[then(regex = r#"^the command fails with exit code 1 naming "([^"]+)"$"#)]
+async fn the_command_fails_with_exit_code_1_naming(world: &mut CliWorld, said: String) {
+    assert_eq!(world.output().exit_code, 1, "{}", world.printed());
+    let report = world.printed();
+    assert!(
+        report.contains(&said),
+        "{said:?} is not in:
+{report}"
+    );
+}
+
+#[then(regex = r#"^lvpm\.lock has no signer for "([^"]+)"$"#)]
+async fn the_lock_has_no_signer_for(world: &mut CliWorld, name: String) {
+    let package = world.locked_package(&name);
+    for key in ["signer", "subject"] {
+        assert!(
+            !package.contains_key(key),
+            "{name} has a {key}: {package:?}"
+        );
     }
 }
 

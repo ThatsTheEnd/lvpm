@@ -24,6 +24,10 @@
 //!
 //! [nipm.dependencies]               # NI Package Manager packages, reported only
 //! ni-daqmx-labview-support = "26.0"
+//!
+//! [policy]                          # what a GitHub release's attestation must say
+//! require-signature = true          # refuse a release with no attestation
+//! trusted-publishers = ["https://github.com/a/*"]  # and one from any other repository
 //! ```
 //!
 //! `labview` is a minimum: a venv binds to that version or a newer one, never
@@ -31,6 +35,7 @@
 
 use crate::errors::LockError;
 use crate::manifest_edit::DependencyTable;
+use crate::verify::Policy;
 use crate::version::Version;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -195,6 +200,9 @@ pub struct Project {
     /// `[distribution]`, as written: `lvpm build` reads it through
     /// `distribution::validate`, and `lvpm check` for the library it names.
     pub distribution: Option<toml::Table>,
+    /// `[policy]`: what a GitHub release's attestation must say. Trust on
+    /// first use when absent.
+    pub policy: Policy,
 }
 
 impl Default for Project {
@@ -212,6 +220,7 @@ impl Default for Project {
             github: BTreeMap::new(),
             nipm: Vec::new(),
             distribution: None,
+            policy: Policy::default(),
         }
     }
 }
@@ -262,6 +271,8 @@ struct File {
     dependency_groups: toml::Table,
     nipm: NipmTable,
     distribution: Option<toml::Table>,
+    /// Any value: `policy = 1` is refused by key, not as a shape mismatch.
+    policy: Option<toml::Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -333,7 +344,52 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     p.dev_dependencies = parse_dependencies("dev-dependencies", f.dev_dependencies, &mut p.github)?;
     p.groups = parse_groups(f.dependency_groups, &mut p.github)?;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
+    p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
     Ok(p)
+}
+
+/// `[policy]`: the two keys it knows, `require-signature` and
+/// `trusted-publishers`. Any other key is refused, never ignored.
+fn parse_policy(value: toml::Value) -> Result<Policy> {
+    let toml::Value::Table(table) = value else {
+        bail!("policy must be a table");
+    };
+    let mut policy = Policy::default();
+    for (key, value) in table {
+        match (key.as_str(), value) {
+            ("require-signature", toml::Value::Boolean(b)) => policy.require_signature = b,
+            ("require-signature", _) => bail!("[policy] require-signature must be true or false"),
+            ("trusted-publishers", toml::Value::Array(patterns)) => {
+                policy.trusted_publishers = patterns
+                    .into_iter()
+                    .map(trusted_publisher)
+                    .collect::<Result<_>>()?;
+            }
+            ("trusted-publishers", _) => {
+                bail!("[policy] trusted-publishers must be a list of URL patterns")
+            }
+            (key, _) => bail!(
+                "[policy] has unknown key `{key}` (expected require-signature, trusted-publishers)"
+            ),
+        }
+    }
+    Ok(policy)
+}
+
+/// One `trusted-publishers` entry: a string that starts with the GitHub URL,
+/// in any case. What its `*` means is [`crate::verify::pattern_matches`]'s.
+fn trusted_publisher(value: toml::Value) -> Result<String> {
+    match value {
+        toml::Value::String(pattern)
+            if pattern.to_ascii_lowercase().starts_with(GITHUB_URL_PREFIX) =>
+        {
+            Ok(pattern)
+        }
+        toml::Value::String(pattern) => bail!(
+            "[policy] trusted-publishers entry `{pattern}` must start with {GITHUB_URL_PREFIX}"
+        ),
+        _ => bail!("[policy] trusted-publishers must be a list of URL patterns"),
+    }
 }
 
 /// `project.labview` as written, `">=2024"`, to the year it starts at, `"2024"`:
@@ -1118,6 +1174,80 @@ e = \"*\"
             why,
             "[dependency-groups.ci] Caraya: github = \"x/y\" differs from \"o/r\" in the other dependency table"
         );
+    }
+
+    #[test]
+    fn a_policy_table_is_read() {
+        let p = parse(
+            "[policy]\nrequire-signature = true\ntrusted-publishers = [\"https://github.com/a/*\"]\n",
+        )
+        .unwrap();
+        assert!(p.policy.require_signature);
+        assert_eq!(p.policy.trusted_publishers, ["https://github.com/a/*"]);
+    }
+
+    #[test]
+    fn no_policy_means_trust_on_first_use() {
+        assert!(
+            parse("[project]\nname = \"x\"\n")
+                .unwrap()
+                .policy
+                .is_default()
+        );
+        assert!(parse("[policy]\n").unwrap().policy.is_default());
+    }
+
+    #[test]
+    fn a_bad_policy_is_refused_naming_the_key() {
+        for (policy, key) in [
+            ("[policy]\nrequire-signature = \"yes\"", "require-signature"),
+            ("[policy]\ntrusted-publisher = []", "`trusted-publisher`"),
+            (
+                "[policy]\ntrusted-publishers = \"https://github.com/a/*\"",
+                "trusted-publishers",
+            ),
+            ("[policy]\ntrusted-publishers = [1]", "trusted-publishers"),
+            (
+                "[policy]\ntrusted-publishers = [\"\"]",
+                "trusted-publishers",
+            ),
+            (
+                "[policy]\ntrusted-publishers = [\"github.com/a/*\"]",
+                "trusted-publishers",
+            ),
+            ("policy = 1", "policy"),
+        ] {
+            let why = parse(policy).unwrap_err().to_string();
+            assert!(why.contains(key), "{policy}: {why}");
+        }
+    }
+
+    #[test]
+    fn a_bad_policy_says_what_to_write() {
+        let why = |text| parse(text).unwrap_err().to_string();
+        assert_eq!(
+            why("[policy]\ntrusted-publisher = []"),
+            "[policy] has unknown key `trusted-publisher` (expected require-signature, trusted-publishers)"
+        );
+        assert_eq!(
+            why("[policy]\ntrusted-publishers = [\"github.com/a/*\"]"),
+            "[policy] trusted-publishers entry `github.com/a/*` must start with https://github.com/"
+        );
+        assert_eq!(why("policy = 1"), "policy must be a table");
+        assert_eq!(
+            why("[policy]\nrequire-signature = 1"),
+            "[policy] require-signature must be true or false"
+        );
+        assert_eq!(
+            why("[policy]\ntrusted-publishers = 1"),
+            "[policy] trusted-publishers must be a list of URL patterns"
+        );
+    }
+
+    #[test]
+    fn a_pattern_starts_with_the_github_url_in_any_case() {
+        let p = parse("[policy]\ntrusted-publishers = [\"HTTPS://GitHub.com/A/*\"]\n").unwrap();
+        assert_eq!(p.policy.trusted_publishers, ["HTTPS://GitHub.com/A/*"]);
     }
 
     #[test]

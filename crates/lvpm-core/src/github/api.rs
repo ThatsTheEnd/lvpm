@@ -11,7 +11,7 @@ use crate::fetch::Rejected;
 use crate::version::Version;
 use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, HeaderMap, LINK, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -25,7 +25,7 @@ const PER_PAGE: usize = 100;
 const MAX_PAGES: usize = 50;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// A page of releases larger than this is not one GitHub sent.
-const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024;
 /// The API version the requests ask for.
 const API_VERSION: &str = "2022-11-28";
 /// The cache's `kind` for a repo's listing.
@@ -218,22 +218,30 @@ fn fetch_all(
     )))
 }
 
+/// A GET of `url` as every API call is made: the API's headers, the timeout
+/// and, when there is one, the token.
+pub(super) fn request(client: &Client, url: &str, auth: &GitHubAuth) -> RequestBuilder {
+    let request = client
+        .get(url)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", API_VERSION)
+        .header(USER_AGENT, concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+        .timeout(REQUEST_TIMEOUT);
+    match auth.token() {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    }
+}
+
 /// One API call: the body, and the `Link` header.
 fn get(
     client: &Client,
     url: &str,
     auth: &GitHubAuth,
 ) -> Result<(Vec<u8>, Option<String>), GitHubFault> {
-    let mut request = client
-        .get(url)
-        .header(ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", API_VERSION)
-        .header(USER_AGENT, concat!("lvpm/", env!("CARGO_PKG_VERSION")))
-        .timeout(REQUEST_TIMEOUT);
-    if let Some(token) = auth.token() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().map_err(|error| transport(&error))?;
+    let response = request(client, url, auth)
+        .send()
+        .map_err(|error| transport(&error))?;
     let status = response.status();
     let headers = response.headers().clone();
     let mut body = Vec::new();
@@ -258,7 +266,7 @@ fn get(
 
 /// The fault for a status that is not a success, at `now` (Unix seconds).
 /// `auth` says whether a token was sent, and from where.
-fn failure(
+pub(super) fn failure(
     status: StatusCode,
     headers: &HeaderMap,
     body: &[u8],
@@ -314,7 +322,7 @@ fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(200).collect()
 }
 
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64)

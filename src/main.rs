@@ -5,7 +5,7 @@
 #![allow(clippy::disallowed_methods)]
 
 use lvpm_core::events::{Event, EventSink};
-use lvpm_core::github::{GitHub, gh_auth_token};
+use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
@@ -545,7 +545,8 @@ fn op_env<'a>(cli: &Cli, sink: &'a dyn EventSink) -> Result<OpEnv<'a>> {
     };
     env.refresh = cli.refresh;
     env.headless = std::env::var_os("LV_RTE_HEADLESS").is_some();
-    env.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token);
+    env.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token)
+        .with_gh_runner(gh::real_runner());
     Ok(env)
 }
 

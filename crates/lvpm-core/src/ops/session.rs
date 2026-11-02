@@ -15,10 +15,11 @@ use super::staging::Staging;
 use crate::cache::{Cache, Stored};
 use crate::cancel::CancelToken;
 use crate::fetch;
-use crate::github::{self, GitHubAuth};
+use crate::github::{self, GitHub};
 use crate::index::{self, Entry};
 use crate::target::{LvTarget, Roots};
 use crate::venv::Venv;
+use crate::verify::Outcome;
 use crate::viserver::Connection;
 use anyhow::Result;
 use reqwest::blocking::Client;
@@ -31,7 +32,7 @@ pub(super) struct Downloads {
     client: Client,
     cache: Cache,
     cancel: CancelToken,
-    github: GitHubAuth,
+    github: GitHub,
 }
 
 impl Downloads {
@@ -42,7 +43,7 @@ impl Downloads {
                 .build()?,
             cache: Cache::open(&env.config.cache)?,
             cancel: env.cancel.clone(),
-            github: env.github.auth.clone(),
+            github: env.github.clone(),
         })
     }
 
@@ -51,12 +52,11 @@ impl Downloads {
     /// environment's token is cancelled, [`Cancelled`](crate::errors::Cancelled).
     pub(super) fn fetch(&self, entry: &Entry) -> Result<Vec<u8>> {
         let repo = index::github_repo(entry);
-        let token = || repo.and_then(|_| self.github.token());
+        let token = || repo.and_then(|_| self.github.auth.token());
         let bytes = fetch::package(&self.cache, &self.client, entry, token, &self.cancel);
         match repo {
-            Some(repo) => {
-                bytes.map_err(|why| github::download_error(why, &entry.name, repo, &self.github))
-            }
+            Some(repo) => bytes
+                .map_err(|why| github::download_error(why, &entry.name, repo, &self.github.auth)),
             None => bytes,
         }
     }
@@ -70,8 +70,17 @@ impl Downloads {
         name: &str,
         refresh: bool,
     ) -> Result<github::Listing> {
-        let (cache, client, auth) = (&self.cache, &self.client, &self.github);
+        let (cache, client, auth) = (&self.cache, &self.client, &self.github.auth);
         github::releases_cached(cache, client, api, repo, name, auth, refresh)
+    }
+
+    /// The attestation outcome for the archive of `repo` (`owner/repo`) held in
+    /// the cache under `sha256`; see [`github::attestation::outcome`].
+    pub(super) fn attestation(&self, repo: &str, sha256: &str) -> Outcome {
+        // The cache and GitHub both key by the lowercase digest; a lock may not.
+        let sha256 = sha256.to_ascii_lowercase();
+        let blob = self.cache.blob_path(&sha256);
+        github::attestation::outcome(&self.client, &self.github, repo, &sha256, &blob)
     }
 
     /// What the cache holds under this SHA-256, without removing anything.
@@ -265,6 +274,58 @@ mod tests {
                 "{source}: {head}"
             );
         }
+        std::fs::remove_dir_all(cache).ok();
+    }
+
+    #[test]
+    fn gh_is_run_on_the_cached_archive_with_the_repo_and_the_token() {
+        use crate::github::gh::GhRun;
+        use crate::verify::NotChecked;
+        use std::sync::{Arc, Mutex};
+
+        let cache = std::env::temp_dir().join(format!("lvpm-session-gh-{}", std::process::id()));
+        let mut env = OpEnv::new(
+            &NullSink,
+            crate::config::Config {
+                cache: cache.clone(),
+                local_sources: Vec::new(),
+                venv_dir: "venv".into(),
+            },
+            Vec::new(),
+            PathBuf::from("."),
+        );
+        let (url, server) = serve_once("200 OK", br#"{"attestations":[{"bundle":{}}]}"#);
+        env.github.api = url.trim_end_matches("/package.vip").to_string();
+        env.github.auth = GitHubAuth::new(
+            |name| (name == "GH_TOKEN").then(|| "tok".to_string()),
+            || None,
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        env.github.runner = Arc::new(move |archive, repo, token| {
+            seen.lock()
+                .unwrap()
+                .push((archive.to_path_buf(), repo.to_string(), token.to_string()));
+            GhRun::NotRunnable(NotChecked::GhTimedOut)
+        });
+        let downloads = Downloads::open(&env).unwrap();
+        let sha = downloads.keep(b"archive").unwrap();
+
+        assert_eq!(
+            downloads.attestation("o/r", &sha.to_ascii_uppercase()),
+            Outcome::Unchecked(NotChecked::GhTimedOut)
+        );
+        let head = server.join().unwrap();
+        assert!(
+            head.starts_with(&format!("get /repos/o/r/attestations/sha256:{sha} ")),
+            "{head}"
+        );
+        let blob = downloads.cache.blob_path(&sha);
+        assert!(blob.is_file());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [(blob, "o/r".to_string(), "tok".to_string())]
+        );
         std::fs::remove_dir_all(cache).ok();
     }
 

@@ -298,10 +298,11 @@ fn new_lock(
         return locking::lock(env);
     }
     let previous = Lockfile::read(lock_path).ok();
-    let (lock, changes) = locking::relock(env, found, previous.as_ref())?;
+    let (lock, changes, after) = locking::relock(env, found, previous.as_ref())?;
     if !changes.is_empty() {
         env.sink.emit(Event::LockWouldChange { changes });
     }
+    after.into_iter().for_each(|event| env.sink.emit(event));
     Ok(lock)
 }
 
@@ -803,6 +804,8 @@ mod tests {
             source: LOCAL_SOURCE.to_string(),
             requires: requires.iter().map(|name| name.to_string()).collect(),
             groups: groups.iter().map(|group| group.to_string()).collect(),
+            signer: None,
+            subject: None,
         }
     }
 
@@ -818,6 +821,7 @@ mod tests {
                 dev_dependencies: BTreeMap::new(),
                 dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
+                policy: Default::default(),
             },
             packages,
             unresolved: Vec::new(),

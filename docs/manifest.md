@@ -333,6 +333,24 @@ reads only the names, reports them after resolving (`note: the manifest also
 lists N [nipm.dependencies]`), and does not install them; install them with
 NIPM. Values may be a version string or a table; neither is interpreted yet.
 
+## `[policy]`
+
+What a GitHub release's attestation must say before lvpm locks it. Both keys
+are optional, and with neither lvpm trusts a release on first use.
+
+```toml
+[policy]
+require-signature = true                               # default false
+trusted-publishers = ["https://github.com/hexagon/*"] # default []
+```
+
+`require-signature` refuses a release with no attestation. Each
+`trusted-publishers` pattern starts with `https://github.com/`; in it `*`
+matches any run of characters except `/`, and case does not matter. A
+non-empty list refuses a release attested by any other repository, and one
+with no attestation. Any other key in `[policy]` is refused. What is checked,
+and when, is in [usage](usage.md#policy).
+
 ## Unknown keys and tables
 
 Keys and tables lvpm does not know are ignored, not rejected. This keeps a
@@ -340,7 +358,7 @@ manifest readable by older lvpm builds as the format grows, and lets one file
 carry another tool's sections (see below). The flip side is that a misspelt
 key such as `labveiw` is silently ignored; check the install banner, which
 echoes the manifest path, project name, groups and `labview` minimum it read.
-Inside a dependency table the rule is the opposite: an unknown key is refused
+Inside a dependency table and in `[policy]` the rule is the opposite: an unknown key is refused
 ([above](#a-dependency-from-github)), because ignoring it would drop what you
 asked for. (Upstream ignores `[dev-dependencies]` in an `lvpm.toml` and reads
 `[dependencies.dev]`; here `[dev-dependencies]` is the group `dev`.)

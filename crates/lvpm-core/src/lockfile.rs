@@ -26,6 +26,10 @@
 //! [inputs.github]                      # only when a dependency names a repo
 //! beta = "owner/repo"
 //!
+//! [inputs.policy]                      # only when the manifest sets a [policy]
+//! require-signature = true
+//! trusted-publishers = ["https://github.com/a/*"]
+//!
 //! [[package]]
 //! name = "alpha"
 //! version = "2.0"
@@ -34,6 +38,8 @@
 //! source = "local"                     # or the feed's index URL, or https://github.com/owner/repo
 //! requires = ["beta"]                  # the locked packages it needs
 //! groups = ["ci", "dev"]               # only when [dependencies] does not need it
+//! signer = "https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"  # GitHub packages with an attestation
+//! subject = "https://github.com/o/r"   # the repository that built it
 //!
 //! [[unresolved]]                       # a requirement no source lists
 //! name = "ni_lib_missing"
@@ -43,6 +49,7 @@
 use crate::manifest_edit::DependencyTable;
 use crate::project::{Constraint, Project, name_key};
 use crate::solve::range_of;
+use crate::verify::Policy;
 use crate::version::Version;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -77,8 +84,8 @@ pub struct Lockfile {
 }
 
 /// What the manifest said when the lock was made, so that a later change to it
-/// can be noticed: the sources, the `min-age-days` limit and the dependency
-/// lines.
+/// can be noticed: the sources, the `min-age-days` limit, the dependency
+/// lines and the `[policy]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Inputs {
     /// Whether the public indexes were consulted too.
@@ -111,6 +118,9 @@ pub struct Inputs {
     /// name its line is written under.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub github: BTreeMap<String, String>,
+    /// `[policy]`; the default, which is also the absent table, is not written.
+    #[serde(default, skip_serializing_if = "Policy::is_default")]
+    pub policy: Policy,
 }
 
 impl Inputs {
@@ -132,6 +142,7 @@ impl Inputs {
                 .map(|(group, entries)| (group.clone(), constraints(entries)))
                 .collect(),
             github: project.github.clone(),
+            policy: project.policy.clone(),
         }
     }
 }
@@ -155,6 +166,23 @@ pub struct LockedPackage {
     /// `[dev-dependencies]`, sorted; empty when `[dependencies]` needs it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// The workflow that built a GitHub package's archive, as its attestation
+    /// names it; absent when no attestation was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
+    /// The repository that ran that workflow, as the attestation names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+}
+
+impl LockedPackage {
+    /// The attestation the lock records, when it records one.
+    pub fn attestation(&self) -> Option<crate::verify::Attestation> {
+        Some(crate::verify::Attestation {
+            signer: self.signer.clone()?,
+            subject: self.subject.clone()?,
+        })
+    }
 }
 
 /// A requirement that no source lists, and the package that has it.
@@ -194,6 +222,8 @@ pub enum StaleReason {
     /// The manifest's `[sources] min-age-days` is not the one the lock was
     /// resolved with; an absent key counts as 0.
     MinAgeChanged { from: u32, to: u32 },
+    /// The manifest's `[policy]` is not the one the lock was resolved under.
+    PolicyChanged,
     /// The manifest lists a dependency the lock was not resolved for.
     DependencyAdded {
         name: String,
@@ -221,6 +251,7 @@ impl Lockfile {
             .or_else(|| self.labview_changed(project))
             .or_else(|| self.sources_changed(project))
             .or_else(|| self.min_age_changed(project))
+            .or_else(|| self.policy_changed(project))
             .or_else(|| self.dependencies_changed(project))
     }
 
@@ -249,6 +280,10 @@ impl Lockfile {
     fn min_age_changed(&self, project: &Project) -> Option<StaleReason> {
         let (from, to) = (self.inputs.min_age_days, project.min_age_days);
         (from != to).then_some(StaleReason::MinAgeChanged { from, to })
+    }
+
+    fn policy_changed(&self, project: &Project) -> Option<StaleReason> {
+        (self.inputs.policy != project.policy).then_some(StaleReason::PolicyChanged)
     }
 
     /// The first change in any table: the manifest's own, then each group the
@@ -390,6 +425,8 @@ mod tests {
             source: LOCAL_SOURCE.to_string(),
             requires: Vec::new(),
             groups: Vec::new(),
+            signer: None,
+            subject: None,
         }
     }
 
@@ -411,6 +448,7 @@ mod tests {
                 dev_dependencies: BTreeMap::from([("caraya".to_string(), "*".to_string())]),
                 dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
+                policy: Policy::default(),
             },
             packages: vec![package("alpha", "2.0"), beta, caraya],
             unresolved: vec![LockedUnresolved {
@@ -915,6 +953,93 @@ required_by = \"beta\"
             lock.staleness(&current),
             excludes("gamma", "1.5", "2.0", DevDependencies)
         );
+    }
+
+    // ---- [policy] ----
+
+    /// Why a lock made under `before`, a `[policy]` body, is stale under `after`;
+    /// `None` for either is no `[policy]` table at all.
+    fn policy_staleness(before: Option<&str>, after: Option<&str>) -> Option<StaleReason> {
+        let manifest = |policy: Option<&str>| {
+            let table = policy.map_or(String::new(), |body| format!("\n[policy]\n{body}\n"));
+            crate::project::parse(&format!("{MANIFEST}{table}")).unwrap()
+        };
+        let mut locked = lock();
+        locked.inputs.policy = manifest(before).policy;
+        locked.staleness(&manifest(after))
+    }
+
+    #[test]
+    fn changing_the_policy_makes_the_lock_stale_and_leaving_it_default_does_not() {
+        let required = Some("require-signature = true");
+        let trust = |who: &str| format!("trusted-publishers = [\"https://github.com/{who}/*\"]");
+        let stale = Some(StaleReason::PolicyChanged);
+        for (before, after, state) in [
+            (None, required, stale.clone()),
+            (required, Some("require-signature = false"), stale.clone()),
+            (
+                Some(trust("a").as_str()),
+                Some(trust("b").as_str()),
+                stale.clone(),
+            ),
+            (required, None, stale),
+            (None, None, None),
+            (None, Some("require-signature = false"), None),
+            (None, Some("trusted-publishers = []"), None),
+        ] {
+            assert_eq!(
+                policy_staleness(before, after),
+                state,
+                "{before:?} then {after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_policy_is_written_under_inputs_only_when_it_is_not_the_default() {
+        assert!(!lock().to_toml().unwrap().contains("policy"));
+        let mut required = lock();
+        required.inputs.policy = Policy {
+            require_signature: true,
+            trusted_publishers: vec!["https://github.com/a/*".to_string()],
+        };
+        let text = required.to_toml().unwrap();
+        assert!(
+            text.contains(
+                "[inputs.policy]\nrequire-signature = true\ntrusted-publishers = [\"https://github.com/a/*\"]\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(Lockfile::parse(&text).unwrap(), required);
+    }
+
+    #[test]
+    fn signer_and_subject_round_trip() {
+        let mut attested = lock();
+        attested.packages[0].signer =
+            Some("https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1".to_string());
+        attested.packages[0].subject = Some("https://github.com/o/r".to_string());
+        let text = attested.to_toml().unwrap();
+        assert_eq!(text.matches("signer = ").count(), 1, "{text}");
+        assert_eq!(text.matches("subject = ").count(), 1, "{text}");
+        assert_eq!(Lockfile::parse(&text).unwrap(), attested);
+    }
+
+    #[test]
+    fn absent_signer_and_subject_stay_absent() {
+        let text = lock().to_toml().unwrap();
+        assert!(
+            !text.contains("signer") && !text.contains("subject"),
+            "{text}"
+        );
+        // Such a text is a lock written before S6: it reads with both absent.
+        let read = Lockfile::parse(&text).unwrap();
+        assert!(
+            read.packages
+                .iter()
+                .all(|p| p.signer.is_none() && p.subject.is_none())
+        );
+        assert!(read.inputs.policy.is_default());
     }
 
     // ---- dependency groups ----

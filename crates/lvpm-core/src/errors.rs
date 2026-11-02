@@ -13,6 +13,7 @@ use crate::lockfile::StaleReason;
 use crate::manifest_edit::DependencyTable;
 use crate::solve::Conflict;
 use crate::timefmt::{rfc3339, time_until};
+use crate::verify::Refusal;
 use std::path::PathBuf;
 
 /// The operation's [`CancelToken`](crate::cancel::CancelToken) was cancelled
@@ -127,12 +128,30 @@ pub enum LockError {
         needs_year: u32,
         project_year: u32,
     },
+    /// The `[policy]` refuses these GitHub packages, all of them: one run
+    /// reports every one. Nothing was written. `trusted_publishers` is the
+    /// policy's list, which an untrusted signer is told it is not on.
+    #[error("{} package(s) refused", .refusals.len())]
+    Refused {
+        refusals: Vec<AttestationRefusal>,
+        trusted_publishers: Vec<String>,
+    },
     /// The operation's token was cancelled; nothing was written.
     #[error("cancelled")]
     Cancelled,
     /// Anything else that went wrong while reading or writing: its own text.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+}
+
+/// One GitHub package the `[policy]` refuses, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationRefusal {
+    pub name: String,
+    pub version: String,
+    /// `owner/repo` the release is from.
+    pub repo: String,
+    pub kind: Refusal,
 }
 
 /// One archive that could not be had, and why, in the cause's own words.
