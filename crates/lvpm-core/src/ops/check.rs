@@ -108,10 +108,39 @@ impl Checked {
     }
 }
 
+/// What a check of the library `[distribution]` names found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Library {
+    /// The check of the library's own VIs.
+    pub checked: Checked,
+    /// The `[dependencies]` no library VI links into, in manifest order.
+    pub unused: Vec<String>,
+}
+
+/// [`check`] for the library's own files only, and which of the declared
+/// dependencies none of them uses.
+pub fn check_library(env: &OpEnv) -> Result<Library, CheckError> {
+    run(env, None, Scope::Members)
+}
+
 /// Read every `.vi .vit .ctl .ctt` under `dir` (the project root when None; a
 /// relative one is taken from the directory the command ran in) and say which
 /// links lead nowhere. Findings are a result, not an error.
 pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
+    Ok(run(env, dir, Scope::All)?.checked)
+}
+
+/// Which of the VIs under the folder a check reads.
+#[derive(Clone, Copy)]
+enum Scope {
+    All,
+    /// Only the files of the library `[distribution]` names.
+    Members,
+}
+
+/// [`check`] and [`check_library`]: the check of the VIs in `scope`, and the
+/// `[dependencies]` none of them links into.
+fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckError> {
     let repo = match &env.flags.project {
         Some(repo) => env.cwd.join(repo),
         None => venv::locate(&env.cwd, &env.config.venv_dir)?.ok_or_else(|| {
@@ -125,6 +154,9 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     // Every path below is taken from these two, so a `..` in either is
     // settled here, once: `join` and `shown` work on names, not on `..`.
     let repo = lexical(&repo);
+    if !venv::binding_path(&repo.join(&env.config.venv_dir)).is_file() {
+        return Err(CheckError::NoVenv(repo));
+    }
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     env.check_bitness(&bound.target)?;
     let (_, manifest) = env
@@ -148,6 +180,9 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     let mut files = Vec::new();
     let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
     walk(&start, &venv, &mut files)?;
+    if matches!(scope, Scope::Members) {
+        files.retain(|file| members.contains(&key(file)));
+    }
 
     let search = Search::of(&bound)?;
     let mut checked = Checked {
@@ -183,7 +218,14 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
             }));
     }
     in_order(&mut checked.findings);
-    Ok(checked)
+    let used = search.used.borrow();
+    // shortcut: a package loaded by path at run time has no link and is reported unused; a manifest opt-out would fix it if users ask.
+    let unused = (manifest.dependencies.iter())
+        .map(|(name, _)| name)
+        .filter(|name| !used.iter().any(|package| same_name(name, package)))
+        .cloned()
+        .collect();
+    Ok(Library { checked, unused })
 }
 
 /// The files of the library `[distribution]` names, as [`key`]s; none when the
@@ -331,9 +373,11 @@ fn link_problems(
     for link in links {
         match resolve(link, vi, search) {
             Resolved::File(file) => {
-                if let Some(package) = search.owner(&file)
-                    && let Some(only_in) = uses.barred(package)
-                {
+                let Some(package) = search.owner(&file) else {
+                    continue;
+                };
+                search.used.borrow_mut().insert(package.to_string());
+                if let Some(only_in) = uses.barred(package) {
                     found.push(Problem::Undeclared {
                         link: shown_link(link, vi, repo),
                         package: package.to_string(),
@@ -363,6 +407,8 @@ struct Search {
     owners: HashMap<PathBuf, String>,
     /// The members of each `.llb` read so far, so each is read once a run.
     llbs: RefCell<HashMap<PathBuf, Vec<String>>>,
+    /// The packages a link has led into so far.
+    used: RefCell<HashSet<String>>,
 }
 
 impl Search {
@@ -390,6 +436,7 @@ impl Search {
             packages,
             owners,
             llbs: RefCell::default(),
+            used: RefCell::default(),
         })
     }
 
@@ -737,6 +784,10 @@ mod tests {
 
         fn check_in(&self, dir: &str) -> Result<Checked, CheckError> {
             check(&self.env(), Some(Path::new(dir)))
+        }
+
+        fn check_library(&self) -> Library {
+            check_library(&self.env()).unwrap()
         }
     }
 
@@ -1160,6 +1211,7 @@ mod tests {
             packages: Vec::new(),
             owners: HashMap::new(),
             llbs: RefCell::default(),
+            used: RefCell::default(),
         }
     }
 
@@ -1744,6 +1796,136 @@ mod tests {
         assert_eq!(search.owner(Path::new("/p/C.lvclass/C.ctl")), Some("pkg"));
         // a folder of that name owns nothing
         assert_eq!(search.owner(Path::new("/p/D/C.ctl")), None);
+    }
+
+    #[test]
+    fn a_library_check_reads_the_members_and_no_other_vi() {
+        let sandbox = Sandbox::with_packages("lib-members-only", "");
+        sandbox
+            .library_of(&["Helper.vi"])
+            .put("Helper.vi", "Helper.vi")
+            .put("Broken.vi", "Broken.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!((checked.vis, checked.findings), (1, vec![]));
+    }
+
+    #[test]
+    fn a_library_members_broken_link_is_a_finding() {
+        let sandbox = Sandbox::with_packages("lib-member-broken", "");
+        sandbox
+            .library_of(&["Broken.vi"])
+            .put("Broken.vi", "Broken.vi")
+            .mkdir("Sub");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.findings, [not_found("Broken.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_vi_of_a_class_of_the_library_is_a_member() {
+        let sandbox = Sandbox::with_packages("lib-class-member", "");
+        sandbox
+            .write(
+                "Lib.lvlib",
+                br#"<Library><Item Type="LVClass" Name="C.lvclass" URL="../C/C.lvclass"/></Library>"#,
+            )
+            .write(
+                "C/C.lvclass",
+                br#"<LVClass><Item Name="M.vi" Type="VI" URL="../M.vi"/></LVClass>"#,
+            )
+            .put("Broken.vi", "C/M.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.findings, [not_found("C/M.vi", "C/Sub/Gone.vi")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_member_listed_in_another_case_is_still_a_member() {
+        let sandbox = Sandbox::with_packages("lib-member-case", "");
+        sandbox
+            .library_of(&["good.vi"])
+            .put("Broken.vi", "Good.vi")
+            .mkdir("Sub");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.findings, [not_found("Good.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_dependency_no_member_links_into_is_unused() {
+        let sandbox = Sandbox::with_packages(
+            "lib-unused",
+            "[dependencies]\ncheck_fixture_dep = \"*\"\ncheck_fixture_other = \"*\"",
+        );
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, ["check_fixture_other"]);
+    }
+
+    #[test]
+    fn a_dependency_a_member_links_into_is_not_unused() {
+        let sandbox =
+            Sandbox::with_packages("lib-used", "[dependencies]\ncheck_fixture_dep = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dependency_named_in_another_case_than_its_package_is_not_unused() {
+        let sandbox =
+            Sandbox::with_packages("lib-used-case", "[dependencies]\nCheck_Fixture_DEP = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check_library().unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_link_into_an_undeclared_package_is_one_finding_and_the_declared_one_is_used() {
+        let sandbox = Sandbox::with_packages(
+            "lib-two-packages",
+            "[dependencies]\ncheck_fixture_dep = \"*\"",
+        );
+        sandbox
+            .library_of(&["UsesDep.vi", "UsesDevOnly.vi"])
+            .put("UsesDep.vi", "UsesDep.vi")
+            .put("UsesDevOnly.vi", "UsesDevOnly.vi");
+        let library = sandbox.check_library();
+        assert_eq!(
+            library.checked.findings,
+            [undeclared(
+                "UsesDevOnly.vi",
+                DEV_LINK,
+                "check_fixture_other",
+                None
+            )]
+        );
+        assert_eq!(library.unused, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_library_check_without_a_venv_says_so_as_check_does() {
+        let root = testing::scratch_dir("check-library-no-venv");
+        std::fs::write(
+            root.join("lvpm.toml"),
+            "[project]
+",
+        )
+        .unwrap();
+        let mut env = testing::env(&root);
+        env.flags.project = Some(PathBuf::from("."));
+        let why = check_library(&env).unwrap_err();
+        let CheckError::NoVenv(repo) = &why else {
+            panic!("{why}");
+        };
+        let text = format!(
+            "no venv in {} — `lvpm venv create` makes one",
+            repo.display()
+        );
+        assert_eq!(why.to_string(), text);
+        assert_eq!(check(&env, None).unwrap_err().to_string(), text);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -53,7 +53,7 @@ struct Binding {
     created_at: u64,
 }
 
-fn binding_path(dir: &Path) -> PathBuf {
+pub(crate) fn binding_path(dir: &Path) -> PathBuf {
     dir.join(".lvpm").join("venv.json")
 }
 
