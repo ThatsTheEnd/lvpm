@@ -5,6 +5,7 @@
 pub mod add_remove;
 mod attest;
 pub mod build;
+pub mod check;
 pub mod env;
 mod github_index;
 pub mod hooks;

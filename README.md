@@ -130,7 +130,7 @@ fields has no `data`, for example `{"event": "indexes_loading"}`. The last line 
 `{"result": ...}` when the command succeeds or `{"error": "<message>"}` when
 it fails; no other line has either key. The query commands put their data in
 the result (`search`, `info`, `list`, `targets`, `config get`, `cache add`,
-`venv status`, `lock --check`); the others put `{"command": "<name>"}` there.
+`venv status`, `lock --check`, `check`); the others put `{"command": "<name>"}` there.
 `venv status` gives `{"exists": false, "status": null}` when there is no venv.
 A LabVIEW's `version` is its internal version (`26.3` for LabVIEW 2026), not
 a package version.
@@ -142,7 +142,7 @@ The exit code is the same with or without `--json`:
 | Code | Meaning |
 | --- | --- |
 | 0 | The command succeeded |
-| 1 | The command failed; the message says why |
+| 1 | The command failed; the message says why. For `check`, it found a problem; the findings are the result |
 | 2 | The arguments are wrong (a usage error); nothing ran |
 
 The event names, the result and error keys and these codes are stable: a
@@ -175,6 +175,7 @@ below as one book, starting with a tutorial; CONTRIBUTING.md stays in the repo.
 | [docs/manifest.md](docs/manifest.md) | The `lvpm.toml` format, and how a `vipm.toml` is read |
 | [docs/ogpm-model.md](docs/ogpm-model.md) | The OpenG package model lvpm implements, mapped term by term |
 | [docs/adr/](docs/adr/README.md) | Architecture decisions, and why |
+| [Architecture map](https://thatstheend.github.io/lvpm/map/) | Interactive map of the code, with guided flows from `lvpm init` to an installed package |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, PR rules, releases, code layout |
 
 ## Known limitations

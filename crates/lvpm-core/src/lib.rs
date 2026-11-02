@@ -18,6 +18,7 @@ pub mod github;
 pub mod index;
 pub mod install;
 pub mod launch;
+pub mod linker;
 pub mod lvlib;
 pub mod lvpkg;
 mod paths;

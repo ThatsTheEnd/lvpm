@@ -345,6 +345,16 @@ Decide in `/specs`: rate limits without a token; how the release file is named.
 
 ### Slice S5: `lvpm check`
 
+**Shipped** in #63 ([Checking a project](../usage.md#checking-a-project)). It
+differs from the plan below in three ways. A VI that is not a library member,
+such as a test, may also use `[dev-dependencies]` and dependency groups;
+library members are held to `[dependencies]`. Of the prototype's gaps, exact-path
+resolution and `.llb` members are closed; the old OpenG `PTH0` flavour is not
+read yet (the table is reported as not readable) and waits for a sample in
+[#108](https://github.com/ThatsTheEnd/lvpm/issues/108). Links lvpm cannot look
+for (an absolute path saved elsewhere, a network path, a root such as
+`<resource>`) are counted as not checked, with a warning.
+
 **Depends-on:** none
 **Files:** `crates/lvpm-core/src/linker.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/viserver.rs`, `crates/lvpm-core/src/ops/check.rs`, `src/main.rs`, `src/render/check.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`
 
@@ -369,6 +379,30 @@ Demo: break a link in pilot A; `lvpm check` names the VI and the link.
 
 Decide in `/specs`: where the fixture VIs come from, given PROVENANCE rules;
 the minimum LabVIEW comes from `[project] labview`.
+
+What S5b and `lvpm tree` can reuse, as S5 left it:
+- `linker::ViFacts::read(bytes)` gives a VI's links (`LinkPath`: kind, components),
+  save year and compiled-code flag, or `LinkerError::Unreadable { block, offset }`;
+  `linker::llb_members` lists an `.llb`. Neither needs LabVIEW.
+- `ops::check::check(env, dir)` returns `Checked`: the VI count, the links not
+  looked for with their cause, and `Finding`s (`Problem::{NotResource,
+  Unreadable, TooNew, NotSeparated, NotFound, Undeclared}`), sorted and
+  rendered by `src/render/check.rs`. S5b can call it on the library folder and
+  refuse on any finding; it is a result, not an `Err`.
+- Resolution (relative to the VI file, `<vilib>` in the installation then each
+  venv package, through an `.llb`) and attribution (a file listed by a venv
+  install record belongs to that package) are private to `ops/check.rs`.
+  `lvpm tree` needs the same file for each link, so it should lift them out
+  rather than copy them; the graph is those link-to-file edges, with the
+  package for each edge already known.
+- `check` returns the packages a VI may not use, not every package it uses, so
+  S5b's "infer dependencies from the links" needs the owner of each resolved
+  link too: a small addition in the same file.
+- A link below a file that is there (a class's data control in its `.lvclass`)
+  is found, and an absolute link to a file not on this machine is counted in
+  `Checked::not_checked` as `Unchecked::Absolute`; both pilots pass
+  (tests/features/build-slices/README.md). S5b's gate on pilot A needs nothing
+  more.
 
 ### Slice S5b: `lvpm build` runs the check
 

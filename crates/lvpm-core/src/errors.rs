@@ -35,6 +35,12 @@ impl From<Cancelled> for SyncError {
     }
 }
 
+impl From<Cancelled> for CheckError {
+    fn from(_: Cancelled) -> CheckError {
+        CheckError::Cancelled
+    }
+}
+
 impl From<Cancelled> for EditError {
     fn from(_: Cancelled) -> EditError {
         EditError::Cancelled
@@ -241,6 +247,20 @@ pub enum InitError {
     /// `why` leads with the file as typed.
     #[error("{why}")]
     BadSource { why: String },
+    /// Anything else that went wrong: its own text.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+/// Why `check` read no VI.
+#[derive(Debug, thiserror::Error)]
+pub enum CheckError {
+    /// The folder to check is not there, as it was written.
+    #[error("folder {} does not exist", .0.display())]
+    NoDir(PathBuf),
+    /// The operation's token was cancelled; nothing was written.
+    #[error("cancelled")]
+    Cancelled,
     /// Anything else that went wrong: its own text.
     #[error(transparent)]
     Other(#[from] anyhow::Error),

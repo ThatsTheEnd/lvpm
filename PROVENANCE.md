@@ -87,6 +87,41 @@ facility (the `Server:Logging Enabled` application property), and loopback
 packet captures of traffic between processes we ran ourselves. No NI binary
 was decompiled or disassembled.
 
+## Linker format
+
+The VI file facts that [crates/lvpm-core/src/linker.rs](crates/lvpm-core/src/linker.rs) reads (RSRC block
+list, `vers` save version, the `LIvi`/`LIfp`/`LIbd` link tables and their
+`PTH0` records, the `LVSR` separate-compiled-code bit) were worked out by
+reading VI files we own or that are openly licensed: the fixtures in
+[tests/fixtures/check/](tests/fixtures/check/README.md), saved on 2026-11-02
+with our licensed LabVIEW 2026, and the VIs inside the committed pilot
+packages. The compiled-code bit (`LVSR` u32 at byte 8, `0x400`) was found by
+comparing `Good.vi` with `NotSeparated.vi`, saved the same way except for
+that setting, and checked against every pilot library file. No NI binary was
+decompiled or disassembled.
+
+Each of `LIvi`, `LIfp` and `LIbd` is `u16 version (1 or 2) | 4-char owner (LVIN
+or LVCC, FPHP, BDHP) | u32 entry count | entries | u16 3`. The entries are not
+one structure: each starts with a 4-character link type (`VIVI`, `VILB`,
+`VIPI`, `VICC`, `VIXN`, ...) and the bytes around its `PTH0` path record differ
+by type, across the fixtures and the 216 pilot VIs. `LIbd` repeats `LIvi`'s
+links, most followed by a zero-length `PTH0` (`PTH0 00000000`, not a link);
+`LIfp` is empty in the fixtures but not in the pilots; a library member lists
+its `Lib.lvlib` as a `VILB` link. So `lvpm` finds each `PTH0` by its magic,
+bounds-checks every length, and takes a record that does not parse, or a
+section that runs past the end of the file, as unreadable. A relative link is
+stored relative to the VI file itself, so its first component is empty (up,
+from the file to its folder): `Helper.vi` beside `Good.vi` is `<empty>/Helper.vi`.
+
+An `.llb` is an RSRC file of type `LVAR` whose `UCRF` sections each hold one
+member VI as an RSRC file of its own. Its member names are listed in `ADir`
+(a 24-byte entry before each pascal name), in `CPST` (`u32 count | pascal
+names`) and in `STR#` section 1 (`u16 count | pascal names`); `lvpm` reads
+`STR#` and requires it to be consumed exactly. `Archive.llb`, a single-member
+file, lists only `InLlb.vi` there and holds the name `Removed.vi` nowhere, so
+deleting a member in place rewrites the lists; a multi-member `.llb` is not yet
+checked against this.
+
 ## What is deliberately kept out of this repository
 
 Packet captures, install logs, and filesystem snapshots used during the

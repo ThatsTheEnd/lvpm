@@ -57,6 +57,13 @@ fn binding_path(dir: &Path) -> PathBuf {
     dir.join(".lvpm").join("venv.json")
 }
 
+/// The staging folder of the venv at `dir`: see [`Venv::staging_dir`].
+pub fn staging_of(dir: &Path) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".staging");
+    dir.with_file_name(name)
+}
+
 impl Venv {
     /// Roots for installing one package: its own addon under the venv.
     pub fn roots_for_pkg(&self, pkg: &str) -> Result<Roots> {
@@ -80,9 +87,7 @@ impl Venv {
     /// sibling (`.lv-venv.staging`). LabVIEW loads every folder under the venv
     /// as an addon, and a sibling is on the same volume, so the move is a rename.
     pub fn staging_dir(&self) -> PathBuf {
-        let mut name = self.dir.file_name().unwrap_or_default().to_os_string();
-        name.push(".staging");
-        self.dir.with_file_name(name)
+        staging_of(&self.dir)
     }
 
     /// The ini a LabVIEW on this venv is started with.
@@ -186,15 +191,7 @@ pub fn find(
 pub(crate) fn load(repo: &Path, venv_dir: &Path, targets: &[LvTarget]) -> Result<Venv> {
     let repo = paths::clean(repo);
     let dir = repo.join(venv_dir);
-    let bp = binding_path(&dir);
-    let text = std::fs::read_to_string(&bp).with_context(|| {
-        format!(
-            "no venv in {} — `lvpm venv create` makes one",
-            repo.display()
-        )
-    })?;
-    let b: Binding =
-        serde_json::from_str(&text).with_context(|| format!("reading {}", bp.display()))?;
+    let b = read_binding(&repo, &dir)?;
 
     let target = targets
         .iter()
@@ -213,6 +210,55 @@ pub(crate) fn load(repo: &Path, venv_dir: &Path, targets: &[LvTarget]) -> Result
         dir,
         target,
         port: b.port,
+    })
+}
+
+/// The binding file of the venv at `dir`, in the repo `repo`.
+fn read_binding(repo: &Path, dir: &Path) -> Result<Binding> {
+    let bp = binding_path(dir);
+    let text = std::fs::read_to_string(&bp).with_context(|| {
+        format!(
+            "no venv in {} — `lvpm venv create` makes one",
+            repo.display()
+        )
+    })?;
+    serde_json::from_str(&text).with_context(|| format!("reading {}", bp.display()))
+}
+
+/// What a venv's binding says, taken as it is: the LabVIEW it names is not
+/// looked for among the installations of this machine, so a venv bound to one
+/// that is not here can still be read. Nothing is started or detected.
+#[derive(Debug, Clone)]
+pub struct Bound {
+    /// The repo root — where `lvpm.toml` lives.
+    pub repo: PathBuf,
+    /// The venv folder.
+    pub dir: PathBuf,
+    /// The installation the venv was bound to, as stored.
+    pub target: LvTarget,
+}
+
+impl Bound {
+    /// Roots for what reads the store, as [`Venv::store`] does.
+    pub fn store(&self) -> Roots {
+        Roots::project_store(&self.dir, &self.target)
+    }
+}
+
+/// The venv of `repo` named by its binding, with no requirement that the
+/// LabVIEW it is bound to is installed here.
+pub fn binding(repo: &Path, venv_dir: &Path) -> Result<Bound> {
+    let repo = paths::clean(repo);
+    let dir = repo.join(venv_dir);
+    let b = read_binding(&repo, &dir)?;
+    Ok(Bound {
+        repo,
+        dir,
+        target: LvTarget {
+            version: b.version,
+            bitness: b.bitness,
+            path: PathBuf::from(b.target_path),
+        },
     })
 }
 
@@ -498,6 +544,34 @@ mod tests {
             [Event::VenvPortMoved { from, to: t }] if from == v.port && t == to
         ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_binding_is_read_without_the_labview_it_names_being_installed() {
+        let repo = scratch_dir("binding");
+        let venv_dir = Path::new(".lv-venv");
+        let why = binding(&repo, venv_dir).unwrap_err();
+        assert!(format!("{why:#}").contains("no venv in"), "{why:#}");
+
+        let made = create(
+            &repo,
+            Some("2026"),
+            None,
+            venv_dir,
+            &[labview_2026()],
+            &NullSink,
+        );
+        let v = made.unwrap();
+        // `load` wants the installation; `binding` does not.
+        assert!(load(&repo, venv_dir, &[]).is_err());
+        let bound = binding(&repo, venv_dir).unwrap();
+        assert_eq!(bound.repo, repo);
+        assert_eq!(bound.dir, v.dir);
+        assert_eq!(bound.target.path, labview_2026().path);
+        assert_eq!(bound.target.year(), 2026);
+        assert_eq!(bound.target.bitness, 64);
+        assert_eq!(bound.store().store_dir(), v.store().store_dir());
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
