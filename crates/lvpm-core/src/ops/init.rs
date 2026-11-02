@@ -380,12 +380,14 @@ fn make_venv(
     };
     let Some(path) = path else {
         // Under --labview-bitness only that bitness was looked at.
-        let bits = env
+        let bitness_prefix = env
             .flags
             .labview_bitness
             .map(|b| format!("{b}-bit "))
             .unwrap_or_default();
-        return Err(skip(format!("{bits}LabVIEW {year} is not installed")));
+        return Err(skip(format!(
+            "{bitness_prefix}LabVIEW {year} is not installed"
+        )));
     };
     venv::create(
         root,

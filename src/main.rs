@@ -72,11 +72,16 @@ struct Cli {
     /// Answer yes to every prompt.
     // Derive gives a `bool` clap's strict true/false parser, which would refuse
     // LVPM_YES=1 and LVPM_YES=; the falsey parser is what a flag gets by default.
-    #[arg(long, short = 'y', global = true, env = "LVPM_YES", value_parser = clap::builder::FalseyValueParser::new())]
+    #[arg(long, short = 'y', global = true, env = "LVPM_YES", value_parser = yes_parser())]
     yes: bool,
 
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// The parser `--yes` reads LVPM_YES with, shared with its test.
+fn yes_parser() -> clap::builder::FalseyValueParser {
+    clap::builder::FalseyValueParser::new()
 }
 
 /// Shared by `install` and `relink`, so the two cannot drift apart.
@@ -1316,12 +1321,12 @@ mod tests {
 
     #[test]
     fn lvpm_yes_is_off_only_for_falsey_values() {
-        // Without touching the process env: `--yes` reads LVPM_YES through
-        // FalseyValueParser, whose mapping is pinned here.
+        // Without touching the process env: the parser `--yes` reads LVPM_YES
+        // through, the same one the arg is declared with.
         let cmd = Cli::command();
         let arg = cmd.get_arguments().find(|a| a.get_id() == "yes").unwrap();
         assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("LVPM_YES")));
-        let parser = clap::builder::FalseyValueParser::new();
+        let parser = yes_parser();
         for (value, on) in [
             ("0", false),
             ("false", false),
