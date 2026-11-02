@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-02
 **Branch**: claude/uv-cargo-comparison-5d6d6d (PR branch `issue-63` or this one)
-**Status**: approved 2026-11-02
+**Status**: implemented 2026-11-02
 **Gherkin persistence**: custom: tests/features/build-slices/ (the build steps write `s5-lvpm-check.feature` themselves, as S1, S7a and S10a did)
 **Spec**: [docs/specs/lvpm-check-s5.md](../docs/specs/lvpm-check-s5.md) · **Issue**: [#63](https://github.com/ThatsTheEnd/lvpm/issues/63)
 
@@ -707,9 +707,9 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
   - [x] Step 3.1: Attribute resolved files to packages
 
 #### Wave 4
-- [ ] Slice 4: Pilots and documentation
-  - [ ] Step 4.1: Pilot scenarios
-  - [ ] Step 4.2: Documentation
+- [x] Slice 4: Pilots and documentation
+  - [x] Step 4.1: Pilot scenarios
+  - [x] Step 4.2: Documentation
 
 ## Plan Review Summary
 
