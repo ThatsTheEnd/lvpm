@@ -344,7 +344,7 @@ graph TD
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: `check_library`: the members' findings and the unused dependencies
+- [x] Slice 1: `check_library`: the members' findings and the unused dependencies
   - [x] Step 1.1: `run` with a scope, and `check_library`
 
 #### Wave 2
