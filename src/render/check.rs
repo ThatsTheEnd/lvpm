@@ -47,15 +47,18 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
                 folder,
                 installation,
             } => format!(
-                "{} (the bound installation {} is not on this machine)",
+                "into {} (the bound installation {} is not on this machine)",
                 one_line(folder),
                 one_line(&installation.display().to_string())
             ),
             Unchecked::Root(root) => {
-                format!("{} (lvpm does not resolve this root)", one_line(root))
+                format!("into {} (lvpm does not resolve this root)", one_line(root))
             }
+            Unchecked::Absolute => "absolute paths not on this machine (saved elsewhere; \
+                LabVIEW searches for them when it loads)"
+                .to_string(),
         };
-        text.push_str(&format!("warning: links not checked: {count} into {why}\n"));
+        text.push_str(&format!("warning: links not checked: {count} {why}\n"));
     }
     if !checked.saves_checked {
         text.push_str(
@@ -404,6 +407,23 @@ mod tests {
             listing(&c),
             "VIs checked: 2, problems: 0, links not checked: 4\n"
         );
+    }
+
+    #[test]
+    fn absolute_paths_not_on_this_machine_are_a_warning_and_not_a_problem() {
+        let mut c = checked(2, vec![]);
+        c.not_checked.insert(Unchecked::Absolute, 7);
+        assert_eq!(
+            warnings(&c, None),
+            "warning: links not checked: 7 absolute paths not on this machine (saved elsewhere; \
+             LabVIEW searches for them when it loads)\n"
+        );
+        assert_eq!(
+            listing(&c),
+            "VIs checked: 2, problems: 0, links not checked: 7\n"
+        );
+        assert_eq!(result(&c)["ok"], json!(true));
+        assert_eq!(result(&c)["not_checked"], json!(7));
     }
 
     #[test]

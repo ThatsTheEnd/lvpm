@@ -50,7 +50,8 @@ Demo: break a link in pilot A; `lvpm check` names the VI and the link.
 
 **Resolution (closes the prototype's gaps).**
 
-- Exact path: a link resolves only when the file (or `.llb` member) exists. The prototype's "some ancestor exists" rule is not used.
+- Exact path: a link resolves only when the file exists, or when the nearest part of its path that exists is a file that holds it: an `.llb` has to list the member, and any other file (a `.vi`, a class's `.lvclass`) holds whatever is below it (`Logger.lvclass/Logger.ctl`). A folder that exists with the leaf missing fails. The prototype's "some ancestor directory exists" rule is not used.
+- An absolute link (not `<vilib>` and the like) to a file that is not on this machine is not checked: it is counted in "not checked: N" and warned about, and does not fail the run. One whose file is there is checked as any other.
 - `<vilib>` and the other symbolic roots resolve against the bound installation first, then against each venv package's `<pkg>/1/…` tree, in LabVIEW's order. The installation is the one the venv is bound to (`.lvpm/venv.json`). LabVIEW is never started.
 - Attribution: a resolved file that a venv install record (`install::list_installed`) lists belongs to that package. A `vi.lib` file that no record lists is LabVIEW's own and always allowed.
 - An undecodable linker block fails as `linker table not readable (block, offset)`, never as "no links".
@@ -100,6 +101,8 @@ OpenG `PTH0` flavour (follow-up issue, once a sample exists).
 | One PR or split | `requires-stakeholder-input` | human | One PR. |
 | May check read the installation's vi.lib | `requires-stakeholder-input` | human | Yes, read but never start, like cargo needing the sysroot on disk; absent install → "not checked: N". |
 | Which VIs are held to `[dependencies]` only | `requires-stakeholder-input` | human | Library members; other VIs may also use dev and group dependencies, as with cargo's `src/` vs `tests/`. |
+| A link below a file (`Logger.lvclass/Logger.ctl`, `X.vi/LabVIEW`) | `requires-stakeholder-input` | human | Found when the nearest existing part of the path is a regular file; an `.llb` must still list the member, and a folder with a missing leaf still fails. cargo and uv never see paths inside a file; LabVIEW stores such paths itself, and both pilots hold them, so exact-path checking would fail on correct code. |
+| An absolute link to a file that is not on this machine | `requires-stakeholder-input` | human | Not checked: counted in "not checked: N" with one warning, never a failure. LabVIEW writes the absolute path the file had where the VI was saved (`C:/Users/admin/...`) and searches for it by name when it loads, so a stale one is no broken link; pilot A holds seven. cargo and uv likewise do not fail on a path recorded on another machine. |
 | Old OpenG `PTH0` flavour | `requires-stakeholder-input` | human | No sample on this machine; fail as "not readable", follow-up issue. |
 | No `[distribution]` table | `inferable` | inference | No library means no members: every VI follows the non-member rule (any declared group). Predictability check: "all strict" was the alternative; it is ruled out because an app project's tests would then need their tools in `[dependencies]`. |
 | Minimum LabVIEW | `inferable` | inference | `Project::labview`, as the slice states. No `labview` key → the save-version rule is skipped and the output says so. Alternative "fail" ruled out: S1 made the key optional. |

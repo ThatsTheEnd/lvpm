@@ -388,10 +388,11 @@ What S5b and `lvpm tree` can reuse, as S5 left it:
 - `check` returns the packages a VI may not use, not every package it uses, so
   S5b's "infer dependencies from the links" needs the owner of each resolved
   link too: a small addition in the same file.
-- Open from the pilots, see tests/features/build-slices/README.md: a link into
-  an item stored inside another file (a class's data control in its `.lvclass`)
-  and an absolute link saved on another machine are reported as not found.
-  S5b's gate on pilot A fails until that is settled.
+- A link below a file that is there (a class's data control in its `.lvclass`)
+  is found, and an absolute link to a file not on this machine is counted in
+  `Checked::not_checked` as `Unchecked::Absolute`; both pilots pass
+  (tests/features/build-slices/README.md). S5b's gate on pilot A needs nothing
+  more.
 
 ### Slice S5b: `lvpm build` runs the check
 

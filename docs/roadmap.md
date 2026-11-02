@@ -175,10 +175,10 @@ records) and make it first-class. An earlier Python prototype,
   prototype reported "no linker tables" on every VI in `oglib_*`; `lvpm check`
   reports the table as not readable). It waits for a sample, in
   [#108](https://github.com/ThatsTheEnd/lvpm/issues/108).
-- Open from the pilots: a link to an item stored inside another file (a class's
-  private data control in its `.lvclass`), and an absolute link saved on
-  another machine, are reported as `link not found`; pilots A and B do not pass
-  yet (`tests/features/build-slices/README.md`).
+- Pilots A and B pass. Two rules, from running `lvpm check` on them: a link
+  below a file that is there (a class's private data control in its `.lvclass`)
+  is found, and an absolute link to a file that is not on this machine is not
+  checked (`tests/features/build-slices/README.md`).
 
 ## Packaging and distribution (from idea.txt)
 

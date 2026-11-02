@@ -395,7 +395,8 @@ enum Cmd {
     },
     /// Read every VI under DIR without LabVIEW and name each one that breaks a
     /// rule: saved in a newer LabVIEW than lvpm.toml's `labview`, compiled code
-    /// not separated from the source, or a link to a file that is not there.
+    /// not separated from the source, a link to a file that is not there, or a
+    /// link into an installed package that lvpm.toml does not let the VI use.
     ///
     /// DIR is the whole project when left out. Each finding is listed with its
     /// VI; the exit code is 1 when there is any, and 0 when there is none.

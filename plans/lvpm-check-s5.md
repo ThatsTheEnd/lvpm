@@ -92,6 +92,7 @@ Then the summary, always: `VIs checked: N, problems: M, links not checked: K`.
 **stderr**, warnings, each naming its cause:
 
 - `warning: links not checked: K into vi.lib (the bound installation <path> is not on this machine)` — one line per cause; other symbolic roots read `warning: links not checked: K into <resource> (lvpm does not resolve this root)`
+- `warning: links not checked: K absolute paths not on this machine (saved elsewhere; LabVIEW searches for them when it loads)` — an absolute link to a file that is not here; one that is here is checked
 - `warning: lvpm.toml has no labview, so save versions were not checked`
 - `warning: no VIs under <DIR>`
 
@@ -121,7 +122,8 @@ words the hints, as `render::lock::error` does.
   `Root` table in `linker.rs`. When the bound installation folder does not
   exist, a link that no package holds is counted as not checked.
 - **Other symbolic roots** (`<resource>`, …) are counted as not checked.
-- **Absolute** links (`C:/x.vi`) are checked for existence like any other.
+- **Absolute** links (`C:/x.vi`) are checked for existence like any other when the file is there; one whose file is not on this machine is not checked (counted, one warning, no failure).
+- **Inside a file.** A link whose nearest existing ancestor is a regular file is found inside it (`Logger.lvclass/Logger.ctl`, `X.vi/LabVIEW`); an `.llb` must list the member, and a folder ancestor with a missing leaf still fails. The container file's owner owns the link.
 - **Not-a-path** links are skipped (spec). docs/usage.md says that a VI saved
   with a missing subVI may store one, which check cannot see.
 - **Attribution**: a resolved file listed in a venv install record
@@ -676,6 +678,7 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
   the package-providing VIs. Fallback: byte-edit a saved VI's `PTH0`.
 - **NI vi.lib links are only as good as the bound installation.** On CI with
   no LabVIEW they are "not checked", by design (AC 10).
+- **Deviation from the Resolution rules above (2026-11-02, human decision after Slice 4).** The pilots hold links the exact-path rule reported as broken: 56 in pilot A and 3 in pilot B through a class file or a VI (`Logger.lvclass/Logger.ctl`), and 7 absolute paths saved on the author's machine in pilot A. So a link inside a file counts as found, and a missing absolute link is not checked. See the Ambiguity Log of the spec.
 - **The old OpenG `PTH0` flavour** is not decoded; it shows as "not readable".
   A follow-up issue is opened at PR time.
 - **Shared files.** `main.rs`, `render/mod.rs`, `viserver.rs` and `venv.rs`

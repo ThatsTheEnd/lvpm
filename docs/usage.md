@@ -624,8 +624,11 @@ by the same link is one finding.
   `<instrlib>` links are looked for in the LabVIEW installation the venv is
   bound to first, then in each venv package, as LabVIEW does. A link through an
   `.llb` needs the `.llb` to exist and list that member. The path has to
-  exist exactly: a file somewhere below an existing folder is not enough.
-  An absolute link is looked for as written.
+  exist exactly: a file somewhere below an existing folder is not enough. A
+  link below a file that is there leads into it (`Logger.lvclass/Logger.ctl`,
+  a class's control stored in its `.lvclass`) and is found; the folder form
+  fails. An absolute link is looked for as written, and one whose file is not
+  on this machine is not checked (see below).
 - **Dependencies.** A link into a file that a venv package installed belongs
   to that package, and the VI may use it only if `lvpm.toml` lists the package
   where that VI may draw on it. The VIs of the `[distribution]`
@@ -667,9 +670,13 @@ a field that does not apply is `null`.
 
 **Links lvpm cannot look for** are counted in `links not checked`, with a
 warning on stderr that says why (`warning: links not checked: 57 into vi.lib (the
-bound installation ... is not on this machine)`, or `... into <resource> (lvpm
-does not resolve this root)`). A venv package's own files are still checked
-when the installation is absent.
+bound installation ... is not on this machine)`, `... into <resource> (lvpm
+does not resolve this root)`, or `warning: links not checked: 7 absolute paths
+not on this machine (saved elsewhere; LabVIEW searches for them when it
+loads)`). LabVIEW stores the absolute path a file had where the VI was saved,
+and looks for the file by name when it loads, so such a path on another machine
+is not a broken link. A venv package's own files are still checked when the
+installation is absent.
 
 **Limits.**
 
@@ -677,9 +684,8 @@ when the installation is absent.
   path", which names nothing. `lvpm check` skips such a link; it cannot see it.
 - The older `PTH0` layout of some OpenG packages is not read yet
   ([#108](https://github.com/ThatsTheEnd/lvpm/issues/108)).
-- A link to an item stored inside another file, such as a class's private data
-  control in its `.lvclass`, is looked up as a file, so it is reported as `link
-  not found`. So is an absolute link saved on another machine.
+- A link below a file is found when the file is there; `lvpm check` does not
+  open the file to see that the item is in it (only an `.llb` is read).
 
 ## Package sources
 

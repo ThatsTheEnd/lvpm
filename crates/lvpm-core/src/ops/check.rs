@@ -6,8 +6,9 @@
 //! relative to the VI file itself, so its first `Up` leaves the file. A
 //! `<vilib>`, `<userlib>` or `<instrlib>` one is looked for in the bound
 //! installation first, then in each venv package's `1/` tree. Existence is
-//! what the file system says, or, for a link through an `.llb`, what the
-//! `.llb` lists.
+//! what the file system says, or, for a link inside a file, that the file is
+//! there: an `.llb` has to list the member. An absolute link to a file that is
+//! not on this machine is counted, not reported.
 //!
 //! A file that a venv install record lists belongs to that package, and a VI
 //! may link into it only if the manifest names the package in a table the VI
@@ -74,6 +75,10 @@ pub enum Unchecked {
     },
     /// A symbolic root lvpm does not resolve, as written: `<resource>`.
     Root(String),
+    /// An absolute path to a file that is not on this machine: LabVIEW saves
+    /// the path the file had where the VI was saved, and looks for the file by
+    /// name when it loads the VI.
+    Absolute,
 }
 
 /// What a check found.
@@ -376,12 +381,14 @@ impl Search {
         })
     }
 
-    /// The package that owns `file`. A member of an `.llb` is owned by whoever
-    /// owns the `.llb`, which is the file a record lists.
+    /// The package that owns `file`. A link inside a file (a member of an
+    /// `.llb`, a class's control in its `.lvclass`) is owned by whoever owns
+    /// that file, which is the one a record lists.
     fn owner(&self, file: &Path) -> Option<&str> {
-        let held = self.owners.get(&key(file));
-        let llb = || file.parent().and_then(|dir| self.owners.get(&key(dir)));
-        held.or_else(llb).map(String::as_str)
+        let owner = file
+            .ancestors()
+            .find_map(|path| self.owners.get(&key(path)));
+        owner.map(String::as_str)
     }
 }
 
@@ -411,7 +418,7 @@ impl Uses<'_> {
 /// venv's packages own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Resolved {
-    /// The file it names, or, through an `.llb`, the path of the member.
+    /// The file it names, or, inside a file, the path below that file.
     File(PathBuf),
     NotFound,
     /// It could not be looked for, and why.
@@ -429,7 +436,11 @@ fn resolve(link: &LinkPath, vi: &Path, search: &Search) -> Resolved {
     match &link.kind {
         Kind::NotAPath => Resolved::Skipped,
         Kind::Relative => found(join(vi.to_path_buf(), &link.components)),
-        Kind::Absolute => found(PathBuf::from(link.to_path_string())),
+        // One that is not here was saved elsewhere; it is not a broken link.
+        Kind::Absolute => match found(PathBuf::from(link.to_path_string())) {
+            Resolved::NotFound => Resolved::NotChecked(Unchecked::Absolute),
+            there => there,
+        },
         Kind::Symbolic(root) => {
             let Some(folder) = root.folder() else {
                 return Resolved::NotChecked(Unchecked::Root(root.text().to_owned()));
@@ -463,23 +474,35 @@ fn join(mut base: PathBuf, parts: &[Component]) -> PathBuf {
     base
 }
 
-/// Is there a file at `path`, or a member of an `.llb` of that name?
+/// Is there a file at `path`, or is `path` inside one? The nearest part of it
+/// that exists must be a file, not a folder: a link below a file leads into it,
+/// as `Logger.lvclass/Logger.ctl` does. An `.llb` has to list the member.
 fn exists(path: &Path) -> bool {
     if path.is_file() {
         return true;
     }
-    let (Some(llb), Some(name)) = (path.parent(), path.file_name()) else {
+    let Some(container) = path.ancestors().find(|ancestor| ancestor.exists()) else {
         return false;
     };
-    let is_llb = llb
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("llb"));
-    if !is_llb || !llb.is_file() {
+    if !container.is_file() {
         return false;
     }
-    let name = name.to_string_lossy();
+    let is_llb = container
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("llb"));
+    if !is_llb {
+        return true;
+    }
+    let member = path
+        .strip_prefix(container)
+        .ok()
+        .and_then(|below| below.components().next())
+        .map(|name| name.as_os_str().to_string_lossy());
+    let Some(name) = member else {
+        return false;
+    };
     // An `.llb` that cannot be read lists nothing.
-    let members = std::fs::read(llb).map_or_else(
+    let members = std::fs::read(container).map_or_else(
         |_| Vec::new(),
         |b| linker::llb_members(&b).unwrap_or_default(),
     );
@@ -1130,6 +1153,71 @@ mod tests {
     }
 
     #[test]
+    fn a_link_below_a_vi_or_a_class_file_is_found_inside_it() {
+        let dir = testing::scratch_dir("check-resolve-inside");
+        std::fs::create_dir_all(dir.join("a/Logger")).unwrap();
+        std::fs::write(dir.join("a/Logger/Logger.lvclass"), "").unwrap();
+        std::fs::write(dir.join("a/Logger/Init.vi"), "").unwrap();
+        let (vi, search) = (dir.join("a/V.vi"), search_in(&dir));
+        let class_control = link(
+            Kind::Relative,
+            &["..", "Logger", "Logger.lvclass", "Logger.ctl"],
+        );
+        assert_eq!(
+            resolve(&class_control, &vi, &search),
+            Resolved::File(dir.join("a/Logger/Logger.lvclass/Logger.ctl"))
+        );
+        let below_a_vi = link(Kind::Relative, &["..", "Logger", "Init.vi", "LabVIEW"]);
+        assert_eq!(
+            resolve(&below_a_vi, &vi, &search),
+            Resolved::File(dir.join("a/Logger/Init.vi/LabVIEW"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_below_a_folder_still_needs_its_file() {
+        let dir = testing::scratch_dir("check-resolve-folder");
+        std::fs::create_dir_all(dir.join("a/Logger/Sub")).unwrap();
+        std::fs::write(dir.join("a/Logger/Other.vi"), "").unwrap();
+        let (vi, search) = (dir.join("a/V.vi"), search_in(&dir));
+        for parts in [
+            &["..", "Logger", "Gone.vi"][..],
+            &["..", "Logger", "Sub", "Gone.vi"],
+            &["..", "Nowhere", "Gone.vi"],
+        ] {
+            let gone = link(Kind::Relative, parts);
+            assert_eq!(
+                resolve(&gone, &vi, &search),
+                Resolved::NotFound,
+                "{parts:?}"
+            );
+        }
+        // an `.llb` that does not list the member is not a file that holds it
+        std::fs::write(dir.join("a/Empty.llb"), "").unwrap();
+        let gone = link(Kind::Relative, &["..", "Empty.llb", "Gone.vi"]);
+        assert_eq!(resolve(&gone, &vi, &search), Resolved::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_absolute_link_is_counted_and_is_no_problem() {
+        let dir = testing::scratch_dir("check-resolve-stale");
+        let absolute = |path: &Path| decode_pth0(&encode_pth0(path).unwrap()).unwrap().0;
+        let (vi, search) = (dir.join("V.vi"), search_in(&dir));
+        let stale = absolute(&dir.join("elsewhere/Formatter.lvclass"));
+        assert_eq!(
+            resolve(&stale, &vi, &search),
+            Resolved::NotChecked(Unchecked::Absolute)
+        );
+        let mut unchecked = BTreeMap::new();
+        let found = link_problems(&[stale], &vi, &search, &nobody(), &dir, &mut unchecked);
+        assert_eq!(found, []);
+        assert_eq!(unchecked, BTreeMap::from([(Unchecked::Absolute, 1)]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn an_absolute_link_is_checked_as_it_is() {
         let dir = testing::scratch_dir("check-resolve-abs");
         let here = dir.join("x.vi");
@@ -1139,11 +1227,16 @@ mod tests {
         let search = search_in(&dir);
         assert_eq!(
             resolve(&absolute(&here), &vi, &search),
-            Resolved::File(here)
+            Resolved::File(here.clone())
+        );
+        // through a file that is here, it is found inside it
+        assert_eq!(
+            resolve(&absolute(&here.join("LabVIEW")), &vi, &search),
+            Resolved::File(here.join("LabVIEW"))
         );
         assert_eq!(
             resolve(&absolute(&dir.join("gone.vi")), &vi, &search),
-            Resolved::NotFound
+            Resolved::NotChecked(Unchecked::Absolute)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1550,6 +1643,17 @@ mod tests {
         assert_eq!(search.owner(Path::new("/p/x.llb")), Some("pkg"));
         assert_eq!(search.owner(Path::new("/p/x.llb/m.vi")), Some("pkg"));
         assert_eq!(search.owner(Path::new("/p/y.vi")), None);
+    }
+
+    #[test]
+    fn a_link_inside_a_file_belongs_to_the_package_that_owns_the_file() {
+        let mut search = search_in(Path::new("/nowhere"));
+        search
+            .owners
+            .insert(key(Path::new("/p/C.lvclass")), "pkg".to_string());
+        assert_eq!(search.owner(Path::new("/p/C.lvclass/C.ctl")), Some("pkg"));
+        // a folder of that name owns nothing
+        assert_eq!(search.owner(Path::new("/p/D/C.ctl")), None);
     }
 
     #[test]

@@ -256,10 +256,8 @@ Feature: lvpm check finds broken links without LabVIEW
     And stderr has a line containing "Nope.lvlib"
 
   # The pilot sources are not committed; README.md beside this file says how to
-  # check them out. The two scenarios that expect a pass are pending: the real
-  # pilots hold links that exact-path checking reports, see "What check finds
-  # in the pilots" in README.md.
-  @pilot-source @pending-s5-pilot-links
+  # check them out.
+  @pilot-source
   Scenario: pilot A passes
     Given pilot A's pinned source checkout with labview ">=2016"
     And the bound installation folder does not exist
@@ -285,7 +283,7 @@ Feature: lvpm check finds broken links without LabVIEW
     Then it exits 1
     And stdout has the line "source/Serializer.INI/INI.Attributes to Variant.vi: <vilib>/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi is in labview_open_source_lib_data_manipulation, which is not in [dependencies]"
 
-  @pilot-b-source @pending-s5-pilot-links
+  @pilot-b-source
   Scenario: pilot B passes with its dependency declared
     Given pilot B's pinned source checkout with labview ">=2013" and "labview_open_source_lib_data_manipulation" in [dependencies]
     And the bound installation folder does not exist

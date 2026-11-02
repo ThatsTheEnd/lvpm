@@ -123,17 +123,19 @@ check exits 1 with one line per VI and link, among them:
 source/Serializer.INI/INI.Attributes to Variant.vi: <vilib>/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi is in labview_open_source_lib_data_manipulation, which is not in [dependencies]
 ```
 
-**What the pilots still fail on.** Neither pilot passes yet, so the two
-scenarios that expect a pass carry `@pending-s5-pilot-links`:
+**Both pilots pass.** With `labview_open_source_lib_data_manipulation` in
+`[dependencies]` (pilot B) and the bound installation absent, `lvpm check` prints:
 
-- Pilot A, 63 problems. 56 are links through a class file to its private data
-  control (`Source/HSE-Logger/Logger/Logger.lvclass/Logger.ctl`): the control is
-  stored inside the `.lvclass`, so no file of that name exists. The other 7 are
-  absolute links saved on the author's machine to a class file
-  (`C:/Users/admin/_Git/hse-logger/Source/HSE-Logger/Formatter/Formatter.lvclass`,
-  `C:/_work/hampel-soft/open-source/hse-logger/...`).
-- Pilot B, 3 problems with its dependency declared: a VI that links to a
-  path below itself (`source/Serializer.INI/ExtractSectionsFromString.vi/LabVIEW`).
+| Pilot | stdout | stderr |
+|---|---|---|
+| A | `VIs checked: 90, problems: 0, links not checked: 26` | `warning: links not checked: 19 into vi.lib (the bound installation <path> is not on this machine)` and `warning: links not checked: 7 absolute paths not on this machine (saved elsewhere; LabVIEW searches for them when it loads)` |
+| B | `VIs checked: 30, problems: 0, links not checked: 57` | `warning: links not checked: 57 into vi.lib (the bound installation <path> is not on this machine)` |
 
-The check treats a path through an `.llb` as a member lookup and every other
-path as a file, so these are reported as `link not found`.
+Two rules make that so. A link inside a file counts as found: pilot A's 56
+links to a class's private data control (`Source/HSE-Logger/Logger/Logger.lvclass/Logger.ctl`)
+and pilot B's 3 links to a path below a VI
+(`source/Serializer.INI/ExtractSectionsFromString.vi/LabVIEW`) lead into a file
+that is there. A link to an absolute path that is not on this machine is not
+checked: pilot A's 7 were saved where the author worked
+(`C:/Users/admin/_Git/hse-logger/...`, `C:/_work/hampel-soft/open-source/hse-logger/...`)
+and LabVIEW looks for the file by name when it loads the VI.
