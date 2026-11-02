@@ -63,7 +63,7 @@ in manifest order. `// shortcut: a package loaded by path at run time has no
 link and is reported unused; a manifest opt-out would fix it if users ask.`
 `check.rs` tests `venv::binding_path(&dir).is_file()` (made `pub(crate)`) before
 calling `venv::binding`; when it is absent it returns `CheckError::NoVenv(PathBuf)` (its text keeps
-today's "no venv in <repo>, `lvpm venv create` makes one" for `lvpm check`).
+today's "no venv in <repo> — `lvpm venv create` makes one" for `lvpm check`).
 `Checked`'s fields do not change, so `src/render/check.rs` still compiles.
 
 **Behavior:** (unit tests in `check.rs`, hand-bound venv and install records as S5's tests do)
@@ -102,8 +102,8 @@ Feature: check_library holds the members to the check
     When the library is checked
     Then unused is exactly "spare"
 
-  Scenario: a name differing only in case or separator still matches
-    Given [dependencies] names "Dep_Pkg" and a member links into package "dep-pkg"
+  Scenario: a name differing only in case still matches (same_name folds ASCII case, not separators, as check's Undeclared rule does)
+    Given [dependencies] names "Dep_Pkg" and a member links into package "dep_pkg"
     When the library is checked
     Then unused is empty
 
@@ -345,7 +345,7 @@ graph TD
 
 #### Wave 1
 - [ ] Slice 1: `check_library`: the members' findings and the unused dependencies
-  - [ ] Step 1.1: `run` with a scope, and `check_library`
+  - [x] Step 1.1: `run` with a scope, and `check_library`
 
 #### Wave 2
 - [ ] Slice 2: the check in `lvpm build`
