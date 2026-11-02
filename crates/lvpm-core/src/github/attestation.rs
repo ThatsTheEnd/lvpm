@@ -57,7 +57,7 @@ fn settled_by_api(client: &Client, github: &GitHub, repo: &str, sha: &str) -> Op
                     anonymous: token_source.is_none(),
                 },
                 GitHubFault::TokenRejected { .. } => NotChecked::TokenRejected,
-                GitHubFault::Refused { .. } => NotChecked::LookupRefused,
+                GitHubFault::Refused { .. } if status.as_u16() == 403 => NotChecked::LookupRefused,
                 _ => NotChecked::Http {
                     status: status.as_u16(),
                 },
@@ -408,6 +408,15 @@ mod tests {
                 "{}",
                 unchecked(NotChecked::TokenRejected),
             ),
+            Row {
+                token: None,
+                ..row(
+                    "401 Unauthorized",
+                    "",
+                    "{}",
+                    unchecked(NotChecked::Http { status: 401 }),
+                )
+            },
             row(
                 "200 OK",
                 "",

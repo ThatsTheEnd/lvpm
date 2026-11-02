@@ -415,8 +415,8 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
                  hint: add the repository to [policy] trusted-publishers, or depend on a release \
                  built by a trusted repository",
                 trusted_publishers.join(", "),
-                subject = printable(subject),
-                signer = printable(signer),
+                subject = super::printable(subject.clone()),
+                signer = super::printable(signer.clone()),
             ),
             Refusal::DoesNotVerify { cause } => format!(
                 "the attestation of {name} {version} from github.com/{repo} does not verify:{}\n    \
@@ -440,7 +440,7 @@ fn invalid(cause: &Invalid) -> String {
     let stderr = match cause {
         Invalid::UnreadableOutput => return " unrecognised gh output".to_string(),
         Invalid::OtherArchive => return " gh's attestation does not match the archive".to_string(),
-        Invalid::Rejected { stderr } => printable(&strip_ansi(stderr)),
+        Invalid::Rejected { stderr } => super::printable(strip_ansi(stderr)),
     };
     if stderr.trim().is_empty() {
         return " gh gave no reason".to_string();
@@ -468,14 +468,6 @@ fn strip_ansi(text: &str) -> String {
     plain
 }
 
-/// `text` without control characters other than newlines and tabs, so text
-/// from gh or a certificate cannot drive the terminal.
-fn printable(text: &str) -> String {
-    (text.chars())
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .collect()
-}
-
 /// What lvpm says of a reason it could not check an attestation, and what to
 /// do about it. `repo` is the repository the package is from, when it is one
 /// package that is asked about.
@@ -494,7 +486,8 @@ fn not_checked(reason: &NotChecked, repo: Option<&str>) -> (String, String) {
         NotChecked::GhTimedOut => ("gh timed out", LATER),
         NotChecked::GhInterrupted => ("gh was interrupted", LATER),
         NotChecked::GhFailed { error } => {
-            return (format!("gh could not be run: {error}"), LATER.to_string());
+            let said = super::printable(format!("gh could not be run: {error}"));
+            return (said, LATER.to_string());
         }
         NotChecked::NoToken => ("lvpm has no GitHub token", AUTH),
         NotChecked::RateLimited { anonymous: true } => {
@@ -1301,7 +1294,7 @@ mod tests {
             !text.chars().any(|c| c.is_control() && c != '\n'),
             "{text:?}"
         );
-        assert!(text.contains("    ]0;titlebadsig\n"), "{text:?}");
+        assert!(text.contains("    ?]0;title?bad?sig\n"), "{text:?}");
     }
 
     #[test]

@@ -82,13 +82,14 @@ fn run(command: &mut Command, limit: Duration, cap: u64) -> GhRun {
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // The grace covers the readers seeing EOF. Output that has not
+                // One grace covers both readers seeing EOF. Output that has not
                 // come by then (a grandchild holding a pipe open) is not gh's
                 // answer; shortcut: that reader thread is left behind, kill
                 // gh's process tree if it is ever seen.
-                let grace = Duration::from_secs(1);
+                let grace = Instant::now() + Duration::from_secs(1);
+                let left = || grace.saturating_duration_since(Instant::now());
                 let (Ok(stdout), Ok(stderr)) =
-                    (stdout.recv_timeout(grace), stderr.recv_timeout(grace))
+                    (stdout.recv_timeout(left()), stderr.recv_timeout(left()))
                 else {
                     return GhRun::NotRunnable(NotChecked::GhInterrupted);
                 };
