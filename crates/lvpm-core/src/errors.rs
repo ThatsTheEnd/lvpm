@@ -252,7 +252,7 @@ pub enum InitError {
     Other(#[from] anyhow::Error),
 }
 
-/// Why `check` read no VI.
+/// Why `check` read no VI, or why `build` stopped.
 #[derive(Debug, thiserror::Error)]
 pub enum CheckError {
     /// The folder to check is not there, as it was written.

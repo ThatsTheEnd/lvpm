@@ -33,8 +33,9 @@ path at run time, which the linker table cannot show.
   `Outcome::Refused(Library)` when a member has findings. Nothing is written to
   `dist/` on refusal. Otherwise `Outcome::Built(Built)`, whose `library` holds
   the `Library` (`None` with `--no-check`).
-- The gate needs the venv binding, as `check` does. With no venv, build fails
-  through `check`'s own error, with a hint to run `lvpm sync`.
+- The gate needs the venv binding, as `check` does. With no venv, build maps
+  `check`'s `NoVenv` to its own message, naming `lvpm venv create`, `lvpm sync`
+  and `--no-check`.
 - `src/main.rs`: `Cmd::Build { no_check: bool }` (`--no-check`). A refusal
   prints the findings with `render::check`'s finding lines and exits 1. An
   unused dependency goes in the report's warning.

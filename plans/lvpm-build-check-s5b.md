@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-02
 **Branch**: claude/dev-team-ship-250da7
-**Status**: approved (revision 3)
+**Status**: implemented
 **Gherkin persistence**: custom: tests/features/build-slices/ (the build steps write `s5b-lvpm-build-check.feature` themselves, as S1 and S5 did)
 
 Spec: [docs/specs/lvpm-build-check-s5b.md](../docs/specs/lvpm-build-check-s5b.md). Issue ThatsTheEnd/lvpm#64, `deviation`.

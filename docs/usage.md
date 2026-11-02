@@ -602,13 +602,15 @@ nothing written; fix them or pass --no-check`. With `--json` the result is
 - A package in `[dependencies]` that no member links to is a warning on
   stderr, and the build goes on:
   `[dependencies] names spare, which no member links to (ignore this if it is loaded by path at run time)`.
+  It is not printed when a link was not checked, such as an absolute path,
+  since that link may lead into the package.
 - A link from a member into a package that is not in `[dependencies]`, or only
   in `[dev-dependencies]`, is a finding and refuses the build.
 - `lvpm build --no-check` skips the check. It needs no venv, and stderr says
   `check skipped (--no-check)`. Use it where there is no venv, such as a CI
   runner without LabVIEW; check the library with `lvpm check` or a plain
   `lvpm build` on a machine that has the venv.
-- A member is checked wherever the library lists it, under a dot-folder or
+- A VI member (`.vi .vit .vim .ctl .ctt`) is checked wherever the library lists it, under a dot-folder or
   behind a link too, since the build packages it there. Only `lvpm check`,
   which walks a folder, skips such names.
 

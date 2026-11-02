@@ -18,7 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The lvpm that builds. Raise it to build with a newer one.
+  # The lvpm that builds. Raise it to build with a newer one. `--no-check`
+  # needs the first release after 0.22.0; release-please raises this pin.
   LVPM_VERSION: "0.22.0" # x-release-please-version
 
 jobs:
