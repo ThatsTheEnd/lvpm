@@ -14,6 +14,11 @@ pub enum LinkerError {
     /// A field lies past the end of the bytes, at byte `at`.
     #[error("truncated at byte {at}")]
     Truncated { at: usize },
+    /// A section that should hold a table does not: it is missing (offset 0),
+    /// runs past the end of the file, or holds a record that does not parse.
+    /// `offset` is the file byte where that section or record starts.
+    #[error("{block} not readable at byte {offset}")]
+    Unreadable { block: &'static str, offset: usize },
 }
 
 /// `at + by`, an error rather than a wrap where `usize` is 32 bits.
@@ -116,6 +121,125 @@ impl<'a> Rsrc<'a> {
         let bcd = u32::from(*vers.data?.first()?);
         let major = (bcd >> 4) * 10 + (bcd & 0x0f);
         (major >= 9).then_some(2000 + major)
+    }
+
+    /// Whether the VI keeps its compiled code in a separate file, from bit
+    /// 0x400 of the `LVSR` u32 at byte 8. Good.vi, saved with "Separate
+    /// compiled code from source file" on, has the bit set (0x600);
+    /// NotSeparated.vi, the same VI saved with the compiled code kept in the
+    /// file, has it clear (0x200). None when there is no such `LVSR`.
+    pub fn separate_compiled(&self) -> Option<bool> {
+        let lvsr = self.blocks.iter().find(|b| &b.kind == b"LVSR")?;
+        let flags = Cursor::at(lvsr.data?, 8).u32().ok()?;
+        Some(flags & 0x400 != 0)
+    }
+
+    /// Every file a VI links to, from its three linker tables, once each. The
+    /// empty paths LabVIEW writes after most links are not links.
+    pub fn links(&self) -> Result<Vec<LinkPath>, LinkerError> {
+        let mut links = Vec::new();
+        for table in ["LIvi", "LIfp", "LIbd"] {
+            for path in self.table_paths(table)? {
+                if !links.contains(&path) {
+                    links.push(path);
+                }
+            }
+        }
+        Ok(links)
+    }
+
+    /// The paths in one linker table. Every table is `u16 version | 4-char
+    /// owner | u32 entry count | entries | u16 3`, but the entries differ per
+    /// link type and are not documented, so this finds each `PTH0` record by
+    /// its magic and checks the bounds of each one.
+    // shortcut: reads PTH0 records by magic, not entry structure; upgrade once the entry layout is documented
+    fn table_paths(&self, table: &'static str) -> Result<Vec<LinkPath>, LinkerError> {
+        let missing = LinkerError::Unreadable {
+            block: table,
+            offset: 0,
+        };
+        let block = self
+            .blocks
+            .iter()
+            .find(|b| b.kind == table.as_bytes())
+            .ok_or(missing)?;
+        let data = block.data.ok_or(LinkerError::Unreadable {
+            block: table,
+            offset: block.offset,
+        })?;
+        let mut paths = Vec::new();
+        let mut at = 0;
+        while let Some(found) = data[at..].windows(4).position(|w| w == b"PTH0") {
+            let start = at + found;
+            let bad = LinkerError::Unreadable {
+                block: table,
+                // the record's own bytes follow the section's 4-byte size
+                offset: block.offset + 4 + start,
+            };
+            if Cursor::at(data, start + 4).u32().map_err(|_| bad)? == 0 {
+                at = start + 8;
+                continue;
+            }
+            let (path, used) = decode_pth0(&data[start..]).map_err(|_| bad)?;
+            at = start + used;
+            if path.kind == Kind::NotAPath || !path.components.is_empty() {
+                paths.push(path);
+            }
+        }
+        Ok(paths)
+    }
+}
+
+/// What `lvpm check` needs from one VI file, read once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViFacts {
+    pub save_year: Option<u32>,
+    pub separate_compiled: bool,
+    pub links: Vec<LinkPath>,
+}
+
+impl ViFacts {
+    pub fn read(bytes: &[u8]) -> Result<Self, LinkerError> {
+        let rsrc = Rsrc::read(bytes)?;
+        let separate_compiled = rsrc.separate_compiled().ok_or(LinkerError::Unreadable {
+            block: "LVSR",
+            offset: 0,
+        })?;
+        Ok(ViFacts {
+            save_year: rsrc.save_year(),
+            separate_compiled,
+            links: rsrc.links()?,
+        })
+    }
+}
+
+/// The names of the VIs in an `.llb`, from its `STR#` section 1, a Mac string
+/// list: `u16 count | count pascal names`, with nothing after the last.
+// shortcut: layout read from one single-member .llb (Removed.vi was deleted from it); check it against a multi-member .llb when one is a fixture
+pub fn llb_members(bytes: &[u8]) -> Result<Vec<String>, LinkerError> {
+    let rsrc = Rsrc::read(bytes)?;
+    let unreadable = |offset| LinkerError::Unreadable {
+        block: "STR#",
+        offset,
+    };
+    let list = rsrc
+        .blocks
+        .iter()
+        .find(|b| &b.kind == b"STR#" && b.id == 1)
+        .ok_or(unreadable(0))?;
+    let data = list.data.ok_or(unreadable(list.offset))?;
+    let mut cursor = Cursor::at(data, 0);
+    let names = (|| {
+        let mut names = Vec::new();
+        for _ in 0..cursor.u16()? {
+            let len = cursor.take(1)?[0] as usize;
+            names.push(String::from_utf8_lossy(cursor.take(len)?).into_owned());
+        }
+        Ok::<_, LinkerError>(names)
+    })();
+    match names {
+        Ok(names) if cursor.pos == data.len() => Ok(names),
+        _ => Err(unreadable(list.offset)),
     }
 }
 
@@ -465,6 +589,148 @@ mod tests {
         );
         assert_eq!(written(1, &["", "x.vi"]), format!("..{sep}x.vi"));
         assert_eq!(written(2, &[]), "<Not A Path>");
+    }
+
+    #[test]
+    fn the_compiled_code_flag_tells_the_minimal_pair_apart() {
+        let flag = |name| Rsrc::read(&project_vi(name)).unwrap().separate_compiled();
+        assert_eq!(flag("Good.vi"), Some(true));
+        assert_eq!(flag("NotSeparated.vi"), Some(false));
+    }
+
+    #[test]
+    fn an_llb_lists_the_vis_it_still_holds() {
+        let llb = project_vi("Archive.llb");
+        assert_eq!(llb_members(&llb).unwrap(), ["InLlb.vi"]);
+    }
+
+    #[test]
+    fn an_llb_list_that_does_not_add_up_is_unreadable() {
+        let mut llb = project_vi("Archive.llb");
+        let rsrc = Rsrc::read(&llb).unwrap();
+        let list = rsrc.blocks.iter().find(|b| &b.kind == b"STR#" && b.id == 1);
+        let offset = list.unwrap().offset;
+        llb[offset + 5] = 2; // two names are claimed, one is there
+        assert_eq!(
+            llb_members(&llb),
+            Err(LinkerError::Unreadable {
+                block: "STR#",
+                offset
+            })
+        );
+        assert_eq!(
+            llb_members(&project_vi("Good.vi")),
+            Err(LinkerError::Unreadable {
+                block: "STR#",
+                offset: 0
+            })
+        );
+    }
+
+    #[test]
+    fn a_vi_is_read_once_into_its_facts() {
+        let facts = ViFacts::read(&project_vi("Good.vi")).unwrap();
+        assert_eq!(facts.save_year, Some(2026));
+        assert!(facts.separate_compiled);
+        assert_eq!(facts.links, [rel(&["Lib.lvlib"]), rel(&["Helper.vi"])]);
+        assert_eq!(ViFacts::read(b"not a VI"), Err(LinkerError::NotResource));
+    }
+
+    fn project_vi(name: &str) -> Vec<u8> {
+        std::fs::read(repo(&format!("check/project/{name}"))).unwrap()
+    }
+
+    fn links_of(bytes: &[u8]) -> Vec<LinkPath> {
+        Rsrc::read(bytes).unwrap().links().unwrap()
+    }
+
+    fn link(kind: Kind, parts: &[&str]) -> LinkPath {
+        LinkPath {
+            kind,
+            components: names(parts),
+        }
+    }
+
+    /// A link LabVIEW stores relative to the VI file itself: the first
+    /// component is Up, from the file to its folder.
+    fn rel(parts: &[&str]) -> LinkPath {
+        let mut path = link(Kind::Relative, parts);
+        path.components.insert(0, Component::Up);
+        path
+    }
+
+    #[test]
+    fn good_vi_links_to_its_library_and_helper_once_each() {
+        assert_eq!(
+            links_of(&project_vi("Good.vi")),
+            [rel(&["Lib.lvlib"]), rel(&["Helper.vi"])]
+        );
+        assert_eq!(
+            links_of(&project_vi("Broken.vi")),
+            [rel(&["Sub", "Gone.vi"])]
+        );
+    }
+
+    #[test]
+    fn a_vilib_link_is_symbolic() {
+        assert!(links_of(&project_vi("UsesDep.vi")).contains(&link(
+            Kind::Symbolic(Root::ViLib),
+            &["Check Fixture", "Dep.vi"]
+        )));
+    }
+
+    #[test]
+    fn links_through_an_llb_keep_the_llb_as_a_component() {
+        assert_eq!(
+            links_of(&project_vi("UsesLlb.vi")),
+            [
+                rel(&["Archive.llb", "InLlb.vi"]),
+                rel(&["Archive.llb", "Removed.vi"])
+            ]
+        );
+    }
+
+    /// `bytes` with the size of its `kind` section set past the end of the
+    /// file, and the file offset of that section.
+    fn size_past_the_end(mut bytes: Vec<u8>, kind: &[u8; 4]) -> (Vec<u8>, usize) {
+        let rsrc = Rsrc::read(&bytes).unwrap();
+        let at = rsrc.blocks.iter().find(|b| &b.kind == kind).unwrap().offset;
+        bytes[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        (bytes, at)
+    }
+
+    #[test]
+    fn a_table_whose_size_runs_past_the_file_is_unreadable_at_its_offset() {
+        for block in ["LIvi", "LIfp", "LIbd"] {
+            let (bytes, offset) =
+                size_past_the_end(project_vi("Good.vi"), block.as_bytes().try_into().unwrap());
+            assert_eq!(
+                Rsrc::read(&bytes).unwrap().links(),
+                Err(LinkerError::Unreadable { block, offset })
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_record_that_overruns_its_table_is_unreadable_where_it_starts() {
+        let mut bytes = project_vi("Good.vi");
+        let rsrc = Rsrc::read(&bytes).unwrap();
+        let livi = rsrc.blocks.iter().find(|b| &b.kind == b"LIvi").unwrap();
+        let magic = livi
+            .data
+            .unwrap()
+            .windows(4)
+            .position(|w| w == b"PTH0")
+            .unwrap();
+        let record = livi.offset + 4 + magic;
+        bytes[record + 4..record + 8].copy_from_slice(&1000u32.to_be_bytes());
+        assert_eq!(
+            Rsrc::read(&bytes).unwrap().links(),
+            Err(LinkerError::Unreadable {
+                block: "LIvi",
+                offset: record
+            })
+        );
     }
 
     #[test]
