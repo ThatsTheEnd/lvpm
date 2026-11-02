@@ -25,7 +25,7 @@
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
-| `lvpm build`                                         | Package the project's library as `dist/<name>-<version>.lvpkg`, from `[distribution]` ([Building a package](#building-a-package))              |
+| `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
@@ -372,11 +372,13 @@ and an upgrade of that package list it again.
 from lvpm's repository into `.github/workflows/` of the repository that holds
 your package. The repository needs an `lvpm.toml` with `[project]` and
 `[distribution]` ([Building a package](#building-a-package)). Pushing a tag
-then runs `lvpm build` and attaches `dist/<name>-<version>.lvpkg` to the tag's
+then runs `lvpm build --no-check` and attaches `dist/<name>-<version>.lvpkg` to the tag's
 release, creating the release if there is none, and replacing the file if the
 tag is pushed again. The template names the lvpm release it builds with in
-`LVPM_VERSION`; raise it to use a newer one. Projects depend on the package
-under its `[project]` `name`.
+`LVPM_VERSION`; raise it to use a newer one. The runner has no LabVIEW, so
+there is no venv to check the library against: the template skips the check and
+prints a `::warning::` that the build is unchecked. Run `lvpm build` on your own
+machine to check. Projects depend on the package under its `[project]` `name`.
 
 ## [policy]
 
@@ -573,6 +575,40 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"  # optional; this
   `install-dir = "vi.lib/Acme Inc/Lib"`.
 - The package name takes letters, digits, `_`, `-` and `.`, but not `..`. A quote or line
   break in `vendor` or `display-name` is refused.
+
+**The check.** `lvpm build` checks the library's members first, with the
+rules of [`lvpm check`](#checking-a-project), and writes nothing when one
+breaks a rule. The members are the files the `.lvlib` lists; a VI the library
+does not list is not checked. The check needs a venv, so run
+`lvpm venv create` and `lvpm sync` before the first build, or pass
+`--no-check`. Without a venv and without the flag, the build exits 1 and says
+which two commands to run.
+
+When a member breaks a rule, the build exits 1, `dist/` is left as it was,
+and stdout lists what `lvpm check` would list. `VIs checked` counts the
+library's members, not every VI in the project:
+
+```console
+$ lvpm build
+Broken.vi: link not found: Sub/Gone.vi
+VIs checked: 3, problems: 1, links not checked: 0
+```
+
+The last line on stderr is `build refused: 1 problem(s) in library members,
+nothing written; fix them or pass --no-check`. With `--json` the result is
+`check`'s, with `"command": "build"`.
+
+- A package in `[dependencies]` that no member links to is a warning on
+  stderr, and the build goes on:
+  `[dependencies] names spare, which no member links to (ignore this if it is loaded by path at run time)`.
+- A link from a member into a package that is not in `[dependencies]`, or only
+  in `[dev-dependencies]`, is a finding and refuses the build.
+- `lvpm build --no-check` skips the check. It needs no venv, and stderr says
+  `check skipped (--no-check)`. Use it where there is no venv, such as a CI
+  runner without LabVIEW; check the library with `lvpm check` or a plain
+  `lvpm build` on a machine that has the venv.
+- A member under a folder whose name starts with a dot is packaged but not
+  checked, as `lvpm check` skips such names.
 
 ### Installing a .lvpkg
 

@@ -750,3 +750,43 @@ async fn usage_has_a_line_starting(_: &mut CliWorld, start: String) {
         "no line of docs/usage.md starts with {start:?}"
     );
 }
+
+#[then(
+    regex = r#"^docs/usage\.md contains "([^"]+)", "([^"]+)", "([^"]+)" counts members, and "([^"]+)"$"#
+)]
+async fn usage_describes_the_build_check(
+    _: &mut CliWorld,
+    checks: String,
+    needs: String,
+    counted: String,
+    flag: String,
+) {
+    let section = section_of(&repo_file("docs/usage.md"), "Building a package");
+    // Prose wraps: compare with every run of whitespace as one space.
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for wanted in [
+        checks,
+        needs,
+        format!("`{counted}` counts the library's members"),
+        flag,
+    ] {
+        assert!(
+            section.contains(&wanted),
+            "the Building a package section of docs/usage.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[then(regex = r#"^the release template runs "([^"]+)" after printing "([^"]+)"$"#)]
+async fn template_builds_unchecked(_: &mut CliWorld, command: String, warning: String) {
+    let lines = template_lines();
+    let warned = lines
+        .iter()
+        .position(|line| line.contains(&warning))
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} prints no `{warning}`"));
+    let built = lines
+        .iter()
+        .position(|line| *line == command)
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} has no line `{command}`"));
+    assert!(warned < built, "the warning comes after `{command}`");
+}

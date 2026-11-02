@@ -128,3 +128,9 @@ Feature: lvpm build checks the library's members first
     When lvpm build runs on it
     Then it exits 1 and dist holds no .lvpkg
     And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
+
+  Scenario: the docs describe the check in build
+    Then docs/usage.md contains "checks the library's members first", "needs a venv", "VIs checked" counts members, and "--no-check"
+
+  Scenario: the release template builds unchecked and says so
+    Then the release template runs "lvpm build --no-check" after printing "::warning::unchecked build"
