@@ -57,6 +57,13 @@ fn binding_path(dir: &Path) -> PathBuf {
     dir.join(".lvpm").join("venv.json")
 }
 
+/// The staging folder of the venv at `dir`: see [`Venv::staging_dir`].
+pub fn staging_of(dir: &Path) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push(".staging");
+    dir.with_file_name(name)
+}
+
 impl Venv {
     /// Roots for installing one package: its own addon under the venv.
     pub fn roots_for_pkg(&self, pkg: &str) -> Result<Roots> {
@@ -80,9 +87,7 @@ impl Venv {
     /// sibling (`.lv-venv.staging`). LabVIEW loads every folder under the venv
     /// as an addon, and a sibling is on the same volume, so the move is a rename.
     pub fn staging_dir(&self) -> PathBuf {
-        let mut name = self.dir.file_name().unwrap_or_default().to_os_string();
-        name.push(".staging");
-        self.dir.with_file_name(name)
+        staging_of(&self.dir)
     }
 
     /// The ini a LabVIEW on this venv is started with.

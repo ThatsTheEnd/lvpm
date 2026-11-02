@@ -274,6 +274,8 @@ pub enum Kind {
     Symbolic(Root),
     /// LabVIEW's "not a path".
     NotAPath,
+    /// A kind this reader does not follow, as written: 3 is a UNC path.
+    Other(u16),
 }
 
 /// A symbolic path's root, as LabVIEW writes it between angle brackets.
@@ -332,7 +334,7 @@ impl LinkPath {
         match &self.kind {
             Kind::NotAPath => return "<Not A Path>".to_string(),
             Kind::Symbolic(root) => parts.push(root.text().to_string()),
-            Kind::Absolute | Kind::Relative => {}
+            Kind::Absolute | Kind::Relative | Kind::Other(_) => {}
         }
         parts.extend(self.components.iter().map(|c| match c {
             Component::Name(name) => name.clone(),
@@ -362,7 +364,7 @@ impl LinkPath {
 /// `"PTH0" | u32 length | u16 kind | u16 levels | pascal components`, where
 /// the components carry no padding. `kind` is 0 for an absolute path
 /// (symbolic when the first component is `<...>`), 1 for a relative one and 2
-/// for LabVIEW's "not a path".
+/// for LabVIEW's "not a path"; any other is [`Kind::Other`].
 pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
     let mut record = Cursor::at(b, 0);
     let magic = record.take(4)?;
@@ -384,8 +386,6 @@ pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
         let n = body.take(1)?[0] as usize;
         names.push(lv_name(body.take(n)?));
     }
-    // shortcut: any kind but 0 and 2 reads as relative, as it always did here
-    // (3 is a UNC path); give it a Kind of its own when a link uses one.
     let (kind, names) = match (kind, names.split_first()) {
         (0, Some((root, rest))) if root.starts_with('<') && root.ends_with('>') => {
             let root = match root.as_str() {
@@ -397,7 +397,8 @@ pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
             (Kind::Symbolic(root), rest.to_vec())
         }
         (0, _) => (Kind::Absolute, names),
-        _ => (Kind::Relative, names),
+        (1, _) => (Kind::Relative, names),
+        (other, _) => (Kind::Other(other), names),
     };
     let relative = kind == Kind::Relative;
     let components = names
@@ -597,6 +598,13 @@ mod tests {
                 Component::Name("x.vi".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_unc_or_unknown_kind_is_kept_as_written_not_read_as_relative() {
+        let (path, _) = decode_pth0(&record(3, &["server", "share", "x.vi"])).unwrap();
+        assert_eq!(path.kind, Kind::Other(3));
+        assert_eq!(path.components[0], Component::Name("server".into()));
     }
 
     #[test]

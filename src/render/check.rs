@@ -57,6 +57,9 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
             Unchecked::Absolute => "absolute paths not on this machine (saved elsewhere; \
                 LabVIEW searches for them when it loads)"
                 .to_string(),
+            Unchecked::Unfollowed => "paths lvpm does not follow (a network path, \
+                or a name that leaves its folder)"
+                .to_string(),
         };
         text.push_str(&format!("warning: links not checked: {count} {why}\n"));
     }

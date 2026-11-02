@@ -8,7 +8,8 @@
 //! installation first, then in each venv package's `1/` tree. Existence is
 //! what the file system says, or, for a link inside a file, that the file is
 //! there: an `.llb` has to list the member. An absolute link to a file that is
-//! not on this machine is counted, not reported.
+//! not on this machine is counted, not reported, and so is one lvpm will not
+//! follow: a network path, or a name that would leave the folder it is under.
 //!
 //! A file that a venv install record lists belongs to that package, and a VI
 //! may link into it only if the manifest names the package in a table the VI
@@ -23,6 +24,7 @@ use crate::project::{Project, same_name};
 use crate::venv::{self, Bound};
 use crate::{distribution, install, lvlib, paths, project, target};
 use anyhow::{Context, Result, anyhow};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -79,6 +81,11 @@ pub enum Unchecked {
     /// the path the file had where the VI was saved, and looks for the file by
     /// name when it loads the VI.
     Absolute,
+    /// A path lvpm does not look for, since it could lead to another machine
+    /// or out of the folder it names: a UNC or unknown path kind, an absolute
+    /// path with no drive or root, or a name that is empty, `.`, `..`, or holds
+    /// a separator, `:` or NUL.
+    Unfollowed,
 }
 
 /// What a check found.
@@ -138,7 +145,8 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     }
     let members = members(&manifest, &bound.repo)?;
     let mut files = Vec::new();
-    walk(&start, &bound.dir, &mut files)?;
+    let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
+    walk(&start, &venv, &mut files)?;
 
     let search = Search::of(&bound)?;
     let mut checked = Checked {
@@ -228,23 +236,23 @@ fn lexical(path: &Path) -> PathBuf {
 }
 
 /// The VIs, controls and templates under `dir`, in name order, leaving out the
-/// venv, dot-folders and links, which could lead out of the project or round
-/// in a loop.
-fn walk(dir: &Path, venv: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+/// venv and its staging folder, dot-names and links, which could lead out of
+/// the project or round in a loop.
+fn walk(dir: &Path, venv: &[PathBuf], out: &mut Vec<PathBuf>) -> Result<()> {
+    // The type comes from the listing itself, so a link is never followed.
     let mut entries = std::fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
+        .map(|entry| entry.and_then(|entry| Ok((entry.path(), entry.file_type()?))))
         .collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort();
-    for path in entries {
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, kind) in entries {
         let hidden = path
             .file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with('.'));
-        let link = std::fs::symlink_metadata(&path)?.file_type().is_symlink();
-        if hidden || link || target::within(venv, &path) {
+        if hidden || kind.is_symlink() || venv.iter().any(|v| target::within(v, &path)) {
             continue;
         }
-        if path.is_dir() {
+        if kind.is_dir() {
             walk(&path, venv, out)?;
         } else if is_vi_file(&path) {
             out.push(path);
@@ -352,6 +360,8 @@ struct Search {
     packages: Vec<PathBuf>,
     /// The package each file an install record lists belongs to, by [`key`].
     owners: HashMap<PathBuf, String>,
+    /// The members of each `.llb` read so far, so each is read once a run.
+    llbs: RefCell<HashMap<PathBuf, Vec<String>>>,
 }
 
 impl Search {
@@ -378,6 +388,7 @@ impl Search {
             present: bound.target.path.is_dir(),
             packages,
             owners,
+            llbs: RefCell::default(),
         })
     }
 
@@ -429,17 +440,24 @@ enum Resolved {
 
 /// Where `link`, found in the VI file `vi`, leads.
 fn resolve(link: &LinkPath, vi: &Path, search: &Search) -> Resolved {
-    let found = |path: PathBuf| match exists(&path) {
+    let found = |path: PathBuf| match search.exists(&path) {
         true => Resolved::File(path),
         false => Resolved::NotFound,
     };
+    if link.kind != Kind::NotAPath && !followable(link) {
+        return Resolved::NotChecked(Unchecked::Unfollowed);
+    }
     match &link.kind {
         Kind::NotAPath => Resolved::Skipped,
+        Kind::Other(_) => Resolved::NotChecked(Unchecked::Unfollowed),
         Kind::Relative => found(join(vi.to_path_buf(), &link.components)),
         // One that is not here was saved elsewhere; it is not a broken link.
-        Kind::Absolute => match found(PathBuf::from(link.to_path_string())) {
-            Resolved::NotFound => Resolved::NotChecked(Unchecked::Absolute),
-            there => there,
+        Kind::Absolute => match PathBuf::from(link.to_path_string()) {
+            path if !path.is_absolute() => Resolved::NotChecked(Unchecked::Unfollowed),
+            path => match found(path) {
+                Resolved::NotFound => Resolved::NotChecked(Unchecked::Absolute),
+                there => there,
+            },
         },
         Kind::Symbolic(root) => {
             let Some(folder) = root.folder() else {
@@ -448,7 +466,7 @@ fn resolve(link: &LinkPath, vi: &Path, search: &Search) -> Resolved {
             let places = std::iter::once(&search.installation).chain(&search.packages);
             let held = places
                 .map(|place| join(place.join(folder), &link.components))
-                .find(|path| exists(path));
+                .find(|path| search.exists(path));
             match (held, search.present) {
                 (Some(path), _) => Resolved::File(path),
                 (None, true) => Resolved::NotFound,
@@ -459,6 +477,17 @@ fn resolve(link: &LinkPath, vi: &Path, search: &Search) -> Resolved {
             }
         }
     }
+}
+
+/// Does every name of `link` stay in the folder it is under? Only a relative
+/// path may go up.
+fn followable(link: &LinkPath) -> bool {
+    link.components.iter().all(|part| match part {
+        Component::Up => link.kind == Kind::Relative,
+        Component::Name(name) => {
+            !matches!(name.as_str(), "" | "." | "..") && !name.contains(['/', '\\', ':', '\0'])
+        }
+    })
 }
 
 /// `base` with `parts` followed: an `Up` leaves the last name.
@@ -474,42 +503,47 @@ fn join(mut base: PathBuf, parts: &[Component]) -> PathBuf {
     base
 }
 
-/// Is there a file at `path`, or is `path` inside one? The nearest part of it
-/// that exists must be a file, not a folder: a link below a file leads into it,
-/// as `Logger.lvclass/Logger.ctl` does. An `.llb` has to list the member.
-fn exists(path: &Path) -> bool {
-    if path.is_file() {
-        return true;
+impl Search {
+    /// Is there a file at `path`, or is `path` inside one? The nearest part of it
+    /// that exists must be a file, not a folder: a link below a file leads into it,
+    /// as `Logger.lvclass/Logger.ctl` does. An `.llb` has to list the member.
+    fn exists(&self, path: &Path) -> bool {
+        if path.is_file() {
+            return true;
+        }
+        let Some(container) = path.ancestors().find(|ancestor| ancestor.exists()) else {
+            return false;
+        };
+        if !container.is_file() {
+            return false;
+        }
+        let is_llb = container
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("llb"));
+        if !is_llb {
+            return true;
+        }
+        let member = path
+            .strip_prefix(container)
+            .ok()
+            .and_then(|below| below.components().next())
+            .map(|name| name.as_os_str().to_string_lossy());
+        let Some(name) = member else {
+            return false;
+        };
+        let mut llbs = self.llbs.borrow_mut();
+        // An `.llb` that cannot be read lists nothing.
+        let members = llbs.entry(container.to_path_buf()).or_insert_with(|| {
+            std::fs::read(container).map_or_else(
+                |_| Vec::new(),
+                |b| linker::llb_members(&b).unwrap_or_default(),
+            )
+        });
+        members.iter().any(|member| match cfg!(windows) {
+            true => member.eq_ignore_ascii_case(&name),
+            false => *member == *name,
+        })
     }
-    let Some(container) = path.ancestors().find(|ancestor| ancestor.exists()) else {
-        return false;
-    };
-    if !container.is_file() {
-        return false;
-    }
-    let is_llb = container
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("llb"));
-    if !is_llb {
-        return true;
-    }
-    let member = path
-        .strip_prefix(container)
-        .ok()
-        .and_then(|below| below.components().next())
-        .map(|name| name.as_os_str().to_string_lossy());
-    let Some(name) = member else {
-        return false;
-    };
-    // An `.llb` that cannot be read lists nothing.
-    let members = std::fs::read(container).map_or_else(
-        |_| Vec::new(),
-        |b| linker::llb_members(&b).unwrap_or_default(),
-    );
-    members.iter().any(|member| match cfg!(windows) {
-        true => member.eq_ignore_ascii_case(&name),
-        false => *member == *name,
-    })
 }
 
 /// A path relative to the project root, with `/`; one outside it as it is.
@@ -538,7 +572,9 @@ fn shown_link(link: &LinkPath, vi: &Path, repo: &Path) -> String {
                 .join("/")
         }
         Kind::Relative => shown(repo, &join(vi.to_path_buf(), &link.components)),
-        Kind::Absolute | Kind::NotAPath => shown(repo, Path::new(&link.to_path_string())),
+        Kind::Absolute | Kind::NotAPath | Kind::Other(_) => {
+            shown(repo, Path::new(&link.to_path_string()))
+        }
     }
 }
 
@@ -984,6 +1020,7 @@ mod tests {
         sandbox.library();
         sandbox
             .put("Broken.vi", "venv/pkg/1/vi.lib/Broken.vi")
+            .put("Broken.vi", "venv.staging/pkg/1/vi.lib/Broken.vi")
             .put("Broken.vi", ".hidden/Broken.vi")
             .write("notes.txt", b"x")
             .write(
@@ -1115,6 +1152,7 @@ mod tests {
             present: dir.join("LabVIEW").is_dir(),
             packages: Vec::new(),
             owners: HashMap::new(),
+            llbs: RefCell::default(),
         }
     }
 
@@ -1237,6 +1275,51 @@ mod tests {
         assert_eq!(
             resolve(&absolute(&dir.join("gone.vi")), &vi, &search),
             Resolved::NotChecked(Unchecked::Absolute)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_that_could_leave_its_folder_is_not_followed() {
+        let dir = testing::scratch_dir("check-resolve-unfollowed");
+        std::fs::create_dir_all(dir.join("LabVIEW/vi.lib")).unwrap();
+        std::fs::write(dir.join("secret.vi"), "").unwrap();
+        let (vi, search) = (dir.join("a/V.vi"), search_in(&dir));
+        let vilib = || Kind::Symbolic(linker::Root::ViLib);
+        let unfollowed = [
+            link(Kind::Other(3), &["server", "share", "x.vi"]),
+            link(Kind::Relative, &["", "x.vi"]),
+            LinkPath {
+                kind: Kind::Relative,
+                components: vec![Component::Name("..".into())],
+            },
+            link(Kind::Relative, &["..", r"a\..\..\secret.vi"]),
+            link(Kind::Relative, &["..", "C:secret.vi"]),
+            link(vilib(), &["..", "..", "secret.vi"]),
+            link(vilib(), &[r"\\server\share", "x.vi"]),
+            link(Kind::Absolute, &["", "server", "share", "x.vi"]),
+        ];
+        for path in &unfollowed {
+            assert_eq!(
+                resolve(path, &vi, &search),
+                Resolved::NotChecked(Unchecked::Unfollowed),
+                "{path:?}"
+            );
+        }
+        // an absolute path with no drive is not joined onto the working folder
+        #[cfg(windows)]
+        assert_eq!(
+            resolve(&link(Kind::Absolute, &["server", "x.vi"]), &vi, &search),
+            Resolved::NotChecked(Unchecked::Unfollowed)
+        );
+        // going up from the VI is how a relative link reaches its neighbours
+        assert_eq!(
+            resolve(
+                &link(Kind::Relative, &["..", "..", "secret.vi"]),
+                &vi,
+                &search
+            ),
+            Resolved::File(dir.join("secret.vi"))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
