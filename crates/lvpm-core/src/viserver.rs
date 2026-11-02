@@ -26,6 +26,7 @@
 //! sends nothing back, so we must not block waiting for it.
 
 use crate::events::{Event, EventSink};
+use crate::linker::{decode_pth0, encode_pth0};
 use crate::target::LvTarget;
 use anyhow::{Context, Result, bail, ensure};
 use std::io::{Read, Write};
@@ -431,8 +432,7 @@ fn lv_string(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// A Pascal string padded to even length, as used for names inside type
-/// descriptors and for `PTH0` components... except PTH0 components are NOT
-/// padded — only type-descriptor names are.
+/// descriptors.
 fn pascal_padded(name: &str) -> Result<Vec<u8>> {
     let bytes = name.as_bytes();
     ensure!(bytes.len() <= 255, "name too long: {name:?}");
@@ -1033,47 +1033,11 @@ impl<'a> Reader<'a> {
         Ok(TypeDesc { code, dims, elem })
     }
 
-    /// Read one flattened `PTH0` record — the inverse of [`encode_pth0`]:
-    /// `"PTH0" | u32 length | u16 kind | u16 levels | pascal components`,
-    /// where the components carry no padding. `kind` is 0 for an absolute
-    /// path, 1 for a relative one and 2 for LabVIEW's "not a path".
+    /// Read one flattened `PTH0` record as the path it names.
     fn pth0(&mut self) -> Result<String> {
-        let magic = self.take(4)?;
-        ensure!(magic == b"PTH0", "expected a PTH0 record, got {magic:02x?}");
-        let len = self.u32()? as usize;
-        ensure!(len >= 4, "PTH0 length {len} is too small");
-        let mut body = Reader::new(self.take(len)?);
-        let kind = body.u16()?;
-        let levels = body.u16()?;
-        if kind == 2 {
-            return Ok("<Not A Path>".to_string());
-        }
-        let mut parts: Vec<String> = Vec::with_capacity(levels as usize);
-        for _ in 0..levels {
-            let n = body.take(1)?[0] as usize;
-            parts.push(String::from_utf8_lossy(body.take(n)?).into_owned());
-        }
-        #[cfg(windows)]
-        {
-            // A drive letter comes back as a bare component: "C" is "C:".
-            if kind == 0
-                && let Some(first) = parts.first_mut()
-                && first.len() == 1
-                && first.chars().all(|c| c.is_ascii_alphabetic())
-            {
-                first.push(':');
-            }
-            Ok(parts.join("\\"))
-        }
-        // One root and no drives: "/usr/local" comes back as "usr", "local"
-        // and must be rooted again, or it reads as a relative path.
-        #[cfg(target_os = "linux")]
-        {
-            Ok(match kind {
-                0 => format!("/{}", parts.join("/")),
-                _ => parts.join("/"),
-            })
-        }
+        let (path, used) = decode_pth0(&self.b[self.pos..])?;
+        self.pos += used;
+        Ok(path.to_path_string())
     }
 
     /// Decode the value at table entry `idx`. `depth` bounds the recursion: a
@@ -1177,48 +1141,6 @@ pub struct Connection {
     sock: TcpStream,
     /// Request ids stride by 0x100000; the low 20 bits stay clear.
     next_uid: u32,
-}
-
-/// Encode a path as LabVIEW's `PTH0` record.
-///
-/// The same structure appears inside a VI's `LIvi`/`LIbd` linker blocks, so this
-/// encoder serves both the wire protocol and any future offline path rewriting:
-/// `"PTH0" | u32 byte length | u32 component count | pascal components`, with an
-/// absolute Windows path contributing its drive letter as the first component.
-/// A Linux path is the same record without one: `/usr/local` is `usr`,
-/// `local` (verified against LabVIEW 2026 Q3 on Linux).
-pub(crate) fn encode_pth0(path: &Path) -> Result<Vec<u8>> {
-    let s = path.to_string_lossy().replace('/', "\\");
-    let mut parts: Vec<String> = Vec::new();
-    for (i, comp) in s.split('\\').filter(|c| !c.is_empty()).enumerate() {
-        // "C:" becomes the component "C".
-        if i == 0 && comp.len() == 2 && comp.ends_with(':') {
-            parts.push(comp[..1].to_string());
-        } else {
-            parts.push(comp.to_string());
-        }
-    }
-    if parts.is_empty() {
-        bail!("cannot encode empty path");
-    }
-
-    let mut components = Vec::new();
-    for p in &parts {
-        let bytes = p.as_bytes();
-        if bytes.len() > 255 {
-            bail!("path component too long for PTH0: {p:?}");
-        }
-        components.push(bytes.len() as u8);
-        components.extend_from_slice(bytes);
-    }
-
-    let mut out = Vec::with_capacity(components.len() + 16);
-    out.extend_from_slice(b"PTH0");
-    // Length covers the component count field plus the components themselves.
-    out.extend_from_slice(&((components.len() + 4) as u32).to_be_bytes());
-    out.extend_from_slice(&(parts.len() as u32).to_be_bytes());
-    out.extend_from_slice(&components);
-    Ok(out)
 }
 
 /// What a VI Server error code means, for the ones we have met.

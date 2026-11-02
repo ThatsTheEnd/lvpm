@@ -1,5 +1,9 @@
-//! A VI read as bytes, with no LabVIEW: the blocks of its RSRC container and
-//! the LabVIEW version it was saved in.
+//! A VI read as bytes, with no LabVIEW: the blocks of its RSRC container, the
+//! LabVIEW version it was saved in, and the `PTH0` path records that its
+//! linker tables and VI Server's wire format share.
+
+use anyhow::{Result, bail, ensure};
+use std::path::Path;
 
 /// Why a file's bytes could not be read as an RSRC container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -8,7 +12,7 @@ pub enum LinkerError {
     #[error("not a LabVIEW resource file")]
     NotResource,
     /// A field lies past the end of the bytes, at byte `at`.
-    #[error("file truncated at byte {at}")]
+    #[error("truncated at byte {at}")]
     Truncated { at: usize },
 }
 
@@ -36,6 +40,12 @@ impl<'a> Cursor<'a> {
         })?;
         self.pos += n;
         Ok(s)
+    }
+
+    fn u16(&mut self) -> Result<u16, LinkerError> {
+        Ok(u16::from_be_bytes(
+            self.take(2)?.try_into().expect("2 bytes"),
+        ))
     }
 
     fn u32(&mut self) -> Result<usize, LinkerError> {
@@ -107,6 +117,182 @@ impl<'a> Rsrc<'a> {
         let major = (bcd >> 4) * 10 + (bcd & 0x0f);
         (major >= 9).then_some(2000 + major)
     }
+}
+
+/// Where a link's path starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    Absolute,
+    Relative,
+    /// Under a LabVIEW search root such as `<vilib>`; the root is not among
+    /// the components.
+    Symbolic(Root),
+    /// LabVIEW's "not a path".
+    NotAPath,
+}
+
+/// A symbolic path's root, as LabVIEW writes it between angle brackets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Root {
+    ViLib,
+    UserLib,
+    InstrLib,
+    /// Any other `<...>`, as written, brackets included.
+    Other(String),
+}
+
+impl Root {
+    fn text(&self) -> &str {
+        match self {
+            Root::ViLib => "<vilib>",
+            Root::UserLib => "<userlib>",
+            Root::InstrLib => "<instrlib>",
+            Root::Other(text) => text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Component {
+    Name(String),
+    /// One folder up: an empty component of a relative path.
+    Up,
+}
+
+/// The path a `PTH0` record holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPath {
+    pub kind: Kind,
+    pub components: Vec<Component>,
+}
+
+impl LinkPath {
+    /// The path as this machine writes it. A drive letter, which LabVIEW
+    /// stores as a bare component, gets its colon back; a Linux path has one
+    /// root and no drives, so an absolute one is rooted again.
+    pub fn to_path_string(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match &self.kind {
+            Kind::NotAPath => return "<Not A Path>".to_string(),
+            Kind::Symbolic(root) => parts.push(root.text().to_string()),
+            Kind::Absolute | Kind::Relative => {}
+        }
+        parts.extend(self.components.iter().map(|c| match c {
+            Component::Name(name) => name.clone(),
+            Component::Up => "..".to_string(),
+        }));
+        #[cfg(windows)]
+        {
+            if self.kind == Kind::Absolute
+                && let Some(first) = parts.first_mut()
+                && first.len() == 1
+                && first.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                first.push(':');
+            }
+            parts.join("\\")
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let rooted = matches!(self.kind, Kind::Absolute | Kind::Symbolic(_));
+            format!("{}{}", if rooted { "/" } else { "" }, parts.join("/"))
+        }
+    }
+}
+
+/// Read one flattened `PTH0` record from the start of `b`, and how many bytes
+/// it took. The inverse of [`encode_pth0`]:
+/// `"PTH0" | u32 length | u16 kind | u16 levels | pascal components`, where
+/// the components carry no padding. `kind` is 0 for an absolute path
+/// (symbolic when the first component is `<...>`), 1 for a relative one and 2
+/// for LabVIEW's "not a path".
+pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
+    let mut record = Cursor::at(b, 0);
+    let magic = record.take(4)?;
+    ensure!(magic == b"PTH0", "expected a PTH0 record, got {magic:02x?}");
+    let len = record.u32()?;
+    ensure!(len >= 4, "PTH0 length {len} is too small");
+    let mut body = Cursor::at(record.take(len)?, 0);
+    let (kind, levels) = (body.u16()?, body.u16()?);
+    let used = record.pos;
+    if kind == 2 {
+        let path = LinkPath {
+            kind: Kind::NotAPath,
+            components: Vec::new(),
+        };
+        return Ok((path, used));
+    }
+    let mut names: Vec<String> = Vec::with_capacity(levels as usize);
+    for _ in 0..levels {
+        let n = body.take(1)?[0] as usize;
+        names.push(String::from_utf8_lossy(body.take(n)?).into_owned());
+    }
+    // shortcut: any kind but 0 and 2 reads as relative, as it always did here
+    // (3 is a UNC path); give it a Kind of its own when a link uses one.
+    let (kind, names) = match (kind, names.split_first()) {
+        (0, Some((root, rest))) if root.starts_with('<') && root.ends_with('>') => {
+            let root = match root.as_str() {
+                "<vilib>" => Root::ViLib,
+                "<userlib>" => Root::UserLib,
+                "<instrlib>" => Root::InstrLib,
+                other => Root::Other(other.to_string()),
+            };
+            (Kind::Symbolic(root), rest.to_vec())
+        }
+        (0, _) => (Kind::Absolute, names),
+        _ => (Kind::Relative, names),
+    };
+    let relative = kind == Kind::Relative;
+    let components = names
+        .into_iter()
+        .map(|name| match name.is_empty() && relative {
+            true => Component::Up,
+            false => Component::Name(name),
+        })
+        .collect();
+    Ok((LinkPath { kind, components }, used))
+}
+
+/// Encode a path as LabVIEW's `PTH0` record.
+///
+/// The same structure appears inside a VI's `LIvi`/`LIbd` linker blocks, so this
+/// encoder serves both the wire protocol and any future offline path rewriting:
+/// `"PTH0" | u32 byte length | u32 component count | pascal components`, with an
+/// absolute Windows path contributing its drive letter as the first component.
+/// A Linux path is the same record without one: `/usr/local` is `usr`,
+/// `local` (verified against LabVIEW 2026 Q3 on Linux).
+pub(crate) fn encode_pth0(path: &Path) -> Result<Vec<u8>> {
+    let s = path.to_string_lossy().replace('/', "\\");
+    let mut parts: Vec<String> = Vec::new();
+    for (i, comp) in s.split('\\').filter(|c| !c.is_empty()).enumerate() {
+        // "C:" becomes the component "C".
+        if i == 0 && comp.len() == 2 && comp.ends_with(':') {
+            parts.push(comp[..1].to_string());
+        } else {
+            parts.push(comp.to_string());
+        }
+    }
+    if parts.is_empty() {
+        bail!("cannot encode empty path");
+    }
+
+    let mut components = Vec::new();
+    for p in &parts {
+        let bytes = p.as_bytes();
+        if bytes.len() > 255 {
+            bail!("path component too long for PTH0: {p:?}");
+        }
+        components.push(bytes.len() as u8);
+        components.extend_from_slice(bytes);
+    }
+
+    let mut out = Vec::with_capacity(components.len() + 16);
+    out.extend_from_slice(b"PTH0");
+    // Length covers the component count field plus the components themselves.
+    out.extend_from_slice(&((components.len() + 4) as u32).to_be_bytes());
+    out.extend_from_slice(&(parts.len() as u32).to_be_bytes());
+    out.extend_from_slice(&components);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -182,5 +368,109 @@ mod tests {
             bytes[at] = byte;
             assert_eq!(Rsrc::read(&bytes).unwrap().save_year(), year);
         }
+    }
+
+    /// A `PTH0` record of `kind` with `parts` as its components.
+    fn record(kind: u16, parts: &[&str]) -> Vec<u8> {
+        let mut body = [kind.to_be_bytes(), (parts.len() as u16).to_be_bytes()].concat();
+        for p in parts {
+            body.push(p.len() as u8);
+            body.extend(p.as_bytes());
+        }
+        [
+            b"PTH0".as_slice(),
+            &(body.len() as u32).to_be_bytes(),
+            &body,
+        ]
+        .concat()
+    }
+
+    fn names(parts: &[&str]) -> Vec<Component> {
+        parts
+            .iter()
+            .map(|p| Component::Name(p.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_record_decodes_to_its_kind_and_components_and_says_how_much_it_took() {
+        let mut bytes = record(0, &["C", "Git", "x.vi"]);
+        let took = bytes.len();
+        bytes.extend(b"more");
+        let (path, used) = decode_pth0(&bytes).unwrap();
+        assert_eq!(used, took);
+        assert_eq!(path.kind, Kind::Absolute);
+        assert_eq!(path.components, names(&["C", "Git", "x.vi"]));
+    }
+
+    #[test]
+    fn a_symbolic_root_is_not_a_component() {
+        for (root, want) in [
+            ("<vilib>", Root::ViLib),
+            ("<userlib>", Root::UserLib),
+            ("<instrlib>", Root::InstrLib),
+            ("<resource>", Root::Other("<resource>".into())),
+        ] {
+            let (path, _) = decode_pth0(&record(0, &[root, "Check Fixture", "Dep.vi"])).unwrap();
+            assert_eq!(path.kind, Kind::Symbolic(want));
+            assert_eq!(path.components, names(&["Check Fixture", "Dep.vi"]));
+        }
+    }
+
+    #[test]
+    fn an_empty_component_of_a_relative_path_is_up() {
+        let (path, _) = decode_pth0(&record(1, &["", "Sub", "x.vi"])).unwrap();
+        assert_eq!(path.kind, Kind::Relative);
+        assert_eq!(
+            path.components,
+            [
+                Component::Up,
+                Component::Name("Sub".into()),
+                Component::Name("x.vi".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn not_a_path_has_no_components() {
+        let (path, used) = decode_pth0(b"PTH0\x00\x00\x00\x04\x00\x02\x00\x00").unwrap();
+        assert_eq!(
+            (path.kind, path.components, used),
+            (Kind::NotAPath, vec![], 12)
+        );
+    }
+
+    #[test]
+    fn a_record_that_is_not_one_or_is_cut_short_is_an_error() {
+        assert!(decode_pth0(b"XXXX\x00\x00\x00\x04\x00\x00\x00\x00").is_err());
+        let whole = record(0, &["C", "x.vi"]);
+        for cut in 0..whole.len() {
+            assert!(decode_pth0(&whole[..cut]).is_err(), "cut at {cut}");
+        }
+    }
+
+    #[test]
+    fn a_path_is_written_the_way_this_machine_does() {
+        let sep = if cfg!(windows) { "\\" } else { "/" };
+        let root = if cfg!(windows) { "" } else { "/" };
+        let written = |kind, parts: &[&str]| {
+            decode_pth0(&record(kind, parts))
+                .unwrap()
+                .0
+                .to_path_string()
+        };
+        assert_eq!(
+            written(0, &["<vilib>", "Dep.vi"]),
+            format!("{root}<vilib>{sep}Dep.vi")
+        );
+        assert_eq!(written(1, &["", "x.vi"]), format!("..{sep}x.vi"));
+        assert_eq!(written(2, &[]), "<Not A Path>");
+    }
+
+    #[test]
+    fn viserver_has_no_pth0_codec_of_its_own() {
+        let viserver = include_str!("viserver.rs");
+        assert!(!viserver.contains("fn encode_pth0"));
+        assert!(!viserver.contains("fn decode_pth0"));
     }
 }
