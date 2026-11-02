@@ -126,6 +126,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     // settled here, once: `join` and `shown` work on names, not on `..`.
     let repo = lexical(&repo);
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
+    env.check_bitness(&bound.target)?;
     let (_, manifest) = env
         .manifest_for(None, Some(&bound.repo))?
         .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
@@ -1139,6 +1140,15 @@ mod tests {
         assert!(env.cancel.cancel());
         let why = check(&env, None).unwrap_err();
         assert!(matches!(why, CheckError::Cancelled), "{why}");
+    }
+
+    #[test]
+    fn a_venv_bound_to_the_other_bitness_is_refused() {
+        let sandbox = Sandbox::new("bitness", None);
+        let mut env = sandbox.env();
+        env.flags.labview_bitness = Some(32);
+        let why = check(&env, None).unwrap_err();
+        assert!(why.to_string().contains("not the 32-bit LabVIEW"), "{why}");
     }
 
     /// A search with an installation of its own, which is `present` if it is
