@@ -157,7 +157,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     };
     for file in &files {
         if env.cancel.is_cancelled() {
-            return Err(anyhow::Error::from(Cancelled).into());
+            return Err(Cancelled.into());
         }
         let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
         let vi = shown(&bound.repo, file);
@@ -1138,10 +1138,7 @@ mod tests {
         env.cancel = CancelToken::new();
         assert!(env.cancel.cancel());
         let why = check(&env, None).unwrap_err();
-        assert!(
-            matches!(&why, CheckError::Other(why) if why.is::<Cancelled>()),
-            "{why}"
-        );
+        assert!(matches!(why, CheckError::Cancelled), "{why}");
     }
 
     /// A search with an installation of its own, which is `present` if it is

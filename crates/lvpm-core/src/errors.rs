@@ -34,6 +34,12 @@ impl From<Cancelled> for SyncError {
     }
 }
 
+impl From<Cancelled> for CheckError {
+    fn from(_: Cancelled) -> CheckError {
+        CheckError::Cancelled
+    }
+}
+
 impl From<Cancelled> for EditError {
     fn from(_: Cancelled) -> EditError {
         EditError::Cancelled
@@ -233,8 +239,10 @@ pub enum CheckError {
     /// The folder to check is not there, as it was written.
     #[error("folder {} does not exist", .0.display())]
     NoDir(PathBuf),
-    /// Anything else that went wrong: its own text. A cancel is the cause,
-    /// [`Cancelled`], for the caller to downcast.
+    /// The operation's token was cancelled; nothing was written.
+    #[error("cancelled")]
+    Cancelled,
+    /// Anything else that went wrong: its own text.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

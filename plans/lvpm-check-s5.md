@@ -680,7 +680,13 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
   no LabVIEW they are "not checked", by design (AC 10).
 - **Deviation from the Resolution rules above (2026-11-02, human decision after Slice 4).** The pilots hold links the exact-path rule reported as broken: 56 in pilot A and 3 in pilot B through a class file or a VI (`Logger.lvclass/Logger.ctl`), and 7 absolute paths saved on the author's machine in pilot A. So a link inside a file counts as found, and a missing absolute link is not checked. See the Ambiguity Log of the spec.
 - **The old OpenG `PTH0` flavour** is not decoded; it shows as "not readable".
-  A follow-up issue is opened at PR time.
+  A follow-up issue is opened at PR time (#108).
+- **Found in review (2026-11-02), kept as is.** A VI whose linker table cannot
+  be read gets that one finding; its other rules are not checked (AC 8 counts
+  one finding per rule that ran). The pilot demo scenario uses a pilot without
+  `[distribution]`, because a library member that is missing errors the whole
+  run before any VI is checked. Pilot counts are asserted as "at least", since
+  the pilots are other people's repositories and grow.
 - **Shared files.** `main.rs`, `render/mod.rs`, `viserver.rs` and `venv.rs`
   are also touched by S10a, S10b and S12. Rebase before the PR; expected
   conflicts are small.
