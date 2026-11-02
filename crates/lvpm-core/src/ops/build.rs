@@ -5,10 +5,16 @@
 //! package is written to a temporary file and renamed over
 //! `dist/<name>-<version>.lvpkg` only once it is complete, so a failed build
 //! leaves the previous package as it was.
+//!
+//! With `check`, the library's members are checked first, as `lvpm check`
+//! does, and a member that breaks a rule refuses the build before anything is
+//! read or written.
 
+use super::check::{Library, check_library};
 use super::env::OpEnv;
+use crate::errors::{Cancelled, CheckError};
 use crate::{distribution, lvlib, lvpkg};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -18,11 +24,31 @@ pub struct Built {
     pub path: PathBuf,
     /// The members packaged, the library itself among them.
     pub files: usize,
+    /// What the check made of the library; `None` when it was not run.
+    pub library: Option<Library>,
 }
 
-pub fn build(env: &OpEnv) -> Result<Built> {
+/// What a build did: wrote the package, or refused to.
+#[derive(Debug)]
+pub enum Outcome {
+    Built(Built),
+    /// A member breaks a rule of the check; nothing was written.
+    Refused(Library),
+}
+
+pub fn build(env: &OpEnv, check: bool) -> Result<Outcome> {
     let (root, d) = super::packaged(env, "build")?;
     let root = root.as_path();
+    let checked = match check {
+        true => Some(check_members(env)?),
+        false => None,
+    };
+    let checked = match checked {
+        Some(library) if !library.checked.findings.is_empty() => {
+            return Ok(Outcome::Refused(library));
+        }
+        other => other,
+    };
 
     let library = root.join(&d.library);
     let folder = library.parent().context("the library has no folder")?;
@@ -79,9 +105,23 @@ pub fn build(env: &OpEnv) -> Result<Built> {
     let dist = package.parent().context("the package has no folder")?;
     std::fs::create_dir_all(dist).with_context(|| format!("creating {}", dist.display()))?;
     let path = write_atomically(&package, &bytes)?;
-    Ok(Built {
+    Ok(Outcome::Built(Built {
         path,
         files: files.len(),
+        library: checked,
+    }))
+}
+
+/// [`check_library`], with the error of a project that has no venv saying how
+/// to go on.
+fn check_members(env: &OpEnv) -> Result<Library> {
+    check_library(env).map_err(|why| match why {
+        CheckError::NoVenv(repo) => anyhow!(
+            "no venv in {}: run lvpm venv create and lvpm sync, or pass --no-check",
+            repo.display()
+        ),
+        CheckError::Cancelled => Cancelled.into(),
+        other => other.into(),
     })
 }
 

@@ -17,6 +17,7 @@ mod tests {
         let b = Built {
             path: PathBuf::from("dist/demo-1.0.0.0.vip"),
             files: 4,
+            library: None,
         };
         assert_eq!(built(&b), format!("built {} (4 files)\n", b.path.display()));
     }

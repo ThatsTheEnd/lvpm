@@ -821,10 +821,14 @@ fn run(cli: &Cli) -> Result<Report> {
             let text = values.iter().map(|value| format!("{value}\n")).collect();
             Report::new(text, json!({ "key": key, "values": values }))
         }
-        Cmd::Build => Ok(Report::said(
-            render::build::built(&ops::build::build(&env)?),
-            "build",
-        )),
+        Cmd::Build => match ops::build::build(&env, false)? {
+            ops::build::Outcome::Built(built) => {
+                Ok(Report::said(render::build::built(&built), "build"))
+            }
+            ops::build::Outcome::Refused(_) => {
+                unreachable!("a build that is not checked refuses nothing")
+            }
+        },
         Cmd::Publish { to } => Ok(Report::said(
             render::publish::published(&ops::publish::publish(&env, to)?),
             "publish",

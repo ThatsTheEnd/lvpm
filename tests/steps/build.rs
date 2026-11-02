@@ -83,7 +83,7 @@ impl CliWorld {
                     venv_dir: PathBuf::from(".lv-venv"),
                 };
                 let env = OpEnv::new(&sink, config, Vec::new(), self.sandbox.work_dir());
-                let built = lvpm_core::ops::build::build(&env);
+                let built = lvpm_core::ops::build::build(&env, false);
                 Output {
                     stdout: String::new(),
                     stderr: built
