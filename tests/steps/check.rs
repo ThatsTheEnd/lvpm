@@ -108,11 +108,7 @@ impl CliWorld {
     /// A project a build can package: `Lib.lvlib` is `library`, and lists only
     /// the members the scenario holds.
     fn build_project(&self, labview: &str, library: &str, holding: &str) {
-        let tables = format!(
-            "{}vendor = \"Vendor\"\ndisplay-name = \"Check Lib\"\n",
-            distribution(library)
-        );
-        self.check_project(Some(labview), true, &tables, holding);
+        self.check_project(Some(labview), true, &distribution(library), holding);
         self.keep_held_members();
     }
 
@@ -426,11 +422,14 @@ async fn project_holds_in_folder(world: &mut CliWorld, name: String, folder: Str
     world.put_fixture(&name, &world.sandbox.work_dir().join(folder));
 }
 
-/// The `[distribution]` table of a project whose library is `library`.
+/// The `[distribution]` table of a project whose library is `library`, with
+/// the keys `lvpm build` needs besides it.
 fn distribution(library: &str) -> String {
     format!(
         "[distribution]
 top-level-library = \"{library}\"
+vendor = \"Vendor\"
+display-name = \"Check Lib\"
 "
     )
 }
@@ -481,6 +480,22 @@ async fn installed_from_the_pilot_archive(world: &mut CliWorld, package: String)
 #[given(regex = r#"^"([^"]+)" is deleted from the project$"#)]
 async fn deleted_from_the_project(world: &mut CliWorld, file: String) {
     std::fs::remove_file(world.sandbox.work_dir().join(file)).expect("delete the file");
+}
+
+/// The library file lists what it holds, so a build that finds a listed file
+/// missing stops before it checks anything: the demo takes the file out of
+/// the listing too, and its caller's link is then what breaks.
+#[given(regex = r#"^"([^"]+)" is no longer listed in "([^"]+)"$"#)]
+async fn no_longer_listed(world: &mut CliWorld, item: String, file: String) {
+    let path = world.sandbox.work_dir().join(file);
+    let text = std::fs::read_to_string(&path).expect("read the library file");
+    let from = text
+        .find(&format!("<Item Name=\"{item}\""))
+        .expect("the item is listed");
+    let to = from + text[from..].find("</Item>").expect("the item ends") + "</Item>".len();
+    let first = text[..from].rfind('\n').map_or(0, |at| at + 1);
+    let last = text[to..].find('\n').map_or(text.len(), |at| to + at + 1);
+    std::fs::write(&path, format!("{}{}", &text[..first], &text[last..])).expect("write it back");
 }
 
 // ---- running ----
@@ -772,6 +787,12 @@ async fn refused_and_package_unchanged(world: &mut CliWorld) {
         world.build.earlier.as_ref() == Some(&now),
         "the package changed"
     );
+}
+
+#[then(regex = r"^it exits 1 and dist holds no \.lvpkg$")]
+async fn refused_and_no_package(world: &mut CliWorld) {
+    world.exited(1);
+    world.no_package_in_dist();
 }
 
 #[then(regex = r#"^it exits 1, stdout has a line starting "([^"]+)", and dist holds no \.lvpkg$"#)]

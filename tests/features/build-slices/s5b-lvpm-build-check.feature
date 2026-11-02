@@ -109,3 +109,22 @@ Feature: lvpm build checks the library's members first
     Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
     When lvpm build runs on it with --json
     Then it exits 1, dist holds no .lvpkg, and the JSON has "ok": false, "command": "build" and one finding for "Broken.vi"
+
+  # The pilot sources are not committed; README.md beside this file says how to
+  # check them out.
+  @pilot-source
+  Scenario: pilot A builds with the check on
+    Given pilot A's pinned source checkout with labview ">=2016"
+    And the bound installation folder does not exist
+    When lvpm build runs on it
+    Then it exits 0 and dist holds the package
+
+  @pilot-source
+  Scenario: the demo: a broken link in pilot A refuses the build
+    Given pilot A's pinned source checkout with labview ">=2016"
+    And the bound installation folder does not exist
+    And "Source/HSE-Logger/LogRecord/Generate Callchain.vi" is deleted from the project
+    And "Generate Callchain.vi" is no longer listed in "Source/HSE-Logger/LogRecord/LogRecord.lvclass"
+    When lvpm build runs on it
+    Then it exits 1 and dist holds no .lvpkg
+    And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
