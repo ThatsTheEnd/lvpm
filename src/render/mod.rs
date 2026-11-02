@@ -8,6 +8,7 @@
 //! `init`, `launch`, `venv` and `viserver` files also word what their commands return.
 
 pub mod build;
+pub mod check;
 pub mod edit;
 mod env;
 mod headless;

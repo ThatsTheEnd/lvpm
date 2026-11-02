@@ -393,6 +393,16 @@ enum Cmd {
         #[arg(long)]
         to: PathBuf,
     },
+    /// Read every VI under DIR without LabVIEW and name each link to a file that is
+    /// not there.
+    ///
+    /// DIR is the whole project when left out. A VI or link that breaks a rule is
+    /// listed with its VI; the exit code is 1 when there is any, and 0 when
+    /// there is none.
+    Check {
+        /// The folder to check, relative to the working directory. Default: the project.
+        dir: Option<PathBuf>,
+    },
     /// Start LabVIEW on the project's venv, optionally opening a project file.
     ///
     /// LabVIEW reads the venv's contents when it starts, so a LabVIEW that
@@ -536,6 +546,9 @@ struct Report {
     text: String,
     warning: String,
     result: serde_json::Value,
+    /// The command ran and found something wrong: its output is printed as
+    /// usual, and the exit code is 1.
+    failed: bool,
 }
 
 impl Report {
@@ -544,6 +557,7 @@ impl Report {
             text,
             warning: String::new(),
             result: serde_json::to_value(result)?,
+            failed: false,
         })
     }
 
@@ -553,6 +567,7 @@ impl Report {
             text,
             warning: String::new(),
             result: json!({ "command": command }),
+            failed: false,
         }
     }
 
@@ -562,6 +577,17 @@ impl Report {
 
     fn warning(self, warning: String) -> Report {
         Report { warning, ..self }
+    }
+
+    fn failed(self, failed: bool) -> Report {
+        Report { failed, ..self }
+    }
+
+    fn exit_code(&self) -> std::process::ExitCode {
+        match self.failed {
+            true => std::process::ExitCode::FAILURE,
+            false => std::process::ExitCode::SUCCESS,
+        }
     }
 }
 
@@ -576,7 +602,7 @@ fn tui_gets_options(cli: &Cli) -> bool {
         || cli.json
 }
 
-/// Exit codes: 0 done, 1 the command failed, 2 the arguments are wrong (clap's).
+/// Exit codes: 0 done, 1 the command failed or `check` found a problem, 2 the arguments are wrong (clap's).
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     let cli = Cli::parse();
@@ -619,11 +645,11 @@ fn main() -> std::process::ExitCode {
         (Ok(report), false) => {
             eprint!("{}", report.warning);
             print!("{}", report.text);
-            ExitCode::SUCCESS
+            report.exit_code()
         }
         (Ok(report), true) => {
             render::json::print(&render::json::result(&report.result));
-            ExitCode::SUCCESS
+            report.exit_code()
         }
         // As `main() -> Result` would print it, but a feed's text in an error
         // cannot drive the terminal.
@@ -781,6 +807,16 @@ fn run(cli: &Cli) -> Result<Report> {
             render::publish::published(&ops::publish::publish(&env, to)?),
             "publish",
         )),
+        Cmd::Check { dir } => {
+            let checked = ops::check::check(&env, dir.as_deref())?;
+            let warning = render::check::warnings(&checked, dir.as_deref());
+            Ok(Report::new(
+                render::check::listing(&checked),
+                render::check::result(&checked),
+            )?
+            .warning(warning)
+            .failed(!checked.findings.is_empty()))
+        }
         Cmd::Launch { lvproj } => {
             let launched = ops::launch_cmd::launch(&env, lvproj.as_deref())?;
             Ok(Report::said(render::launch::launched(&launched), "launch"))

@@ -27,6 +27,7 @@
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Package the project's library as `dist/<name>-<version>.lvpkg`, from `[distribution]` ([Building a package](#building-a-package))              |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
+| `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each link to a file that is not there; exits 1 when it finds any |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
