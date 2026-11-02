@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.19.0...v0.20.0) (2026-11-02)
+
+
+### Features
+
+* **s10d:** --yes, --labview-bitness, no lvpm update ([#106](https://github.com/ThatsTheEnd/lvpm/issues/106)) ([3b51c59](https://github.com/ThatsTheEnd/lvpm/commit/3b51c59d472dfa4f6e3002fb79861e0cd1772958))
+
 ## [0.19.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.18.0...v0.19.0) (2026-11-01)
 
 

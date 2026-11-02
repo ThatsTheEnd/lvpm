@@ -33,7 +33,7 @@ pub fn create(env: &OpEnv, manifest: Option<&Path>) -> Result<Venv> {
         env.flags.labview_version.as_deref(),
         explicit,
         &env.config.venv_dir,
-        &env.targets,
+        &env.pickable()?,
         env.sink,
     )
 }

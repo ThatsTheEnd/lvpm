@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 pub struct DestinationFlags {
     /// Install into this LabVIEW version, e.g. 2026.
     pub labview_version: Option<String>,
+    /// Pick the 32- or 64-bit LabVIEW when both of a version are installed.
+    pub labview_bitness: Option<u8>,
     /// Install into a scratch directory instead of a LabVIEW installation.
     pub prefix: Option<PathBuf>,
     /// Use the LabVIEW installation itself, even from inside a project that
@@ -52,7 +54,8 @@ pub struct OpEnv<'a> {
     /// variable; operations only read this.
     pub headless: bool,
     pub config: Config,
-    /// The LabVIEW installations detected on this machine.
+    /// The LabVIEW installations detected on this machine: the detected list;
+    /// choose from [`OpEnv::pickable`].
     pub targets: Vec<LvTarget>,
     pub sink: &'a dyn EventSink,
     /// Does nothing unless the front end keeps a clone and cancels it.
@@ -122,6 +125,12 @@ impl<'a> OpEnv<'a> {
         Roots::labview_on(t, self.machine.as_deref())
     }
 
+    /// The installations a pick may choose from: the detected ones, narrowed to
+    /// `--labview-bitness` when it is given. Not for finding a venv's own LabVIEW.
+    pub fn pickable(&self) -> Result<Vec<LvTarget>> {
+        target::of_bitness(&self.targets, self.flags.labview_bitness)
+    }
+
     /// Resolve `--labview-version` / `--prefix` into a set of roots.
     pub fn roots(&self) -> Result<Roots> {
         match (&self.flags.labview_version, &self.flags.prefix) {
@@ -130,7 +139,7 @@ impl<'a> OpEnv<'a> {
                 if self.targets.is_empty() {
                     bail!("no LabVIEW installations detected");
                 }
-                Ok(self.labview_roots(&target::select(&self.targets, want)?))
+                Ok(self.labview_roots(&target::select(&self.pickable()?, want)?))
             }
             (None, Some(p)) => Ok(Roots::scratch(p)),
             (None, None) => bail!(
@@ -195,7 +204,7 @@ impl<'a> OpEnv<'a> {
             !self.targets.is_empty(),
             "no LabVIEW installations detected"
         );
-        let t = target::select_for_project(&self.targets, requested, min_year)?
+        let t = target::select_for_project(&self.pickable()?, requested, min_year)?
             .expect("checked above: a flag or a manifest year is set");
         self.sink.emit(Event::HeadlessInstallationChosen {
             repo: repo.to_path_buf(),
@@ -208,12 +217,23 @@ impl<'a> OpEnv<'a> {
     /// otherwise it is looked up from `cwd`.
     pub fn find_venv(&self) -> Result<Option<Venv>> {
         let project = self.flags.project.as_deref().map(|p| self.cwd.join(p));
-        venv::find(
+        let found = venv::find(
             project.as_deref(),
             &self.cwd,
             &self.config.venv_dir,
             &self.targets,
-        )
+        )?;
+        if let (Some(v), Some(bits)) = (&found, self.flags.labview_bitness)
+            && v.target.bitness != bits
+        {
+            bail!(
+                "this venv is bound to {}, not the {bits}-bit LabVIEW --labview-bitness asks for\n\
+                 hint: drop --labview-bitness, or run `lvpm venv remove` without it, then \
+                 `lvpm venv create --labview-bitness {bits}`",
+                v.target.label()
+            );
+        }
+        Ok(found)
     }
 
     /// Where the relink VI and a staged PostUninstall hook are written. `%TEMP%`
@@ -332,6 +352,14 @@ mod tests {
         }
     }
 
+    fn labview(year: u32, bitness: u8) -> LvTarget {
+        LvTarget {
+            version: f64::from(year - 2000),
+            bitness,
+            path: PathBuf::from(format!("LabVIEW {year} {bitness}")),
+        }
+    }
+
     fn scratch_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("lvpm-env-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -379,6 +407,42 @@ mod tests {
     }
 
     #[test]
+    fn a_bitness_the_venv_is_not_bound_to_is_refused_and_a_matching_or_absent_one_is_not() {
+        let repo = scratch_dir("venv-bitness");
+        let bound = LvTarget {
+            version: 26.3,
+            ..labview(2026, 64)
+        };
+        let installed = vec![bound.clone(), labview(2026, 32)];
+        venv::create(
+            &repo,
+            Some("2026"),
+            None,
+            Path::new(".lv-venv"),
+            &installed[..1],
+            &NullSink,
+        )
+        .unwrap();
+        let mut env = OpEnv::new(&NullSink, config(), installed, repo.clone());
+
+        env.flags.labview_bitness = Some(32);
+        assert_eq!(
+            env.find_venv().unwrap_err().to_string(),
+            "this venv is bound to LabVIEW 2026 (64-bit)  v26.3, not the 32-bit LabVIEW \
+             --labview-bitness asks for\n\
+             hint: drop --labview-bitness, or run `lvpm venv remove` without it, then \
+             `lvpm venv create --labview-bitness 32`"
+        );
+
+        for bits in [Some(64), None] {
+            env.flags.labview_bitness = bits;
+            let venv = env.find_venv().unwrap().expect("the venv is found");
+            assert_eq!(venv.target.path, bound.path);
+        }
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn a_labview_version_picks_among_the_injected_installations() {
         let mut env = OpEnv::new(
             &NullSink,
@@ -393,6 +457,69 @@ mod tests {
         );
 
         env.targets.clear();
+        let why = env.roots().unwrap_err().to_string();
+        assert_eq!(why, "no LabVIEW installations detected");
+    }
+
+    #[test]
+    fn a_manifests_minimum_still_lets_a_newer_year_of_the_requested_bitness_stand_in() {
+        let repo = scratch_dir("headless-bitness");
+        std::fs::write(
+            repo.join(project::FILE_NAME),
+            "[project]\nlabview = \">=2025\"\n",
+        )
+        .unwrap();
+        let installed = vec![labview(2025, 64), labview(2026, 32)];
+        let mut env = OpEnv::new(&NullSink, config(), installed, repo.clone());
+        env.flags.labview_bitness = Some(32);
+        let chosen = env.headless_roots(&repo).unwrap().target.unwrap();
+        assert_eq!(chosen.path, labview(2026, 32).path);
+
+        // Without the flag the manifest's own year is the pick.
+        env.flags.labview_bitness = None;
+        let chosen = env.headless_roots(&repo).unwrap().target.unwrap();
+        assert_eq!(chosen.path, labview(2025, 64).path);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_bitness_picks_between_the_installations_of_a_version_through_roots() {
+        let installed = vec![labview(2026, 64), labview(2026, 32)];
+        let mut env = OpEnv::new(&NullSink, config(), installed, PathBuf::from("."));
+        env.flags.labview_version = Some("2026".into());
+        env.flags.labview_bitness = Some(32);
+        assert_eq!(
+            env.roots().unwrap().target.unwrap().path,
+            labview(2026, 32).path
+        );
+
+        env.targets = vec![labview(2026, 64)];
+        let why = env.roots().unwrap_err().to_string();
+        assert_eq!(
+            why,
+            format!(
+                "no 32-bit LabVIEW installation detected (detected: {})\n\
+                 hint: `lvpm targets` lists detected LabVIEW installations",
+                labview(2026, 64).label()
+            )
+        );
+    }
+
+    #[test]
+    fn a_bitness_the_named_path_does_not_have_matches_no_target() {
+        let installed = vec![labview(2026, 64), labview(2026, 32)];
+        let mut env = OpEnv::new(&NullSink, config(), installed, PathBuf::from("."));
+        env.flags.labview_version = Some(labview(2026, 64).path.display().to_string());
+        env.flags.labview_bitness = Some(32);
+        let why = env.roots().unwrap_err().to_string();
+        assert!(why.starts_with("no LabVIEW target matching"), "{why}");
+    }
+
+    #[test]
+    fn a_bitness_with_nothing_installed_still_says_nothing_is_installed() {
+        let mut env = OpEnv::new(&NullSink, config(), Vec::new(), PathBuf::from("."));
+        env.flags.labview_version = Some("2026".into());
+        env.flags.labview_bitness = Some(32);
         let why = env.roots().unwrap_err().to_string();
         assert_eq!(why, "no LabVIEW installations detected");
     }

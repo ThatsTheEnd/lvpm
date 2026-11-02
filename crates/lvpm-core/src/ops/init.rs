@@ -161,7 +161,7 @@ pub fn run(env: &OpEnv, from: Option<&Path>, runner: Runner) -> Result<Initializ
         Some(from) => read_source(&env.cwd, from).map(|(seed, kind)| (seed, Some(kind)))?,
         None => (Seed::default(), None),
     };
-    let choice = choose_labview(&env.targets, flag);
+    let choice = choose_labview(&env.pickable()?, flag);
 
     let text = manifest_text(&root, choice.year, &seed)?;
     write_new(&manifest, &text)?;
@@ -379,7 +379,15 @@ fn make_venv(
         return Err(skip("no LabVIEW found".into()));
     };
     let Some(path) = path else {
-        return Err(skip(format!("LabVIEW {year} is not installed")));
+        // Under --labview-bitness only that bitness was looked at.
+        let bitness_prefix = env
+            .flags
+            .labview_bitness
+            .map(|b| format!("{b}-bit "))
+            .unwrap_or_default();
+        return Err(skip(format!(
+            "{bitness_prefix}LabVIEW {year} is not installed"
+        )));
     };
     venv::create(
         root,
@@ -738,6 +746,20 @@ mod tests {
     }
 
     #[test]
+    fn a_skip_under_a_bitness_names_it() {
+        let (_scratch, root) = folder("init-venv-skip-bits", "App");
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &root);
+        env.targets = vec![lv(2025, 64), lv(2026, 32)];
+        env.flags.labview_version = Some("2025".into());
+        env.flags.labview_bitness = Some(32);
+
+        let skip = run(&env, None, &git_ok).unwrap().venv.unwrap_err();
+
+        assert_eq!(skip.why, "32-bit LabVIEW 2025 is not installed");
+    }
+
+    #[test]
     fn a_venv_that_is_already_there_is_kept_and_init_says_so() {
         let (scratch, root) = folder("init-venv-there", "App");
         let binding = root.join(".lv-venv").join(".lvpm").join("venv.json");
@@ -872,6 +894,38 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn a_bitness_offers_only_that_bitness_and_binds_the_venv_to_it() {
+        let (scratch, root) = folder("init-bitness-flag", "App");
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &root);
+        env.targets = vec![lv(2026, 64), lv(2026, 32)];
+        env.flags.labview_bitness = Some(32);
+
+        let done = run(&env, None, &git_ok).unwrap();
+
+        let made = done.venv.unwrap();
+        assert_eq!(
+            (made.target.bitness, made.target.path),
+            (32, lv(2026, 32).path)
+        );
+
+        // A bitness nothing has writes nothing at all.
+        let (scratch_none, other) = folder("init-bitness-flag-none", "Other");
+        let mut env = env_on(&sink, &other);
+        env.targets = vec![lv(2026, 64)];
+        env.flags.labview_bitness = Some(32);
+        let why = run(&env, None, &no_git).err().unwrap().to_string();
+        assert!(
+            why.starts_with("no 32-bit LabVIEW installation detected"),
+            "{why}"
+        );
+        assert!(!other.join("lvpm.toml").exists());
+
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _ = std::fs::remove_dir_all(&scratch_none);
     }
 
     #[test]

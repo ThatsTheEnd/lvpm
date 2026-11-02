@@ -202,6 +202,11 @@ async fn project_has_venv(world: &mut CliWorld) {
     venv::venv_for_labview(world).await;
 }
 
+#[given(regex = r#"^LVPM_YES is "(.*)"$"#)]
+async fn lvpm_yes_is(world: &mut CliWorld, value: String) {
+    world.sandbox.set_child_env("LVPM_YES", &value);
+}
+
 /// Served where both the project and the public feed list it, with an empty
 /// cache, so the next install downloads it.
 #[given(r#"the archive of "alpha" 1.0 is corrupt"#)]
@@ -327,6 +332,13 @@ async fn error_names_yes(world: &mut CliWorld) {
     assert!(message.contains("--yes"), "{message}");
 }
 
+#[then(regex = r#"^the error names "(.+)"$"#)]
+async fn error_names(world: &mut CliWorld, name: String) {
+    let error = last_only(world, "error");
+    let message = error.as_str().expect("the error is a message");
+    assert!(message.contains(&name), "{message}");
+}
+
 #[then("the exit code is 1")]
 async fn exit_code_is_1(world: &mut CliWorld) {
     assert_eq!(output(world).exit_code, 1, "{:?}", output(world));
@@ -368,6 +380,12 @@ async fn skipped_for_scratch(world: &mut CliWorld) {
 async fn it_asked(world: &mut CliWorld) {
     let stderr = &output(world).stderr;
     assert!(stderr.contains("[y/N]"), "{stderr}");
+}
+
+#[then(regex = r#"^it did not ask "\[y/N\]"$"#)]
+async fn it_did_not_ask(world: &mut CliWorld) {
+    let stderr = &output(world).stderr;
+    assert!(!stderr.contains("[y/N]"), "{stderr}");
 }
 
 // ---- Without --json ----

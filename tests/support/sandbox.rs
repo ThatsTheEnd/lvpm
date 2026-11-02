@@ -266,6 +266,8 @@ pub struct Sandbox {
     /// The GitHub API the children use and the token they carry, once a
     /// scenario has said; until then they have neither.
     github: Mutex<Option<(String, Option<String>)>>,
+    /// Variables a scenario has set for the children, and only for them.
+    child_env: Mutex<Vec<(String, String)>>,
 }
 
 impl Sandbox {
@@ -278,6 +280,7 @@ impl Sandbox {
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
             github: Mutex::new(None),
+            child_env: Mutex::new(Vec::new()),
         };
         for name in [
             WORK_DIR,
@@ -467,6 +470,17 @@ impl Sandbox {
         self.headless.store(headless, Ordering::SeqCst);
     }
 
+    /// From now on, run the sandbox's children with `name` set to `value`, an
+    /// empty one included. The test process's own environment is never touched.
+    pub fn set_child_env(&self, name: &str, value: &str) {
+        let mut vars = self
+            .child_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        vars.retain(|(set, _)| set != name);
+        vars.push((name.to_string(), value.to_string()));
+    }
+
     /// From now on, run the children against the GitHub API at `api`, with
     /// `token` as `GH_TOKEN` when there is one. Nothing else reaches them.
     pub fn set_github(&self, api: &str, token: Option<&str>) {
@@ -554,6 +568,13 @@ impl Sandbox {
         }
         if self.is_headless() {
             command.env(HEADLESS_ENV_VAR, "1");
+        }
+        for (name, value) in &*self
+            .child_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            command.env(name, value);
         }
         if let Some((api, token)) = &*self.github.lock().unwrap_or_else(PoisonError::into_inner) {
             command.env("GITHUB_API_URL", api);
@@ -1116,6 +1137,20 @@ mod tests {
         assert!(has_switch(&sandbox));
         sandbox.set_headless(false);
         assert!(!has_switch(&sandbox));
+    }
+
+    #[test]
+    fn a_child_has_a_variable_only_when_its_sandbox_was_told_to_and_an_empty_one_still_counts() {
+        let sandbox = Sandbox::new();
+        let value = |sandbox: &Sandbox| {
+            variable(&child_environment(sandbox), "LVPM_YES").map(str::to_string)
+        };
+        assert_eq!(value(&sandbox), None);
+        sandbox.set_child_env("LVPM_YES", "1");
+        assert_eq!(value(&sandbox).as_deref(), Some("1"));
+        sandbox.set_child_env("LVPM_YES", "");
+        assert_eq!(value(&sandbox).as_deref(), Some(""));
+        assert_eq!(value(&Sandbox::new()), None);
     }
 
     #[test]
