@@ -1,1 +1,7 @@
 .githooks/* text eol=lf
+*.vi binary
+*.vit binary
+*.ctl binary
+*.ctt binary
+*.llb binary
+*.lvlib binary

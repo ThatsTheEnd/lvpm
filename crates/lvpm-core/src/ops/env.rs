@@ -223,17 +223,25 @@ impl<'a> OpEnv<'a> {
             &self.config.venv_dir,
             &self.targets,
         )?;
-        if let (Some(v), Some(bits)) = (&found, self.flags.labview_bitness)
-            && v.target.bitness != bits
+        if let Some(v) = &found {
+            self.check_bitness(&v.target)?;
+        }
+        Ok(found)
+    }
+
+    /// Refuses a venv bound to another bitness than `--labview-bitness` names.
+    pub fn check_bitness(&self, bound_to: &LvTarget) -> Result<()> {
+        if let Some(bits) = self.flags.labview_bitness
+            && bound_to.bitness != bits
         {
             bail!(
                 "this venv is bound to {}, not the {bits}-bit LabVIEW --labview-bitness asks for\n\
                  hint: drop --labview-bitness, or run `lvpm venv remove` without it, then \
                  `lvpm venv create --labview-bitness {bits}`",
-                v.target.label()
+                bound_to.label()
             );
         }
-        Ok(found)
+        Ok(())
     }
 
     /// Where the relink VI and a staged PostUninstall hook are written. `%TEMP%`

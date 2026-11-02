@@ -192,8 +192,8 @@ pub struct Project {
     pub github: BTreeMap<String, String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
-    /// `[distribution]`, as written: only `lvpm build` reads it, through
-    /// `distribution::validate`.
+    /// `[distribution]`, as written: `lvpm build` reads it through
+    /// `distribution::validate`, and `lvpm check` for the library it names.
     pub distribution: Option<toml::Table>,
 }
 

@@ -47,9 +47,18 @@ git -C hse-logger checkout f7cc16a391faa1e982b54ae22d2f43c9df1ef581
 LVPM_TEST_PILOT_A=<path to hse-logger> cargo test --test acceptance
 ```
 
+Pilot B's source is public, and the `@pilot-b-source` scenarios (S5) read it
+from a clone in the same way, through `LVPM_TEST_PILOT_B`:
+
+```console
+git clone https://github.com/LabVIEW-Open-Source/Serializer
+git -C Serializer checkout 723d7a672b5f0eafa9f98ea63629ba5855d50227
+LVPM_TEST_PILOT_A=<path to hse-logger> LVPM_TEST_PILOT_B=<path to Serializer> cargo test --test acceptance
+```
+
 Each scenario checks that its HEAD is the pinned commit and that the folder
 the build copies (`Source` or `source`) has no modified, untracked or ignored
-files; changes elsewhere in the checkout are accepted. Without the variable, the harness does not run those scenarios
+files; changes elsewhere in the checkout are accepted. Without a variable, the harness does not run its scenarios
 and says how many it left out.
 
 | Pilot | Repository | Tag | Commit |
@@ -82,3 +91,51 @@ in `%TEMP%`, so two test runs never share one. If another run holds the
 claim, or something already answers VI Server on the installation's port
 (your own LabVIEW, say), they are not run and the harness says why. The
 LabVIEW the run started is ended when the run ends, even after a panic.
+
+## What `lvpm check` says about the pilots
+
+`s5-lvpm-check.feature` copies the pilots' source folders into a sandbox, binds
+a venv to an installation folder that is absent, and runs `lvpm check` on the
+copy. The VI counts and lines below are what the pinned commits give.
+
+| Pilot | Project | VIs checked |
+|---|---|---|
+| A | `Source` as `[distribution]` library `Source/HSE-Logger/hse-logger.lvlib`, `labview = ">=2016"` | 90 |
+| B | `source` as `[distribution]` library `source/OpenSerializer.lvlib`, `labview = ">=2013"` | 30 |
+
+**The demo.** `Source/HSE-Logger/LogRecord/Generate Callchain.vi` is called by
+exactly one VI of pilot A, `Source/HSE-Logger/LogRecord/Init.vi`. Delete it
+from the copy and `lvpm check` prints:
+
+```text
+Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi
+```
+
+The demo project has no `[distribution]` table: with one, the library file
+`LogRecord.lvclass` lists the deleted VI and `lvpm check` stops with
+`... lists ... Generate Callchain.vi, which is not on disk` before it reads any VI.
+
+**Pilot B and its dependency.** With `labview_open_source_lib_data_manipulation`
+installed in the venv from the committed archive and `[dependencies]` empty, the
+check exits 1 with one line per VI and link, among them:
+
+```text
+source/Serializer.INI/INI.Attributes to Variant.vi: <vilib>/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi is in labview_open_source_lib_data_manipulation, which is not in [dependencies]
+```
+
+**Both pilots pass.** With `labview_open_source_lib_data_manipulation` in
+`[dependencies]` (pilot B) and the bound installation absent, `lvpm check` prints:
+
+| Pilot | stdout | stderr |
+|---|---|---|
+| A | `VIs checked: 90, problems: 0, links not checked: 26` | `warning: links not checked: 19 into vi.lib (the bound installation <path> is not on this machine)` and `warning: links not checked: 7 absolute paths not on this machine (saved elsewhere; LabVIEW searches for them when it loads)` |
+| B | `VIs checked: 30, problems: 0, links not checked: 57` | `warning: links not checked: 57 into vi.lib (the bound installation <path> is not on this machine)` |
+
+Two rules make that so. A link inside a file counts as found: pilot A's 56
+links to a class's private data control (`Source/HSE-Logger/Logger/Logger.lvclass/Logger.ctl`)
+and pilot B's 3 links to a path below a VI
+(`source/Serializer.INI/ExtractSectionsFromString.vi/LabVIEW`) lead into a file
+that is there. A link to an absolute path that is not on this machine is not
+checked: pilot A's 7 were saved where the author worked
+(`C:/Users/admin/_Git/hse-logger/...`, `C:/_work/hampel-soft/open-source/hse-logger/...`)
+and LabVIEW looks for the file by name when it loads the VI.

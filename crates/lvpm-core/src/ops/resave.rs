@@ -6,6 +6,7 @@
 use super::staging::Staging;
 use crate::events::{Event, EventSink};
 use crate::launch::{self, Instance};
+use crate::linker::Rsrc;
 use crate::venv::Venv;
 use crate::viserver::Connection;
 use anyhow::{Result, bail};
@@ -132,39 +133,16 @@ pub(crate) fn is_lv_file(path: &Path) -> bool {
         .is_some_and(|e| ["vi", "ctl", "vit"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// The LabVIEW major version a file was saved in, read from the `vers`
-/// resource (id 4) of its RSRC header, with no LabVIEW: 26 for LabVIEW 2026.
-/// None for a file that is not one, or is cut short.
+/// The LabVIEW major version a file was saved in, read from its RSRC header
+/// with no LabVIEW: 26 for LabVIEW 2026. None for a file that is not one, is
+/// cut short, or was saved before LabVIEW 9.
 pub(crate) fn saved_major(path: &Path) -> Option<u32> {
-    read_major(&std::fs::read(path).ok()?)
+    major_of(&std::fs::read(path).ok()?)
 }
 
-fn read_major(b: &[u8]) -> Option<u32> {
-    let u32_at = |at: usize| -> Option<usize> {
-        let bytes = b.get(at..at.checked_add(4)?)?;
-        Some(u32::from_be_bytes(bytes.try_into().ok()?) as usize)
-    };
-    if !b.starts_with(b"RSRC\r\n") {
-        return None;
-    }
-    let (info, data) = (u32_at(16)?, u32_at(24)?);
-    let base = info.checked_add(u32_at(info.checked_add(44)?)?)?;
-    for kind in 0..=u32_at(base)? {
-        let entry = base + 4 + 12 * kind;
-        if b.get(entry..entry + 4)? != b"vers" {
-            continue;
-        }
-        let list = base + u32_at(entry + 8)?;
-        for section in 0..=u32_at(entry + 4)? {
-            let at = list + 20 * section;
-            if u32_at(at)? == 4 {
-                // Binary-coded decimal: 0x26 is 26.
-                let major = *b.get(data + u32_at(at + 12)? + 4)?;
-                return Some(u32::from(major >> 4) * 10 + u32::from(major & 0x0f));
-            }
-        }
-    }
-    None
+/// [`saved_major`] of a file's bytes.
+fn major_of(bytes: &[u8]) -> Option<u32> {
+    Some(Rsrc::read(bytes).ok()?.save_year()? - 2000)
 }
 
 /// One LabVIEW for a run's resaves, started for the first package that needs
@@ -896,7 +874,7 @@ mod tests {
         assert_eq!(planned(&sink.events()), None);
     }
 
-    /// The smallest RSRC file `read_major` reads: one `vers` resource, id 4,
+    /// The smallest RSRC file `major_of` reads: one `vers` resource, id 4,
     /// whose first bytes are `version` (binary-coded decimal).
     fn rsrc(version: [u8; 4]) -> Vec<u8> {
         let be = |n: u32| n.to_be_bytes();
@@ -926,19 +904,19 @@ mod tests {
         let real = |p: &str| saved_major(&Path::new(env!("CARGO_MANIFEST_DIR")).join(p));
         assert_eq!(real("src/lv-src/relink-package.vi"), Some(20));
         assert_eq!(real("../../tests/fixtures/hooks/PostInstall.vi"), Some(26));
-        assert_eq!(read_major(&rsrc([0x13, 0x01, 0x80, 0x00])), Some(13));
-        assert_eq!(read_major(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
-        assert_eq!(read_major(b"PAYLOAD a.vi"), None);
+        assert_eq!(major_of(&rsrc([0x13, 0x01, 0x80, 0x00])), Some(13));
+        assert_eq!(major_of(&rsrc([0x26, 0x31, 0x80, 0x01])), Some(26));
+        assert_eq!(major_of(b"PAYLOAD a.vi"), None);
         let whole = rsrc([0x26, 0x31, 0x80, 0x01]);
-        // The section's last field is never read, so cut only before it.
-        for cut in 0..whole.len() - 4 {
-            assert_eq!(read_major(&whole[..cut]), None, "cut at {cut}");
+        // Every field is read, so a cut anywhere is None.
+        for cut in 0..whole.len() {
+            assert_eq!(major_of(&whole[..cut]), None, "cut at {cut}");
         }
         // A huge section count with no id 4 runs off the end, not forever.
         let mut endless = whole.clone();
         endless[100..104].copy_from_slice(&u32::MAX.to_be_bytes());
         endless[108..112].copy_from_slice(&5u32.to_be_bytes());
-        assert_eq!(read_major(&endless), None);
+        assert_eq!(major_of(&endless), None);
     }
 
     fn saved_in(repo: &Path, name: &str, members: &[(&str, Vec<u8>)]) {

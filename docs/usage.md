@@ -27,6 +27,7 @@
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Package the project's library as `dist/<name>-<version>.lvpkg`, from `[distribution]` ([Building a package](#building-a-package))              |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
+| `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -595,6 +596,101 @@ published D:\feeds\packages\demo_lib-1.2.3.lvpkg
   reader of the folder never sees half a package. That needs a file system
   with hard links (NTFS and ext4 have them); on one without them, publish
   fails and names the folder.
+
+## Checking a project
+
+`lvpm check` reads every VI under a folder as bytes and starts no LabVIEW, so
+it runs on a machine that has none. It needs the project's venv
+(`lvpm venv create`): the venv says which LabVIEW installation `vi.lib` links
+are looked for in, and which package owns which file.
+
+```console
+lvpm check
+lvpm check Source
+lvpm check --json
+```
+
+`DIR` is read from where the command runs; with none, it is the whole project.
+The walk takes `.vi`, `.vit`, `.ctl` and `.ctt` files, and skips the venv and its
+staging folder, every name that starts with a dot, and links.
+
+**The rules.** Each finding is one VI breaking one rule; a rule broken twice
+by the same link is one finding.
+
+- **Save version.** A VI may not be saved in a LabVIEW newer than the minimum
+  in `[project] labview` (`>=2025` is 2025). Without `labview`, the version is
+  not checked, and stderr says so.
+- **Separated compiled code.** Each VI must have "Separate compiled code from
+  source file" turned on.
+- **Links.** Every file a VI links to must be there. A relative link is read
+  from the VI file's folder; a `..` moves up. `<vilib>`, `<userlib>` and
+  `<instrlib>` links are looked for in the LabVIEW installation the venv is
+  bound to first, then in each venv package, as LabVIEW does. A link through an
+  `.llb` needs the `.llb` to exist and list that member. The path has to
+  exist exactly: a file somewhere below an existing folder is not enough. A
+  link below a file that is there leads into it (`Logger.lvclass/Logger.ctl`,
+  a class's control stored in its `.lvclass`) and is found; the folder form
+  fails. An absolute link is looked for as written, and one whose file is not
+  on this machine is not checked (see below).
+- **Dependencies.** A link into a file that a venv package installed belongs
+  to that package, and the VI may use it only if `lvpm.toml` lists the package
+  where that VI may draw on it. The VIs of the `[distribution]`
+  `top-level-library` (its members) may use `[dependencies]` only; any other VI,
+  such as a test, may use every table (`[dev-dependencies]` and the
+  `[dependency-groups]`). Without `[distribution]` no VI is a member. A package
+  that is only a dependency of a dependency does not count: list it. A file the
+  installation itself holds is LabVIEW's own and is always allowed. `lvpm.lock`
+  is not read.
+- **Readable.** A file that is not a LabVIEW resource file, or whose link table
+  lvpm cannot read, is a finding, never a pass.
+
+**The output.** One line per finding on stdout, sorted by VI path, then rule,
+then link. Paths are relative to the project and use `/`. A link is shown as
+stored for `<vilib>` and the other roots, and otherwise as the path it led to.
+
+```text
+Broken.vi: link not found: Sub/Gone.vi
+Garbled.vi: linker table not readable (LIvi at byte 1234): format not supported yet
+New.vi: saved in LabVIEW 2026, newer than the minimum 2025
+NotSeparated.vi: compiled code is not separated from the source
+UsesDep.vi: <vilib>/Check Fixture/Dep.vi is in check_fixture_dep, which is not in [dependencies]
+UsesDevOnly.vi: <vilib>/Check Fixture Dev/DevDep.vi is in check_fixture_other, which is only in [dev-dependencies]
+x.vi: not a LabVIEW resource file
+```
+
+A package in a dependency group reads `only in [dependency-groups] ci`. Then
+one `next:` line per rule that occurred (the undeclared ones, one per package:
+`next: add <pkg> to [dependencies] in lvpm.toml`), and always the summary:
+
+```text
+VIs checked: 12, problems: 3, links not checked: 57
+```
+
+The exit code is 1 when there is a finding and 0 when there is none. With
+`--json` the result has the same shape either way:
+`{"ok": bool, "vis": N, "not_checked": K, "findings": [{"vi", "kind", "link", "package", "table", "saved", "minimum", "block", "offset"}]}`;
+a field that does not apply is `null`.
+
+**Links lvpm cannot look for** are counted in `links not checked`, with a
+warning on stderr that says why (`warning: links not checked: 57 into vi.lib (the
+bound installation ... is not on this machine)`, `... into <resource> (lvpm
+does not resolve this root)`, or `warning: links not checked: 7 absolute paths
+not on this machine (saved elsewhere; LabVIEW searches for them when it
+loads)`). In pilots A and B such a path is where the file was on the machine
+that saved the VI, and LabVIEW 2026 finds the file by name when it loads the
+VI, so it is not a broken link here. A network path, or a name that would leave
+its folder (`..`, a separator), is counted the same way and never looked for.
+The warnings are text output only; `--json` carries the count, not the cause. A venv package's own files are still checked when the
+installation is absent.
+
+**Limits.**
+
+- A VI saved while one of its subVIs was missing may store that link as "not a
+  path", which names nothing. `lvpm check` skips such a link; it cannot see it.
+- The older `PTH0` layout of some OpenG packages is not read yet
+  ([#108](https://github.com/ThatsTheEnd/lvpm/issues/108)).
+- A link below a file is found when the file is there; `lvpm check` does not
+  open the file to see that the item is in it (only an `.llb` is read).
 
 ## Package sources
 
