@@ -39,7 +39,7 @@ Flags that apply to every command:
 | `--prefix <DIR>`           | Install into a scratch directory instead of LabVIEW (file copy only; nothing to relink or run hooks with) |
 | `--refresh`                | Ask each index whether it changed (a conditional request) instead of trusting the cache in `%LOCALAPPDATA%\lvpm\cache` |
 | `--yes` / `-y`             | Answer yes to every prompt (today only `venv remove` asks). `LVPM_YES` does the same; `0`, `false`, `no`, `off` or empty leaves it off |
-| `--labview-bitness <32\|64>` | Pick the 32- or 64-bit LabVIEW when both of a version are installed; inside a venv bound to the other bitness it is an error |
+| `--labview-bitness <32\|64>` | Use only 32- or 64-bit LabVIEW installations, to pick one when both of a version are installed; a venv bound to the other bitness is an error (`--global` skips the venv) |
 | `--json`                   | Write JSON Lines to stdout for a script or front end ([JSON output and exit codes](https://github.com/ThatsTheEnd/lvpm#json-output-and-exit-codes)). Not taken by `app-probe`, `vi-probe`, `vi-save` or `vi-run` (exit 2) |
 
 `install` flags: `--dry-run` shows every file, relink folder and hook and
@@ -99,8 +99,9 @@ next: lvpm sync
   $ lvpm venv create --labview-version 2025
   ```
 
-  For the other bitness of the same year, give its installation path, which
-  init prints: `lvpm venv create --labview-version "<path>"`.
+  For the other bitness of the same year, add `--labview-bitness 32` (or `64`),
+  or give its installation path, which init prints:
+  `lvpm venv create --labview-version "<path>"`.
 
 ### From a .vipc
 

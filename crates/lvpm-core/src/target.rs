@@ -683,10 +683,15 @@ mod tests {
 
     #[test]
     fn a_bitness_picks_that_installation_of_the_year() {
-        let both = [lv_bits(2026, 32), lv_bits(2026, 64)];
-        for bits in [32, 64] {
-            let picked = select(&of_bitness(&both, Some(bits)).unwrap(), "2026").unwrap();
-            assert_eq!(picked.bitness, bits);
+        // Both orders, so each bitness is once the one `select` would not pick.
+        for both in [
+            [lv_bits(2026, 32), lv_bits(2026, 64)],
+            [lv_bits(2026, 64), lv_bits(2026, 32)],
+        ] {
+            for bits in [32, 64] {
+                let picked = select(&of_bitness(&both, Some(bits)).unwrap(), "2026").unwrap();
+                assert_eq!(picked.bitness, bits);
+            }
         }
     }
 
@@ -712,16 +717,10 @@ mod tests {
     }
 
     #[test]
-    fn a_bitness_with_nothing_installed_is_not_narrowed_and_select_reports_it() {
-        let none = of_bitness(&[], Some(32)).unwrap();
-        assert!(none.is_empty());
-        // What `select` says about an empty list is unchanged by the narrowing;
-        // the `no LabVIEW installations detected` wording is the callers' own
-        // `is_empty` check, which still sees the empty list.
-        assert_eq!(
-            select(&none, "2026").unwrap_err().to_string(),
-            select(&[], "2026").unwrap_err().to_string()
-        );
+    fn a_bitness_with_nothing_installed_is_not_an_error() {
+        // The `no LabVIEW installations detected` wording is the callers' own
+        // `is_empty` check, which still sees the empty list (tested in ops::env).
+        assert!(of_bitness(&[], Some(32)).unwrap().is_empty());
     }
 
     #[cfg(not(windows))]

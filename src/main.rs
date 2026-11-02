@@ -38,7 +38,7 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     prefix: Option<PathBuf>,
 
-    /// Pick the 32- or 64-bit LabVIEW when both of a version are installed.
+    /// Use only the 32- or 64-bit LabVIEW, to pick one when both of a version are installed.
     #[arg(
         long,
         global = true,
@@ -1312,6 +1312,32 @@ mod tests {
         let err = Cli::try_parse_from(["lvpm", "update"]).err().unwrap();
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
         assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn lvpm_yes_is_off_only_for_falsey_values() {
+        // Without touching the process env: `--yes` reads LVPM_YES through
+        // FalseyValueParser, whose mapping is pinned here.
+        let cmd = Cli::command();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "yes").unwrap();
+        assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("LVPM_YES")));
+        let parser = clap::builder::FalseyValueParser::new();
+        for (value, on) in [
+            ("0", false),
+            ("false", false),
+            ("FALSE", false),
+            ("no", false),
+            ("off", false),
+            ("", false),
+            ("1", true),
+            ("true", true),
+            ("banana", true),
+        ] {
+            let parsed = parser
+                .parse_ref(&cmd, Some(arg), std::ffi::OsStr::new(value))
+                .unwrap();
+            assert_eq!(parsed, on, "{value:?}");
+        }
     }
 
     #[test]

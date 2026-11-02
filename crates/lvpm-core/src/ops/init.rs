@@ -379,7 +379,13 @@ fn make_venv(
         return Err(skip("no LabVIEW found".into()));
     };
     let Some(path) = path else {
-        return Err(skip(format!("LabVIEW {year} is not installed")));
+        // Under --labview-bitness only that bitness was looked at.
+        let bits = env
+            .flags
+            .labview_bitness
+            .map(|b| format!("{b}-bit "))
+            .unwrap_or_default();
+        return Err(skip(format!("{bits}LabVIEW {year} is not installed")));
     };
     venv::create(
         root,
@@ -735,6 +741,20 @@ mod tests {
             assert!(skip.why.contains(why), "{why:?} is not in {:?}", skip.why);
             assert!(!ran.root().join(".lv-venv").exists(), "{why}");
         }
+    }
+
+    #[test]
+    fn a_skip_under_a_bitness_names_it() {
+        let (_scratch, root) = folder("init-venv-skip-bits", "App");
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &root);
+        env.targets = vec![lv(2025, 64), lv(2026, 32)];
+        env.flags.labview_version = Some("2025".into());
+        env.flags.labview_bitness = Some(32);
+
+        let skip = run(&env, None, &git_ok).unwrap().venv.unwrap_err();
+
+        assert_eq!(skip.why, "32-bit LabVIEW 2025 is not installed");
     }
 
     #[test]
