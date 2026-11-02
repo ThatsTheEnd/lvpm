@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.21.0...v0.22.0) (2026-11-02)
+
+
+### Features
+
+* **s6:** attestations and consumer policy ([#112](https://github.com/ThatsTheEnd/lvpm/issues/112)) ([5ee9d47](https://github.com/ThatsTheEnd/lvpm/commit/5ee9d47dfe216d226069902a7b2649ba93a71d36))
+
 ## [0.21.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.20.0...v0.21.0) (2026-11-02)
 
 
