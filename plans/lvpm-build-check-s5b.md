@@ -348,9 +348,9 @@ graph TD
   - [x] Step 1.1: `run` with a scope, and `check_library`
 
 #### Wave 2
-- [ ] Slice 2: the check in `lvpm build`
-  - [ ] Step 2.1: `build(env, check)` and `Outcome`
-  - [ ] Step 2.2: CLI flag, rendering, scenarios
+- [x] Slice 2: the check in `lvpm build`
+  - [x] Step 2.1: `build(env, check)` and `Outcome`
+  - [x] Step 2.2: CLI flag, rendering, scenarios
 
 #### Wave 3
 - [ ] Slice 3: pilot A and docs
