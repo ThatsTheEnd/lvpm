@@ -89,12 +89,18 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
             )
         })?,
     };
+    // Every path below is taken from these two, so a `..` in either is
+    // settled here, once: `join` and `shown` work on names, not on `..`.
+    let repo = lexical(&repo);
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     let (_, manifest) = env
         .manifest_for(None, Some(&bound.repo))?
         .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
 
-    let start = dir.map_or_else(|| bound.repo.clone(), |dir| paths::resolve(&env.cwd, dir));
+    let start = dir.map_or_else(
+        || bound.repo.clone(),
+        |dir| lexical(&paths::resolve(&env.cwd, dir)),
+    );
     if !start.is_dir() {
         return Err(CheckError::NoDir(dir.map_or(start, Path::to_path_buf)));
     }
@@ -122,10 +128,38 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
                 problem,
             }));
     }
-    // The one place the listing is put in order and a repeat is dropped.
-    checked.findings.sort();
-    checked.findings.dedup();
+    in_order(&mut checked.findings);
     Ok(checked)
+}
+
+/// The one place the listing is put in order (VI, rule, link) and a repeat is
+/// dropped.
+fn in_order(findings: &mut Vec<Finding>) {
+    findings.sort();
+    findings.dedup();
+}
+
+/// `path` with `.` and `..` settled by name, as [`target::within`] does but
+/// keeping case. A `..` that leads a relative path stays; one at a root goes.
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if out
+                    .components()
+                    .all(|c| c == std::path::Component::ParentDir)
+                {
+                    out.push("..");
+                } else {
+                    out.pop();
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// The VIs, controls and templates under `dir`, in name order, leaving out the
@@ -640,6 +674,10 @@ mod tests {
         std::fs::write(root.join("lvpm.toml"), "[project]\n").unwrap();
         let why = check(&testing::env(&root), None).unwrap_err();
         assert!(why.to_string().contains("but no venv"), "{why}");
+        assert!(
+            why.to_string().contains("`lvpm venv create` makes one"),
+            "{why}"
+        );
 
         let bare = testing::scratch_dir("check-no-manifest");
         let why = check(&testing::env(&bare), None).unwrap_err();
@@ -730,14 +768,89 @@ mod tests {
         .unwrap();
         let link = sandbox.repo.join("linked");
         #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_dir(&outside, &link);
+        let made = std::os::windows::fs::symlink_dir(&outside, &link).or_else(|_| {
+            // Without Developer Mode a junction needs no privilege.
+            let junction = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()?;
+            match junction.status.success() {
+                true => Ok(()),
+                false => Err(std::io::Error::other("mklink /J failed")),
+            }
+        });
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(&outside, &link);
-        if made.is_err() {
-            // Windows without Developer Mode cannot make one; nothing to check.
-            return;
-        }
+        made.expect("a link to a folder can be made");
+        assert!(link.join("Broken.vi").is_file(), "the link leads there");
         assert_eq!(sandbox.check().vis, 0);
+    }
+
+    /// Broken.vi's bytes with its link `Sub/Gone.vi` rewritten, in the same
+    /// number of bytes, as `../../Missing.vi`: two `Up`s, as a VI two levels
+    /// below a file it calls stores it.
+    fn two_ups_vi() -> Vec<u8> {
+        let bytes = std::fs::read(Path::new(FIXTURES).join("project/Broken.vi")).unwrap();
+        let from = b"\x03Sub\x07Gone.vi";
+        let to = b"\x00\x0aMissing.vi";
+        let mut out = Vec::new();
+        let mut rest = &bytes[..];
+        while let Some(at) = rest.windows(from.len()).position(|w| w == from) {
+            out.extend(&rest[..at]);
+            out.extend(to);
+            rest = &rest[at + from.len()..];
+        }
+        out.extend(rest);
+        let links = ViFacts::read(&out).unwrap().links;
+        let ups = [Component::Up, Component::Up];
+        assert_eq!(links[0].components[..2], ups);
+        out
+    }
+
+    #[test]
+    fn a_dotdot_in_the_project_flag_or_dir_changes_neither_what_is_found_nor_how_it_is_shown() {
+        let sandbox = Sandbox::new("dotdot", None);
+        sandbox.write("Top.vi", &two_ups_vi()).mkdir("Sub");
+        std::fs::write(sandbox.root.join("Missing.vi"), "").unwrap();
+        let mut env = sandbox.env();
+        // From `repo/Sub`, the project is `..`; the VI's two `Up`s lead to the
+        // file beside the repo, not into `repo/Sub`.
+        env.cwd = sandbox.repo.join("Sub");
+        env.flags.project = Some(PathBuf::from(".."));
+        let checked = check(&env, None).unwrap();
+        assert_eq!((checked.vis, checked.findings), (1, vec![]));
+        std::fs::remove_file(sandbox.root.join("Missing.vi")).unwrap();
+        assert_eq!(check(&env, None).unwrap().findings.len(), 1);
+
+        // From `repo/Old`, DIR `../New` is `New`, and is shown so.
+        let sandbox = Sandbox::new("dotdot-dir", None);
+        sandbox.put("Broken.vi", "New/Broken.vi").mkdir("Old");
+        let mut env = sandbox.env();
+        env.cwd = sandbox.repo.join("Old");
+        let checked = check(&env, Some(Path::new("../New"))).unwrap();
+        assert_eq!(
+            checked.findings,
+            [not_found("New/Broken.vi", "New/Sub/Gone.vi")]
+        );
+    }
+
+    #[test]
+    fn a_pilot_control_is_read_and_is_not_unreadable() {
+        use std::io::Read;
+        let vip = Path::new(FIXTURES)
+            .join("../pilots/labview_open_source_lib_data_manipulation-1.6.0.16.vip");
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(vip).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        let name = "File Group 0/vi.lib/LabVIEW Open Source Project/Data Manipulation/StringFormatter/Localization Decimal Separator -- enum.ctl";
+        zip.by_name(name).unwrap().read_to_end(&mut bytes).unwrap();
+        ViFacts::read(&bytes).expect("a typedef is readable");
+        let sandbox = Sandbox::new("pilot-ctl", None);
+        sandbox.write("T.ctl", &bytes);
+        let unreadable = |f: &Finding| matches!(f.problem, Problem::Unreadable { .. });
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 1);
+        assert!(!checked.findings.iter().any(unreadable));
     }
 
     #[test]
@@ -899,8 +1012,7 @@ mod tests {
             ),
             vi("a.vi", Problem::NotResource),
         ];
-        found.sort();
-        found.dedup();
+        in_order(&mut found);
         assert_eq!(
             found,
             [
