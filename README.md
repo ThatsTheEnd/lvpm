@@ -175,6 +175,7 @@ below as one book, starting with a tutorial; CONTRIBUTING.md stays in the repo.
 | [docs/manifest.md](docs/manifest.md) | The `lvpm.toml` format, and how a `vipm.toml` is read |
 | [docs/ogpm-model.md](docs/ogpm-model.md) | The OpenG package model lvpm implements, mapped term by term |
 | [docs/adr/](docs/adr/README.md) | Architecture decisions, and why |
+| [Architecture map](https://thatstheend.github.io/lvpm/map/) | Interactive map of the code, with guided flows from `lvpm init` to an installed package |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, PR rules, releases, code layout |
 
 ## Known limitations

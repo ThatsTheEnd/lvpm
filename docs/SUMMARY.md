@@ -24,6 +24,7 @@
 
 - [The OpenG package model](ogpm-model.md)
 - [What an install does in LabVIEW](labview-integration.md)
+- [Architecture map](architecture-map.md)
 - [Architecture decisions](adr/README.md)
   - [1. Manifest: project and distribution tables](adr/0001-manifest-project-and-distribution.md)
   - [2. .vip first, .lvpkg later (superseded)](adr/0002-vip-first-lvpkg-later.md)
