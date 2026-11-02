@@ -182,10 +182,10 @@ fn members(manifest: &Project, repo: &Path) -> Result<HashSet<PathBuf>> {
     Ok(lvlib::members(&library)?.iter().map(|p| key(p)).collect())
 }
 
-/// A path as files are compared by: separators and `.` settled and, on
+/// A path as files are compared by: separators, `.` and `..` settled and, on
 /// Windows, case folded, as the file system does.
 fn key(path: &Path) -> PathBuf {
-    let path = paths::clean(path);
+    let path = lexical(path);
     match cfg!(windows) {
         true => PathBuf::from(path.to_string_lossy().to_lowercase()),
         false => path,
@@ -527,6 +527,16 @@ mod tests {
     use crate::linker::{Block, Rsrc, decode_pth0, encode_pth0};
     use crate::ops::testing;
     use crate::target::LvTarget;
+
+    #[test]
+    fn a_record_path_through_dot_dot_is_the_same_file() {
+        // `lvpm install --project ..` from a subfolder writes records like this.
+        let recorded = Path::new("repo/Sub/../.lv-venv/pkg/1/vi.lib/X/Dep.vi");
+        assert_eq!(
+            key(recorded),
+            key(Path::new("repo/.lv-venv/pkg/1/vi.lib/X/Dep.vi"))
+        );
+    }
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/check");
 

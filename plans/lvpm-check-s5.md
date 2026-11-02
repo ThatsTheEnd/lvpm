@@ -700,8 +700,8 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
   - [x] Step 2.3: Save version and compiled-code rules
 
 #### Wave 3
-- [ ] Slice 3: Undeclared dependencies
-  - [ ] Step 3.1: Attribute resolved files to packages
+- [x] Slice 3: Undeclared dependencies
+  - [x] Step 3.1: Attribute resolved files to packages
 
 #### Wave 4
 - [ ] Slice 4: Pilots and documentation
