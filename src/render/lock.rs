@@ -11,7 +11,7 @@ use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::released;
 use lvpm_core::solve::{AllHeldBack, Conflict, Fact};
-use lvpm_core::verify::Refusal;
+use lvpm_core::verify::{Invalid, NotChecked, Refusal};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -73,14 +73,14 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         ),
         Event::AttestationsNotChecked { packages, reason } => {
             let named: Vec<String> = (packages.iter())
-                .map(|(name, version)| format!("{name} {version}"))
+                .map(|package| format!("{} {}", package.name, package.version))
                 .collect();
+            let (said, hint) = not_checked(reason, None);
             r.line(
                 Stream::Err,
                 &format!(
-                    "warning: did not check the attestation of {}: {reason}; {}",
-                    named.join(", "),
-                    cannot_check_hint(reason, None)
+                    "warning: did not check the attestation of {}: {said}; {hint}",
+                    named.join(", ")
                 ),
             )
         }
@@ -409,47 +409,43 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
                 "{name} {version} from github.com/{repo} has no attestation\n    \
                  hint: ask the publisher to build with the lvpm release template"
             ),
-            Refusal::UntrustedSigner { subject, signer } => format!(
+            Refusal::UntrustedPublisher { subject, signer } => format!(
                 "{name} {version} was attested by repository {subject} (workflow {signer})\n    \
                  which [policy] trusted-publishers does not list: {}\n    \
                  hint: add the repository to [policy] trusted-publishers, or depend on a release \
                  built by a trusted repository",
-                trusted_publishers.join(", ")
+                trusted_publishers.join(", "),
+                subject = printable(subject),
+                signer = printable(signer),
             ),
-            Refusal::DoesNotVerify { stderr } => format!(
+            Refusal::DoesNotVerify { cause } => format!(
                 "the attestation of {name} {version} from github.com/{repo} does not verify:{}\n    \
-                 hint: report this to the publisher; the archive may have been tampered with. \
-                 lvpm refuses it whatever [policy] says",
-                gh_said(stderr)
+                 hint: if gh's reason is a network error, try again; otherwise report this to the \
+                 publisher, the archive may have been tampered with. lvpm refuses it whatever \
+                 [policy] says",
+                invalid(cause)
             ),
-            Refusal::CannotCheck { reason } => format!(
-                "cannot check the attestation of {name} {version}: {reason}\n    hint: {}",
-                cannot_check_hint(reason, Some(repo))
-            ),
+            Refusal::CannotCheck { reason } => {
+                let (said, hint) = not_checked(reason, Some(repo));
+                format!("cannot check the attestation of {name} {version}: {said}\n    hint: {hint}")
+            }
         });
     }
     text
 }
 
-/// What lvpm itself says when gh's output cannot be read or is not about the
-/// archive: it stands on the refusal's line, where gh's stderr goes below it.
-const OWN_WORDS: [&str; 2] = [
-    "unrecognised gh output",
-    "gh's attestation does not match the archive",
-];
-
 /// The end of a "does not verify:" line: lvpm's own reason after a space, or
-/// the first 5 lines of gh's stderr, without ANSI codes, one to a line and
-/// indented four spaces.
-fn gh_said(stderr: &str) -> String {
-    let plain = strip_ansi(stderr);
-    if OWN_WORDS.contains(&plain.trim()) {
-        return format!(" {}", plain.trim());
-    }
-    if plain.trim().is_empty() {
+/// the first 5 lines of gh's stderr, one to a line and indented four spaces.
+fn invalid(cause: &Invalid) -> String {
+    let stderr = match cause {
+        Invalid::UnreadableOutput => return " unrecognised gh output".to_string(),
+        Invalid::OtherArchive => return " gh's attestation does not match the archive".to_string(),
+        Invalid::Rejected { stderr } => printable(&strip_ansi(stderr)),
+    };
+    if stderr.trim().is_empty() {
         return " gh gave no reason".to_string();
     }
-    (plain.lines().take(5)).fold(String::new(), |text, line| format!("{text}\n    {line}"))
+    (stderr.lines().take(5)).fold(String::new(), |text, line| format!("{text}\n    {line}"))
 }
 
 /// `text` without its ANSI escape sequences (`ESC [`, parameters, one final
@@ -472,29 +468,64 @@ fn strip_ansi(text: &str) -> String {
     plain
 }
 
-/// What to do about a reason lvpm could not check an attestation. `repo` is
-/// the repository the package is from, when it is one package that is asked about.
-fn cannot_check_hint(reason: &str, repo: Option<&str>) -> String {
-    let hint = match reason {
-        "gh is not installed" => "install the GitHub CLI 2.49 or newer: https://cli.github.com",
-        "gh is too old to verify attestations" => "upgrade the GitHub CLI to 2.49 or newer",
-        "lvpm has no GitHub token"
-        | "GitHub rate limit reached (60/h without a token)"
-        | "GitHub returned HTTP 401" => "run `gh auth login` or set GH_TOKEN",
-        "could not reach GitHub" => "check your network connection and try again",
-        reason if reason.starts_with("GitHub refused the attestation lookup") => {
-            let repo = repo.unwrap_or("the repository");
-            return format!("check that your token can read {repo}");
+/// `text` without control characters other than newlines and tabs, so text
+/// from gh or a certificate cannot drive the terminal.
+fn printable(text: &str) -> String {
+    (text.chars())
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+/// What lvpm says of a reason it could not check an attestation, and what to
+/// do about it. `repo` is the repository the package is from, when it is one
+/// package that is asked about.
+fn not_checked(reason: &NotChecked, repo: Option<&str>) -> (String, String) {
+    const AUTH: &str = "run `gh auth login` or set GH_TOKEN";
+    const LATER: &str = "try again later";
+    let (said, hint) = match reason {
+        NotChecked::GhMissing => (
+            "gh is not installed",
+            "install the GitHub CLI 2.49 or newer: https://cli.github.com",
+        ),
+        NotChecked::GhTooOld => (
+            "gh is too old to verify attestations",
+            "upgrade the GitHub CLI to 2.49 or newer",
+        ),
+        NotChecked::GhTimedOut => ("gh timed out", LATER),
+        NotChecked::GhInterrupted => ("gh was interrupted", LATER),
+        NotChecked::GhFailed { error } => {
+            return (format!("gh could not be run: {error}"), LATER.to_string());
         }
-        _ => "try again later",
+        NotChecked::NoToken => ("lvpm has no GitHub token", AUTH),
+        NotChecked::RateLimited { anonymous: true } => {
+            ("GitHub rate limit reached (60/h without a token)", AUTH)
+        }
+        NotChecked::RateLimited { anonymous: false } => ("GitHub rate limit reached", LATER),
+        NotChecked::TokenRejected => ("GitHub did not accept the token (HTTP 401)", AUTH),
+        NotChecked::LookupRefused => {
+            let repo = repo.unwrap_or("the repository");
+            return (
+                "GitHub refused the attestation lookup (HTTP 403)".to_string(),
+                format!("check that your token can read {repo}"),
+            );
+        }
+        NotChecked::Http { status } => {
+            return (format!("GitHub returned HTTP {status}"), LATER.to_string());
+        }
+        NotChecked::Unreachable => (
+            "could not reach GitHub",
+            "check your network connection and try again",
+        ),
+        NotChecked::Unreadable => ("GitHub returned an unreadable answer", LATER),
     };
-    hint.to_string()
+    (said.to_string(), hint.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::renderer;
     use super::*;
+    use lvpm_core::events::PackageRef;
     use lvpm_core::released::SECS_PER_DAY;
     use std::path::PathBuf;
 
@@ -1081,7 +1112,7 @@ mod tests {
                 "helper",
                 "0.3.0",
                 "b/x",
-                Refusal::UntrustedSigner {
+                Refusal::UntrustedPublisher {
                     subject: "https://github.com/b/x".into(),
                     signer: "https://github.com/b/x/.github/workflows/release.yml@refs/tags/v0.3.0"
                         .into(),
@@ -1109,55 +1140,77 @@ mod tests {
 
     #[test]
     fn a_cannot_check_refusal_carries_the_hint_for_its_cause_and_none_turns_the_policy_off() {
+        const AUTH: &str = "run `gh auth login` or set GH_TOKEN";
+        const LATER: &str = "try again later";
         let table = [
             (
+                NotChecked::GhMissing,
                 "gh is not installed",
                 "install the GitHub CLI 2.49 or newer: https://cli.github.com",
             ),
             (
+                NotChecked::GhTooOld,
                 "gh is too old to verify attestations",
                 "upgrade the GitHub CLI to 2.49 or newer",
             ),
+            (NotChecked::NoToken, "lvpm has no GitHub token", AUTH),
             (
-                "lvpm has no GitHub token",
-                "run `gh auth login` or set GH_TOKEN",
-            ),
-            (
+                NotChecked::RateLimited { anonymous: true },
                 "GitHub rate limit reached (60/h without a token)",
-                "run `gh auth login` or set GH_TOKEN",
+                AUTH,
             ),
             (
-                "GitHub returned HTTP 401",
-                "run `gh auth login` or set GH_TOKEN",
+                NotChecked::TokenRejected,
+                "GitHub did not accept the token (HTTP 401)",
+                AUTH,
             ),
             (
+                NotChecked::Unreachable,
                 "could not reach GitHub",
                 "check your network connection and try again",
             ),
             (
+                NotChecked::LookupRefused,
                 "GitHub refused the attestation lookup (HTTP 403)",
                 "check that your token can read o/r",
             ),
-            ("GitHub rate limit reached", "try again later"),
-            ("GitHub returned HTTP 500", "try again later"),
-            ("GitHub returned an unreadable answer", "try again later"),
-            ("gh could not be started: access denied", "try again later"),
-            ("gh timed out", "try again later"),
+            (
+                NotChecked::RateLimited { anonymous: false },
+                "GitHub rate limit reached",
+                LATER,
+            ),
+            (
+                NotChecked::Http { status: 500 },
+                "GitHub returned HTTP 500",
+                LATER,
+            ),
+            (
+                NotChecked::Unreadable,
+                "GitHub returned an unreadable answer",
+                LATER,
+            ),
+            (
+                NotChecked::GhFailed {
+                    error: "access denied".into(),
+                },
+                "gh could not be run: access denied",
+                LATER,
+            ),
+            (NotChecked::GhTimedOut, "gh timed out", LATER),
+            (NotChecked::GhInterrupted, "gh was interrupted", LATER),
         ];
-        for (reason, hint) in table {
+        for (reason, said, hint) in table {
             let text = refused(vec![refusal(
                 "p",
                 "1.0.0",
                 "o/r",
-                Refusal::CannotCheck {
-                    reason: reason.into(),
-                },
+                Refusal::CannotCheck { reason },
             )]);
             assert_eq!(
                 text,
                 format!(
                     "lvpm refused 1 package:\n  \
-                     cannot check the attestation of p 1.0.0: {reason}\n    hint: {hint}"
+                     cannot check the attestation of p 1.0.0: {said}\n    hint: {hint}"
                 )
             );
             assert!(!text.contains("policy"), "{text}");
@@ -1176,43 +1229,79 @@ mod tests {
             "p",
             "1.0.0",
             "o/r",
-            Refusal::DoesNotVerify { stderr },
+            Refusal::DoesNotVerify {
+                cause: Invalid::Rejected { stderr },
+            },
         )]);
         assert_eq!(
             text,
             "lvpm refused 1 package:\n\
              \x20 the attestation of p 1.0.0 from github.com/o/r does not verify:\n\
              \x20   line 1\n    line 2\n    line 3\n    line 4\n    line 5\n\
-             \x20   hint: report this to the publisher; the archive may have been tampered with. \
-             lvpm refuses it whatever [policy] says"
+             \x20   hint: if gh's reason is a network error, try again; otherwise report this to the \
+             publisher, the archive may have been tampered with. lvpm refuses it whatever \
+             [policy] says"
         );
     }
 
     #[test]
     fn what_lvpm_itself_found_wrong_with_ghs_output_stands_on_the_line() {
-        for (stderr, own) in [
-            ("unrecognised gh output", "unrecognised gh output"),
+        for (cause, own) in [
+            (Invalid::UnreadableOutput, "unrecognised gh output"),
             (
-                "gh's attestation does not match the archive",
+                Invalid::OtherArchive,
                 "gh's attestation does not match the archive",
             ),
-            (" \n", "gh gave no reason"),
+            (
+                Invalid::Rejected {
+                    stderr: " \n".into(),
+                },
+                "gh gave no reason",
+            ),
         ] {
             let text = refused(vec![refusal(
                 "p",
                 "1.0.0",
                 "o/r",
-                Refusal::DoesNotVerify {
-                    stderr: stderr.into(),
-                },
+                Refusal::DoesNotVerify { cause },
             )]);
             assert!(
                 text.contains(&format!(
-                    "  the attestation of p 1.0.0 from github.com/o/r does not verify: {own}\n    hint: report this"
+                    "  the attestation of p 1.0.0 from github.com/o/r does not verify: {own}\n    hint: if gh's"
                 )),
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn control_characters_from_gh_and_certificates_do_not_reach_the_terminal() {
+        let text = refused(vec![
+            refusal(
+                "p",
+                "1.0.0",
+                "o/r",
+                Refusal::DoesNotVerify {
+                    cause: Invalid::Rejected {
+                        stderr: "\x1b]0;title\x07bad\rsig\n".into(),
+                    },
+                },
+            ),
+            refusal(
+                "q",
+                "1.0.0",
+                "o/q",
+                Refusal::UntrustedPublisher {
+                    subject: "https://github.com/b/\x1b]8;;x\x07q".into(),
+                    signer: "w\x07".into(),
+                },
+            ),
+        ]);
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "{text:?}"
+        );
+        assert!(text.contains("    ]0;titlebadsig\n"), "{text:?}");
     }
 
     #[test]
@@ -1229,18 +1318,18 @@ mod tests {
     #[test]
     fn unchecked_packages_collapse_to_one_warning_per_reason_with_its_hint() {
         let (mut renderer, out, err) = renderer();
-        let package = |name: &str, version: &str| (name.to_string(), version.to_string());
+        let package = |name: &str, version: &str| PackageRef {
+            name: name.to_string(),
+            version: version.to_string(),
+        };
         for (packages, reason) in [
             (
                 vec![package("a", "1.0.0"), package("b", "2.0.0")],
-                "gh is not installed",
+                NotChecked::GhMissing,
             ),
-            (vec![package("c", "3.0.0")], "gh timed out"),
+            (vec![package("c", "3.0.0")], NotChecked::GhTimedOut),
         ] {
-            renderer.render(&Event::AttestationsNotChecked {
-                packages,
-                reason: reason.into(),
-            });
+            renderer.render(&Event::AttestationsNotChecked { packages, reason });
         }
         assert_eq!(
             err.text(),

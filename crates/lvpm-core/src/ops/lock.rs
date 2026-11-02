@@ -2226,9 +2226,10 @@ caraya = \"*\"
     mod attestations {
         use super::*;
         use crate::errors::AttestationRefusal;
+        use crate::events::PackageRef;
         use crate::github::gh::{GhRun, Runner};
         use crate::github::{GitHub, GitHubAuth};
-        use crate::verify::Refusal;
+        use crate::verify::{Invalid, NotChecked, Refusal};
         use std::io::Read;
         use std::net::TcpListener;
         use std::sync::Arc;
@@ -2246,7 +2247,7 @@ caraya = \"*\"
             /// It exits 1 and says this.
             Fails(&'static str),
             /// It cannot be run, for this reason.
-            Absent(&'static str),
+            Absent(NotChecked),
         }
 
         const HEAD: &str = "[project]\nlabview = \">=2023\"\n\n[sources]\ndefaults = false\n\n";
@@ -2331,8 +2332,8 @@ caraya = \"*\"
                         stdout: Vec::new(),
                         stderr: stderr.as_bytes().to_vec(),
                     },
-                    Some(Gh::Absent(reason)) => GhRun::NotRunnable(reason.to_string()),
-                    None => GhRun::NotRunnable("gh was not expected to run".to_string()),
+                    Some(Gh::Absent(reason)) => GhRun::NotRunnable(reason.clone()),
+                    None => panic!("gh was not expected to run for {repo}"),
                 }
             });
             (runner, ran)
@@ -2512,7 +2513,9 @@ caraya = \"*\"
                 [(
                     "p".to_string(),
                     Refusal::DoesNotVerify {
-                        stderr: "verification failed".into()
+                        cause: Invalid::Rejected {
+                            stderr: "verification failed".into()
+                        }
                     }
                 )]
             );
@@ -2546,7 +2549,7 @@ caraya = \"*\"
                     name: "p".into(),
                     version: "1.0.0".into(),
                     repo: "o/p".into(),
-                    kind: Refusal::UntrustedSigner {
+                    kind: Refusal::UntrustedPublisher {
                         subject: "https://github.com/b/x".into(),
                         signer: signer_of_repo("b/x"),
                     }
@@ -2573,7 +2576,7 @@ caraya = \"*\"
                 policy: "",
                 previous: None,
                 api: vec![("o/p", ONE)],
-                gh: vec![("o/p", Gh::Absent("gh is not installed"))],
+                gh: vec![("o/p", Gh::Absent(NotChecked::GhMissing))],
             }
             .run(&project);
             assert_eq!(done.signer_of("p"), None);
@@ -2581,8 +2584,11 @@ caraya = \"*\"
             assert_eq!(
                 after,
                 [Event::AttestationsNotChecked {
-                    packages: vec![("p".into(), "1.0.0".into())],
-                    reason: "gh is not installed".into()
+                    packages: vec![PackageRef {
+                        name: "p".into(),
+                        version: "1.0.0".into()
+                    }],
+                    reason: NotChecked::GhMissing
                 }]
             );
 
@@ -2612,23 +2618,26 @@ caraya = \"*\"
                 previous: None,
                 api: vec![("o/p", ONE), ("o/q", ONE), ("o/r", ONE)],
                 gh: vec![
-                    ("o/p", Gh::Absent("gh is not installed")),
-                    ("o/q", Gh::Absent("gh timed out")),
-                    ("o/r", Gh::Absent("gh is not installed")),
+                    ("o/p", Gh::Absent(NotChecked::GhMissing)),
+                    ("o/q", Gh::Absent(NotChecked::GhTimedOut)),
+                    ("o/r", Gh::Absent(NotChecked::GhMissing)),
                 ],
             }
             .run(&project);
-            let named = |names: &[&str], reason: &str| Event::AttestationsNotChecked {
+            let named = |names: &[&str], reason| Event::AttestationsNotChecked {
                 packages: (names.iter())
-                    .map(|name| (name.to_string(), "1.0.0".to_string()))
+                    .map(|name| PackageRef {
+                        name: name.to_string(),
+                        version: "1.0.0".to_string(),
+                    })
                     .collect(),
-                reason: reason.to_string(),
+                reason,
             };
             assert_eq!(
                 done.result.unwrap().2,
                 [
-                    named(&["p", "r"], "gh is not installed"),
-                    named(&["q"], "gh timed out")
+                    named(&["p", "r"], NotChecked::GhMissing),
+                    named(&["q"], NotChecked::GhTimedOut)
                 ]
             );
         }
@@ -2712,14 +2721,15 @@ caraya = \"*\"
                 stricter.refused(),
                 [(
                     "p".to_string(),
-                    Refusal::UntrustedSigner {
+                    Refusal::UntrustedPublisher {
                         subject: "https://github.com/b/x".into(),
                         signer: signer_of_repo("b/x"),
                     }
                 )]
             );
             for done in [&same_policy, &stricter] {
-                assert!(done.asked.is_empty() && done.ran.is_empty());
+                assert!(done.asked.is_empty(), "{:?}", done.asked);
+                assert!(done.ran.is_empty(), "{:?}", done.ran);
                 assert!(!done.checked(), "{:?}", done.events);
             }
         }

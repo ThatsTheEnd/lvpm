@@ -25,7 +25,7 @@ const PER_PAGE: usize = 100;
 const MAX_PAGES: usize = 50;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// A page of releases larger than this is not one GitHub sent.
-const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024;
 /// The API version the requests ask for.
 const API_VERSION: &str = "2022-11-28";
 /// The cache's `kind` for a repo's listing.
@@ -266,7 +266,7 @@ fn get(
 
 /// The fault for a status that is not a success, at `now` (Unix seconds).
 /// `auth` says whether a token was sent, and from where.
-fn failure(
+pub(super) fn failure(
     status: StatusCode,
     headers: &HeaderMap,
     body: &[u8],
@@ -322,7 +322,7 @@ fn printable(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(200).collect()
 }
 
-fn unix_now() -> i64 {
+pub(super) fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64)

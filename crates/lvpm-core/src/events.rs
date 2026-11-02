@@ -10,6 +10,7 @@
 
 use crate::git::GitOutcome;
 use crate::released;
+use crate::verify::NotChecked;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -363,11 +364,11 @@ pub enum Event {
     /// The attestation of a GitHub package is being looked up and checked.
     AttestationChecking { name: String, version: String },
     /// GitHub packages `[policy]` did not need an attestation of, locked with
-    /// no signer because lvpm could not check, for `reason`: `(name, version)`
-    /// of each. One event per distinct reason, after [`Event::LockWritten`].
+    /// no signer because lvpm could not check, for `reason`. One event per
+    /// distinct reason, after [`Event::LockWritten`].
     AttestationsNotChecked {
-        packages: Vec<(String, String)>,
-        reason: String,
+        packages: Vec<PackageRef>,
+        reason: NotChecked,
     },
     /// An upgrade rewrote the constraint of a manifest entry, to admit the
     /// version it moved the package to: `from` and `to` are the constraint as

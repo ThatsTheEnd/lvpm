@@ -6,9 +6,10 @@
 //! [`Outcome`]; what the policy makes of it is `verify`'s.
 
 use super::GitHub;
-use super::api::request;
+use super::api::{MAX_BODY_BYTES, failure, request, unix_now};
 use super::gh::GhRun;
-use crate::verify::{Attestation, Outcome};
+use crate::errors::GitHubFault;
+use crate::verify::{Attestation, Invalid, NotChecked, Outcome};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -16,72 +17,62 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
-/// A list of attestations larger than this is not one GitHub sent.
-const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
-const NO_TOKEN: &str = "lvpm has no GitHub token";
-
 /// What asking for the attestation of `archive`, the file of `repo`
 /// (`owner/repo`) whose SHA-256 is `sha`, came to. The lookup is made with or
 /// without a token; gh needs one.
 pub fn outcome(client: &Client, github: &GitHub, repo: &str, sha: &str, archive: &Path) -> Outcome {
-    if let Some(settled) = lookup(client, github, repo, sha) {
+    if let Some(settled) = settled_by_api(client, github, repo, sha) {
         return settled;
     }
     let Some(token) = github.auth.token() else {
-        return Outcome::Unchecked(NO_TOKEN.to_string());
+        return Outcome::Unchecked(NotChecked::NoToken);
     };
     classify((github.runner)(archive, repo, token), sha)
 }
 
-/// Ask GitHub's API for the attestations of the archive with SHA-256 `sha`.
-/// `None` means there is at least one, so gh is to be asked; any other answer
-/// is the outcome.
-pub fn lookup(client: &Client, github: &GitHub, repo: &str, sha: &str) -> Option<Outcome> {
+/// What GitHub's API says of the attestations of the archive with SHA-256
+/// `sha`, when that settles the outcome. `None` means there is at least one,
+/// so gh is to be asked.
+fn settled_by_api(client: &Client, github: &GitHub, repo: &str, sha: &str) -> Option<Outcome> {
+    let unchecked = |reason| Some(Outcome::Unchecked(reason));
     let api = github.api.trim_end_matches('/');
     let url = format!("{api}/repos/{repo}/attestations/sha256:{sha}");
     let Ok(response) = request(client, &url, &github.auth).send() else {
-        return unchecked("could not reach GitHub");
+        return unchecked(NotChecked::Unreachable);
     };
     let status = response.status();
-    let none_left = response
-        .headers()
-        .get("x-ratelimit-remaining")
-        .map(|v| v.as_bytes())
-        == Some(b"0");
-    let rate_limited = || match github.auth.token() {
-        Some(_) => unchecked("GitHub rate limit reached"),
-        None => unchecked("GitHub rate limit reached (60/h without a token)"),
-    };
-    match status.as_u16() {
-        404 => Some(Outcome::Unattested),
-        429 => rate_limited(),
-        403 if none_left => rate_limited(),
-        403 => unchecked("GitHub refused the attestation lookup (HTTP 403)"),
-        _ if !status.is_success() => unchecked(format!("GitHub returned HTTP {}", status.as_u16())),
-        _ => {
-            #[derive(Deserialize)]
-            struct List {
-                attestations: Vec<IgnoredAny>,
-            }
-            let mut body = Vec::new();
-            if response
-                .take(MAX_BODY_BYTES)
-                .read_to_end(&mut body)
-                .is_err()
-            {
-                return unchecked("could not reach GitHub");
-            }
-            match serde_json::from_slice::<List>(&body) {
-                Ok(list) if list.attestations.is_empty() => Some(Outcome::Unattested),
-                Ok(_) => None,
-                Err(_) => unchecked("GitHub returned an unreadable answer"),
-            }
-        }
+    let headers = response.headers().clone();
+    let mut body = Vec::new();
+    if (response.take(MAX_BODY_BYTES).read_to_end(&mut body)).is_err() {
+        return unchecked(NotChecked::Unreachable);
     }
-}
-
-fn unchecked(reason: impl Into<String>) -> Option<Outcome> {
-    Some(Outcome::Unchecked(reason.into()))
+    if status.as_u16() == 404 {
+        return Some(Outcome::Unattested);
+    }
+    if !status.is_success() {
+        // Sorted as every other GitHub call sorts a failure.
+        return unchecked(
+            match failure(status, &headers, &body, &github.auth, unix_now()) {
+                GitHubFault::RateLimited { token_source, .. } => NotChecked::RateLimited {
+                    anonymous: token_source.is_none(),
+                },
+                GitHubFault::TokenRejected { .. } => NotChecked::TokenRejected,
+                GitHubFault::Refused { .. } => NotChecked::LookupRefused,
+                _ => NotChecked::Http {
+                    status: status.as_u16(),
+                },
+            },
+        );
+    }
+    #[derive(Deserialize)]
+    struct List {
+        attestations: Vec<IgnoredAny>,
+    }
+    match serde_json::from_slice::<List>(&body) {
+        Ok(list) if list.attestations.is_empty() => Some(Outcome::Unattested),
+        Ok(_) => None,
+        Err(_) => unchecked(NotChecked::Unreadable),
+    }
 }
 
 /// What a run of gh says of the archive with SHA-256 `sha`.
@@ -93,13 +84,17 @@ fn classify(run: GhRun, sha: &str) -> Outcome {
             stdout,
             ..
         } => parse_gh_json(&stdout, sha),
+        // A signal (a Ctrl-C, a kill) ended gh: it said nothing of the attestation.
+        GhRun::Spawned { status: None, .. } => Outcome::Unchecked(NotChecked::GhInterrupted),
         GhRun::Spawned { stderr, .. } => {
             let stderr = String::from_utf8_lossy(&stderr);
             // Anchored: gh's usage error leads its stderr, and a verify failure must not pass for it.
             if (stderr.trim_start()).starts_with(r#"unknown command "attestation" for "gh""#) {
-                Outcome::Unchecked("gh is too old to verify attestations".to_string())
+                Outcome::Unchecked(NotChecked::GhTooOld)
             } else {
-                Outcome::Invalid(stderr.into_owned())
+                Outcome::Invalid(Invalid::Rejected {
+                    stderr: stderr.into_owned(),
+                })
             }
         }
     }
@@ -112,10 +107,10 @@ fn classify(run: GhRun, sha: &str) -> Outcome {
 /// something lvpm cannot tie to the archive.
 pub fn parse_gh_json(json: &[u8], sha: &str) -> Outcome {
     let Ok(entries) = serde_json::from_slice::<Vec<Entry>>(json) else {
-        return Outcome::Invalid("unrecognised gh output".to_string());
+        return Outcome::Invalid(Invalid::UnreadableOutput);
     };
     if entries.is_empty() {
-        return Outcome::Invalid("unrecognised gh output".to_string());
+        return Outcome::Invalid(Invalid::UnreadableOutput);
     }
     let for_archive = |entry: &&Entry| {
         (entry.result.statement.subject.iter()).any(|subject| {
@@ -133,7 +128,7 @@ pub fn parse_gh_json(json: &[u8], sha: &str) -> Outcome {
                 subject: certificate.repository.clone(),
             })
         }
-        None => Outcome::Invalid("gh's attestation does not match the archive".to_string()),
+        None => Outcome::Invalid(Invalid::OtherArchive),
     }
 }
 
@@ -194,7 +189,7 @@ mod tests {
         "https://github.com/cli/cli/.github/workflows/deployment.yml@refs/heads/trunk";
 
     fn unrecognised() -> Outcome {
-        Outcome::Invalid("unrecognised gh output".into())
+        Outcome::Invalid(Invalid::UnreadableOutput)
     }
 
     fn recorded() -> Value {
@@ -246,7 +241,7 @@ mod tests {
                 "entries whose digest is not the archive",
                 RECORDED.as_bytes().to_vec(),
                 OTHER,
-                Outcome::Invalid("gh's attestation does not match the archive".into()),
+                Outcome::Invalid(Invalid::OtherArchive),
             ),
         ];
         for (output, bytes, sha, want) in table {
@@ -343,105 +338,128 @@ mod tests {
         outcome(&Client::new(), github, "o/r", ARCHIVE, Path::new("a.lvpkg"))
     }
 
+    /// One answer of the API: what it sends, and what lvpm makes of it.
+    struct Row {
+        status: &'static str,
+        headers: &'static str,
+        body: &'static str,
+        token: Option<&'static str>,
+        want: Outcome,
+        gh_runs: bool,
+    }
+
     #[test]
     fn the_api_lookup_decides_whether_gh_runs() {
         const RATE: &str = "x-ratelimit-remaining: 0\r\n";
-        let rate_limit = |reason: &str| Outcome::Unchecked(reason.into());
-        let table: [(&str, &str, &str, &str, Outcome, usize); 10] = [
-            ("404 Not Found", "", "{}", "tok", Outcome::Unattested, 0),
-            (
-                "200 OK",
-                "",
-                r#"{"attestations":[]}"#,
-                "tok",
-                Outcome::Unattested,
-                0,
-            ),
-            (
+        let unchecked = Outcome::Unchecked;
+        let row = |status, headers, body, want| Row {
+            status,
+            headers,
+            body,
+            token: Some("tok"),
+            want,
+            gh_runs: false,
+        };
+        let table = [
+            row("404 Not Found", "", "{}", Outcome::Unattested),
+            row("200 OK", "", r#"{"attestations":[]}"#, Outcome::Unattested),
+            row(
                 "429 Too Many Requests",
                 "",
                 "{}",
-                "tok",
-                rate_limit("GitHub rate limit reached"),
-                0,
+                unchecked(NotChecked::RateLimited { anonymous: false }),
             ),
-            (
+            row(
                 "403 Forbidden",
                 RATE,
                 "{}",
-                "tok",
-                rate_limit("GitHub rate limit reached"),
-                0,
+                unchecked(NotChecked::RateLimited { anonymous: false }),
             ),
-            (
+            Row {
+                token: None,
+                ..row(
+                    "403 Forbidden",
+                    RATE,
+                    "{}",
+                    unchecked(NotChecked::RateLimited { anonymous: true }),
+                )
+            },
+            row(
                 "403 Forbidden",
-                RATE,
+                "retry-after: 60\r\n",
                 "{}",
-                "",
-                rate_limit("GitHub rate limit reached (60/h without a token)"),
-                0,
+                unchecked(NotChecked::RateLimited { anonymous: false }),
             ),
-            (
+            row(
                 "403 Forbidden",
                 "x-ratelimit-remaining: 4999\r\n",
                 "{}",
-                "tok",
-                rate_limit("GitHub refused the attestation lookup (HTTP 403)"),
-                0,
+                unchecked(NotChecked::LookupRefused),
             ),
-            (
+            row(
                 "500 Internal Server Error",
                 "",
                 "{}",
-                "tok",
-                rate_limit("GitHub returned HTTP 500"),
-                0,
+                unchecked(NotChecked::Http { status: 500 }),
             ),
-            (
+            row(
                 "401 Unauthorized",
                 "",
                 "{}",
-                "tok",
-                rate_limit("GitHub returned HTTP 401"),
-                0,
+                unchecked(NotChecked::TokenRejected),
             ),
-            (
+            row(
                 "200 OK",
                 "",
                 "<html>a captive portal</html>",
-                "tok",
-                rate_limit("GitHub returned an unreadable answer"),
-                0,
+                unchecked(NotChecked::Unreadable),
             ),
-            (
-                "200 OK",
-                "",
-                ONE_ENTRY,
-                "tok",
-                attested(RECORDED_SIGNER, "https://github.com/cli/cli"),
-                1,
-            ),
+            Row {
+                gh_runs: true,
+                ..row(
+                    "200 OK",
+                    "",
+                    ONE_ENTRY,
+                    attested(RECORDED_SIGNER, "https://github.com/cli/cli"),
+                )
+            },
         ];
-        for (status, headers, body, token, want, ran) in table {
+        for Row {
+            status,
+            headers,
+            body,
+            token,
+            want,
+            gh_runs,
+        } in table
+        {
             let (api, _) = serve(status, headers, body);
             let (runner, calls) = recording(spawned(0, RECORDED, ""));
-            let github = github(&api, (!token.is_empty()).then_some("tok"), runner);
+            let github = github(&api, token, runner);
             assert_eq!(ask(&github), want, "{status} {headers:?} {body}");
-            assert_eq!(calls.lock().unwrap().len(), ran, "{status} {body}");
+            assert_eq!(
+                calls.lock().unwrap().len(),
+                usize::from(gh_runs),
+                "{status} {body}"
+            );
         }
     }
 
     #[test]
     fn a_connection_that_is_refused_is_unchecked_and_gh_is_not_run() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let api = format!("http://{}", listener.local_addr().unwrap());
-        drop(listener);
+        // Port 1 is never served here, and no other test can be handed it.
         let (runner, calls) = recording(spawned(0, RECORDED, ""));
         assert_eq!(
-            ask(&github(&api, Some("tok"), runner)),
-            Outcome::Unchecked("could not reach GitHub".into())
+            ask(&github("http://127.0.0.1:1", Some("tok"), runner)),
+            Outcome::Unchecked(NotChecked::Unreachable)
         );
         assert!(calls.lock().unwrap().is_empty());
+    }
+
+    fn rejected(stderr: &str) -> Outcome {
+        Outcome::Invalid(Invalid::Rejected {
+            stderr: stderr.into(),
+        })
     }
 
     #[test]
@@ -449,13 +467,13 @@ mod tests {
         let table = [
             (
                 "is not installed",
-                GhRun::NotRunnable("gh is not installed".into()),
-                Outcome::Unchecked("gh is not installed".into()),
+                GhRun::NotRunnable(NotChecked::GhMissing),
+                Outcome::Unchecked(NotChecked::GhMissing),
             ),
             (
                 r#"says unknown command "attestation""#,
                 spawned(1, "", "unknown command \"attestation\" for \"gh\"\n"),
-                Outcome::Unchecked("gh is too old to verify attestations".into()),
+                Outcome::Unchecked(NotChecked::GhTooOld),
             ),
             (
                 r#"fails verification quoting unknown command "attestation""#,
@@ -464,17 +482,17 @@ mod tests {
                     "",
                     "error: ref unknown command \"attestation\" for \"gh\"",
                 ),
-                Outcome::Invalid("error: ref unknown command \"attestation\" for \"gh\"".into()),
+                rejected("error: ref unknown command \"attestation\" for \"gh\""),
             ),
             (
                 "times out",
-                GhRun::NotRunnable("gh timed out".into()),
-                Outcome::Unchecked("gh timed out".into()),
+                GhRun::NotRunnable(NotChecked::GhTimedOut),
+                Outcome::Unchecked(NotChecked::GhTimedOut),
             ),
             (
                 r#"exits 1 with "verification failed""#,
                 spawned(1, "", "verification failed"),
-                Outcome::Invalid("verification failed".into()),
+                rejected("verification failed"),
             ),
             (
                 "is ended by a signal",
@@ -483,7 +501,7 @@ mod tests {
                     stdout: Vec::new(),
                     stderr: b"killed".to_vec(),
                 },
-                Outcome::Invalid("killed".into()),
+                Outcome::Unchecked(NotChecked::GhInterrupted),
             ),
         ];
         for (does, run, want) in table {
@@ -499,7 +517,7 @@ mod tests {
         let (runner, calls) = recording(spawned(0, RECORDED, ""));
         assert_eq!(
             ask(&github(&api, None, runner)),
-            Outcome::Unchecked("lvpm has no GitHub token".into())
+            Outcome::Unchecked(NotChecked::NoToken)
         );
         assert!(calls.lock().unwrap().is_empty());
     }

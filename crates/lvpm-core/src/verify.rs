@@ -63,9 +63,50 @@ pub enum Outcome {
     /// GitHub holds no attestation for the archive.
     Unattested,
     /// The question could not be answered, for this reason.
-    Unchecked(String),
-    /// An attestation exists and does not verify; gh's stderr says why.
-    Invalid(String),
+    Unchecked(NotChecked),
+    /// An attestation exists and does not verify.
+    Invalid(Invalid),
+}
+
+/// Why lvpm could not check a release's attestation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "cause", rename_all = "snake_case")]
+pub enum NotChecked {
+    /// gh is not on the PATH.
+    GhMissing,
+    /// gh has no `attestation` command.
+    GhTooOld,
+    /// gh did not finish in time.
+    GhTimedOut,
+    /// gh ended on a signal, or its output did not arrive.
+    GhInterrupted,
+    /// gh could not be started or waited for: the system's own error text.
+    GhFailed { error: String },
+    /// lvpm has no GitHub token, and gh needs one.
+    NoToken,
+    /// GitHub's rate limit is used up; `anonymous` when no token was sent (60/h).
+    RateLimited { anonymous: bool },
+    /// GitHub did not accept the token (HTTP 401).
+    TokenRejected,
+    /// GitHub refused the lookup (HTTP 403), as for a repository the token cannot read.
+    LookupRefused,
+    /// GitHub answered with this other failing status.
+    Http { status: u16 },
+    /// GitHub could not be reached.
+    Unreachable,
+    /// GitHub's answer could not be read.
+    Unreadable,
+}
+
+/// Why an attestation does not verify.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Invalid {
+    /// gh rejected it; this is its stderr.
+    Rejected { stderr: String },
+    /// gh's output could not be read.
+    UnreadableOutput,
+    /// gh vouched for no subject with the archive's digest.
+    OtherArchive,
 }
 
 /// Why a package is refused.
@@ -74,11 +115,11 @@ pub enum Refusal {
     /// The policy requires an attestation and the release has none.
     NoAttestation,
     /// The attestation is from a repository `trusted-publishers` does not list.
-    UntrustedSigner { subject: String, signer: String },
-    /// gh rejected the attestation; this is its stderr.
-    DoesNotVerify { stderr: String },
+    UntrustedPublisher { subject: String, signer: String },
+    /// The attestation does not verify.
+    DoesNotVerify { cause: Invalid },
     /// The policy requires an attestation and lvpm could not look.
-    CannotCheck { reason: String },
+    CannotCheck { reason: NotChecked },
 }
 
 /// A package the policy lets through.
@@ -89,17 +130,17 @@ pub enum Accepted {
     /// Lock it with no signer: it has no attestation.
     Unsigned,
     /// Lock it with no signer and warn: lvpm could not check, for this reason.
-    Unchecked(String),
+    Unchecked(NotChecked),
 }
 
 /// What `policy` makes of `outcome`.
 pub fn decide(outcome: Outcome, policy: &Policy) -> Result<Accepted, Refusal> {
     match outcome {
-        Outcome::Invalid(stderr) => Err(Refusal::DoesNotVerify { stderr }),
+        Outcome::Invalid(cause) => Err(Refusal::DoesNotVerify { cause }),
         Outcome::Attested(attestation) if policy.trusts(&attestation.subject) => {
             Ok(Accepted::Signed(attestation))
         }
-        Outcome::Attested(attestation) => Err(Refusal::UntrustedSigner {
+        Outcome::Attested(attestation) => Err(Refusal::UntrustedPublisher {
             subject: attestation.subject,
             signer: attestation.signer,
         }),
@@ -119,33 +160,44 @@ pub fn pattern_matches(pattern: &str, subject: &str) -> bool {
     let subject = subject.strip_suffix(".git").unwrap_or(&subject);
     let pattern = pattern.to_ascii_lowercase();
     let pattern = pattern.strip_suffix(".git").unwrap_or(&pattern);
-    let mut pattern: Vec<char> = pattern.chars().collect();
-    // `**` means what `*` means; merging the run keeps the backtracking linear in stars.
-    pattern.dedup_by(|a, b| *a == '*' && *b == '*');
+    let pattern: Vec<char> = pattern.chars().collect();
     let subject: Vec<char> = subject.chars().collect();
     glob(&pattern, &subject)
 }
 
+/// Whether `pattern` matches all of `text`. `matched[j]` says whether the
+/// pattern so far matches `text[..j]`, so the cost is pattern length times
+/// text length however many stars there are.
 fn glob(pattern: &[char], text: &[char]) -> bool {
-    match pattern.split_first() {
-        None => text.is_empty(),
-        Some(('*', rest)) => {
-            let run = text.iter().take_while(|&&c| c != '/').count();
-            (0..=run).any(|n| glob(rest, &text[n..]))
+    let mut matched = vec![false; text.len() + 1];
+    matched[0] = true;
+    for &p in pattern {
+        let mut next = vec![false; text.len() + 1];
+        for j in 0..=text.len() {
+            next[j] = match p {
+                // An empty run, or one more non-`/` character on a run.
+                '*' => matched[j] || (j > 0 && text[j - 1] != '/' && next[j - 1]),
+                _ => j > 0 && text[j - 1] == p && matched[j - 1],
+            };
         }
-        Some((c, rest)) => text.first() == Some(c) && glob(rest, &text[1..]),
+        matched = next;
     }
+    matched[text.len()]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn attested(repo: &str) -> Outcome {
-        Outcome::Attested(Attestation {
+    fn attestation(repo: &str) -> Attestation {
+        Attestation {
             signer: format!("https://github.com/{repo}/.github/workflows/release.yml@refs/tags/v1"),
             subject: format!("https://github.com/{repo}"),
-        })
+        }
+    }
+
+    fn attested(repo: &str) -> Outcome {
+        Outcome::Attested(attestation(repo))
     }
 
     fn policy(require_signature: bool, trusted: &[&str]) -> Policy {
@@ -163,24 +215,20 @@ mod tests {
         let none = policy(false, &[]);
         let required = policy(true, &[]);
         let trusted = policy(false, &["a/*"]);
-        let signed = |repo: &str| {
-            Ok(Accepted::Signed(match attested(repo) {
-                Outcome::Attested(a) => a,
-                _ => unreachable!(),
-            }))
-        };
-        let untrusted = Err(Refusal::UntrustedSigner {
+        let signed = |repo: &str| Ok(Accepted::Signed(attestation(repo)));
+        let untrusted = Err(Refusal::UntrustedPublisher {
             subject: "https://github.com/b/x".into(),
             signer: "https://github.com/b/x/.github/workflows/release.yml@refs/tags/v1".into(),
         });
-        let unchecked = || Outcome::Unchecked("gh is not installed".into());
+        let unchecked = || Outcome::Unchecked(NotChecked::GhMissing);
         let cannot = Err(Refusal::CannotCheck {
-            reason: "gh is not installed".into(),
+            reason: NotChecked::GhMissing,
         });
-        let invalid = || Outcome::Invalid("verification failed".into());
-        let forged = Err(Refusal::DoesNotVerify {
+        let rejected = || Invalid::Rejected {
             stderr: "verification failed".into(),
-        });
+        };
+        let invalid = || Outcome::Invalid(rejected());
+        let forged = Err(Refusal::DoesNotVerify { cause: rejected() });
 
         let rows = [
             (attested("a/x"), &none, signed("a/x")),
@@ -193,7 +241,7 @@ mod tests {
             (
                 unchecked(),
                 &none,
-                Ok(Accepted::Unchecked("gh is not installed".into())),
+                Ok(Accepted::Unchecked(NotChecked::GhMissing)),
             ),
             (unchecked(), &required, cannot.clone()),
             (unchecked(), &trusted, cannot),
@@ -241,6 +289,9 @@ mod tests {
             ),
             ("https://github.com/a/x.git", true, "https://github.com/a/x"),
             ("https://github.com/a/**", true, "https://github.com/a/x"),
+            ("https://github.com/a/", false, "https://github.com/a/x"),
+            ("https://github.com/*/x", false, "https://github.com/a/b/x"),
+            // The Kelvin sign lowercases to `k` under Unicode, not under ASCII.
             (
                 "https://github.com/a/k*",
                 false,
@@ -250,8 +301,17 @@ mod tests {
             assert_eq!(
                 pattern_matches(pattern, subject),
                 matches,
-                "{pattern} on {subject}"
+                "{pattern} on {subject}, expected {matches}"
             );
         }
+    }
+
+    #[test]
+    fn many_stars_on_a_subject_they_do_not_match_answer_at_once() {
+        let pattern = format!("https://github.com/{}b/x", "*a".repeat(12));
+        let subject = format!("https://github.com/{}/x", "a".repeat(100));
+        let started = std::time::Instant::now();
+        assert!(!pattern_matches(&pattern, &subject));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

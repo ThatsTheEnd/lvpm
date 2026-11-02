@@ -11,11 +11,11 @@ use super::env::OpEnv;
 use super::lock::kept_of;
 use super::session::Downloads;
 use crate::errors::{AttestationRefusal, Cancelled, LockError};
-use crate::events::Event;
+use crate::events::{Event, PackageRef};
 use crate::index;
 use crate::lockfile::Lockfile;
 use crate::solve::Resolution;
-use crate::verify::{Accepted, Attestation, Outcome, Policy, decide};
+use crate::verify::{Accepted, Attestation, NotChecked, Outcome, Policy, decide};
 use std::collections::HashMap;
 
 /// What the pass found out.
@@ -41,18 +41,13 @@ pub(super) fn attest_archives(
     let mut downloads = None;
     let mut signers = HashMap::new();
     let mut refusals = Vec::new();
-    let mut unchecked: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut unchecked: Vec<(NotChecked, Vec<PackageRef>)> = Vec::new();
     for (key, entry) in &resolution.packages {
         let Some(repo) = index::github_repo(entry) else {
             continue;
         };
         let kept = kept_of(previous, key, entry);
-        let stored = kept.and_then(|locked| {
-            Some(Attestation {
-                signer: locked.signer.clone()?,
-                subject: locked.subject.clone()?,
-            })
-        });
+        let stored = kept.and_then(|locked| locked.attestation());
         let outcome = match (kept, stored) {
             (_, Some(attestation)) => Outcome::Attested(attestation),
             (Some(_), None) if !policy.requires() => continue,
@@ -68,10 +63,13 @@ pub(super) fn attest_archives(
                     downloads = Some(Downloads::open(env)?);
                 }
                 let downloads = downloads.as_ref().expect("opened above");
-                downloads.attestation(entry, &hashes[key])
+                downloads.attestation(repo, &hashes[key])
             }
         };
-        let package = (entry.name.clone(), entry.version.to_string());
+        let package = PackageRef {
+            name: entry.name.clone(),
+            version: entry.version.to_string(),
+        };
         match decide(outcome, policy) {
             Ok(Accepted::Signed(attestation)) => {
                 signers.insert(key.clone(), attestation);
@@ -84,8 +82,8 @@ pub(super) fn attest_archives(
                 }
             }
             Err(kind) => refusals.push(AttestationRefusal {
-                name: package.0,
-                version: package.1,
+                name: package.name,
+                version: package.version,
                 repo: repo.to_string(),
                 kind,
             }),

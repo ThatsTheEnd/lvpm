@@ -4,6 +4,7 @@
 //! [`GitHub`](super::GitHub). What the run came to is a [`GhRun`]; what that
 //! means for the release is `attestation`'s to say.
 
+use crate::verify::NotChecked;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -26,7 +27,7 @@ pub enum GhRun {
         stderr: Vec<u8>,
     },
     /// gh could not give an answer, for this reason.
-    NotRunnable(String),
+    NotRunnable(NotChecked),
 }
 
 /// What runs gh: given the archive, `owner/repo` and the token.
@@ -34,21 +35,29 @@ pub type Runner = Arc<dyn Fn(&Path, &str, &str) -> GhRun + Send + Sync>;
 
 /// The runner a [`GitHub`](super::GitHub) starts with: gh is never run.
 pub(super) fn missing() -> Runner {
-    Arc::new(|_, _, _| GhRun::NotRunnable("gh is not installed".to_string()))
+    Arc::new(|_, _, _| GhRun::NotRunnable(NotChecked::GhMissing))
 }
 
 /// `gh attestation verify <archive> --repo <owner/repo> --format json`, the
 /// token handed over as `GH_TOKEN`.
 pub fn real_runner() -> Runner {
     Arc::new(|archive, repo, token| {
-        let mut command = Command::new("gh");
-        command
-            .args(["attestation", "verify"])
-            .arg(archive)
-            .args(["--repo", repo, "--format", "json"])
-            .env("GH_TOKEN", token);
-        run(&mut command, GH_TIMEOUT, MAX_OUTPUT_BYTES)
+        run(
+            &mut verify_command(archive, repo, token),
+            GH_TIMEOUT,
+            MAX_OUTPUT_BYTES,
+        )
     })
+}
+
+fn verify_command(archive: &Path, repo: &str, token: &str) -> Command {
+    let mut command = Command::new("gh");
+    command
+        .args(["attestation", "verify"])
+        .arg(archive)
+        .args(["--repo", repo, "--format", "json"])
+        .env("GH_TOKEN", token);
+    command
 }
 
 /// `command` run to its end within `limit`, keeping at most `cap` bytes of each
@@ -63,9 +72,9 @@ fn run(command: &mut Command, limit: Duration, cap: u64) -> GhRun {
     {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return GhRun::NotRunnable("gh is not installed".to_string());
+            return GhRun::NotRunnable(NotChecked::GhMissing);
         }
-        Err(error) => return GhRun::NotRunnable(format!("gh could not be started: {error}")),
+        Err(error) => return failed(&error),
     };
     let stdout = read_capped(child.stdout.take().expect("piped above"), cap);
     let stderr = read_capped(child.stderr.take().expect("piped above"), cap);
@@ -73,22 +82,39 @@ fn run(command: &mut Command, limit: Duration, cap: u64) -> GhRun {
     while Instant::now() < deadline {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // The grace covers the readers seeing EOF, and stops a grandchild
-                // that kept a pipe open from holding us.
+                // The grace covers the readers seeing EOF. Output that has not
+                // come by then (a grandchild holding a pipe open) is not gh's
+                // answer; shortcut: that reader thread is left behind, kill
+                // gh's process tree if it is ever seen.
                 let grace = Duration::from_secs(1);
+                let (Ok(stdout), Ok(stderr)) =
+                    (stdout.recv_timeout(grace), stderr.recv_timeout(grace))
+                else {
+                    return GhRun::NotRunnable(NotChecked::GhInterrupted);
+                };
                 return GhRun::Spawned {
                     status: status.code(),
-                    stdout: stdout.recv_timeout(grace).unwrap_or_default(),
-                    stderr: stderr.recv_timeout(grace).unwrap_or_default(),
+                    stdout,
+                    stderr,
                 };
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => break,
+            Err(error) => {
+                child.kill().ok();
+                child.wait().ok();
+                return failed(&error);
+            }
         }
     }
     child.kill().ok();
     child.wait().ok();
-    GhRun::NotRunnable("gh timed out".to_string())
+    GhRun::NotRunnable(NotChecked::GhTimedOut)
+}
+
+fn failed(error: &std::io::Error) -> GhRun {
+    GhRun::NotRunnable(NotChecked::GhFailed {
+        error: error.to_string(),
+    })
 }
 
 /// What `pipe` yields, the first `cap` bytes of it, once it ends. Read as it is
@@ -118,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_gives_status_stdout_and_stderr_unless_gh_is_missing_or_too_slow() {
+    fn a_run_keeps_stdout_and_the_status() {
         let GhRun::Spawned {
             status,
             stdout,
@@ -130,7 +156,10 @@ mod tests {
         assert_eq!(status, Some(0));
         assert!(stdout.starts_with(b"cargo "));
         assert!(stderr.is_empty());
+    }
 
+    #[test]
+    fn a_failing_run_keeps_stderr() {
         let failed = run(
             &mut cargo(&["no-such-subcommand-lvpm"]),
             LONG,
@@ -141,16 +170,19 @@ mod tests {
         };
         assert!(status.is_some_and(|code| code != 0));
         assert!(!stderr.is_empty(), "stderr is kept");
+    }
 
+    #[test]
+    fn a_missing_program_is_gh_missing_and_a_slow_one_timed_out() {
         let missing = run(
             &mut Command::new("no-such-program-lvpm"),
             LONG,
             MAX_OUTPUT_BYTES,
         );
-        assert_eq!(missing, GhRun::NotRunnable("gh is not installed".into()));
+        assert_eq!(missing, GhRun::NotRunnable(NotChecked::GhMissing));
 
         let slow = run(&mut cargo(&["--version"]), Duration::ZERO, MAX_OUTPUT_BYTES);
-        assert_eq!(slow, GhRun::NotRunnable("gh timed out".into()));
+        assert_eq!(slow, GhRun::NotRunnable(NotChecked::GhTimedOut));
     }
 
     #[test]
@@ -165,7 +197,28 @@ mod tests {
     fn the_missing_runner_never_runs_gh() {
         assert_eq!(
             missing()(Path::new("a.lvpkg"), "o/r", "tok"),
-            GhRun::NotRunnable("gh is not installed".into())
+            GhRun::NotRunnable(NotChecked::GhMissing)
         );
+    }
+
+    #[test]
+    fn gh_is_asked_to_verify_the_archive_for_the_repo_with_the_token_in_its_environment() {
+        let command = verify_command(Path::new("blob"), "o/r", "tok");
+        assert_eq!(command.get_program(), "gh");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "attestation",
+                "verify",
+                "blob",
+                "--repo",
+                "o/r",
+                "--format",
+                "json"
+            ]
+        );
+        let envs: Vec<_> = command.get_envs().collect();
+        assert_eq!(envs, [("GH_TOKEN".as_ref(), Some("tok".as_ref()))]);
     }
 }

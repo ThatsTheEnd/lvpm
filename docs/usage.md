@@ -390,6 +390,8 @@ require-signature = true                               # refuse a release with n
 trusted-publishers = ["https://github.com/hexagon/*"] # refuse an attestation from any other repository
 ```
 
+Any other key in `[policy]` is refused.
+
 A signature here is a GitHub artifact attestation: a statement, signed by the
 publisher's GitHub Actions workflow, that this workflow built this archive.
 `trusted-publishers` lists patterns for the repository that ran the workflow.
@@ -413,8 +415,11 @@ package and why, writes no lock and exits 1.
 
 **What it covers.** Only packages from a GitHub repo. Packages from a feed,
 vipm.io, NI or a local folder are not checked, `[policy]` or not. A package
-the lock already holds keeps the signer it was locked with and is only judged
-again under the current policy, with no network. An up-to-date lock is not
+the lock already holds with a signer is judged again from the lock under the
+current policy, with no network; one it holds with no signer is asked again
+only when the policy now requires an attestation. So the `signer` and
+`subject` in `lvpm.lock` are what lvpm recorded, not proof: review a change to
+them in a lock diff as you would a new version. An up-to-date lock is not
 checked again, so `lvpm sync` from it checks nothing new; changing `[policy]`
 makes the lock out of date, and the next `lvpm lock` checks it again.
 

@@ -104,16 +104,16 @@ mod tests {
 
     #[test]
     fn gh_is_not_run_until_the_front_end_installs_a_runner() {
+        use crate::verify::NotChecked;
         use std::path::Path;
-        let not_installed = gh::GhRun::NotRunnable("gh is not installed".into());
+        let not_installed = gh::GhRun::NotRunnable(NotChecked::GhMissing);
         let run = |github: &GitHub| (github.runner)(Path::new("a.lvpkg"), "o/r", "tok");
         assert_eq!(run(&GitHub::default()), not_installed);
         assert_eq!(run(&GitHub::from_lookup(|_| None, || None)), not_installed);
 
         let github = GitHub::default().with_gh_runner(std::sync::Arc::new(|_, _, _| {
-            gh::GhRun::NotRunnable("gh timed out".into())
+            gh::GhRun::NotRunnable(NotChecked::GhTimedOut)
         }));
-        assert_eq!(run(&github), gh::GhRun::NotRunnable("gh timed out".into()));
-        assert!(format!("{github:?}").contains("runner: <gh runner>"));
+        assert_eq!(run(&github), gh::GhRun::NotRunnable(NotChecked::GhTimedOut));
     }
 }

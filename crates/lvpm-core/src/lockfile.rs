@@ -175,6 +175,16 @@ pub struct LockedPackage {
     pub subject: Option<String>,
 }
 
+impl LockedPackage {
+    /// The attestation the lock records, when it records one.
+    pub fn attestation(&self) -> Option<crate::verify::Attestation> {
+        Some(crate::verify::Attestation {
+            signer: self.signer.clone()?,
+            subject: self.subject.clone()?,
+        })
+    }
+}
+
 /// A requirement that no source lists, and the package that has it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockedUnresolved {

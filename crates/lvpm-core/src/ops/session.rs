@@ -74,15 +74,13 @@ impl Downloads {
         github::releases_cached(cache, client, api, repo, name, auth, refresh)
     }
 
-    /// Whether a GitHub entry's archive, held in the cache under `sha256`, has
-    /// an attestation; see [`github::attestation::outcome`]. An entry that is
-    /// not from GitHub has nothing to ask.
-    pub(super) fn attestation(&self, entry: &Entry, sha256: &str) -> Outcome {
-        let Some(repo) = index::github_repo(entry) else {
-            return Outcome::Unchecked("not a GitHub release".to_string());
-        };
-        let blob = self.cache.blob_path(sha256);
-        github::attestation::outcome(&self.client, &self.github, repo, sha256, &blob)
+    /// The attestation outcome for the archive of `repo` (`owner/repo`) held in
+    /// the cache under `sha256`; see [`github::attestation::outcome`].
+    pub(super) fn attestation(&self, repo: &str, sha256: &str) -> Outcome {
+        // The cache and GitHub both key by the lowercase digest; a lock may not.
+        let sha256 = sha256.to_ascii_lowercase();
+        let blob = self.cache.blob_path(&sha256);
+        github::attestation::outcome(&self.client, &self.github, repo, &sha256, &blob)
     }
 
     /// What the cache holds under this SHA-256, without removing anything.
@@ -282,6 +280,7 @@ mod tests {
     #[test]
     fn gh_is_run_on_the_cached_archive_with_the_repo_and_the_token() {
         use crate::github::gh::GhRun;
+        use crate::verify::NotChecked;
         use std::sync::{Arc, Mutex};
 
         let cache = std::env::temp_dir().join(format!("lvpm-session-gh-{}", std::process::id()));
@@ -307,15 +306,14 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .push((archive.to_path_buf(), repo.to_string(), token.to_string()));
-            GhRun::NotRunnable("gh timed out".into())
+            GhRun::NotRunnable(NotChecked::GhTimedOut)
         });
         let downloads = Downloads::open(&env).unwrap();
         let sha = downloads.keep(b"archive").unwrap();
 
-        let from_github = entry("http://unused".into(), "github:o/r".into());
         assert_eq!(
-            downloads.attestation(&from_github, &sha),
-            Outcome::Unchecked("gh timed out".into())
+            downloads.attestation("o/r", &sha.to_ascii_uppercase()),
+            Outcome::Unchecked(NotChecked::GhTimedOut)
         );
         let head = server.join().unwrap();
         assert!(
@@ -328,16 +326,6 @@ mod tests {
             *calls.lock().unwrap(),
             [(blob, "o/r".to_string(), "tok".to_string())]
         );
-
-        let from_a_feed = entry(
-            "http://unused".into(),
-            "http://feed.example/index.json".into(),
-        );
-        assert_eq!(
-            downloads.attestation(&from_a_feed, &sha),
-            Outcome::Unchecked("not a GitHub release".into())
-        );
-        assert_eq!(calls.lock().unwrap().len(), 1, "gh is not run for a feed");
         std::fs::remove_dir_all(cache).ok();
     }
 
