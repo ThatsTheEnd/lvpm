@@ -39,3 +39,8 @@ Feature: s10d: run unattended
     Given the project has a venv on the detected LabVIEW
     When "lvpm venv remove" runs in the project and "y" is typed
     Then the venv no longer exists
+
+  # update: there is none; upgrading is two commands, as in uv.
+  Scenario: the README says what to run instead of an update
+    Then README.md has a "## Upgrading" section containing "has no `lvpm update` command"
+    And README.md has a "## Upgrading" section where "lvpm lock --upgrade" comes before "lvpm sync"

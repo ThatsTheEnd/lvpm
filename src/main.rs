@@ -1307,6 +1307,14 @@ mod tests {
     }
 
     #[test]
+    fn there_is_no_update_command() {
+        // Upgrading is `lvpm lock --upgrade` then `lvpm sync`, as uv does it.
+        let err = Cli::try_parse_from(["lvpm", "update"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
     fn yes_and_y_are_global() {
         // Only the true cases: an exported LVPM_YES makes the absent case true too.
         for args in [
