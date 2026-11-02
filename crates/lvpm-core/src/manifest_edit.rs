@@ -10,7 +10,7 @@ use std::path::Path;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, Value};
 
 /// Which dependency table an edit targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DependencyTable {
     Dependencies,
     DevDependencies,

@@ -166,3 +166,91 @@ Feature: lvpm check finds broken links without LabVIEW
       | NotSeparated.vi: compiled code is not separated from the source         |
       | NotSeparated.vi: link not found: Helper.vi                              |
       | NotSeparated.vi: link not found: Lib.lvlib                              |
+
+  # A link into a package the venv holds must be to one the manifest declares.
+  # Each of these projects has [distribution] top-level-library "Lib.lvlib"
+  # unless it says otherwise, and the venv has check_fixture_dep and
+  # check_fixture_other installed with install records. Lib.lvlib is always
+  # there (the library VIs link to it) and lists only the members held.
+
+  Scenario: a declared dependency passes
+    Given a check project with [dependencies] holding "check_fixture_dep", holding "Lib.lvlib" and "UsesDep.vi"
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: an undeclared dependency is named with the VI, link and package
+    Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "UsesDep.vi: <vilib>/Check Fixture/Dep.vi is in check_fixture_dep, which is not in [dependencies]"
+    And stdout has the line "next: add check_fixture_dep to [dependencies] in lvpm.toml"
+
+  Scenario: a package that is only installed, not declared, is not enough
+    Given a check project with [dependencies] holding "check_fixture_other" only, holding "Lib.lvlib" and "UsesDep.vi"
+    And the lock lists "check_fixture_dep" as a dependency of "check_fixture_other"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "UsesDep.vi: <vilib>/Check Fixture/Dep.vi is in check_fixture_dep, which is not in [dependencies]"
+
+  Scenario: a library member may not use a dev-dependency
+    Given a check project with [dev-dependencies] holding "check_fixture_other", holding "Lib.lvlib" and "UsesDevOnly.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "UsesDevOnly.vi: <vilib>/Check Fixture Dev/DevDep.vi is in check_fixture_other, which is only in [dev-dependencies]"
+
+  Scenario: a library member may not use a dependency group
+    Given a check project with [dependency-groups] "ci" holding "check_fixture_other", holding "Lib.lvlib" and "UsesDevOnly.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "UsesDevOnly.vi: <vilib>/Check Fixture Dev/DevDep.vi is in check_fixture_other, which is only in [dependency-groups] ci"
+
+  Scenario: a test VI may use a dev-dependency
+    Given a check project with [dev-dependencies] holding "check_fixture_other", holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: a test VI may use a dependency group
+    Given a check project with [dependency-groups] "ci" holding "check_fixture_other", holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: a test VI may not use a package in no table
+    Given a check project with every dependency table empty, holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "Tests/TestDevOnly.vi: <vilib>/Check Fixture Dev/DevDep.vi is in check_fixture_other, which is not in [dependencies]"
+
+  Scenario: an undeclared finding in JSON
+    Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
+    When lvpm check runs with --json
+    Then the JSON has one finding with "kind" "undeclared", "package" "check_fixture_dep" and "table" null
+
+  Scenario: a vi.lib file no package owns is LabVIEW's own
+    Given a check project with [dependencies] empty, holding "UsesNi.vi"
+    And the bound installation folder holds the vi.lib file it links to
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: a file in the installation wins over a package
+    Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
+    And the bound installation folder also holds "vi.lib/Check Fixture/Dep.vi"
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: package links are checked with the installation absent
+    Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
+    And the bound installation folder does not exist
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "UsesDep.vi: <vilib>/Check Fixture/Dep.vi is in check_fixture_dep, which is not in [dependencies]"
+
+  Scenario: without [distribution], every VI may use any declared table
+    Given a check project with no [distribution] table and [dev-dependencies] holding "check_fixture_other", holding "UsesDevOnly.vi"
+    When lvpm check runs
+    Then it exits 0
+
+  Scenario: the top-level library cannot be read
+    Given a check project with [distribution] top-level-library "Nope.lvlib", holding "UsesDep.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stderr has a line containing "Nope.lvlib"

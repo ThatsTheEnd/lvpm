@@ -19,6 +19,8 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/chec
 /// The folder the venv is bound to, in the sandbox. It holds an empty `vi.lib`
 /// until a scenario says otherwise.
 const INSTALLATION: &str = "LabVIEW 2026";
+/// The files the fixture packages hold, below the `vi.lib` the venv puts them in.
+const PACKAGES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/check/packages");
 /// The one NI file `UsesNi.vi` links to, below the installation.
 const NI_FILE: &str = "vi.lib/Utility/Get Current LV Bitness.vi";
 /// A VI saved in LabVIEW 2013, taken out of the committed pilot archive that holds it.
@@ -34,9 +36,10 @@ impl CliWorld {
         self.sandbox.root().join(INSTALLATION)
     }
 
-    /// A project: an `lvpm.toml` with `labview` (a `>=YYYY` as written), and
-    /// the files `holding` lists. With `venv`, a venv bound to the installation.
-    fn check_project(&self, labview: Option<&str>, venv: bool, holding: &str) {
+    /// A project: an `lvpm.toml` with `labview` (a `>=YYYY` as written) and
+    /// then `tables` (TOML), and the files `holding` lists. With `venv`, a venv
+    /// bound to the installation.
+    fn check_project(&self, labview: Option<&str>, venv: bool, tables: &str, holding: &str) {
         let manifest = match labview {
             Some(text) => ProjectManifest::new().labview(
                 text.strip_prefix(">=")
@@ -45,7 +48,8 @@ impl CliWorld {
             None => ProjectManifest::new(),
         };
         let work = self.sandbox.work_dir();
-        std::fs::write(work.join(MANIFEST_FILE), manifest.render()).expect("write the manifest");
+        let manifest = format!("{}\n{tables}", manifest.render());
+        std::fs::write(work.join(MANIFEST_FILE), manifest).expect("write the manifest");
         if venv {
             self.bind_venv();
         }
@@ -54,6 +58,33 @@ impl CliWorld {
         for segment in holding.split(" and ") {
             self.hold(segment.trim().trim_end_matches(','), &mut last);
         }
+    }
+
+    /// A project that declares dependencies, with both fixture packages
+    /// installed in its venv. `Lib.lvlib` is there, as the library VIs link to
+    /// it, and lists only the members the scenario holds: it holds the VIs it
+    /// is about, not every one the fixture lists.
+    fn declaring_project(&self, spec: &str, holding: &str) {
+        self.check_project(None, true, &manifest_tables(spec), holding);
+        for (package, rel) in [
+            (PACKAGE, "Check Fixture/Dep.vi"),
+            ("check_fixture_other", "Check Fixture Dev/DevDep.vi"),
+        ] {
+            self.install_in_venv(package, rel, &Path::new(PACKAGES).join(rel));
+        }
+        let work = self.sandbox.work_dir();
+        if !work.join("Lib.lvlib").exists() {
+            self.put_fixture("Lib.lvlib", &work);
+        }
+        let text = std::fs::read_to_string(work.join("Lib.lvlib")).expect("the library");
+        let held = |line: &&str| match line.split_once("URL=\"../") {
+            Some((_, rest)) => work
+                .join(rest.split('"').next().unwrap_or_default())
+                .is_file(),
+            None => true,
+        };
+        let kept: Vec<&str> = text.lines().filter(held).collect();
+        std::fs::write(work.join("Lib.lvlib"), kept.join("\n")).expect("trim the library");
     }
 
     /// What `lvpm venv create` leaves, as the venv of the project is bound to
@@ -181,26 +212,83 @@ fn quoted(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The manifest tables a "check project with ..." step says: `[distribution]`
+/// (`Lib.lvlib` unless the step says otherwise) and the one dependency table
+/// with its packages. Every package is `"*"`.
+fn manifest_tables(spec: &str) -> String {
+    let (spec, library) = match spec.strip_prefix("no [distribution] table and ") {
+        Some(rest) => (rest, None),
+        None if spec.starts_with("[distribution] ") => (spec, quoted(spec).pop()),
+        None => (spec, Some("Lib.lvlib".to_string())),
+    };
+    let mut text = library.map_or(String::new(), |lib| {
+        format!("[distribution]\ntop-level-library = \"{lib}\"\n")
+    });
+    let names = quoted(spec);
+    let (table, packages) = match spec.split_once("] ") {
+        Some(("[dependency-groups", _)) => (format!("dependency-groups.{}", names[0]), &names[1..]),
+        Some((table, _)) if !table.starts_with("[distribution") => {
+            (table.trim_start_matches('[').to_string(), &names[..])
+        }
+        _ => return text,
+    };
+    if !packages.is_empty() {
+        text.push_str(&format!("[{table}]\n"));
+        for package in packages {
+            text.push_str(&format!("{package} = \"*\"\n"));
+        }
+    }
+    text
+}
+
 // ---- setup ----
 
 #[given(regex = r#"^a check project with labview "([^"]+)" holding (.+)$"#)]
 async fn project_with_labview(world: &mut CliWorld, labview: String, holding: String) {
-    world.check_project(Some(&labview), true, &holding);
+    world.check_project(Some(&labview), true, "", &holding);
 }
 
 #[given(regex = r"^a check project with no labview key holding (.+)$")]
 async fn project_without_labview(world: &mut CliWorld, holding: String) {
-    world.check_project(None, true, &holding);
+    world.check_project(None, true, "", &holding);
 }
 
 #[given(regex = r"^a check project holding (.+)$")]
 async fn project(world: &mut CliWorld, holding: String) {
-    world.check_project(None, true, &holding);
+    world.check_project(None, true, "", &holding);
 }
 
 #[given(regex = r"^a sandbox project with an lvpm\.toml and no venv, holding (.+)$")]
 async fn project_without_a_venv(world: &mut CliWorld, holding: String) {
-    world.check_project(None, false, &holding);
+    world.check_project(None, false, "", &holding);
+}
+
+#[given(
+    regex = r#"^a check project with (\[.+?|every dependency table empty|no \[distribution\] table and .+?), holding (.+)$"#
+)]
+async fn project_declaring(world: &mut CliWorld, spec: String, holding: String) {
+    world.declaring_project(&spec, &holding);
+}
+
+#[given(regex = r#"^the lock lists "([^"]+)" as a dependency of "([^"]+)"$"#)]
+async fn lock_lists(world: &mut CliWorld, dependency: String, of: String) {
+    let package = |name: &str, requires: &[&str]| {
+        format!(
+            "[[package]]\nname = \"{name}\"\nversion = \"1.0\"\nsha256 = \"00\"\nsource = \"local\"\nrequires = {requires:?}\n\n"
+        )
+    };
+    let lock = format!(
+        "version = 2\nlabview = \"2026\"\n\n[inputs]\ndefaults = false\n\n[inputs.dependencies]\n{of} = \"*\"\n\n{}{}",
+        package(&of, &[&dependency]),
+        package(&dependency, &[]),
+    );
+    let path = world.sandbox.work_dir().join("lvpm.lock");
+    std::fs::write(path, lock).expect("write the lock");
+}
+
+#[given(regex = r#"^the bound installation folder also holds "([^"]+)"$"#)]
+async fn installation_also_holds(world: &mut CliWorld, name: String) {
+    world.write(&world.installation().join(name), b"");
 }
 
 #[given("the bound installation folder holds the vi.lib file it links to")]
@@ -312,6 +400,12 @@ async fn stderr_has_a_line_starting(world: &mut CliWorld, start: String) {
     assert!(out.stderr.lines().any(|l| l.starts_with(&start)), "{out:?}");
 }
 
+#[then(regex = r#"^stderr has a line containing "([^"]+)"$"#)]
+async fn stderr_has_a_line_containing(world: &mut CliWorld, text: String) {
+    let out = world.checked();
+    assert!(out.stderr.lines().any(|l| l.contains(&text)), "{out:?}");
+}
+
 /// The `result` of the `--json` run, which is its one line of output.
 fn json_result(world: &CliWorld) -> Value {
     let out = world.checked();
@@ -325,6 +419,20 @@ async fn json_without_findings(world: &mut CliWorld, ok: bool, vis: u64) {
     let result = json_result(world);
     let want = json!({"ok": ok, "vis": vis, "not_checked": 0, "findings": []});
     assert_eq!(result, want);
+}
+
+#[then(
+    regex = r#"^the JSON has one finding with "kind" "([^"]+)", "package" "([^"]+)" and "table" null$"#
+)]
+async fn json_with_an_undeclared_finding(world: &mut CliWorld, kind: String, package: String) {
+    let result = json_result(world);
+    let findings = result["findings"].as_array().expect("findings");
+    assert_eq!(findings.len(), 1, "{result}");
+    let found = &findings[0];
+    assert_eq!(
+        (&found["kind"], &found["package"], &found["table"]),
+        (&json!(kind), &json!(package), &Value::Null)
+    );
 }
 
 #[then(

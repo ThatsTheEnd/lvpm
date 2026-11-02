@@ -3,6 +3,7 @@
 //! and link names come from untrusted files, so the text is made printable.
 
 use super::printable;
+use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::check::{Checked, Finding, Problem, Unchecked};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -89,6 +90,14 @@ fn finding(finding: &Finding) -> Value {
         Problem::TooNew { .. } => ("too_new", None, None, None),
         Problem::NotSeparated => ("not_separated", None, None, None),
         Problem::NotFound { link } => ("not_found", Some(link.as_str()), None, None),
+        Problem::Undeclared { link, .. } => ("undeclared", Some(link.as_str()), None, None),
+    };
+    // `table` is the manifest key of the one table that names the package.
+    let (package, table) = match &finding.problem {
+        Problem::Undeclared {
+            package, only_in, ..
+        } => (Some(package), only_in.as_ref().map(DependencyTable::key)),
+        _ => (None, None),
     };
     let (saved, minimum) = match &finding.problem {
         Problem::TooNew { saved, minimum } => (Some(saved), Some(minimum)),
@@ -98,8 +107,8 @@ fn finding(finding: &Finding) -> Value {
         "vi": finding.vi,
         "kind": kind,
         "link": link,
-        "package": null,
-        "table": null,
+        "package": package,
+        "table": table,
         "saved": saved,
         "minimum": minimum,
         "block": block,
@@ -124,6 +133,24 @@ fn what(problem: &Problem) -> String {
         }
         Problem::NotSeparated => "compiled code is not separated from the source".to_string(),
         Problem::NotFound { link } => format!("link not found: {}", one_line(link)),
+        Problem::Undeclared {
+            link,
+            package,
+            only_in,
+        } => {
+            let table = match only_in {
+                None => "not in [dependencies]".to_string(),
+                Some(DependencyTable::Group(group)) => {
+                    format!("only in [dependency-groups] {}", one_line(group))
+                }
+                Some(table) => format!("only in [{}]", table.key()),
+            };
+            format!(
+                "{} is in {}, which is {table}",
+                one_line(link),
+                one_line(package)
+            )
+        }
     }
 }
 
@@ -144,6 +171,9 @@ fn next(problem: &Problem) -> String {
         }
         Problem::NotFound { .. } => {
             "restore the file, or open the VI in LabVIEW and relink it".to_string()
+        }
+        Problem::Undeclared { package, .. } => {
+            format!("add {} to [dependencies] in lvpm.toml", one_line(package))
         }
     }
 }
@@ -292,6 +322,63 @@ mod tests {
             findings[1],
             json!({"vi": "b.vi", "kind": "not_separated", "link": null, "package": null,
                    "table": null, "saved": null, "minimum": null, "block": null, "offset": null})
+        );
+    }
+
+    fn undeclared(vi: &str, package: &str, only_in: Option<DependencyTable>) -> Finding {
+        let link = "<vilib>/Check Fixture/Dep.vi".into();
+        let package = package.into();
+        found(
+            vi,
+            Problem::Undeclared {
+                link,
+                package,
+                only_in,
+            },
+        )
+    }
+
+    #[test]
+    fn an_undeclared_link_names_the_package_and_the_table_that_does_hold_it() {
+        let findings = vec![
+            undeclared("A.vi", "dep", None),
+            undeclared("B.vi", "dev", Some(DependencyTable::DevDependencies)),
+            undeclared(
+                "C.vi",
+                "dev",
+                Some(DependencyTable::Group("ci\nnext: x".into())),
+            ),
+        ];
+        assert_eq!(
+            listing(&checked(3, findings)),
+            "A.vi: <vilib>/Check Fixture/Dep.vi is in dep, which is not in [dependencies]\n\
+             B.vi: <vilib>/Check Fixture/Dep.vi is in dev, which is only in [dev-dependencies]\n\
+             C.vi: <vilib>/Check Fixture/Dep.vi is in dev, which is only in [dependency-groups] ci?next: x\n\
+             next: add dep to [dependencies] in lvpm.toml\n\
+             next: add dev to [dependencies] in lvpm.toml\n\
+             VIs checked: 3, problems: 3, links not checked: 0\n"
+        );
+    }
+
+    #[test]
+    fn the_undeclared_json_gives_the_package_and_the_table_or_null() {
+        let c = checked(
+            2,
+            vec![
+                undeclared("a.vi", "dep", None),
+                undeclared("b.vi", "dev", Some(DependencyTable::Group("ci".into()))),
+            ],
+        );
+        let findings = result(&c)["findings"].clone();
+        let want = |vi: &str, package: &str, table: Value| {
+            json!({"vi": vi, "kind": "undeclared", "link": "<vilib>/Check Fixture/Dep.vi",
+                   "package": package, "table": table, "saved": null, "minimum": null,
+                   "block": null, "offset": null})
+        };
+        assert_eq!(findings[0], want("a.vi", "dep", Value::Null));
+        assert_eq!(
+            findings[1],
+            want("b.vi", "dev", json!("dependency-groups.ci"))
         );
     }
 

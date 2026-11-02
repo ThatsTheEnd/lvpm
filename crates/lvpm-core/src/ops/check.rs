@@ -8,14 +8,21 @@
 //! installation first, then in each venv package's `1/` tree. Existence is
 //! what the file system says, or, for a link through an `.llb`, what the
 //! `.llb` lists.
+//!
+//! A file that a venv install record lists belongs to that package, and a VI
+//! may link into it only if the manifest names the package in a table the VI
+//! may draw on. A file the bound installation holds is LabVIEW's own, since it
+//! is looked for first, and so is one that no record lists.
 
 use crate::errors::{Cancelled, CheckError};
 use crate::linker::{self, Component, Kind, LinkPath, LinkerError, ViFacts};
+use crate::manifest_edit::DependencyTable;
 use crate::ops::OpEnv;
+use crate::project::{Project, same_name};
 use crate::venv::{self, Bound};
-use crate::{paths, project, target};
+use crate::{distribution, install, lvlib, paths, project, target};
 use anyhow::{Context, Result, anyhow};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// One rule a VI breaks. Declared in the order the rules are listed in, which
@@ -37,6 +44,15 @@ pub enum Problem {
     /// symbolic root (`<vilib>/x.vi`), and otherwise as the resolved path
     /// relative to the project root, with `/`.
     NotFound { link: String },
+    /// A link into `package`, which the venv holds, that the manifest does not
+    /// let the VI use: `only_in` is the table that names it, if one does (a
+    /// library member may draw on `[dependencies]` only). `link` is as in
+    /// `NotFound`.
+    Undeclared {
+        link: String,
+        package: String,
+        only_in: Option<DependencyTable>,
+    },
 }
 
 /// A VI and a rule it breaks.
@@ -115,6 +131,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     if !start.is_dir() {
         return Err(CheckError::NoDir(dir.map_or(start, Path::to_path_buf)));
     }
+    let members = members(&manifest, &bound.repo)?;
     let mut files = Vec::new();
     walk(&start, &bound.dir, &mut files)?;
 
@@ -131,10 +148,15 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
         }
         let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
         let vi = shown(&bound.repo, file);
+        let uses = Uses {
+            project: &manifest,
+            member: members.contains(&key(file)),
+        };
         let broken = problems(
             &bytes,
             file,
             &search,
+            &uses,
             &bound.repo,
             minimum,
             &mut checked.not_checked,
@@ -148,6 +170,26 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     }
     in_order(&mut checked.findings);
     Ok(checked)
+}
+
+/// The files of the library `[distribution]` names, as [`key`]s; none when the
+/// manifest has no such table.
+fn members(manifest: &Project, repo: &Path) -> Result<HashSet<PathBuf>> {
+    let Some(dist) = &manifest.distribution else {
+        return Ok(HashSet::new());
+    };
+    let library = repo.join(distribution::top_level_library(dist, repo)?);
+    Ok(lvlib::members(&library)?.iter().map(|p| key(p)).collect())
+}
+
+/// A path as files are compared by: separators and `.` settled and, on
+/// Windows, case folded, as the file system does.
+fn key(path: &Path) -> PathBuf {
+    let path = paths::clean(path);
+    match cfg!(windows) {
+        true => PathBuf::from(path.to_string_lossy().to_lowercase()),
+        false => path,
+    }
 }
 
 /// The one place the listing is put in order (VI, rule, link) and a repeat is
@@ -219,6 +261,7 @@ fn problems(
     bytes: &[u8],
     vi: &Path,
     search: &Search,
+    uses: &Uses,
     repo: &Path,
     minimum: Option<u32>,
     unchecked: &mut BTreeMap<Unchecked, usize>,
@@ -226,7 +269,14 @@ fn problems(
     match ViFacts::read(bytes) {
         Ok(facts) => {
             let mut found = save_problems(&facts, minimum);
-            found.extend(link_problems(&facts.links, vi, search, repo, unchecked));
+            found.extend(link_problems(
+                &facts.links,
+                vi,
+                search,
+                uses,
+                repo,
+                unchecked,
+            ));
             found
         }
         // A header or directory that runs out is a cut-short file.
@@ -259,13 +309,25 @@ fn link_problems(
     links: &[LinkPath],
     vi: &Path,
     search: &Search,
+    uses: &Uses,
     repo: &Path,
     unchecked: &mut BTreeMap<Unchecked, usize>,
 ) -> Vec<Problem> {
     let mut found = Vec::new();
     for link in links {
         match resolve(link, vi, search) {
-            Resolved::File(_) | Resolved::Skipped => {}
+            Resolved::File(file) => {
+                if let Some(package) = search.owner(&file)
+                    && let Some(only_in) = uses.barred(package)
+                {
+                    found.push(Problem::Undeclared {
+                        link: shown_link(link, vi, repo),
+                        package: package.to_string(),
+                        only_in,
+                    });
+                }
+            }
+            Resolved::Skipped => {}
             Resolved::NotFound => found.push(Problem::NotFound {
                 link: shown_link(link, vi, repo),
             }),
@@ -283,6 +345,8 @@ struct Search {
     present: bool,
     /// Each venv package's `<pkg>/1` tree, in name order.
     packages: Vec<PathBuf>,
+    /// The package each file an install record lists belongs to, by [`key`].
+    owners: HashMap<PathBuf, String>,
 }
 
 impl Search {
@@ -298,17 +362,53 @@ impl Search {
             }
         }
         packages.sort();
+        let mut owners = HashMap::new();
+        for record in install::list_installed(&bound.store())? {
+            for file in &record.files {
+                owners.insert(key(Path::new(file)), record.name.clone());
+            }
+        }
         Ok(Search {
             installation: bound.target.path.clone(),
             present: bound.target.path.is_dir(),
             packages,
+            owners,
         })
+    }
+
+    /// The package that owns `file`. A member of an `.llb` is owned by whoever
+    /// owns the `.llb`, which is the file a record lists.
+    fn owner(&self, file: &Path) -> Option<&str> {
+        let held = self.owners.get(&key(file));
+        let llb = || file.parent().and_then(|dir| self.owners.get(&key(dir)));
+        held.or_else(llb).map(String::as_str)
     }
 }
 
-/// Where a link leads. Nothing reads the file of a `File` yet: which package
-/// holds it is asked next.
-#[cfg_attr(not(test), allow(dead_code))]
+/// What the manifest lets one VI link into.
+struct Uses<'a> {
+    project: &'a Project,
+    /// Whether the VI is a member of the distribution library, which is held to
+    /// `[dependencies]`; any other VI (a test) may draw on every table.
+    member: bool,
+}
+
+impl Uses<'_> {
+    /// `None` when the VI may use `package`. Otherwise `Some(only_in)`: the
+    /// first table that names it, if any does.
+    fn barred(&self, package: &str) -> Option<Option<DependencyTable>> {
+        let named: Vec<_> = (self.project.tables())
+            .filter(|(_, lines)| lines.iter().any(|(name, _)| same_name(name, package)))
+            .map(|(table, _)| table)
+            .collect();
+        let may =
+            named.contains(&DependencyTable::Dependencies) || (!self.member && !named.is_empty());
+        (!may).then(|| named.into_iter().next())
+    }
+}
+
+/// Where a link leads. The file of a `File` is looked up among those the
+/// venv's packages own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Resolved {
     /// The file it names, or, through an `.llb`, the path of the member.
@@ -505,6 +605,55 @@ mod tests {
             self
         }
 
+        /// Lines added to the manifest.
+        fn declare(&self, toml: &str) -> &Sandbox {
+            let path = self.repo.join("lvpm.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(path, format!("{text}\n{toml}\n")).unwrap();
+            self
+        }
+
+        /// A library `Lib.lvlib` that lists exactly `members`, which are in the project.
+        fn library_of(&self, members: &[&str]) -> &Sandbox {
+            let items: String = (members.iter())
+                .map(|m| format!("<Item Name=\"{m}\" Type=\"VI\" URL=\"../{m}\"/>"))
+                .collect();
+            self.write(
+                "Lib.lvlib",
+                format!("<Library>{items}</Library>").as_bytes(),
+            )
+        }
+
+        /// A package the venv holds: the fixture `rel` below `packages/` as
+        /// `rel` in its `vi.lib`, and the install record that lists it.
+        fn package(&self, name: &str, rel: &str) -> &Sandbox {
+            let venv = self.repo.join(self.venv_dir);
+            let to = venv.join(name).join("1/vi.lib").join(rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(Path::new(FIXTURES).join("packages").join(rel), &to).unwrap();
+            let record = serde_json::json!({
+                "name": name, "version": "1.0", "installed_at": 0,
+                "target": self.installation.to_string_lossy(),
+                "files": [to.to_string_lossy().replace('\\', "/")], "skipped_hooks": [],
+            });
+            let record_path = venv.join(format!(".lvpm/installed/{name}.json"));
+            std::fs::create_dir_all(record_path.parent().unwrap()).unwrap();
+            std::fs::write(record_path, record.to_string()).unwrap();
+            self
+        }
+
+        /// A project with `Lib.lvlib` as its distribution, `toml` after it in
+        /// the manifest, and both fixture packages in its venv.
+        fn with_packages(tag: &str, toml: &str) -> Sandbox {
+            let sandbox = Sandbox::new(tag, None);
+            sandbox
+                .declare("[distribution]\ntop-level-library = \"Lib.lvlib\"")
+                .declare(toml)
+                .package("check_fixture_dep", DEP)
+                .package("check_fixture_other", DEV);
+            sandbox
+        }
+
         fn env(&self) -> OpEnv<'static> {
             let mut env = testing::env(&self.repo);
             env.targets.clear();
@@ -531,6 +680,24 @@ mod tests {
         Finding {
             vi: vi.into(),
             problem: Problem::NotFound { link: link.into() },
+        }
+    }
+
+    /// The fixture packages' files, as they are below `packages/` and `vi.lib`.
+    const DEP: &str = "Check Fixture/Dep.vi";
+    const DEV: &str = "Check Fixture Dev/DevDep.vi";
+
+    /// What `UsesDep.vi` and `UsesDevOnly.vi` link to.
+    const DEP_LINK: &str = "<vilib>/Check Fixture/Dep.vi";
+    const DEV_LINK: &str = "<vilib>/Check Fixture Dev/DevDep.vi";
+
+    static NO_MANIFEST: std::sync::LazyLock<Project> = std::sync::LazyLock::new(Project::default);
+
+    /// A VI no manifest table names anything for, and that is no library member.
+    fn nobody() -> Uses<'static> {
+        Uses {
+            project: &NO_MANIFEST,
+            member: false,
         }
     }
 
@@ -914,6 +1081,7 @@ mod tests {
             installation: dir.join("LabVIEW"),
             present: dir.join("LabVIEW").is_dir(),
             packages: Vec::new(),
+            owners: HashMap::new(),
         }
     }
 
@@ -991,7 +1159,7 @@ mod tests {
         let mut unchecked = BTreeMap::new();
         let links = [resource, nothing];
         assert_eq!(
-            link_problems(&links, &vi, &search, &dir, &mut unchecked),
+            link_problems(&links, &vi, &search, &nobody(), &dir, &mut unchecked),
             []
         );
         assert_eq!(unchecked.values().sum::<usize>(), 1);
@@ -1021,7 +1189,7 @@ mod tests {
         .to_vec();
         let links = Rsrc { blocks }.links().unwrap();
         let (vi, search) = (dir.join("V.vi"), search_in(&dir));
-        let found = link_problems(&links, &vi, &search, &dir, &mut BTreeMap::new());
+        let found = link_problems(&links, &vi, &search, &nobody(), &dir, &mut BTreeMap::new());
         assert_eq!(
             found,
             [Problem::NotFound {
@@ -1213,6 +1381,165 @@ mod tests {
                 not_found("NotSeparated.vi", "Lib.lvlib"),
             ]
         );
+    }
+
+    fn undeclared(
+        vi: &str,
+        link: &str,
+        package: &str,
+        only_in: Option<DependencyTable>,
+    ) -> Finding {
+        Finding {
+            vi: vi.into(),
+            problem: Problem::Undeclared {
+                link: link.into(),
+                package: package.into(),
+                only_in,
+            },
+        }
+    }
+
+    #[test]
+    fn a_link_into_a_package_the_manifest_does_not_name_is_undeclared_until_it_is() {
+        // The installation is not made, so the package is the only place the file is.
+        let sandbox = Sandbox::with_packages("undeclared", "");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(
+            sandbox.check().findings,
+            [undeclared(
+                "UsesDep.vi",
+                DEP_LINK,
+                "check_fixture_dep",
+                None
+            )]
+        );
+        sandbox.declare("[dependencies]\ncheck_fixture_dep = \"*\"");
+        assert_eq!(sandbox.check().findings, []);
+    }
+
+    #[test]
+    fn a_package_is_named_in_the_manifest_whatever_the_case() {
+        let sandbox = Sandbox::with_packages("case", "[dependencies]\nCheck_Fixture_DEP = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(sandbox.check().findings, []);
+    }
+
+    #[test]
+    fn a_package_that_is_installed_but_not_declared_is_not_enough() {
+        let sandbox =
+            Sandbox::with_packages("other-only", "[dependencies]\ncheck_fixture_other = \"*\"");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi");
+        assert_eq!(
+            sandbox.check().findings,
+            [undeclared(
+                "UsesDep.vi",
+                DEP_LINK,
+                "check_fixture_dep",
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn a_file_the_installation_holds_is_labviews_own_even_when_a_package_holds_it_too() {
+        let sandbox = Sandbox::with_packages("precedence", "");
+        sandbox
+            .library_of(&["UsesDep.vi"])
+            .put("UsesDep.vi", "UsesDep.vi")
+            .installed(&format!("vi.lib/{DEP}"));
+        assert_eq!(sandbox.check().findings, []);
+    }
+
+    #[test]
+    fn a_vilib_file_that_no_record_lists_is_labviews_own() {
+        let sandbox = Sandbox::with_packages("no-record", "");
+        sandbox
+            .library_of(&["UsesNi.vi"])
+            .put("UsesNi.vi", "UsesNi.vi");
+        sandbox.write(&format!(".lv-venv/pkg/1/{NI_FILE}"), b"");
+        assert_eq!(sandbox.check().findings, []);
+    }
+
+    #[test]
+    fn a_member_may_use_only_dependencies_and_any_other_vi_any_table_but_none_is_no_table() {
+        let group = DependencyTable::Group("ci".into());
+        for (declared, only_in) in [
+            (
+                "[dev-dependencies]\ncheck_fixture_other = \"*\"",
+                Some(DependencyTable::DevDependencies),
+            ),
+            (
+                "[dependency-groups.ci]\ncheck_fixture_other = \"*\"",
+                Some(group),
+            ),
+            ("", None),
+        ] {
+            let sandbox = Sandbox::with_packages("tables", declared);
+            sandbox
+                .library_of(&["UsesDevOnly.vi"])
+                .put("UsesDevOnly.vi", "UsesDevOnly.vi")
+                .put("Tests/TestDevOnly.vi", "Tests/TestDevOnly.vi");
+            let member = undeclared("UsesDevOnly.vi", DEV_LINK, "check_fixture_other", only_in);
+            let test = undeclared(
+                "Tests/TestDevOnly.vi",
+                DEV_LINK,
+                "check_fixture_other",
+                None,
+            );
+            let want = match declared.is_empty() {
+                true => vec![test, member],
+                false => vec![member],
+            };
+            assert_eq!(sandbox.check().findings, want, "{declared:?}");
+        }
+    }
+
+    #[test]
+    fn without_a_distribution_every_vi_may_use_every_declared_table() {
+        let sandbox = Sandbox::new("no-distribution", None);
+        sandbox
+            .declare("[dev-dependencies]\ncheck_fixture_other = \"*\"")
+            .package("check_fixture_other", DEV)
+            .put("UsesDevOnly.vi", "UsesDevOnly.vi")
+            .put("Lib.lvlib", "Lib.lvlib");
+        assert_eq!(sandbox.check().findings, []);
+    }
+
+    #[test]
+    fn a_top_level_library_that_is_not_there_fails_naming_it() {
+        let sandbox = Sandbox::new("no-library", None);
+        sandbox
+            .declare("[distribution]\ntop-level-library = \"Nope.lvlib\"")
+            .put("UsesDep.vi", "UsesDep.vi");
+        let why = check(&sandbox.env(), None).unwrap_err();
+        assert!(why.to_string().contains("Nope.lvlib"), "{why}");
+    }
+
+    #[test]
+    fn a_library_that_lists_a_vi_that_is_not_there_fails_naming_it() {
+        let sandbox = Sandbox::new("lists-a-gap", None);
+        sandbox
+            .declare("[distribution]\ntop-level-library = \"Lib.lvlib\"")
+            .library_of(&["Gone.vi"]);
+        let why = format!("{:#}", check(&sandbox.env(), None).unwrap_err());
+        assert!(why.contains("Gone.vi"), "{why}");
+    }
+
+    #[test]
+    fn a_member_of_an_llb_belongs_to_the_package_that_owns_the_llb() {
+        let mut search = search_in(Path::new("/nowhere"));
+        search
+            .owners
+            .insert(key(Path::new("/p/x.llb")), "pkg".to_string());
+        assert_eq!(search.owner(Path::new("/p/x.llb")), Some("pkg"));
+        assert_eq!(search.owner(Path::new("/p/x.llb/m.vi")), Some("pkg"));
+        assert_eq!(search.owner(Path::new("/p/y.vi")), None);
     }
 
     #[test]
