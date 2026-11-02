@@ -287,12 +287,24 @@ pub enum Root {
 }
 
 impl Root {
-    fn text(&self) -> &str {
+    /// The root as LabVIEW writes it, brackets included.
+    pub fn text(&self) -> &str {
         match self {
             Root::ViLib => "<vilib>",
             Root::UserLib => "<userlib>",
             Root::InstrLib => "<instrlib>",
             Root::Other(text) => text,
+        }
+    }
+
+    /// The folder of a LabVIEW installation (and of a venv package's `1/`
+    /// tree) that this root names. None for a root lvpm does not resolve.
+    pub fn folder(&self) -> Option<&'static str> {
+        match self {
+            Root::ViLib => Some("vi.lib"),
+            Root::UserLib => Some("user.lib"),
+            Root::InstrLib => Some("instr.lib"),
+            Root::Other(_) => None,
         }
     }
 }
@@ -560,6 +572,17 @@ mod tests {
             assert_eq!(path.kind, Kind::Symbolic(want));
             assert_eq!(path.components, names(&["Check Fixture", "Dep.vi"]));
         }
+    }
+
+    #[test]
+    fn only_the_three_library_roots_name_a_folder() {
+        let folders = [Root::ViLib, Root::UserLib, Root::InstrLib].map(|r| r.folder());
+        assert_eq!(
+            folders,
+            [Some("vi.lib"), Some("user.lib"), Some("instr.lib")]
+        );
+        assert_eq!(Root::Other("<resource>".into()).folder(), None);
+        assert_eq!(Root::Other("<resource>".into()).text(), "<resource>");
     }
 
     #[test]

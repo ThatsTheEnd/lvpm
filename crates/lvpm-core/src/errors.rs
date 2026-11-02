@@ -227,6 +227,18 @@ pub enum InitError {
     Other(#[from] anyhow::Error),
 }
 
+/// Why `check` read no VI.
+#[derive(Debug, thiserror::Error)]
+pub enum CheckError {
+    /// The folder to check is not there, as it was written.
+    #[error("folder {} does not exist", .0.display())]
+    NoDir(PathBuf),
+    /// Anything else that went wrong: its own text. A cancel is the cause,
+    /// [`Cancelled`], for the caller to downcast.
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
 /// Why an install request could not be routed to a mode.
 #[derive(Debug, thiserror::Error)]
 pub enum RouteError {

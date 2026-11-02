@@ -1,0 +1,929 @@
+//! `check`: every VI under a folder, read as bytes, and each link in its linker
+//! tables that leads to a file that is not there. The installation a venv is
+//! bound to is a folder to look in, never a program to run.
+//!
+//! A link is looked for where LabVIEW would look. A relative one is stored
+//! relative to the VI file itself, so its first `Up` leaves the file. A
+//! `<vilib>`, `<userlib>` or `<instrlib>` one is looked for in the bound
+//! installation first, then in each venv package's `1/` tree. Existence is
+//! what the file system says, or, for a link through an `.llb`, what the
+//! `.llb` lists.
+
+use crate::errors::{Cancelled, CheckError};
+use crate::linker::{self, Component, Kind, LinkPath, LinkerError, ViFacts};
+use crate::ops::OpEnv;
+use crate::venv::{self, Bound};
+use crate::{paths, project, target};
+use anyhow::{Context, Result, anyhow};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// One rule a VI breaks. Declared in the order the rules are listed in, which
+/// is the order findings are sorted in.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Problem {
+    /// The file is not an RSRC container: text, a git-LFS pointer, a cut-short
+    /// copy.
+    NotResource,
+    /// A linker table cannot be read: `block` is its four-character name and
+    /// `offset` the file byte where the section or record that failed starts.
+    Unreadable { block: &'static str, offset: usize },
+    /// A link to a file that is not there. `link` is shown as stored for a
+    /// symbolic root (`<vilib>/x.vi`), and otherwise as the resolved path
+    /// relative to the project root, with `/`.
+    NotFound { link: String },
+}
+
+/// A VI and a rule it breaks.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Finding {
+    /// The VI, relative to the project root, with `/`.
+    pub vi: String,
+    pub problem: Problem,
+}
+
+/// Why links were not looked for.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Unchecked {
+    /// A link into `folder` of the bound installation, which is not on this
+    /// machine at `installation`, and no package holds the file.
+    NoInstallation {
+        folder: &'static str,
+        installation: PathBuf,
+    },
+    /// A symbolic root lvpm does not resolve, as written: `<resource>`.
+    Root(String),
+}
+
+/// What a check found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// How many VIs were read, readable or not.
+    pub vis: usize,
+    /// How many links were not looked for, for each cause.
+    pub not_checked: BTreeMap<Unchecked, usize>,
+    /// Whether the manifest names a LabVIEW to compare save versions with.
+    pub saves_checked: bool,
+    /// Sorted by VI, then rule, then link; each once.
+    pub findings: Vec<Finding>,
+}
+
+impl Checked {
+    /// All the links that were not looked for, whatever the cause.
+    pub fn not_checked_total(&self) -> usize {
+        self.not_checked.values().sum()
+    }
+}
+
+/// Read every `.vi .vit .ctl .ctt` under `dir` (the project root when None; a
+/// relative one is taken from the directory the command ran in) and say which
+/// links lead nowhere. Findings are a result, not an error.
+pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
+    let repo = match &env.flags.project {
+        Some(repo) => env.cwd.join(repo),
+        None => venv::locate(&env.cwd, &env.config.venv_dir)?.ok_or_else(|| {
+            anyhow!(
+                "no {} at or above {}",
+                project::FILE_NAME,
+                env.cwd.display()
+            )
+        })?,
+    };
+    let bound = venv::binding(&repo, &env.config.venv_dir)?;
+    let (_, manifest) = env
+        .manifest_for(None, Some(&bound.repo))?
+        .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
+
+    let start = dir.map_or_else(|| bound.repo.clone(), |dir| paths::resolve(&env.cwd, dir));
+    if !start.is_dir() {
+        return Err(CheckError::NoDir(dir.map_or(start, Path::to_path_buf)));
+    }
+    let mut files = Vec::new();
+    walk(&start, &bound.dir, &mut files)?;
+
+    let search = Search::of(&bound)?;
+    let mut checked = Checked {
+        vis: files.len(),
+        not_checked: BTreeMap::new(),
+        saves_checked: manifest.labview.is_some(),
+        findings: Vec::new(),
+    };
+    for file in &files {
+        if env.cancel.is_cancelled() {
+            return Err(anyhow::Error::from(Cancelled).into());
+        }
+        let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+        let vi = shown(&bound.repo, file);
+        let broken = problems(&bytes, file, &search, &bound.repo, &mut checked.not_checked);
+        checked
+            .findings
+            .extend(broken.into_iter().map(|problem| Finding {
+                vi: vi.clone(),
+                problem,
+            }));
+    }
+    // The one place the listing is put in order and a repeat is dropped.
+    checked.findings.sort();
+    checked.findings.dedup();
+    Ok(checked)
+}
+
+/// The VIs, controls and templates under `dir`, in name order, leaving out the
+/// venv, dot-folders and links, which could lead out of the project or round
+/// in a loop.
+fn walk(dir: &Path, venv: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let mut entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort();
+    for path in entries {
+        let hidden = path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        let link = std::fs::symlink_metadata(&path)?.file_type().is_symlink();
+        if hidden || link || target::within(venv, &path) {
+            continue;
+        }
+        if path.is_dir() {
+            walk(&path, venv, out)?;
+        } else if is_vi_file(&path) {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn is_vi_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        ["vi", "vit", "ctl", "ctt"].contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+    })
+}
+
+/// What one VI's bytes break. A link that is looked for and not found is a
+/// problem; one that cannot be looked for is counted in `unchecked`.
+fn problems(
+    bytes: &[u8],
+    vi: &Path,
+    search: &Search,
+    repo: &Path,
+    unchecked: &mut BTreeMap<Unchecked, usize>,
+) -> Vec<Problem> {
+    match ViFacts::read(bytes) {
+        Ok(facts) => link_problems(&facts.links, vi, search, repo, unchecked),
+        // A header or directory that runs out is a cut-short file.
+        Err(LinkerError::NotResource | LinkerError::Truncated { .. }) => {
+            vec![Problem::NotResource]
+        }
+        Err(LinkerError::Unreadable { block, offset }) => {
+            vec![Problem::Unreadable { block, offset }]
+        }
+    }
+}
+
+fn link_problems(
+    links: &[LinkPath],
+    vi: &Path,
+    search: &Search,
+    repo: &Path,
+    unchecked: &mut BTreeMap<Unchecked, usize>,
+) -> Vec<Problem> {
+    let mut found = Vec::new();
+    for link in links {
+        match resolve(link, vi, search) {
+            Resolved::File(_) | Resolved::Skipped => {}
+            Resolved::NotFound => found.push(Problem::NotFound {
+                link: shown_link(link, vi, repo),
+            }),
+            Resolved::NotChecked(why) => *unchecked.entry(why).or_default() += 1,
+        }
+    }
+    found
+}
+
+/// Where the places a symbolic link can lead are.
+struct Search {
+    /// The folder of the LabVIEW the venv is bound to.
+    installation: PathBuf,
+    /// Whether it is on this machine.
+    present: bool,
+    /// Each venv package's `<pkg>/1` tree, in name order.
+    packages: Vec<PathBuf>,
+}
+
+impl Search {
+    fn of(bound: &Bound) -> Result<Search> {
+        let mut packages = Vec::new();
+        // A venv is not always made yet: its binding is, but its folder may hold only that.
+        for entry in std::fs::read_dir(&bound.dir)
+            .with_context(|| format!("reading {}", bound.dir.display()))?
+        {
+            let tree = entry?.path().join("1");
+            if tree.is_dir() {
+                packages.push(tree);
+            }
+        }
+        packages.sort();
+        Ok(Search {
+            installation: bound.target.path.clone(),
+            present: bound.target.path.is_dir(),
+            packages,
+        })
+    }
+}
+
+/// Where a link leads. Nothing reads the file of a `File` yet: which package
+/// holds it is asked next.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Resolved {
+    /// The file it names, or, through an `.llb`, the path of the member.
+    File(PathBuf),
+    NotFound,
+    /// It could not be looked for, and why.
+    NotChecked(Unchecked),
+    /// LabVIEW's "not a path": a subVI saved while missing. It names nothing.
+    Skipped,
+}
+
+/// Where `link`, found in the VI file `vi`, leads.
+fn resolve(link: &LinkPath, vi: &Path, search: &Search) -> Resolved {
+    let found = |path: PathBuf| match exists(&path) {
+        true => Resolved::File(path),
+        false => Resolved::NotFound,
+    };
+    match &link.kind {
+        Kind::NotAPath => Resolved::Skipped,
+        Kind::Relative => found(join(vi.to_path_buf(), &link.components)),
+        Kind::Absolute => found(PathBuf::from(link.to_path_string())),
+        Kind::Symbolic(root) => {
+            let Some(folder) = root.folder() else {
+                return Resolved::NotChecked(Unchecked::Root(root.text().to_owned()));
+            };
+            let places = std::iter::once(&search.installation).chain(&search.packages);
+            let held = places
+                .map(|place| join(place.join(folder), &link.components))
+                .find(|path| exists(path));
+            match (held, search.present) {
+                (Some(path), _) => Resolved::File(path),
+                (None, true) => Resolved::NotFound,
+                (None, false) => Resolved::NotChecked(Unchecked::NoInstallation {
+                    folder,
+                    installation: search.installation.clone(),
+                }),
+            }
+        }
+    }
+}
+
+/// `base` with `parts` followed: an `Up` leaves the last name.
+fn join(mut base: PathBuf, parts: &[Component]) -> PathBuf {
+    for part in parts {
+        match part {
+            Component::Up => {
+                base.pop();
+            }
+            Component::Name(name) => base.push(name),
+        }
+    }
+    base
+}
+
+/// Is there a file at `path`, or a member of an `.llb` of that name?
+fn exists(path: &Path) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    let (Some(llb), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    let is_llb = llb
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("llb"));
+    if !is_llb || !llb.is_file() {
+        return false;
+    }
+    let name = name.to_string_lossy();
+    // An `.llb` that cannot be read lists nothing.
+    let members = std::fs::read(llb).map_or_else(
+        |_| Vec::new(),
+        |b| linker::llb_members(&b).unwrap_or_default(),
+    );
+    members.iter().any(|member| match cfg!(windows) {
+        true => member.eq_ignore_ascii_case(&name),
+        false => *member == *name,
+    })
+}
+
+/// A path relative to the project root, with `/`; one outside it as it is.
+fn shown(repo: &Path, path: &Path) -> String {
+    match target::within(repo, path) {
+        true => {
+            let below = path.components().skip(repo.components().count());
+            let names: Vec<_> = below.map(|c| c.as_os_str().to_string_lossy()).collect();
+            names.join("/")
+        }
+        false => path.to_string_lossy().replace('\\', "/"),
+    }
+}
+
+/// A link as the finding names it.
+fn shown_link(link: &LinkPath, vi: &Path, repo: &Path) -> String {
+    match &link.kind {
+        Kind::Symbolic(root) => {
+            let names = link.components.iter().map(|c| match c {
+                Component::Up => "..",
+                Component::Name(name) => name,
+            });
+            std::iter::once(root.text())
+                .chain(names)
+                .collect::<Vec<_>>()
+                .join("/")
+        }
+        Kind::Relative => shown(repo, &join(vi.to_path_buf(), &link.components)),
+        Kind::Absolute | Kind::NotAPath => shown(repo, Path::new(&link.to_path_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cancel::CancelToken;
+    use crate::events::NullSink;
+    use crate::linker::{Block, Rsrc, decode_pth0, encode_pth0};
+    use crate::ops::testing;
+    use crate::target::LvTarget;
+
+    const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/check");
+
+    /// A project folder with an `lvpm.toml`, a venv bound to an installation
+    /// that is not made yet, and no LabVIEW detected. Removed when dropped.
+    struct Sandbox {
+        root: PathBuf,
+        repo: PathBuf,
+        installation: PathBuf,
+        venv_dir: &'static str,
+    }
+
+    impl Sandbox {
+        fn new(tag: &str, labview: Option<&str>) -> Sandbox {
+            Sandbox::with_venv_dir(tag, labview, ".lv-venv")
+        }
+
+        fn with_venv_dir(tag: &str, labview: Option<&str>, venv_dir: &'static str) -> Sandbox {
+            let root = testing::scratch_dir(&format!("check-{tag}"));
+            let (repo, installation) = (root.join("repo"), root.join("LabVIEW 2026"));
+            std::fs::create_dir_all(&repo).unwrap();
+            let key = labview.map_or(String::new(), |v| format!("labview = \">={v}\"\n"));
+            std::fs::write(repo.join("lvpm.toml"), format!("[project]\n{key}")).unwrap();
+            let target = LvTarget {
+                version: 26.3,
+                bitness: 64,
+                path: installation.clone(),
+            };
+            let made = venv::create(
+                &repo,
+                Some("2026"),
+                None,
+                Path::new(venv_dir),
+                &[target],
+                &NullSink,
+            );
+            made.unwrap();
+            Sandbox {
+                root,
+                repo,
+                installation,
+                venv_dir,
+            }
+        }
+
+        /// A fixture VI (or `.llb`, or `.lvlib`) copied to `to` under the project.
+        fn put(&self, fixture: &str, to: &str) -> &Sandbox {
+            let from = Path::new(FIXTURES).join("project").join(fixture);
+            self.write(to, &std::fs::read(from).unwrap())
+        }
+
+        fn write(&self, to: &str, bytes: &[u8]) -> &Sandbox {
+            let to = self.repo.join(to);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::write(to, bytes).unwrap();
+            self
+        }
+
+        fn mkdir(&self, rel: &str) -> &Sandbox {
+            std::fs::create_dir_all(self.repo.join(rel)).unwrap();
+            self
+        }
+
+        /// The files a library VI is made of, as they are in the project.
+        fn library(&self) -> &Sandbox {
+            self.put("Lib.lvlib", "Lib.lvlib")
+                .put("Good.vi", "Good.vi")
+                .put("Helper.vi", "Helper.vi")
+        }
+
+        /// A file in the bound installation, which is made if it is not.
+        fn installed(&self, rel: &str) -> &Sandbox {
+            let to = self.installation.join(rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::write(to, "").unwrap();
+            self
+        }
+
+        fn env(&self) -> OpEnv<'static> {
+            let mut env = testing::env(&self.repo);
+            env.targets.clear();
+            env.config.venv_dir = PathBuf::from(self.venv_dir);
+            env
+        }
+
+        fn check(&self) -> Checked {
+            check(&self.env(), None).unwrap()
+        }
+
+        fn check_in(&self, dir: &str) -> Result<Checked, CheckError> {
+            check(&self.env(), Some(Path::new(dir)))
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn not_found(vi: &str, link: &str) -> Finding {
+        Finding {
+            vi: vi.into(),
+            problem: Problem::NotFound { link: link.into() },
+        }
+    }
+
+    const NI_LINK: &str = "<vilib>/Utility/Get Current LV Bitness.vi";
+    const NI_FILE: &str = "vi.lib/Utility/Get Current LV Bitness.vi";
+
+    #[test]
+    fn a_clean_project_has_no_findings() {
+        let sandbox = Sandbox::new("clean", Some("2026"));
+        sandbox.library();
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 2);
+        assert_eq!(checked.findings, []);
+        assert_eq!(checked.not_checked_total(), 0);
+        assert!(checked.saves_checked);
+    }
+
+    #[test]
+    fn a_manifest_without_labview_says_save_versions_are_not_checked() {
+        let sandbox = Sandbox::new("no-labview", None);
+        sandbox.library();
+        assert!(!sandbox.check().saves_checked);
+    }
+
+    #[test]
+    fn a_missing_subvi_is_named_with_its_vi() {
+        let sandbox = Sandbox::new("missing", None);
+        sandbox.put("Broken.vi", "Broken.vi").mkdir("Sub");
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 1);
+        assert_eq!(checked.findings, [not_found("Broken.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_link_through_an_llb_needs_the_member_to_be_listed() {
+        let sandbox = Sandbox::new("llb", None);
+        sandbox
+            .put("UsesLlb.vi", "UsesLlb.vi")
+            .put("Archive.llb", "Archive.llb");
+        assert_eq!(
+            sandbox.check().findings,
+            [not_found("UsesLlb.vi", "Archive.llb/Removed.vi")]
+        );
+    }
+
+    #[test]
+    fn a_missing_llb_fails_every_link_through_it() {
+        let sandbox = Sandbox::new("no-llb", None);
+        sandbox.put("UsesLlb.vi", "UsesLlb.vi");
+        assert_eq!(
+            sandbox.check().findings,
+            [
+                not_found("UsesLlb.vi", "Archive.llb/InLlb.vi"),
+                not_found("UsesLlb.vi", "Archive.llb/Removed.vi"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_llb_that_is_not_one_lists_nothing() {
+        let sandbox = Sandbox::new("bad-llb", None);
+        sandbox
+            .put("UsesLlb.vi", "UsesLlb.vi")
+            .write("Archive.llb", b"not an llb");
+        assert_eq!(sandbox.check().findings.len(), 2);
+    }
+
+    #[test]
+    fn two_vis_with_the_same_missing_link_give_two_findings() {
+        let sandbox = Sandbox::new("twice", None);
+        sandbox
+            .put("Broken.vi", "Broken.vi")
+            .put("Broken.vi", "Broken2.vi");
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 2);
+        assert_eq!(
+            checked.findings,
+            [
+                not_found("Broken.vi", "Sub/Gone.vi"),
+                not_found("Broken2.vi", "Sub/Gone.vi"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_linker_table_is_a_finding_at_its_offset() {
+        let mut bytes = std::fs::read(Path::new(FIXTURES).join("project/Good.vi")).unwrap();
+        let rsrc = Rsrc::read(&bytes).unwrap();
+        let at = rsrc
+            .blocks
+            .iter()
+            .find(|b| &b.kind == b"LIvi")
+            .unwrap()
+            .offset;
+        bytes[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        let sandbox = Sandbox::new("unreadable", None);
+        sandbox.write("Good.vi", &bytes);
+        let want = Finding {
+            vi: "Good.vi".into(),
+            problem: Problem::Unreadable {
+                block: "LIvi",
+                offset: at,
+            },
+        };
+        assert_eq!(sandbox.check().findings, [want]);
+    }
+
+    #[test]
+    fn text_named_vi_is_not_a_resource_file_and_neither_is_a_cut_short_one() {
+        let sandbox = Sandbox::new("not-a-vi", None);
+        let good = std::fs::read(Path::new(FIXTURES).join("project/Good.vi")).unwrap();
+        sandbox
+            .write("x.vi", b"not a VI")
+            .write("cut.vi", &good[..20]);
+        let vi = |vi: &str| Finding {
+            vi: vi.into(),
+            problem: Problem::NotResource,
+        };
+        assert_eq!(sandbox.check().findings, [vi("cut.vi"), vi("x.vi")]);
+    }
+
+    #[test]
+    fn a_vilib_link_is_looked_for_in_the_bound_installation() {
+        let sandbox = Sandbox::new("vilib-here", None);
+        sandbox.put("UsesNi.vi", "UsesNi.vi").installed(NI_FILE);
+        let checked = sandbox.check();
+        assert_eq!((checked.vis, checked.findings.len()), (1, 0));
+        assert_eq!(checked.not_checked_total(), 0);
+    }
+
+    #[test]
+    fn a_vilib_file_missing_from_the_installation_is_a_broken_link() {
+        let sandbox = Sandbox::new("vilib-gone", None);
+        sandbox
+            .put("UsesNi.vi", "UsesNi.vi")
+            .installed("vi.lib/other.vi");
+        let checked = sandbox.check();
+        assert_eq!(checked.findings, [not_found("UsesNi.vi", NI_LINK)]);
+        assert_eq!(checked.not_checked_total(), 0);
+    }
+
+    #[test]
+    fn with_the_installation_absent_vilib_links_are_not_checked_and_do_not_fail() {
+        let sandbox = Sandbox::new("no-installation", None);
+        sandbox.put("UsesNi.vi", "UsesNi.vi");
+        let checked = sandbox.check();
+        assert_eq!(checked.findings, []);
+        let cause = Unchecked::NoInstallation {
+            folder: "vi.lib",
+            installation: sandbox.installation.clone(),
+        };
+        assert_eq!(checked.not_checked, BTreeMap::from([(cause, 1)]));
+    }
+
+    #[test]
+    fn links_not_checked_do_not_hide_real_findings() {
+        let sandbox = Sandbox::new("not-hidden", None);
+        sandbox
+            .put("UsesNi.vi", "UsesNi.vi")
+            .put("Broken.vi", "Broken.vi")
+            .mkdir("Sub");
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 2);
+        assert_eq!(checked.findings, [not_found("Broken.vi", "Sub/Gone.vi")]);
+        assert_eq!(checked.not_checked_total(), 1);
+    }
+
+    #[test]
+    fn a_venv_package_holds_a_vilib_file_whether_or_not_the_installation_is_there() {
+        let sandbox = Sandbox::new("package", None);
+        sandbox.put("UsesNi.vi", "UsesNi.vi");
+        sandbox.write(&format!(".lv-venv/pkg/1/{NI_FILE}"), b"");
+        let checked = sandbox.check();
+        assert_eq!(checked.findings, []);
+        assert_eq!(checked.not_checked_total(), 0);
+    }
+
+    #[test]
+    fn without_a_venv_the_hint_is_the_one_a_manifest_alone_gets() {
+        let root = testing::scratch_dir("check-no-venv");
+        std::fs::write(root.join("lvpm.toml"), "[project]\n").unwrap();
+        let why = check(&testing::env(&root), None).unwrap_err();
+        assert!(why.to_string().contains("but no venv"), "{why}");
+
+        let bare = testing::scratch_dir("check-no-manifest");
+        let why = check(&testing::env(&bare), None).unwrap_err();
+        assert!(
+            why.to_string().starts_with("no lvpm.toml at or above"),
+            "{why}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    #[test]
+    fn a_project_flag_names_the_repo_from_anywhere() {
+        let sandbox = Sandbox::new("project-flag", None);
+        sandbox.put("Broken.vi", "Broken.vi");
+        let mut env = sandbox.env();
+        env.cwd = sandbox.root.clone();
+        env.flags.project = Some(PathBuf::from("repo"));
+        assert_eq!(check(&env, None).unwrap().findings.len(), 1);
+
+        env.flags.project = Some(PathBuf::from("."));
+        let why = check(&env, None).unwrap_err();
+        assert!(why.to_string().contains("no venv in"), "{why}");
+    }
+
+    #[test]
+    fn dir_limits_the_walk_and_names_paths_from_the_project_root() {
+        let sandbox = Sandbox::new("dir", None);
+        sandbox.put("Broken.vi", "Old/Broken.vi");
+        sandbox
+            .put("Lib.lvlib", "New/Lib.lvlib")
+            .put("Good.vi", "New/Good.vi")
+            .put("Helper.vi", "New/Helper.vi");
+        let new = sandbox.check_in("New").unwrap();
+        assert_eq!((new.vis, new.findings.len()), (2, 0));
+        let old = sandbox.check_in("Old").unwrap();
+        assert_eq!(
+            old.findings,
+            [not_found("Old/Broken.vi", "Old/Sub/Gone.vi")]
+        );
+        assert_eq!(sandbox.check().vis, 3);
+    }
+
+    #[test]
+    fn a_dir_that_is_not_there_is_named_as_it_was_written() {
+        let sandbox = Sandbox::new("no-dir", None);
+        sandbox.put("Good.vi", "Good.vi");
+        let why = sandbox.check_in("Nope").unwrap_err();
+        assert!(matches!(&why, CheckError::NoDir(dir) if dir == Path::new("Nope")));
+        assert_eq!(why.to_string(), "folder Nope does not exist");
+    }
+
+    #[test]
+    fn no_vis_is_a_check_of_nothing() {
+        let sandbox = Sandbox::new("empty", None);
+        let checked = sandbox.check();
+        assert_eq!((checked.vis, checked.findings.len()), (0, 0));
+    }
+
+    #[test]
+    fn the_venv_dot_folders_and_other_files_are_not_walked() {
+        // A venv folder that is not a dot-folder is skipped by being the venv.
+        let sandbox = Sandbox::with_venv_dir("walk", None, "venv");
+        sandbox.library();
+        sandbox
+            .put("Broken.vi", "venv/pkg/1/vi.lib/Broken.vi")
+            .put("Broken.vi", ".hidden/Broken.vi")
+            .write("notes.txt", b"x")
+            .write(
+                "Upper.VI",
+                &std::fs::read(Path::new(FIXTURES).join("project/Helper.vi")).unwrap(),
+            );
+        let checked = sandbox.check();
+        assert_eq!(checked.vis, 3, "Good, Helper and Upper.VI");
+        // Upper.VI is Helper.vi's bytes: it links to Lib.lvlib only.
+        assert_eq!(checked.findings, []);
+    }
+
+    #[test]
+    fn a_linked_folder_is_not_followed() {
+        let sandbox = Sandbox::new("symlink", None);
+        let outside = sandbox.root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::copy(
+            Path::new(FIXTURES).join("project/Broken.vi"),
+            outside.join("Broken.vi"),
+        )
+        .unwrap();
+        let link = sandbox.repo.join("linked");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, &link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, &link);
+        if made.is_err() {
+            // Windows without Developer Mode cannot make one; nothing to check.
+            return;
+        }
+        assert_eq!(sandbox.check().vis, 0);
+    }
+
+    #[test]
+    fn a_cancelled_check_stops_before_it_reads_a_vi() {
+        let sandbox = Sandbox::new("cancel", None);
+        sandbox.put("Broken.vi", "Broken.vi");
+        let mut env = sandbox.env();
+        env.cancel = CancelToken::new();
+        assert!(env.cancel.cancel());
+        let why = check(&env, None).unwrap_err();
+        assert!(
+            matches!(&why, CheckError::Other(why) if why.is::<Cancelled>()),
+            "{why}"
+        );
+    }
+
+    /// A search with an installation of its own, which is `present` if it is
+    /// made, and no packages.
+    fn search_in(dir: &Path) -> Search {
+        Search {
+            installation: dir.join("LabVIEW"),
+            present: dir.join("LabVIEW").is_dir(),
+            packages: Vec::new(),
+        }
+    }
+
+    fn link(kind: Kind, parts: &[&str]) -> LinkPath {
+        let components = parts.iter().map(|p| match p {
+            &".." => Component::Up,
+            name => Component::Name(name.to_string()),
+        });
+        LinkPath {
+            kind,
+            components: components.collect(),
+        }
+    }
+
+    #[test]
+    fn a_relative_link_starts_from_the_vi_file_and_each_up_leaves_one_level() {
+        let dir = testing::scratch_dir("check-resolve-rel");
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/x.vi"), "").unwrap();
+        std::fs::write(dir.join("a/b/Helper.vi"), "").unwrap();
+        let (vi, search) = (dir.join("a/b/V.vi"), search_in(&dir));
+        // `Up` leaves the file, so `[Up, Helper.vi]` is the VI's own folder.
+        let sibling = link(Kind::Relative, &["..", "Helper.vi"]);
+        assert_eq!(
+            resolve(&sibling, &vi, &search),
+            Resolved::File(dir.join("a/b/Helper.vi"))
+        );
+        let parent = link(Kind::Relative, &["..", "..", "x.vi"]);
+        assert_eq!(
+            resolve(&parent, &vi, &search),
+            Resolved::File(dir.join("a/x.vi"))
+        );
+        let gone = link(Kind::Relative, &["..", "..", "gone.vi"]);
+        assert_eq!(resolve(&gone, &vi, &search), Resolved::NotFound);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_absolute_link_is_checked_as_it_is() {
+        let dir = testing::scratch_dir("check-resolve-abs");
+        let here = dir.join("x.vi");
+        std::fs::write(&here, "").unwrap();
+        let absolute = |path: &Path| decode_pth0(&encode_pth0(path).unwrap()).unwrap().0;
+        let vi = dir.join("V.vi");
+        let search = search_in(&dir);
+        assert_eq!(
+            resolve(&absolute(&here), &vi, &search),
+            Resolved::File(here)
+        );
+        assert_eq!(
+            resolve(&absolute(&dir.join("gone.vi")), &vi, &search),
+            Resolved::NotFound
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_root_lvpm_does_not_resolve_is_not_checked_and_a_not_a_path_is_skipped() {
+        let dir = testing::scratch_dir("check-resolve-other");
+        let (vi, search) = (dir.join("V.vi"), search_in(&dir));
+        let resource = link(
+            Kind::Symbolic(linker::Root::Other("<resource>".into())),
+            &["x.vi"],
+        );
+        assert_eq!(
+            resolve(&resource, &vi, &search),
+            Resolved::NotChecked(Unchecked::Root("<resource>".into()))
+        );
+        let nothing = LinkPath {
+            kind: Kind::NotAPath,
+            components: Vec::new(),
+        };
+        assert_eq!(resolve(&nothing, &vi, &search), Resolved::Skipped);
+
+        let mut unchecked = BTreeMap::new();
+        let links = [resource, nothing];
+        assert_eq!(
+            link_problems(&links, &vi, &search, &dir, &mut unchecked),
+            []
+        );
+        assert_eq!(unchecked.values().sum::<usize>(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_stored_in_two_tables_is_one_finding() {
+        let dir = testing::scratch_dir("check-resolve-twice");
+        // As stored: relative to the VI file, so it starts with an `Up`.
+        let record = b"PTH0\0\0\0\x11\0\x01\0\x03\0\x03Sub\x07Gone.vi";
+        let path = decode_pth0(record).unwrap().0;
+        assert_eq!(path, link(Kind::Relative, &["..", "Sub", "Gone.vi"]));
+        let table = [b"\0\x01LVIN\0\0\0\x01".as_slice(), record].concat();
+        let empty: &[u8] = b"\0\x01FPHP\0\0\0\0\0\x03";
+        let blocks = [
+            (b"LIvi", &table[..]),
+            (b"LIfp", &table[..]),
+            (b"LIbd", empty),
+        ]
+        .map(|(kind, data)| Block {
+            kind: *kind,
+            id: 0,
+            offset: 0,
+            data: Some(data),
+        })
+        .to_vec();
+        let links = Rsrc { blocks }.links().unwrap();
+        let (vi, search) = (dir.join("V.vi"), search_in(&dir));
+        let found = link_problems(&links, &vi, &search, &dir, &mut BTreeMap::new());
+        assert_eq!(
+            found,
+            [Problem::NotFound {
+                link: "Sub/Gone.vi".into()
+            }]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn findings_are_sorted_by_vi_then_rule_then_link_and_each_comes_once() {
+        let vi = |vi: &str, problem| Finding {
+            vi: vi.into(),
+            problem,
+        };
+        let gone = |link: &str| Problem::NotFound { link: link.into() };
+        let mut found = vec![
+            vi("b.vi", gone("z")),
+            vi("a.vi", gone("z")),
+            vi("a.vi", gone("a")),
+            vi("a.vi", gone("a")),
+            vi(
+                "a.vi",
+                Problem::Unreadable {
+                    block: "LIvi",
+                    offset: 9,
+                },
+            ),
+            vi("a.vi", Problem::NotResource),
+        ];
+        found.sort();
+        found.dedup();
+        assert_eq!(
+            found,
+            [
+                vi("a.vi", Problem::NotResource),
+                vi(
+                    "a.vi",
+                    Problem::Unreadable {
+                        block: "LIvi",
+                        offset: 9
+                    }
+                ),
+                vi("a.vi", gone("a")),
+                vi("a.vi", gone("z")),
+                vi("b.vi", gone("z")),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_check_cannot_start_a_labview() {
+        let source = include_str!("check.rs");
+        for needle in [["vi", "server"].concat(), ["detect", "_labview"].concat()] {
+            assert!(!source.contains(&needle), "check.rs names {needle}");
+        }
+    }
+}
