@@ -58,6 +58,10 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Answer yes to every prompt.
+    #[arg(long, short = 'y', global = true, env = "LVPM_YES")]
+    yes: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -466,11 +470,7 @@ enum VenvCmd {
     /// Which venv commands run here would use, and what it is bound to.
     Status,
     /// Delete the venv and everything installed in it.
-    Remove {
-        /// Do not ask first.
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+    Remove,
 }
 
 #[derive(Subcommand)]
@@ -759,7 +759,7 @@ fn run(cli: &Cli) -> Result<Report> {
             done,
         )
         .map(|()| Report::done("vi-run")),
-        Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json),
+        Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json, cli.yes),
         Cmd::Cache(CacheCmd::Add { path }) => {
             let imports = ops::query::cache_add(&env, path)?;
             Report::new(render::query::cache_add(&imports), &imports)
@@ -856,7 +856,7 @@ fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {
     })
 }
 
-fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool) -> Result<Report> {
+fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<Report> {
     match sub {
         VenvCmd::Create { manifest } => {
             let created = ops::venv_cmd::create(env, manifest.as_deref())?;
@@ -873,13 +873,15 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool) -> Result<Report> {
                 json!({ "exists": status.is_some(), "status": status }),
             )
         }
-        VenvCmd::Remove { yes } => {
+        VenvCmd::Remove => {
             let venv = ops::venv_cmd::existing(env)?;
             // Under --json stdin is no place for an answer.
             if under_json && !yes {
-                bail!("`venv remove` asks before it deletes; pass --yes to delete under --json");
+                bail!(
+                    "`venv remove` asks before it deletes; pass --yes (or set LVPM_YES=1) to delete under --json"
+                );
             }
-            ops::venv_cmd::remove(env, &venv, *yes || confirm_removal(&venv)?)?;
+            ops::venv_cmd::remove(env, &venv, yes || confirm_removal(&venv)?)?;
             Ok(Report::done("venv"))
         }
     }
@@ -1267,6 +1269,10 @@ mod tests {
             })
             .collect();
         for (long, takes_value) in globals {
+            // `lvpm tui` answers its own prompts, so --yes is harmless there.
+            if long == "yes" {
+                continue;
+            }
             let flag = format!("--{long}");
             let args: Vec<&str> = if takes_value {
                 vec![&flag, "2026"]
@@ -1274,6 +1280,26 @@ mod tests {
                 vec![&flag]
             };
             assert!(tui_gets_options(&parse(&args)), "{flag} is let through");
+        }
+    }
+
+    #[test]
+    fn lvpm_tui_accepts_yes() {
+        let cli = Cli::try_parse_from(["lvpm", "tui", "--yes"]).unwrap();
+        assert!(cli.yes);
+        assert!(!tui_gets_options(&cli));
+    }
+
+    #[test]
+    fn yes_and_y_are_global() {
+        // Only the true cases: an exported LVPM_YES makes the absent case true too.
+        for args in [
+            &["lvpm", "--yes", "venv", "remove"][..],
+            &["lvpm", "venv", "remove", "-y"],
+            &["lvpm", "sync", "--yes"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.yes, "{args:?}");
         }
     }
 
