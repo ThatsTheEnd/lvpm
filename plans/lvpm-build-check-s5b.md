@@ -284,6 +284,7 @@ passed. AC9 is checked in the PR evidence with that variable set.
     Given pilot A's pinned source checkout with labview ">=2016"
     And the bound installation folder does not exist
     And "Source/HSE-Logger/LogRecord/Generate Callchain.vi" is deleted from the project
+    And "Generate Callchain.vi" is no longer listed in "Source/HSE-Logger/LogRecord/LogRecord.lvclass"
     When lvpm build runs on it
     Then it exits 1 and dist holds no .lvpkg
     And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
@@ -353,9 +354,9 @@ graph TD
   - [x] Step 2.2: CLI flag, rendering, scenarios
 
 #### Wave 3
-- [ ] Slice 3: pilot A and docs
-  - [ ] Step 3.1: pilot scenarios
-  - [ ] Step 3.2: docs and release template
+- [x] Slice 3: pilot A and docs
+  - [x] Step 3.1: pilot scenarios
+  - [x] Step 3.2: docs and release template
 
 ## Plan Review Summary
 
