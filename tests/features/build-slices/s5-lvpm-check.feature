@@ -254,3 +254,42 @@ Feature: lvpm check finds broken links without LabVIEW
     When lvpm check runs
     Then it exits 1
     And stderr has a line containing "Nope.lvlib"
+
+  # The pilot sources are not committed; README.md beside this file says how to
+  # check them out. The two scenarios that expect a pass are pending: the real
+  # pilots hold links that exact-path checking reports, see "What check finds
+  # in the pilots" in README.md.
+  @pilot-source @pending-s5-pilot-links
+  Scenario: pilot A passes
+    Given pilot A's pinned source checkout with labview ">=2016"
+    And the bound installation folder does not exist
+    When lvpm check runs
+    Then it exits 0
+    And stdout reports at least 80 VIs checked and 0 problems
+
+  @pilot-source
+  Scenario: the demo: a broken link in pilot A is named
+    Given pilot A's pinned source checkout with labview ">=2016" and no [distribution] table
+    And the bound installation folder does not exist
+    And "Source/HSE-Logger/LogRecord/Generate Callchain.vi" is deleted from the project
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
+
+  @pilot-b-source
+  Scenario: pilot B needs its dependency declared
+    Given pilot B's pinned source checkout with labview ">=2013" and [dependencies] empty
+    And the bound installation folder does not exist
+    And "labview_open_source_lib_data_manipulation" installed in the venv from the committed pilot archive
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "source/Serializer.INI/INI.Attributes to Variant.vi: <vilib>/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi is in labview_open_source_lib_data_manipulation, which is not in [dependencies]"
+
+  @pilot-b-source @pending-s5-pilot-links
+  Scenario: pilot B passes with its dependency declared
+    Given pilot B's pinned source checkout with labview ">=2013" and "labview_open_source_lib_data_manipulation" in [dependencies]
+    And the bound installation folder does not exist
+    And "labview_open_source_lib_data_manipulation" installed in the venv from the committed pilot archive
+    When lvpm check runs
+    Then it exits 0
+    And stdout reports at least 25 VIs checked and 0 problems

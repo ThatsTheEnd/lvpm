@@ -132,6 +132,10 @@ pub fn labviewcli() -> PathBuf {
 
 /// Pilot A's pinned commit; README.md beside the build-slice features names it.
 pub const PILOT_A_COMMIT: &str = "f7cc16a391faa1e982b54ae22d2f43c9df1ef581";
+/// Pilot B's pinned commit; README.md beside the build-slice features names it.
+pub const PILOT_B_COMMIT: &str = "723d7a672b5f0eafa9f98ea63629ba5855d50227";
+/// The folder of pilot B's checkout that holds its library.
+pub const PILOT_B_SUBTREE: &str = "source";
 /// Pilot A as its vendor published it.
 pub const PILOT_A_ARCHIVE: &str = "hse_lib_hse_logger-2.2.2.114.vip";
 /// What `lvpm build` names pilot A's package.

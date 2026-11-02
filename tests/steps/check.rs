@@ -5,8 +5,12 @@
 
 use crate::CliWorld;
 use crate::support::golden::Output;
-use crate::support::pilots::pilots_dir;
+use crate::support::pilots::{
+    PILOT_A_COMMIT, PILOT_A_SUBTREE, PILOT_B_COMMIT, PILOT_B_SUBTREE, archives, copy_tree,
+    pilot_checkout, pilots_dir,
+};
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
+use crate::support::selection::{PILOT_A_ENV_VAR, PILOT_B_ENV_VAR};
 use crate::support::venv::predicted_port;
 use cucumber::{given, then, when};
 use lvpm_core::linker::Rsrc;
@@ -30,6 +34,9 @@ const PILOT_VI: &str =
     "File Group 0/vi.lib/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi";
 /// The package a scenario's "installed package" is.
 const PACKAGE: &str = "check_fixture_dep";
+/// The libraries of the pilots' sources, below the project the checkout is copied into.
+const PILOT_A_LIBRARY: &str = "Source/HSE-Logger/hse-logger.lvlib";
+const PILOT_B_LIBRARY: &str = "source/OpenSerializer.lvlib";
 
 impl CliWorld {
     fn installation(&self) -> PathBuf {
@@ -171,16 +178,63 @@ impl CliWorld {
     fn install_in_venv(&self, package: &str, rel: &str, from: &Path) {
         let tree = self.sandbox.venv_dir().join(package).join("1/vi.lib");
         let to = self.write(&tree.join(rel), &std::fs::read(from).expect("a file"));
+        self.record_install(package, &[to]);
+    }
+
+    /// The package of a committed pilot archive, as an install leaves it: the
+    /// files of its `File Group 0` below the package's `1/` tree.
+    fn install_pilot_archive(&self, package: &str) {
+        let prefix = format!("{package}-");
+        let archive = archives(&pilots_dir())
+            .into_iter()
+            .find(|a| {
+                a.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or_else(|| panic!("no committed pilot archive for {package}"));
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(archive).expect("a pilot archive"))
+            .expect("a zip");
+        let tree = self.sandbox.venv_dir().join(package).join("1");
+        let mut files = Vec::new();
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i).expect("a zip entry");
+            let Some(rel) = entry.name().strip_prefix("File Group 0/").map(String::from) else {
+                continue;
+            };
+            if entry.is_dir() {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).expect("read the entry");
+            files.push(self.write(&tree.join(rel), &bytes));
+        }
+        self.record_install(package, &files);
+    }
+
+    fn record_install(&self, package: &str, files: &[PathBuf]) {
+        let files: Vec<String> = files
+            .iter()
+            .map(|f| f.to_string_lossy().replace('\\', "/"))
+            .collect();
         let record = json!({
             "name": package, "version": "1.0", "installed_at": 0,
             "target": self.installation().to_string_lossy(),
-            "files": [to.to_string_lossy().replace('\\', "/")], "skipped_hooks": [],
+            "files": files, "skipped_hooks": [],
         });
         let record_path = self
             .sandbox
             .venv_dir()
             .join(format!(".lvpm/installed/{package}.json"));
         self.write(&record_path, record.to_string().as_bytes());
+    }
+
+    /// A pilot's source, copied from its pinned checkout into the work
+    /// directory, with the manifest tables `tables` (`[distribution]` among
+    /// them, or not).
+    fn pilot_project(&self, checkout: &Path, subtree: &str, labview: &str, tables: &str) {
+        let work = self.sandbox.work_dir();
+        copy_tree(&checkout.join(subtree), &work.join(subtree));
+        self.check_project(Some(labview), true, tables, "");
     }
 
     fn checked(&self) -> &Output {
@@ -317,6 +371,63 @@ async fn project_holds_in_folder(world: &mut CliWorld, name: String, folder: Str
     world.put_fixture(&name, &world.sandbox.work_dir().join(folder));
 }
 
+/// The `[distribution]` table of a project whose library is `library`.
+fn distribution(library: &str) -> String {
+    format!(
+        "[distribution]
+top-level-library = \"{library}\"
+"
+    )
+}
+
+/// Without a `[distribution]` table no VI is a library member, so the library
+/// file is never read: deleting a member leaves a broken link, not an error.
+#[given(
+    regex = r#"^pilot A's pinned source checkout with labview "([^"]+)"( and no \[distribution\] table)?$"#
+)]
+async fn pilot_a_project(world: &mut CliWorld, labview: String, no_distribution: String) {
+    let checkout = pilot_checkout(PILOT_A_ENV_VAR, PILOT_A_COMMIT, PILOT_A_SUBTREE)
+        .unwrap_or_else(|why| panic!("{why}"));
+    let tables = match no_distribution.is_empty() {
+        true => distribution(PILOT_A_LIBRARY),
+        false => String::new(),
+    };
+    world.pilot_project(&checkout, PILOT_A_SUBTREE, &labview, &tables);
+}
+
+#[given(
+    regex = r#"^pilot B's pinned source checkout with labview "([^"]+)" and (\[dependencies\] empty|"[^"]+" in \[dependencies\])$"#
+)]
+async fn pilot_b_project(world: &mut CliWorld, labview: String, dependencies: String) {
+    let checkout = pilot_checkout(PILOT_B_ENV_VAR, PILOT_B_COMMIT, PILOT_B_SUBTREE)
+        .unwrap_or_else(|why| panic!("{why}"));
+    let declared: String = quoted(&dependencies)
+        .iter()
+        .map(|package| {
+            format!(
+                "{package} = \"*\"
+"
+            )
+        })
+        .collect();
+    let tables = format!(
+        "{}[dependencies]
+{declared}",
+        distribution(PILOT_B_LIBRARY)
+    );
+    world.pilot_project(&checkout, PILOT_B_SUBTREE, &labview, &tables);
+}
+
+#[given(regex = r#"^"([^"]+)" installed in the venv from the committed pilot archive$"#)]
+async fn installed_from_the_pilot_archive(world: &mut CliWorld, package: String) {
+    world.install_pilot_archive(&package);
+}
+
+#[given(regex = r#"^"([^"]+)" is deleted from the project$"#)]
+async fn deleted_from_the_project(world: &mut CliWorld, file: String) {
+    std::fs::remove_file(world.sandbox.work_dir().join(file)).expect("delete the file");
+}
+
 // ---- running ----
 
 #[when("lvpm check runs")]
@@ -373,6 +484,24 @@ async fn stderr_says(world: &mut CliWorld, text: String) {
 async fn stderr_has_the_line(world: &mut CliWorld, line: String) {
     let out = world.checked();
     assert!(out.stderr.lines().any(|l| l == line), "{out:?}");
+}
+
+#[then(regex = r"^stdout reports at least (\d+) VIs checked and (\d+) problems$")]
+async fn stdout_reports_the_summary(world: &mut CliWorld, vis: usize, problems: usize) {
+    let out = world.checked();
+    let summary = world
+        .stdout_lines()
+        .into_iter()
+        .find_map(|l| l.strip_prefix("VIs checked: "))
+        .unwrap_or_else(|| panic!("no summary line: {out:?}"));
+    // "N, problems: M, links not checked: K"
+    let number = |field: usize| -> usize {
+        let text = summary.split(", ").nth(field).unwrap_or_default();
+        let digits = text.trim_start_matches(|c: char| !c.is_ascii_digit());
+        digits.parse().unwrap_or_else(|_| panic!("{summary:?}"))
+    };
+    assert!(number(0) >= vis, "want {vis} VIs at least: {out:?}");
+    assert_eq!(number(1), problems, "{out:?}");
 }
 
 #[then("the finding lines are, in order:")]
