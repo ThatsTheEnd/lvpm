@@ -697,7 +697,7 @@ A strict chain: each slice builds on the one before, so nothing runs concurrentl
 - [x] Slice 2: `lvpm check` on the project's own files
   - [x] Step 2.1: The `check` op, its walk and the broken-link rule
   - [x] Step 2.2: The CLI command, its output and the feature file
-  - [ ] Step 2.3: Save version and compiled-code rules
+  - [x] Step 2.3: Save version and compiled-code rules
 
 #### Wave 3
 - [ ] Slice 3: Undeclared dependencies
