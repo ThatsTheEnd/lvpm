@@ -29,7 +29,7 @@ pub struct BuildState {
     members: Vec<&'static str>,
     output: Option<Output>,
     /// A package's bytes as an earlier build left them.
-    earlier: Option<Vec<u8>>,
+    pub(super) earlier: Option<Vec<u8>>,
 }
 
 impl CliWorld {
@@ -44,7 +44,7 @@ impl CliWorld {
     }
 
     /// `rel`'s text with `item` added as the last item of its root element.
-    fn add_item(&self, rel: &str, close: &str, item: &str) {
+    pub(super) fn add_item(&self, rel: &str, close: &str, item: &str) {
         let text = std::fs::read_to_string(self.work(rel)).expect("read the library");
         self.put(rel, &text.replace(close, &format!("\t{item}\n{close}")));
     }
@@ -71,10 +71,17 @@ impl CliWorld {
         std::fs::write(self.work(MANIFEST_FILE), text).expect("write the manifest");
     }
 
+    /// `lvpm build` as the S1, S2 and S7a scenarios mean it: their members are
+    /// text, not VIs, and they have no venv, so the member check is skipped.
     pub(super) fn lvpm_build(&mut self) {
+        self.lvpm_build_with(&["--no-check"]);
+    }
+
+    /// `lvpm build args...` for the manifest the scenario's table says.
+    pub(super) fn lvpm_build_with(&mut self, args: &[&str]) {
         self.write_build_manifest();
         let output = match self.build.no_labview {
-            false => self.sandbox.run_lvpm(&["build"], None),
+            false => self.sandbox.run_lvpm(&[&["build"], args].concat(), None),
             true => {
                 let sink = RecordingSink::default();
                 let config = Config {
@@ -83,7 +90,7 @@ impl CliWorld {
                     venv_dir: PathBuf::from(".lv-venv"),
                 };
                 let env = OpEnv::new(&sink, config, Vec::new(), self.sandbox.work_dir());
-                let built = lvpm_core::ops::build::build(&env, false);
+                let built = lvpm_core::ops::build::build(&env, !args.contains(&"--no-check"));
                 Output {
                     stdout: String::new(),
                     stderr: built

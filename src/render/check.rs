@@ -79,6 +79,22 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
     printable(text)
 }
 
+/// stderr of a build: a line for each declared dependency that no library VI
+/// links into.
+pub fn unused(names: &[String]) -> String {
+    let lines: String = names
+        .iter()
+        .map(|name| {
+            format!(
+                "[dependencies] names {}, which no member links to \
+                 (ignore this if it is loaded by path at run time)\n",
+                one_line(name)
+            )
+        })
+        .collect();
+    printable(lines)
+}
+
 /// The `--json` result: the same shape whether the check passed or not.
 pub fn result(checked: &Checked) -> Value {
     json!({
@@ -218,6 +234,19 @@ mod tests {
             .insert(Unchecked::Root("<a\nnext: y>".into()), 1);
         assert_eq!(listing(&run).lines().count(), 3);
         assert_eq!(warnings(&run, None).lines().count(), 1);
+    }
+
+    #[test]
+    fn each_unused_dependency_is_a_line_and_cannot_forge_another() {
+        let names = ["spare".to_string(), "b\nc".to_string()];
+        assert_eq!(
+            unused(&names),
+            "[dependencies] names spare, which no member links to \
+             (ignore this if it is loaded by path at run time)\n\
+             [dependencies] names b?c, which no member links to \
+             (ignore this if it is loaded by path at run time)\n"
+        );
+        assert_eq!(unused(&[]), "");
     }
 
     #[test]
