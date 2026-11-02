@@ -18,9 +18,10 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use std::path::Path;
 
-/// The LabVIEW installations detected on this machine, newest first.
-pub fn targets<'e>(env: &'e OpEnv) -> &'e [LvTarget] {
-    &env.targets
+/// The LabVIEW installations detected on this machine, newest first, narrowed
+/// to `--labview-bitness` when it is given.
+pub fn targets(env: &OpEnv) -> Result<Vec<LvTarget>> {
+    env.pickable()
 }
 
 /// The LabVIEW year `entry` needs when `target` is older than that, so that
@@ -224,9 +225,30 @@ mod tests {
             path: PathBuf::from("LabVIEW 2026"),
         };
         let env = env_with("cache", ".lv-venv", vec![labview.clone()]);
-        assert_eq!(targets(&env).len(), 1);
-        assert_eq!(targets(&env)[0].path, labview.path);
-        assert!(targets(&env_with("cache", ".lv-venv", Vec::new())).is_empty());
+        assert_eq!(targets(&env).unwrap().len(), 1);
+        assert_eq!(targets(&env).unwrap()[0].path, labview.path);
+        assert!(
+            targets(&env_with("cache", ".lv-venv", Vec::new()))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn targets_lists_only_the_requested_bitness() {
+        let installed = |bitness| LvTarget {
+            version: 26.3,
+            bitness,
+            path: PathBuf::from(format!("LabVIEW 2026 {bitness}")),
+        };
+        let mut env = env_with("cache", ".lv-venv", vec![installed(64), installed(32)]);
+        env.flags.labview_bitness = Some(64);
+        let listed: Vec<String> = targets(&env).unwrap().iter().map(LvTarget::label).collect();
+        assert_eq!(listed, [installed(64).label()]);
+        assert!(listed[0].starts_with("LabVIEW 2026 (64-bit)"), "{listed:?}");
+
+        env.flags.labview_bitness = None;
+        assert_eq!(targets(&env).unwrap().len(), 2);
     }
 
     #[test]

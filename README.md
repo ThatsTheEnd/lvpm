@@ -135,7 +135,7 @@ the result (`search`, `info`, `list`, `targets`, `config get`, `cache add`,
 A LabVIEW's `version` is its internal version (`26.3` for LabVIEW 2026), not
 a package version.
 Under `--json` a command never prompts: `venv remove` fails unless it gets
-`--yes`.
+`--yes` (or `LVPM_YES=1`).
 
 The exit code is the same with or without `--json`:
 
@@ -148,6 +148,17 @@ The exit code is the same with or without `--json`:
 The event names, the result and error keys and these codes are stable: a
 change to them is a breaking change and gets a major version.
 <!-- ANCHOR_END: json-output -->
+
+## Upgrading
+
+lvpm has no `lvpm update` command. Upgrading is two steps, as in uv
+(`uv lock --upgrade`, then `uv sync`): `lvpm lock --upgrade` moves the lock to
+the newest versions the manifest allows, and `lvpm sync` installs them.
+
+```text
+lvpm lock --upgrade
+lvpm sync
+```
 
 ## Learn more
 

@@ -466,20 +466,38 @@ async fn usage_lists_commands(_: &mut CliWorld, a: String, b: String) {
     }
 }
 
-#[then(regex = r#"^docs/usage\.md has a "([^"]+)" section containing (".+")$"#)]
-async fn usage_section_contains(_: &mut CliWorld, heading: String, quoted: String) {
-    let guide = repo_file("docs/usage.md");
-    let (_, rest) = guide
-        .split_once(&format!("\n{heading}\n"))
-        .unwrap_or_else(|| panic!("usage.md has no {heading} section"));
-    // The section runs to the next heading of the same level; its ### parts are inside.
-    let level = heading.split(' ').next().unwrap_or("##");
-    let end = rest.find(&format!("\n{level} ")).unwrap_or(rest.len());
-    let body = &rest[..end];
+#[then(regex = r#"^(README\.md|docs/usage\.md) has a "([^"]+)" section containing (".+")$"#)]
+async fn usage_section_contains(_: &mut CliWorld, doc: String, heading: String, quoted: String) {
+    let body = heading_section(&doc, &heading);
     // `"a", "b" and "c"` splits on its quotes into text at the odd positions.
     for want in quoted.split('"').skip(1).step_by(2) {
-        assert!(body.contains(want), "{heading} does not say {want}");
+        assert!(body.contains(want), "{doc} {heading} does not say {want}");
     }
+}
+
+#[then(regex = r#"^README\.md has a "([^"]+)" section where "([^"]+)" comes before "([^"]+)"$"#)]
+async fn readme_section_orders(_: &mut CliWorld, heading: String, first: String, then: String) {
+    let body = heading_section("README.md", &heading);
+    let at = |want: &str| {
+        body.find(want)
+            .unwrap_or_else(|| panic!("{heading} does not say {want}"))
+    };
+    assert!(
+        at(&first) < at(&then),
+        "{heading} says {then} before {first}"
+    );
+}
+
+/// `heading`'s section of `doc`, up to the next heading of the same level; its
+/// deeper parts are inside.
+fn heading_section(doc: &str, heading: &str) -> String {
+    let text = repo_file(doc);
+    let (_, rest) = text
+        .split_once(&format!("\n{heading}\n"))
+        .unwrap_or_else(|| panic!("{doc} has no {heading} section"));
+    let level = heading.split(' ').next().unwrap_or("##");
+    let end = rest.find(&format!("\n{level} ")).unwrap_or(rest.len());
+    rest[..end].to_string()
 }
 
 #[then(regex = r#"^docs/(usage|manifest|reference/json-output)\.md (?:mentions|names) "([^"]+)"$"#)]

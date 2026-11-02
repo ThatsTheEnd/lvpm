@@ -95,6 +95,7 @@ Feature: Machine-readable output
     Given the project has a venv on the detected LabVIEW
     When "lvpm --json venv remove" runs in the project
     Then the last line is an error that names --yes
+    And the error names "LVPM_YES"
     And the exit code is 1
     And the venv still exists
 

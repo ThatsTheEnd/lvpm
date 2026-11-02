@@ -18,6 +18,7 @@ use lvpm_core::{config, git, launch, target, venv, viserver};
 mod render;
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::builder::TypedValueParser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
@@ -36,6 +37,16 @@ struct Cli {
     /// Install into a scratch directory instead of a LabVIEW installation.
     #[arg(long, global = true, value_name = "DIR")]
     prefix: Option<PathBuf>,
+
+    /// Use only the 32- or 64-bit LabVIEW, to pick one when both of a version are installed.
+    #[arg(
+        long,
+        global = true,
+        value_name = "BITS",
+        value_parser = clap::builder::PossibleValuesParser::new(["32", "64"]).map(|bits| bits.parse::<u8>().expect("a possible value is a number")),
+        conflicts_with = "prefix"
+    )]
+    labview_bitness: Option<u8>,
 
     /// Use the LabVIEW installation itself, even from inside a project that
     /// has a venv.
@@ -58,8 +69,19 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Answer yes to every prompt.
+    // Derive gives a `bool` clap's strict true/false parser, which would refuse
+    // LVPM_YES=1 and LVPM_YES=; the falsey parser is what a flag gets by default.
+    #[arg(long, short = 'y', global = true, env = "LVPM_YES", value_parser = yes_parser())]
+    yes: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// The parser `--yes` reads LVPM_YES with, shared with its test.
+fn yes_parser() -> clap::builder::FalseyValueParser {
+    clap::builder::FalseyValueParser::new()
 }
 
 /// Shared by `install` and `relink`, so the two cannot drift apart.
@@ -466,11 +488,7 @@ enum VenvCmd {
     /// Which venv commands run here would use, and what it is bound to.
     Status,
     /// Delete the venv and everything installed in it.
-    Remove {
-        /// Do not ask first.
-        #[arg(long, short = 'y')]
-        yes: bool,
-    },
+    Remove,
 }
 
 #[derive(Subcommand)]
@@ -509,6 +527,7 @@ fn op_env<'a>(cli: &Cli, sink: &'a dyn EventSink) -> Result<OpEnv<'a>> {
     );
     env.flags = DestinationFlags {
         labview_version: cli.labview_version.clone(),
+        labview_bitness: cli.labview_bitness,
         prefix: cli.prefix.clone(),
         global: cli.global,
         project: cli.project.clone(),
@@ -569,6 +588,7 @@ impl Report {
 /// an ignored --prefix would send installs into LabVIEW instead.
 fn tui_gets_options(cli: &Cli) -> bool {
     cli.labview_version.is_some()
+        || cli.labview_bitness.is_some()
         || cli.prefix.is_some()
         || cli.global
         || cli.project.is_some()
@@ -647,8 +667,8 @@ fn run(cli: &Cli) -> Result<Report> {
     match &cli.cmd {
         Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::Targets => {
-            let targets = ops::query::targets(&env);
-            Report::new(render::query::targets(targets), targets)
+            let targets = ops::query::targets(&env)?;
+            Report::new(render::query::targets(&targets), targets)
         }
         Cmd::Start { wait } => {
             let started = ops::start::start(&env, *wait)?;
@@ -759,7 +779,7 @@ fn run(cli: &Cli) -> Result<Report> {
             done,
         )
         .map(|()| Report::done("vi-run")),
-        Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json),
+        Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json, cli.yes),
         Cmd::Cache(CacheCmd::Add { path }) => {
             let imports = ops::query::cache_add(&env, path)?;
             Report::new(render::query::cache_add(&imports), &imports)
@@ -856,7 +876,7 @@ fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {
     })
 }
 
-fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool) -> Result<Report> {
+fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<Report> {
     match sub {
         VenvCmd::Create { manifest } => {
             let created = ops::venv_cmd::create(env, manifest.as_deref())?;
@@ -873,13 +893,15 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool) -> Result<Report> {
                 json!({ "exists": status.is_some(), "status": status }),
             )
         }
-        VenvCmd::Remove { yes } => {
+        VenvCmd::Remove => {
             let venv = ops::venv_cmd::existing(env)?;
             // Under --json stdin is no place for an answer.
             if under_json && !yes {
-                bail!("`venv remove` asks before it deletes; pass --yes to delete under --json");
+                bail!(
+                    "`venv remove` asks before it deletes; pass --yes (or set LVPM_YES=1) to delete under --json"
+                );
             }
-            ops::venv_cmd::remove(env, &venv, *yes || confirm_removal(&venv)?)?;
+            ops::venv_cmd::remove(env, &venv, yes || confirm_removal(&venv)?)?;
             Ok(Report::done("venv"))
         }
     }
@@ -1267,14 +1289,121 @@ mod tests {
             })
             .collect();
         for (long, takes_value) in globals {
+            // `lvpm tui` answers its own prompts, so --yes is harmless there.
+            if long == "yes" {
+                continue;
+            }
             let flag = format!("--{long}");
+            // 64 is a value every one of them takes: a year, a bitness, a folder.
             let args: Vec<&str> = if takes_value {
-                vec![&flag, "2026"]
+                vec![&flag, "64"]
             } else {
                 vec![&flag]
             };
             assert!(tui_gets_options(&parse(&args)), "{flag} is let through");
         }
+    }
+
+    #[test]
+    fn lvpm_tui_accepts_yes() {
+        let cli = Cli::try_parse_from(["lvpm", "tui", "--yes"]).unwrap();
+        assert!(cli.yes);
+        assert!(!tui_gets_options(&cli));
+    }
+
+    #[test]
+    fn there_is_no_update_command() {
+        // Upgrading is `lvpm lock --upgrade` then `lvpm sync`, as uv does it.
+        let err = Cli::try_parse_from(["lvpm", "update"]).err().unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn lvpm_yes_is_off_only_for_falsey_values() {
+        // Without touching the process env: the parser `--yes` reads LVPM_YES
+        // through, the same one the arg is declared with.
+        let cmd = Cli::command();
+        let arg = cmd.get_arguments().find(|a| a.get_id() == "yes").unwrap();
+        assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("LVPM_YES")));
+        let parser = yes_parser();
+        for (value, on) in [
+            ("0", false),
+            ("false", false),
+            ("FALSE", false),
+            ("no", false),
+            ("off", false),
+            ("", false),
+            ("1", true),
+            ("true", true),
+            ("banana", true),
+        ] {
+            let parsed = parser
+                .parse_ref(&cmd, Some(arg), std::ffi::OsStr::new(value))
+                .unwrap();
+            assert_eq!(parsed, on, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn yes_and_y_are_global() {
+        // Only the true cases: an exported LVPM_YES makes the absent case true too.
+        for args in [
+            &["lvpm", "--yes", "venv", "remove"][..],
+            &["lvpm", "venv", "remove", "-y"],
+            &["lvpm", "sync", "--yes"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.yes, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_labview_bitness_of_32_or_64_parses_and_reaches_the_flags() {
+        for (value, bits) in [("32", 32), ("64", 64)] {
+            let cli = Cli::try_parse_from(["lvpm", "--labview-bitness", value, "targets"]).unwrap();
+            assert_eq!(cli.labview_bitness, Some(bits));
+        }
+        assert_eq!(
+            Cli::try_parse_from(["lvpm", "targets"])
+                .unwrap()
+                .labview_bitness,
+            None
+        );
+    }
+
+    #[test]
+    fn any_other_labview_bitness_is_a_usage_error_listing_the_two() {
+        for value in ["16", "40", "x64", "0"] {
+            let error = Cli::try_parse_from(["lvpm", "--labview-bitness", value, "targets"])
+                .err()
+                .unwrap_or_else(|| panic!("{value} parsed"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidValue,
+                "{value}"
+            );
+            assert_eq!(error.exit_code(), 2, "{value}");
+            let text = error.to_string();
+            assert!(
+                text.contains("[possible values: 32, 64]"),
+                "{value}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_labview_bitness_cannot_be_combined_with_a_prefix() {
+        let args = [
+            "lvpm",
+            "--prefix",
+            "dest",
+            "--labview-bitness",
+            "32",
+            "list",
+        ];
+        let error = Cli::try_parse_from(args).err().unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     fn lock_args(args: &[&str]) -> Result<Cli, clap::Error> {

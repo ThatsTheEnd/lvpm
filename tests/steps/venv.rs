@@ -85,6 +85,12 @@ async fn venv_still_exists(world: &mut CliWorld) {
     assert!(dir.is_dir(), "{} is gone", dir.display());
 }
 
+#[then("the venv no longer exists")]
+async fn venv_is_gone(world: &mut CliWorld) {
+    let dir = world.sandbox.venv_dir();
+    assert!(!dir.exists(), "{} is still there", dir.display());
+}
+
 /// The count only: the duration differs every run.
 #[then(expr = "the output has a resave line for {word}")]
 async fn has_resave_line(world: &mut CliWorld, package: String) {
