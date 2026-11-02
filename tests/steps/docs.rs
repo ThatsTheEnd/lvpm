@@ -636,10 +636,22 @@ async fn template_grants(_: &mut CliWorld, a: String, b: String) {
         .iter()
         .position(|line| line == "jobs:")
         .expect("the template has no jobs");
+    let block = jobs
+        + lines[jobs..]
+            .iter()
+            .position(|line| line == "permissions:")
+            .expect("the template's job has no permissions block");
+    // The lines are trimmed, so the block is the `name: level` lines after it.
+    let granted: Vec<&String> = lines[block + 1..]
+        .iter()
+        .take_while(|line| {
+            line.ends_with(": read") || line.ends_with(": write") || line.ends_with(": none")
+        })
+        .collect();
     for permission in [a, b] {
         assert!(
-            lines[jobs..].contains(&permission),
-            "no job of {RELEASE_TEMPLATE} grants `{permission}`"
+            granted.contains(&&permission),
+            "the job's permissions in {RELEASE_TEMPLATE} do not grant `{permission}`"
         );
     }
 }

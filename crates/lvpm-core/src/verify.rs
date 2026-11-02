@@ -110,14 +110,18 @@ pub fn decide(outcome: Outcome, policy: &Policy) -> Result<Accepted, Refusal> {
     }
 }
 
-/// Whether `pattern` matches the repository `subject`. Case does not count and
-/// a trailing `.git` on the subject is dropped. In the pattern `*` matches any
+/// Whether `pattern` matches the repository `subject`. ASCII case does not
+/// count and a trailing `.git` on either is dropped. In the pattern `*` matches any
 /// run, an empty one too, of characters other than `/`; every other character
 /// stands for itself.
 pub fn pattern_matches(pattern: &str, subject: &str) -> bool {
-    let subject = subject.to_lowercase();
+    let subject = subject.to_ascii_lowercase();
     let subject = subject.strip_suffix(".git").unwrap_or(&subject);
-    let pattern: Vec<char> = pattern.to_lowercase().chars().collect();
+    let pattern = pattern.to_ascii_lowercase();
+    let pattern = pattern.strip_suffix(".git").unwrap_or(&pattern);
+    let mut pattern: Vec<char> = pattern.chars().collect();
+    // `**` means what `*` means; merging the run keeps the backtracking linear in stars.
+    pattern.dedup_by(|a, b| *a == '*' && *b == '*');
     let subject: Vec<char> = subject.chars().collect();
     glob(&pattern, &subject)
 }
@@ -234,6 +238,13 @@ mod tests {
                 "https://github.com/a/x.y",
                 false,
                 "https://github.com/a/xzy",
+            ),
+            ("https://github.com/a/x.git", true, "https://github.com/a/x"),
+            ("https://github.com/a/**", true, "https://github.com/a/x"),
+            (
+                "https://github.com/a/k*",
+                false,
+                "https://github.com/a/\u{212A}x",
             ),
         ] {
             assert_eq!(

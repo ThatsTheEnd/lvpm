@@ -380,7 +380,9 @@ fn parse_policy(value: toml::Value) -> Result<Policy> {
 /// in any case. What its `*` means is [`crate::verify::pattern_matches`]'s.
 fn trusted_publisher(value: toml::Value) -> Result<String> {
     match value {
-        toml::Value::String(pattern) if pattern.to_lowercase().starts_with(GITHUB_URL_PREFIX) => {
+        toml::Value::String(pattern)
+            if pattern.to_ascii_lowercase().starts_with(GITHUB_URL_PREFIX) =>
+        {
             Ok(pattern)
         }
         toml::Value::String(pattern) => bail!(
