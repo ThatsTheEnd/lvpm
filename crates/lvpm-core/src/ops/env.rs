@@ -217,12 +217,23 @@ impl<'a> OpEnv<'a> {
     /// otherwise it is looked up from `cwd`.
     pub fn find_venv(&self) -> Result<Option<Venv>> {
         let project = self.flags.project.as_deref().map(|p| self.cwd.join(p));
-        venv::find(
+        let found = venv::find(
             project.as_deref(),
             &self.cwd,
             &self.config.venv_dir,
             &self.targets,
-        )
+        )?;
+        if let (Some(v), Some(bits)) = (&found, self.flags.labview_bitness)
+            && v.target.bitness != bits
+        {
+            bail!(
+                "this venv is bound to {}, not the {bits}-bit LabVIEW --labview-bitness asks for\n\
+                 hint: drop --labview-bitness, or run `lvpm venv remove` without it, then \
+                 `lvpm venv create --labview-bitness {bits}`",
+                v.target.label()
+            );
+        }
+        Ok(found)
     }
 
     /// Where the relink VI and a staged PostUninstall hook are written. `%TEMP%`
@@ -393,6 +404,42 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&repo);
         }
+    }
+
+    #[test]
+    fn a_bitness_the_venv_is_not_bound_to_is_refused_and_a_matching_or_absent_one_is_not() {
+        let repo = scratch_dir("venv-bitness");
+        let bound = LvTarget {
+            version: 26.3,
+            ..labview(2026, 64)
+        };
+        let installed = vec![bound.clone(), labview(2026, 32)];
+        venv::create(
+            &repo,
+            Some("2026"),
+            None,
+            Path::new(".lv-venv"),
+            &installed[..1],
+            &NullSink,
+        )
+        .unwrap();
+        let mut env = OpEnv::new(&NullSink, config(), installed, repo.clone());
+
+        env.flags.labview_bitness = Some(32);
+        assert_eq!(
+            env.find_venv().unwrap_err().to_string(),
+            "this venv is bound to LabVIEW 2026 (64-bit)  v26.3, not the 32-bit LabVIEW \
+             --labview-bitness asks for\n\
+             hint: drop --labview-bitness, or run `lvpm venv remove` without it, then \
+             `lvpm venv create --labview-bitness 32`"
+        );
+
+        for bits in [Some(64), None] {
+            env.flags.labview_bitness = bits;
+            let venv = env.find_venv().unwrap().expect("the venv is found");
+            assert_eq!(venv.target.path, bound.path);
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
