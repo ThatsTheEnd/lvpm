@@ -97,6 +97,7 @@ pub fn stale_reason(reason: &StaleReason) -> String {
         StaleReason::MinAgeChanged { from, to } => {
             format!("min-age-days changed ({from} -> {to})")
         }
+        StaleReason::PolicyChanged => "[policy] changed since lvpm.lock was written".to_string(),
         StaleReason::DependencyAdded { name, table } => {
             format!("{} \"{name}\" was added", dependency(table))
         }
@@ -642,6 +643,10 @@ mod tests {
             (
                 StaleReason::MinAgeChanged { from: 0, to: 14 },
                 "min-age-days changed (0 -> 14)",
+            ),
+            (
+                StaleReason::PolicyChanged,
+                "[policy] changed since lvpm.lock was written",
             ),
             (
                 StaleReason::FormatOutdated,

@@ -394,6 +394,7 @@ mod tests {
                 dependency_groups: Default::default(),
                 github: Default::default(),
                 min_age_days: 0,
+                policy: Default::default(),
             },
             packages: vec![crate::lockfile::LockedPackage {
                 name: "pkg".into(),
@@ -403,6 +404,8 @@ mod tests {
                 source: source.into(),
                 requires: Vec::new(),
                 groups: Vec::new(),
+                signer: None,
+                subject: None,
             }],
             unresolved: Vec::new(),
         }

@@ -34,6 +34,8 @@ pub struct DocsState {
     subcommands: Vec<Item>,
     flags: Vec<Item>,
     readme_section: String,
+    /// Where the release template's attest step sits among its lines.
+    attest_step: usize,
 }
 
 /// Names, each with whether the page says anything about it.
@@ -624,6 +626,51 @@ async fn template_uploads(_: &mut CliWorld, command: String, flag: String) {
             .iter()
             .any(|line| line.contains(&command) && line.contains(&flag)),
         "no line of {RELEASE_TEMPLATE} runs `{command}` with `{flag}`"
+    );
+}
+
+#[then(regex = r#"^the release template's job grants "([^"]+)" and "([^"]+)"$"#)]
+async fn template_grants(_: &mut CliWorld, a: String, b: String) {
+    let lines = template_lines();
+    let jobs = lines
+        .iter()
+        .position(|line| line == "jobs:")
+        .expect("the template has no jobs");
+    for permission in [a, b] {
+        assert!(
+            lines[jobs..].contains(&permission),
+            "no job of {RELEASE_TEMPLATE} grants `{permission}`"
+        );
+    }
+}
+
+#[then(regex = r#"^the release template runs "([^"]+)" with subject-path "([^"]+)"$"#)]
+async fn template_attests(world: &mut CliWorld, action: String, subject: String) {
+    let lines = template_lines();
+    let step = lines
+        .iter()
+        .position(|line| *line == format!("uses: {action}") || *line == format!("- uses: {action}"))
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} runs no `{action}`"));
+    assert!(
+        lines[step + 1..].iter().take(2).eq([
+            "with:".to_string(),
+            format!("subject-path: {subject}")
+        ]
+        .iter()),
+        "`{action}` in {RELEASE_TEMPLATE} has no `with:` `subject-path: {subject}`"
+    );
+    world.docs.attest_step = step;
+}
+
+#[then(regex = r#"^that step comes before the step that runs "([^"]+)"$"#)]
+async fn attest_precedes(world: &mut CliWorld, command: String) {
+    let upload = template_lines()
+        .iter()
+        .position(|line| line.contains(&command))
+        .unwrap_or_else(|| panic!("no line of {RELEASE_TEMPLATE} runs `{command}`"));
+    assert!(
+        world.docs.attest_step < upload,
+        "the attest step does not come before the step that runs `{command}`"
     );
 }
 

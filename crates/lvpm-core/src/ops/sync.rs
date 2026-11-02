@@ -803,6 +803,8 @@ mod tests {
             source: LOCAL_SOURCE.to_string(),
             requires: requires.iter().map(|name| name.to_string()).collect(),
             groups: groups.iter().map(|group| group.to_string()).collect(),
+            signer: None,
+            subject: None,
         }
     }
 
@@ -818,6 +820,7 @@ mod tests {
                 dev_dependencies: BTreeMap::new(),
                 dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
+                policy: Default::default(),
             },
             packages,
             unresolved: Vec::new(),

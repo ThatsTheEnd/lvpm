@@ -11,10 +11,6 @@ on:
   push:
     tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
 
-# Creating the release and uploading to it need write access to contents.
-permissions:
-  contents: write
-
 # A second run for the same tag waits, then finds the release the first one made.
 concurrency:
   group: publish-${{ github.ref_name }}
@@ -28,6 +24,13 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Creating the release and uploading to it need write access to contents.
+    # Attesting the package needs an OIDC token (id-token) to sign with and
+    # write access to attestations to store the result.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,6 +47,10 @@ jobs:
           echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
       - name: Build the package
         run: lvpm build
+      - name: Attest the package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.lvpkg
       - name: Attach it to the tag's release
         env:
           GH_TOKEN: ${{ github.token }}

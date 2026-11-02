@@ -501,12 +501,12 @@ Slices 1 to 3 ship together in one PR: `[policy]` must never be released parsed 
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: the pure core
-  - [ ] Step 1.1: `verify.rs` (Policy, Outcome, decide, matcher)
-  - [ ] Step 1.2: `[policy]` parsing
-  - [ ] Step 1.3: lock fields and staleness
-- [ ] Slice T: the release template
-  - [ ] Step T.1: template and its check
+- [x] Slice 1: the pure core
+  - [x] Step 1.1: `verify.rs` (Policy, Outcome, decide, matcher)
+  - [x] Step 1.2: `[policy]` parsing
+  - [x] Step 1.3: lock fields and staleness
+- [x] Slice T: the release template
+  - [x] Step T.1: template and its check
 
 #### Wave 2
 - [ ] Slice 2: asking GitHub and gh

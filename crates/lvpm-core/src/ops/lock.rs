@@ -710,6 +710,8 @@ fn build(
             },
             requires: locked_requirements(entry, resolution),
             groups: groups_needing(key, &reached),
+            signer: None,
+            subject: None,
         })
         .collect();
     let unresolved = resolution
@@ -910,6 +912,8 @@ mod tests {
             source: source.into(),
             requires: Vec::new(),
             groups: Vec::new(),
+            signer: None,
+            subject: None,
         };
         let mut github = entry("pkg", "1.0", &[], "http://api/assets/1");
         github.source = index::github_source("o/r");
@@ -1153,6 +1157,8 @@ caraya = \"*\"
                 source: LOCAL_SOURCE.to_string(),
                 requires: Vec::new(),
                 groups: Vec::new(),
+                signer: None,
+                subject: None,
             })
             .collect();
         lock
