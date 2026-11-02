@@ -40,6 +40,20 @@ pub fn listing(checked: &Checked) -> String {
 /// stderr: each cause of links not looked for, and what could not be said of
 /// the run. `dir` is the folder that was asked for, if one was.
 pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
+    let under = dir.map_or_else(
+        || "the project".to_string(),
+        |d| one_line(&d.display().to_string()),
+    );
+    warnings_with(checked, &format!("under {under}"))
+}
+
+/// [`warnings`] for a build, which checks the library's members, not a folder.
+pub fn member_warnings(checked: &Checked) -> String {
+    warnings_with(checked, "among the library's members")
+}
+
+/// The warnings, saying where no VI was found.
+fn warnings_with(checked: &Checked, no_vis_where: &str) -> String {
     let mut text = String::new();
     for (cause, count) in &checked.not_checked {
         let why = match cause {
@@ -70,11 +84,7 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
         );
     }
     if checked.vis == 0 {
-        let under = dir.map_or_else(
-            || "the project".to_string(),
-            |d| one_line(&d.display().to_string()),
-        );
-        text.push_str(&format!("warning: no VIs under {under}\n"));
+        text.push_str(&format!("warning: no VIs {no_vis_where}\n"));
     }
     printable(text)
 }
@@ -467,6 +477,10 @@ mod tests {
         );
         assert_eq!(warnings(&none, None), "warning: no VIs under the project\n");
         assert_eq!(warnings(&checked(1, vec![]), None), "");
+        assert_eq!(
+            member_warnings(&none),
+            "warning: no VIs among the library's members\n"
+        );
     }
 
     #[test]

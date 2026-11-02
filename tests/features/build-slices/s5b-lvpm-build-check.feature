@@ -11,6 +11,7 @@ Feature: lvpm build checks the library's members first
   Scenario: a clean library builds
     When lvpm build runs on it
     Then it exits 0, dist holds the package, and stderr is empty
+    And stdout has a line starting "built "
 
   Scenario: a member with a missing subVI refuses the build
     Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
@@ -18,6 +19,7 @@ Feature: lvpm build checks the library's members first
     When lvpm build runs on it
     Then it exits 1
     And stdout has the line "Broken.vi: link not found: Sub/Gone.vi"
+    And stdout has the line "VIs checked: 3, problems: 1, links not checked: 0"
     And stderr has the line "build refused: 1 problem(s) in library members, nothing written; fix them or pass --no-check"
     And stderr has no line containing "no member links to"
     And dist holds no .lvpkg
@@ -27,6 +29,25 @@ Feature: lvpm build checks the library's members first
     And "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
     When lvpm build runs on it
     Then it exits 1 and that package is byte-identical to before
+    And stderr has the line "build refused: 1 problem(s) in library members, nothing written; fix them or pass --no-check"
+    And dist holds only that package
+
+  Scenario: every broken member is counted
+    Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
+    And "Broken2.vi", a copy of "Broken.vi", is also a member
+    When lvpm build runs on it
+    Then it exits 1
+    And stdout has the line "Broken.vi: link not found: Sub/Gone.vi"
+    And stdout has the line "Broken2.vi: link not found: Sub/Gone.vi"
+    And stderr has the line "build refused: 2 problem(s) in library members, nothing written; fix them or pass --no-check"
+    And dist holds no .lvpkg
+
+  Scenario: a member the library lists but the disk lacks stops the build
+    Given the library lists "Gone.vi", which is not on disk
+    When lvpm build runs on it
+    Then it exits 1
+    And stderr has a line containing "Gone.vi, which is not on disk"
+    And dist holds no .lvpkg
 
   Scenario: a broken VI outside the library does not stop the build
     Given the project also holds "Broken.vi", not a member
@@ -56,7 +77,7 @@ Feature: lvpm build checks the library's members first
   Scenario: a declared dependency a member uses gives no warning
     Given member "UsesDep.vi" links into package "check_fixture_dep" installed in the venv, and "check_fixture_dep" in [dependencies]
     When lvpm build runs on it
-    Then it exits 0 and stderr has no line containing "no member links to"
+    Then it exits 0, dist holds the package, and stderr is empty
 
   Scenario Outline: every check rule on a member refuses the build
     Given the member "Good.vi" <is broken>
@@ -74,6 +95,7 @@ Feature: lvpm build checks the library's members first
     Given the project has no venv
     When lvpm build runs on it
     Then it exits 1, stderr names "lvpm sync" and "--no-check", and dist holds no .lvpkg
+    And stderr has a line containing "run lvpm venv create and lvpm sync, or pass --no-check"
 
   Scenario: --no-check builds without a venv and past a broken member
     Given the project has no venv
@@ -86,4 +108,4 @@ Feature: lvpm build checks the library's members first
   Scenario: --json reports a refusal as check does
     Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
     When lvpm build runs on it with --json
-    Then it exits 1, dist holds no .lvpkg, and the JSON has "command": "build" and one finding for "Broken.vi"
+    Then it exits 1, dist holds no .lvpkg, and the JSON has "ok": false, "command": "build" and one finding for "Broken.vi"

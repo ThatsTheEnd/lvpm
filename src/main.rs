@@ -914,7 +914,7 @@ fn cmd_build(env: &OpEnv, check: bool) -> Result<Report> {
             let checked = &library.checked;
             let mut result = render::check::result(checked);
             result["command"] = json!("build");
-            let warning = render::check::warnings(checked, None)
+            let warning = render::check::member_warnings(checked)
                 + &render::build::refused(checked.findings.len());
             Ok(Report::new(render::check::listing(checked), result)?
                 .warning(warning)
@@ -923,7 +923,7 @@ fn cmd_build(env: &OpEnv, check: bool) -> Result<Report> {
         ops::build::Outcome::Built(built) => {
             let warning = match &built.library {
                 Some(library) => {
-                    render::check::warnings(&library.checked, None)
+                    render::check::member_warnings(&library.checked)
                         + &render::check::unused(&library.unused)
                 }
                 None => render::build::SKIPPED.to_string(),

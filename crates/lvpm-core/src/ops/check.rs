@@ -254,10 +254,8 @@ struct Seen {
 
 /// The `[dependencies]` no link in `seen` led into, in manifest order.
 fn unused(manifest: &Project, seen: &Seen) -> Vec<String> {
-    // A link that could not be looked for may lead into any package, so none is unused.
-    let unresolved = (seen.not_checked.keys())
-        .any(|why| matches!(why, Unchecked::NoInstallation { .. } | Unchecked::Root(_)));
-    if unresolved {
+    // A link that was not looked for, whatever the cause, may lead into any package, so none is unused.
+    if !seen.not_checked.is_empty() {
         return Vec::new();
     }
     // shortcut: a package loaded by path at run time has no link and is reported unused; a manifest opt-out would fix it if users ask.
@@ -2030,6 +2028,24 @@ check_fixture-dep = \"*\"",
         // Found in the installation, it leads into none.
         sandbox.installed(NI_FILE);
         assert_eq!(sandbox.check_library().unused, ["check_fixture_dep"]);
+    }
+
+    #[test]
+    fn nothing_is_unused_while_any_link_was_not_looked_for() {
+        let manifest = project::parse(
+            "[project]\nname = \"x\"\nversion = \"1.0\"\n[dependencies]\nspare = \"*\"\n",
+        )
+        .unwrap();
+        let mut seen = Seen::default();
+        assert_eq!(unused(&manifest, &seen), ["spare"]);
+        for why in [
+            Unchecked::Absolute,
+            Unchecked::Unfollowed,
+            Unchecked::Root("<resource>".into()),
+        ] {
+            seen.not_checked = BTreeMap::from([(why, 1)]);
+            assert_eq!(unused(&manifest, &seen), Vec::<String>::new());
+        }
     }
 
     #[test]

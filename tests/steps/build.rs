@@ -11,6 +11,7 @@ use crate::support::sandbox::LOCAL_PACKAGES_DIR;
 use cucumber::{given, then, when};
 use lvpm_core::config::Config;
 use lvpm_core::ops::OpEnv;
+use lvpm_core::ops::build::Outcome;
 use std::io::Read;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -98,7 +99,10 @@ impl CliWorld {
                         .err()
                         .map(|e| format!("{e:#}"))
                         .unwrap_or_default(),
-                    exit_code: i32::from(built.is_err()),
+                    exit_code: match &built {
+                        Ok(Outcome::Refused(_)) | Err(_) => 1,
+                        Ok(_) => 0,
+                    },
                     tree: None,
                 }
             }

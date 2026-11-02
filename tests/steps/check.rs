@@ -119,6 +119,11 @@ impl CliWorld {
     /// The fixture VI `name`, listed by `Lib.lvlib`.
     fn add_member(&self, name: &str) {
         self.put_fixture(name, &self.sandbox.work_dir());
+        self.list_member(name);
+    }
+
+    /// `name`, a file in the project, listed by `Lib.lvlib`.
+    fn list_member(&self, name: &str) {
         let item = format!("<Item Name=\"{name}\" Type=\"VI\" URL=\"../{name}\"/>");
         self.add_item("Lib.lvlib", "</Library>", &item);
     }
@@ -651,6 +656,13 @@ async fn member_and_empty_folder(world: &mut CliWorld, vi: String, folder: Strin
     std::fs::create_dir_all(world.sandbox.work_dir().join(folder)).expect("make the folder");
 }
 
+#[given(regex = r#"^"([^"]+)", a copy of "([^"]+)", is also a member$"#)]
+async fn copy_is_also_a_member(world: &mut CliWorld, copy: String, of: String) {
+    let work = world.sandbox.work_dir();
+    std::fs::copy(work.join(of), work.join(&copy)).expect("copy the VI");
+    world.list_member(&copy);
+}
+
 #[given(regex = r#"^the project also holds "([^"]+)", not a member$"#)]
 async fn holds_a_non_member(world: &mut CliWorld, vi: String) {
     world.put_fixture(&vi, &world.sandbox.work_dir());
@@ -762,12 +774,6 @@ async fn refused_and_package_unchanged(world: &mut CliWorld) {
     );
 }
 
-#[then(regex = r#"^it exits 0 and stderr has no line containing "([^"]+)"$"#)]
-async fn built_and_stderr_lacks(world: &mut CliWorld, text: String) {
-    world.exited(0);
-    stderr_has_no_line_containing(world, text).await;
-}
-
 #[then(regex = r#"^it exits 1, stdout has a line starting "([^"]+)", and dist holds no \.lvpkg$"#)]
 async fn refused_with_a_line(world: &mut CliWorld, start: String) {
     world.exited(1);
@@ -789,6 +795,13 @@ async fn stderr_has_no_line_containing(world: &mut CliWorld, text: String) {
     assert!(!out.stderr.lines().any(|l| l.contains(&text)), "{out:?}");
 }
 
+#[then("dist holds only that package")]
+async fn dist_holds_only_that_package(world: &mut CliWorld) {
+    let dist = world.sandbox.work_dir().join("dist");
+    let found: Vec<_> = std::fs::read_dir(dist).expect("dist").flatten().collect();
+    assert_eq!(found.len(), 1, "dist holds {found:?}");
+}
+
 #[then(regex = r#"^stderr is exactly "([^"]+)"$"#)]
 async fn stderr_is_exactly(world: &mut CliWorld, text: String) {
     let out = world.checked();
@@ -796,12 +809,13 @@ async fn stderr_is_exactly(world: &mut CliWorld, text: String) {
 }
 
 #[then(
-    regex = r#"^it exits 1, dist holds no \.lvpkg, and the JSON has "command": "build" and one finding for "([^"]+)"$"#
+    regex = r#"^it exits 1, dist holds no \.lvpkg, and the JSON has "ok": false, "command": "build" and one finding for "([^"]+)"$"#
 )]
 async fn refused_as_json(world: &mut CliWorld, vi: String) {
     world.exited(1);
     world.no_package_in_dist();
     let result = json_result(world);
+    assert_eq!(result["ok"], json!(false), "{result}");
     assert_eq!(result["command"], json!("build"), "{result}");
     let findings = result["findings"].as_array().expect("findings");
     assert_eq!(findings.len(), 1, "{result}");
