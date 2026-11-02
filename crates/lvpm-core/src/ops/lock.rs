@@ -6,6 +6,7 @@
 //! its SHA-256, and writes the lock in one step, so a lock that is written is
 //! complete and a failed run leaves the old one untouched.
 
+use super::attest::attest_archives;
 use super::env::OpEnv;
 use super::github_index;
 use super::session::Downloads;
@@ -21,6 +22,7 @@ use crate::paths;
 use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
 use crate::released;
 use crate::solve::{self, Conflict, Fact, Resolution, SolveError};
+use crate::verify::Attestation;
 use crate::version::Version;
 use anyhow::Context;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -45,12 +47,12 @@ pub fn lock(env: &OpEnv) -> Result<Lockfile, LockError> {
         return Ok(current.clone());
     }
 
-    let (lock, changes) = relock(env, &found, previous.as_ref())?;
+    let (lock, changes, after) = relock(env, &found, previous.as_ref())?;
     let text = lock.to_toml()?;
     // From here a cancel is refused: the first file is written.
     env.cancel.begin_unpack()?;
     write_atomically(&lock_path, &text)?;
-    announce_written(env, lock_path, &lock, changes);
+    announce_written(env, lock_path, &lock, changes, after);
     Ok(lock)
 }
 
@@ -113,7 +115,7 @@ pub fn upgrade(env: &OpEnv, which: &Upgrade) -> Result<Lockfile, LockError> {
         .rewrite
         .as_ref()
         .map_or(project, |rewrite| &rewrite.project);
-    let (lock, changes) = relock_in(
+    let (lock, changes, after) = relock_in(
         env,
         project,
         &index,
@@ -146,16 +148,18 @@ pub fn upgrade(env: &OpEnv, which: &Upgrade) -> Result<Lockfile, LockError> {
             to: update.to.clone(),
         });
     }
-    announce_written(env, lock_path, &lock, changes);
+    announce_written(env, lock_path, &lock, changes, after);
     Ok(lock)
 }
 
-/// What changed in the lock just written, and that it is on disk.
+/// What changed in the lock just written, and that it is on disk; then the
+/// events that are said only once it is, `after`.
 pub(super) fn announce_written(
     env: &OpEnv,
     lock_path: PathBuf,
     lock: &Lockfile,
     changes: Vec<LockChange>,
+    after: Vec<Event>,
 ) {
     if !changes.is_empty() {
         env.sink.emit(Event::LockChanged { changes });
@@ -164,6 +168,9 @@ pub(super) fn announce_written(
         path: lock_path,
         packages: lock.packages.len(),
     });
+    for event in after {
+        env.sink.emit(event);
+    }
 }
 
 /// Which locked versions a new resolution may leave.
@@ -344,14 +351,19 @@ fn constraint_updates(
         .collect()
 }
 
+/// A lock made, how it differs from the one it replaces, and the events to say
+/// only once it is written.
+pub(super) type Relocked = (Lockfile, Vec<LockChange>, Vec<Event>);
+
 /// The lock the manifest resolves to now, and how it differs from `previous`,
 /// with nothing written. Resolving keeps the versions `previous` chose where
-/// they still fit; every chosen archive is fetched and hashed.
+/// they still fit; every chosen archive is fetched and hashed, and each GitHub
+/// one is checked against the `[policy]`.
 pub(super) fn relock(
     env: &OpEnv,
     found: &(PathBuf, Project),
     previous: Option<&Lockfile>,
-) -> Result<(Lockfile, Vec<LockChange>), LockError> {
+) -> Result<Relocked, LockError> {
     let index = load_index(env, Some(found), previous, &Moving::Nothing)?;
     relock_with(env, &found.1, &index, previous)
 }
@@ -362,7 +374,7 @@ pub(super) fn relock_with(
     project: &Project,
     index: &Index,
     previous: Option<&Lockfile>,
-) -> Result<(Lockfile, Vec<LockChange>), LockError> {
+) -> Result<Relocked, LockError> {
     relock_in(env, project, index, previous, &Moving::Nothing, &[])
 }
 
@@ -403,14 +415,22 @@ fn relock_in(
     previous: Option<&Lockfile>,
     moving: &Moving,
     pins: &[(String, Constraint)],
-) -> Result<(Lockfile, Vec<LockChange>), LockError> {
+) -> Result<Relocked, LockError> {
     let labview = project.labview.as_deref().ok_or(LockError::NoLabview)?;
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
     let hashes = hash_archives(env, index, &resolution, previous)?;
+    let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let feeds = index::feeds(&project.resolved_sources()?, project.default_sources);
-    let lock = build(project, labview, &resolution, &hashes, &feeds);
+    let lock = build(
+        project,
+        labview,
+        &resolution,
+        &hashes,
+        &attested.signers,
+        &feeds,
+    );
 
     for unresolved in &resolution.unresolved {
         env.sink.emit(Event::RequirementUnresolved {
@@ -429,7 +449,7 @@ fn relock_in(
         });
     }
     let changes = changes(previous, &lock);
-    Ok((lock, changes))
+    Ok((lock, changes, attested.not_checked))
 }
 
 /// Whether `lvpm.lock` exists and still represents the manifest; the error
@@ -615,15 +635,7 @@ fn hash_archives(
             position: position + 1,
             total,
         });
-        let kept = previous
-            .iter()
-            .flat_map(|lock| &lock.packages)
-            .find(|package| {
-                name_key(&package.name) == *key
-                    && Version::parse(&package.version) == entry.version
-                    && from_same_repo(package, entry)
-            });
-        if let Some(locked) = kept {
+        if let Some(locked) = kept_of(previous, key, entry) {
             let mut search = Search::in_cache(&downloads, locked);
             if !search.found {
                 search.look_in(&downloads, index)?;
@@ -663,6 +675,21 @@ fn hash_archives(
     }
 }
 
+/// The package `previous` locks that `entry` (named `key`) stands for: the same
+/// version, and for a GitHub entry the same repo. A package kept keeps the
+/// SHA-256, and the signer, it was locked with.
+pub(super) fn kept_of<'a>(
+    previous: Option<&'a Lockfile>,
+    key: &str,
+    entry: &Entry,
+) -> Option<&'a LockedPackage> {
+    previous?.packages.iter().find(|package| {
+        name_key(&package.name) == key
+            && Version::parse(&package.version) == entry.version
+            && from_same_repo(package, entry)
+    })
+}
+
 /// The `source` the lock records for a package that comes from `repo`.
 pub(super) fn github_lock_source(repo: &str) -> String {
     format!("https://github.com/{repo}")
@@ -681,12 +708,14 @@ fn from_same_repo(package: &LockedPackage, entry: &Entry) -> bool {
     })
 }
 
-/// The lock a resolution makes, given the hash of each archive in it.
+/// The lock a resolution makes, given the hash of each archive in it and who
+/// built the ones that have an attestation.
 fn build(
     project: &Project,
     labview: &str,
     resolution: &Resolution,
     hashes: &HashMap<String, String>,
+    signers: &HashMap<String, Attestation>,
     feeds: &[(String, String)],
 ) -> Lockfile {
     let reached: Vec<(Option<String>, HashSet<String>)> = project
@@ -710,8 +739,8 @@ fn build(
             },
             requires: locked_requirements(entry, resolution),
             groups: groups_needing(key, &reached),
-            signer: None,
-            subject: None,
+            signer: signers.get(key).map(|built| built.signer.clone()),
+            subject: signers.get(key).map(|built| built.subject.clone()),
         })
         .collect();
     let unresolved = resolution
@@ -992,7 +1021,14 @@ mod tests {
             ],
             Vec::new(),
         );
-        let lock = build(&project, "2024", &resolution, &hashes(&resolution), &[]);
+        let lock = build(
+            &project,
+            "2024",
+            &resolution,
+            &hashes(&resolution),
+            &HashMap::new(),
+            &[],
+        );
         // alpha and shared are needed by `beta`, a direct dependency, even
         // though dev dependencies need them too; helper only by caraya.
         assert_eq!(
@@ -1030,6 +1066,7 @@ mod tests {
             "2024",
             &resolution,
             &hashes(&resolution),
+            &HashMap::new(),
             &[],
         );
         (lock.packages.into_iter())
@@ -1074,7 +1111,14 @@ caraya = \"*\"
              [dependency-groups.ci]\nci_tools = \"*\"\n\n[dependency-groups.docs]\ndocs_tools = \"*\"\n",
         );
         let resolution = grouped_resolution();
-        let lock = build(&project, "2024", &resolution, &hashes(&resolution), &[]);
+        let lock = build(
+            &project,
+            "2024",
+            &resolution,
+            &hashes(&resolution),
+            &HashMap::new(),
+            &[],
+        );
         let groups = groups_of(&lock);
         assert!(groups.contains(&("alpha", vec![])), "{groups:?}");
         assert!(groups.contains(&("beta", vec![])), "{groups:?}");
@@ -1101,7 +1145,14 @@ caraya = \"*\"
                 required_by: "beta".into(),
             }],
         );
-        let lock = build(&project, "2024", &resolution, &hashes(&resolution), &[]);
+        let lock = build(
+            &project,
+            "2024",
+            &resolution,
+            &hashes(&resolution),
+            &HashMap::new(),
+            &[],
+        );
         assert_eq!(lock.packages[1].requires, ["alpha"], "by the locked name");
         assert_eq!(
             lock.unresolved,
@@ -1134,7 +1185,14 @@ caraya = \"*\"
             ],
             Vec::new(),
         );
-        let lock = build(&project, "2024", &resolution, &hashes(&resolution), &feeds);
+        let lock = build(
+            &project,
+            "2024",
+            &resolution,
+            &hashes(&resolution),
+            &HashMap::new(),
+            &feeds,
+        );
         assert_eq!(lock.packages[0].source, LOCAL_SOURCE);
         assert_eq!(lock.packages[1].source, "http://h/feed/index.vipr");
     }
@@ -1144,6 +1202,7 @@ caraya = \"*\"
             &manifest(""),
             "2024",
             &resolution(Vec::new(), Vec::new()),
+            &HashMap::new(),
             &HashMap::new(),
             &[],
         );
@@ -1397,7 +1456,7 @@ caraya = \"*\"
             &sink,
             &[("gamma", "1.0", 30), ("gamma", "1.5", 20)],
         );
-        let (lock, _) = relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
+        let (lock, _, _) = relock_with(&project.env(&sink), &manifest, &index, None).unwrap();
         assert_eq!(lock.packages[0].version, "1.5");
         assert!(
             !sink
@@ -2157,5 +2216,546 @@ caraya = \"*\"
             !project.root.join("cache/content").exists(),
             "nothing was fetched"
         );
+    }
+
+    // ---- attestations: a GitHub release is asked, nothing else is ----
+
+    /// The attestation pass, with a fake of GitHub's attestations API (a socket
+    /// on this machine) and a fake gh, over archives that are local files:
+    /// every package `x` is of the repo `o/x`.
+    mod attestations {
+        use super::*;
+        use crate::errors::AttestationRefusal;
+        use crate::github::gh::{GhRun, Runner};
+        use crate::github::{GitHub, GitHubAuth};
+        use crate::verify::Refusal;
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::sync::Arc;
+
+        /// What the attestations API answers: a status line and a body.
+        type Answer = (&'static str, &'static str);
+        const NONE: Answer = ("404 Not Found", "{}");
+        const ONE: Answer = ("200 OK", r#"{"attestations":[{"bundle":{}}]}"#);
+
+        /// What gh says of the archive of a repo.
+        #[derive(Clone)]
+        enum Gh {
+            /// It verifies, built by this repository.
+            Attests(&'static str),
+            /// It exits 1 and says this.
+            Fails(&'static str),
+            /// It cannot be run, for this reason.
+            Absent(&'static str),
+        }
+
+        const HEAD: &str = "[project]\nlabview = \">=2023\"\n\n[sources]\ndefaults = false\n\n";
+        const REQUIRE: &str = "[policy]\nrequire-signature = true\n";
+        const TRUST_A: &str = "[policy]\ntrusted-publishers = [\"https://github.com/a/*\"]\n";
+
+        /// The bytes of package `name`'s archive.
+        fn archive(name: &str) -> Vec<u8> {
+            format!("{name} archive").into_bytes()
+        }
+
+        /// A fake attestations API answering by `owner/repo` and logging the
+        /// paths asked; a repo it is not told about gets `NONE`.
+        fn serve(answers: Vec<(&'static str, Answer)>) -> (String, Arc<Mutex<Vec<String>>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let api = format!("http://{}", listener.local_addr().unwrap());
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let log = asked.clone();
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { return };
+                    let mut head = Vec::new();
+                    let mut byte = [0];
+                    while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let path = head.split_whitespace().nth(1).unwrap_or_default();
+                    let (status, body) = answers
+                        .iter()
+                        .find(|(repo, _)| path.starts_with(&format!("/repos/{repo}/")))
+                        .map_or(NONE, |(_, answer)| *answer);
+                    log.lock().unwrap().push(path.to_string());
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(reply.as_bytes()).ok();
+                }
+            });
+            (api, asked)
+        }
+
+        /// What gh prints for the archive of package `name` when `by` built it.
+        fn verified(name: &str, by: &str) -> GhRun {
+            let subject = format!("https://github.com/{by}");
+            GhRun::Spawned {
+                status: Some(0),
+                stdout: serde_json::json!([{"verificationResult": {
+                    "signature": {"certificate": {
+                        "subjectAlternativeName": signer_of_repo(by),
+                        "sourceRepositoryURI": subject,
+                    }},
+                    "statement": {"subject": [{"digest": {"sha256": sha256_hex(&archive(name))}}]},
+                }}])
+                .to_string()
+                .into_bytes(),
+                stderr: Vec::new(),
+            }
+        }
+
+        /// The workflow of `repo` that signs its releases.
+        fn signer_of_repo(repo: &str) -> String {
+            format!("https://github.com/{repo}/.github/workflows/release.yml@refs/tags/v1.0.0")
+        }
+
+        /// A fake gh answering by `owner/repo` and logging the repos it ran for.
+        fn gh(says: Vec<(&'static str, Gh)>) -> (Runner, Arc<Mutex<Vec<String>>>) {
+            let ran = Arc::new(Mutex::new(Vec::new()));
+            let log = ran.clone();
+            let runner: Runner = Arc::new(move |_, repo, _| {
+                log.lock().unwrap().push(repo.to_string());
+                let name = repo.strip_prefix("o/").unwrap_or(repo);
+                match says
+                    .iter()
+                    .find(|(of, _)| *of == repo)
+                    .map(|(_, says)| says)
+                {
+                    Some(Gh::Attests(by)) => verified(name, by),
+                    Some(Gh::Fails(stderr)) => GhRun::Spawned {
+                        status: Some(1),
+                        stdout: Vec::new(),
+                        stderr: stderr.as_bytes().to_vec(),
+                    },
+                    Some(Gh::Absent(reason)) => GhRun::NotRunnable(reason.to_string()),
+                    None => GhRun::NotRunnable("gh was not expected to run".to_string()),
+                }
+            });
+            (runner, ran)
+        }
+
+        /// The environment of `project` with the fakes: a GitHub token is held.
+        fn env_of<'a>(
+            project: &ProjectDir,
+            sink: &'a dyn EventSink,
+            api: String,
+            runner: Runner,
+        ) -> OpEnv<'a> {
+            let mut env = project.env(sink);
+            env.github = GitHub {
+                api,
+                auth: GitHubAuth::new(|name| (name == "GH_TOKEN").then(|| "tok".into()), || None),
+                runner,
+            };
+            env
+        }
+
+        /// A GitHub package `name` 1.0.0 whose archive is a local file.
+        fn github_entry(project: &ProjectDir, name: &str) -> Entry {
+            let file = project.root.join(format!("{name}.lvpkg"));
+            std::fs::write(&file, archive(name)).unwrap();
+            let mut github = entry(name, "1.0.0", &[], &file.to_string_lossy());
+            github.source = index::github_source(&format!("o/{name}"));
+            github
+        }
+
+        /// One locking of `names` under `policy` (the manifest's `[policy]`
+        /// table, or none), the packages being `entries`.
+        struct Locking<'a> {
+            names: &'a [&'a str],
+            policy: &'a str,
+            previous: Option<&'a Lockfile>,
+            api: Vec<(&'static str, Answer)>,
+            gh: Vec<(&'static str, Gh)>,
+        }
+
+        /// What a locking did.
+        struct Done {
+            result: Result<Relocked, LockError>,
+            /// The paths the attestations API was asked.
+            asked: Vec<String>,
+            /// The repos gh was run for.
+            ran: Vec<String>,
+            events: Vec<Event>,
+        }
+
+        impl Locking<'_> {
+            fn run(self, project: &ProjectDir) -> Done {
+                let deps: String = (self.names.iter())
+                    .map(|name| format!("{name} = \"*\"\n"))
+                    .collect();
+                let manifest = format!("{HEAD}[dependencies]\n{deps}\n{}", self.policy);
+                std::fs::write(project.root.join(crate::project::FILE_NAME), manifest).unwrap();
+                let entries = (self.names.iter())
+                    .map(|name| github_entry(project, name))
+                    .collect();
+                let (api, asked) = serve(self.api);
+                let (runner, ran) = gh(self.gh);
+                let sink = Recorder::default();
+                let env = env_of(project, &sink, api, runner);
+                let found = find_manifest(&env).unwrap();
+                let result = relock_with(&env, &found.1, &Index { entries }, self.previous);
+                let (asked, ran) = (asked.lock().unwrap().clone(), ran.lock().unwrap().clone());
+                Done {
+                    result,
+                    asked,
+                    ran,
+                    events: sink.events(),
+                }
+            }
+        }
+
+        impl Done {
+            fn lock(&self) -> &Lockfile {
+                &self.result.as_ref().expect("the lock was made").0
+            }
+
+            /// The refusals, as (package, kind).
+            fn refused(&self) -> Vec<(String, Refusal)> {
+                match &self.result {
+                    Err(LockError::Refused { refusals, .. }) => refusals
+                        .iter()
+                        .map(|refusal| (refusal.name.clone(), refusal.kind.clone()))
+                        .collect(),
+                    other => panic!("not refused: {:?}", other.as_ref().map(|_| ())),
+                }
+            }
+
+            /// What the lock has as the signer and the subject of `name`.
+            fn signer_of(&self, name: &str) -> Option<(String, String)> {
+                let package = (self.lock().packages.iter())
+                    .find(|package| package.name == name)
+                    .unwrap();
+                package.signer.clone().zip(package.subject.clone())
+            }
+
+            fn checked(&self) -> bool {
+                (self.events.iter()).any(|event| matches!(event, Event::AttestationChecking { .. }))
+            }
+        }
+
+        fn project(tag: &str) -> ProjectDir {
+            ProjectDir::new(&format!("attest-{tag}"), MANIFEST, &[])
+        }
+
+        /// The signer and the subject the lock has for a release built by `repo`.
+        fn signed_by(repo: &str) -> Option<(String, String)> {
+            Some((signer_of_repo(repo), format!("https://github.com/{repo}")))
+        }
+
+        #[test]
+        fn an_attested_releases_signer_reaches_the_lock() {
+            let project = project("signed");
+            let done = Locking {
+                names: &["p"],
+                policy: "",
+                previous: None,
+                api: vec![("o/p", ONE)],
+                gh: vec![("o/p", Gh::Attests("a/x"))],
+            }
+            .run(&project);
+            assert_eq!(done.signer_of("p"), signed_by("a/x"));
+            assert_eq!(done.ran, ["o/p"]);
+            assert!(
+                done.events.contains(&Event::AttestationChecking {
+                    name: "p".into(),
+                    version: "1.0.0".into()
+                }),
+                "{:?}",
+                done.events
+            );
+            assert!(
+                done.result.unwrap().2.is_empty(),
+                "nothing is left unchecked"
+            );
+        }
+
+        #[test]
+        fn every_refused_package_is_reported_and_nothing_is_written() {
+            let project = project("refused");
+            let done = Locking {
+                names: &["p", "q"],
+                policy: REQUIRE,
+                previous: None,
+                api: vec![],
+                gh: vec![],
+            }
+            .run(&project);
+            assert_eq!(
+                done.refused(),
+                [
+                    ("p".to_string(), Refusal::NoAttestation),
+                    ("q".to_string(), Refusal::NoAttestation)
+                ]
+            );
+            assert!(done.ran.is_empty(), "gh runs only for what the API found");
+            assert!(!project.lock_path().exists(), "relocking writes no lock");
+        }
+
+        #[test]
+        fn a_forged_attestation_is_refused_with_no_policy() {
+            let project = project("forged");
+            let done = Locking {
+                names: &["p"],
+                policy: "",
+                previous: None,
+                api: vec![("o/p", ONE)],
+                gh: vec![("o/p", Gh::Fails("verification failed"))],
+            }
+            .run(&project);
+            assert_eq!(
+                done.refused(),
+                [(
+                    "p".to_string(),
+                    Refusal::DoesNotVerify {
+                        stderr: "verification failed".into()
+                    }
+                )]
+            );
+        }
+
+        #[test]
+        fn an_untrusted_publisher_is_refused_and_a_trusted_one_locks() {
+            let project = project("trust");
+            let api = vec![("o/p", ONE), ("o/q", ONE)];
+            let says = vec![("o/p", Gh::Attests("b/x")), ("o/q", Gh::Attests("a/q"))];
+            let both = Locking {
+                names: &["p", "q"],
+                policy: TRUST_A,
+                previous: None,
+                api: api.clone(),
+                gh: says.clone(),
+            }
+            .run(&project);
+            let Err(LockError::Refused {
+                refusals,
+                trusted_publishers,
+            }) = &both.result
+            else {
+                panic!("p is refused");
+            };
+            assert_eq!(trusted_publishers, &["https://github.com/a/*"]);
+            assert_eq!(
+                *refusals,
+                [AttestationRefusal {
+                    name: "p".into(),
+                    version: "1.0.0".into(),
+                    repo: "o/p".into(),
+                    kind: Refusal::UntrustedSigner {
+                        subject: "https://github.com/b/x".into(),
+                        signer: signer_of_repo("b/x"),
+                    }
+                }]
+            );
+
+            let only_q = Locking {
+                names: &["q"],
+                policy: TRUST_A,
+                previous: None,
+                api,
+                gh: says,
+            }
+            .run(&project);
+            assert_eq!(only_q.signer_of("q"), signed_by("a/q"));
+        }
+
+        #[test]
+        fn without_gh_and_without_a_policy_the_lock_is_made_and_the_warning_follows_it_being_written()
+         {
+            let project = project("no-gh");
+            let done = Locking {
+                names: &["p"],
+                policy: "",
+                previous: None,
+                api: vec![("o/p", ONE)],
+                gh: vec![("o/p", Gh::Absent("gh is not installed"))],
+            }
+            .run(&project);
+            assert_eq!(done.signer_of("p"), None);
+            let (lock, changes, after) = done.result.unwrap();
+            assert_eq!(
+                after,
+                [Event::AttestationsNotChecked {
+                    packages: vec![("p".into(), "1.0.0".into())],
+                    reason: "gh is not installed".into()
+                }]
+            );
+
+            let sink = Recorder::default();
+            let env = project.env(&sink);
+            announce_written(&env, project.lock_path(), &lock, changes, after);
+            let events = sink.events();
+            assert!(
+                matches!(
+                    &events[..],
+                    [
+                        Event::LockChanged { .. },
+                        Event::LockWritten { .. },
+                        Event::AttestationsNotChecked { .. }
+                    ]
+                ),
+                "{events:?}"
+            );
+        }
+
+        #[test]
+        fn unchecked_packages_are_grouped_by_reason_in_the_order_met() {
+            let project = project("grouped");
+            let done = Locking {
+                names: &["p", "q", "r"],
+                policy: "",
+                previous: None,
+                api: vec![("o/p", ONE), ("o/q", ONE), ("o/r", ONE)],
+                gh: vec![
+                    ("o/p", Gh::Absent("gh is not installed")),
+                    ("o/q", Gh::Absent("gh timed out")),
+                    ("o/r", Gh::Absent("gh is not installed")),
+                ],
+            }
+            .run(&project);
+            let named = |names: &[&str], reason: &str| Event::AttestationsNotChecked {
+                packages: (names.iter())
+                    .map(|name| (name.to_string(), "1.0.0".to_string()))
+                    .collect(),
+                reason: reason.to_string(),
+            };
+            assert_eq!(
+                done.result.unwrap().2,
+                [
+                    named(&["p", "r"], "gh is not installed"),
+                    named(&["q"], "gh timed out")
+                ]
+            );
+        }
+
+        #[test]
+        fn packages_that_are_not_from_github_are_never_checked() {
+            for (kind, source) in [
+                ("feed", "http://127.0.0.1:1/index.vipr"),
+                ("local", "C:/packages"),
+                ("vipm", "https://vipm.io/index.json"),
+            ] {
+                let project = project(&format!("not-github-{kind}"));
+                let file = project.root.join("p.vip");
+                std::fs::write(&file, archive("p")).unwrap();
+                let mut elsewhere = entry("p", "1.0.0", &[], &file.to_string_lossy());
+                elsewhere.source = source.to_string();
+                let manifest = format!("{HEAD}[dependencies]\np = \"*\"\n\n{REQUIRE}");
+                std::fs::write(project.root.join(crate::project::FILE_NAME), manifest).unwrap();
+
+                let (api, asked) = serve(vec![]);
+                let (runner, ran) = gh(vec![]);
+                let sink = Recorder::default();
+                let env = env_of(&project, &sink, api, runner);
+                let found = find_manifest(&env).unwrap();
+                let index = Index {
+                    entries: vec![elsewhere],
+                };
+                let (lock, _, after) = relock_with(&env, &found.1, &index, None).unwrap();
+
+                assert_eq!(lock.packages.len(), 1, "{kind}");
+                assert_eq!(lock.packages[0].signer, None, "{kind}");
+                assert!(after.is_empty(), "{kind}");
+                assert!(
+                    asked.lock().unwrap().is_empty(),
+                    "{kind}: the API was asked"
+                );
+                assert!(ran.lock().unwrap().is_empty(), "{kind}: gh was run");
+                let events = sink.events();
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, Event::AttestationChecking { .. })),
+                    "{kind}: {events:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_kept_package_keeps_its_signer_and_is_decided_again_with_no_new_call() {
+            let project = project("kept");
+            let first = Locking {
+                names: &["p"],
+                policy: "",
+                previous: None,
+                api: vec![("o/p", ONE)],
+                gh: vec![("o/p", Gh::Attests("b/x"))],
+            }
+            .run(&project);
+            let held = first.lock().clone();
+            assert_eq!(first.signer_of("p"), signed_by("b/x"));
+
+            let same_policy = Locking {
+                names: &["p"],
+                policy: "",
+                previous: Some(&held),
+                api: vec![],
+                gh: vec![],
+            }
+            .run(&project);
+            assert_eq!(same_policy.signer_of("p"), signed_by("b/x"));
+
+            let stricter = Locking {
+                names: &["p"],
+                policy: TRUST_A,
+                previous: Some(&held),
+                api: vec![],
+                gh: vec![],
+            }
+            .run(&project);
+            assert_eq!(
+                stricter.refused(),
+                [(
+                    "p".to_string(),
+                    Refusal::UntrustedSigner {
+                        subject: "https://github.com/b/x".into(),
+                        signer: signer_of_repo("b/x"),
+                    }
+                )]
+            );
+            for done in [&same_policy, &stricter] {
+                assert!(done.asked.is_empty() && done.ran.is_empty());
+                assert!(!done.checked(), "{:?}", done.events);
+            }
+        }
+
+        #[test]
+        fn a_kept_package_without_a_signer_is_checked_again_only_when_the_policy_requires_it() {
+            for (tag, answer, policy, locked, asked) in [
+                ("none", NONE, REQUIRE, Err(Refusal::NoAttestation), 1),
+                ("one", ONE, REQUIRE, Ok(signed_by("a/x")), 1),
+                ("off", NONE, "", Ok(None), 0),
+            ] {
+                let project = project(&format!("kept-unsigned-{tag}"));
+                let unsigned = Locking {
+                    names: &["p"],
+                    policy: "",
+                    previous: None,
+                    api: vec![],
+                    gh: vec![],
+                }
+                .run(&project);
+                let held = unsigned.lock().clone();
+                assert_eq!(unsigned.signer_of("p"), None);
+
+                let again = Locking {
+                    names: &["p"],
+                    policy,
+                    previous: Some(&held),
+                    api: vec![("o/p", answer)],
+                    gh: vec![("o/p", Gh::Attests("a/x"))],
+                }
+                .run(&project);
+                match locked {
+                    Err(refusal) => assert_eq!(again.refused(), [("p".to_string(), refusal)]),
+                    Ok(signer) => assert_eq!(again.signer_of("p"), signer, "{tag}"),
+                }
+                assert_eq!(again.asked.len(), asked, "{tag}: {:?}", again.asked);
+            }
+        }
     }
 }

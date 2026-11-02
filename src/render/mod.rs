@@ -137,6 +137,8 @@ impl Renderer {
             | Event::HeldBack { .. }
             | Event::LockChanged { .. }
             | Event::LockWritten { .. }
+            | Event::AttestationChecking { .. }
+            | Event::AttestationsNotChecked { .. }
             | Event::LockUpToDate { .. }
             | Event::ManifestUpdated { .. }
             | Event::LockNothingNewer { .. }

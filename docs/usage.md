@@ -226,8 +226,8 @@ fails. Constraints are exact (`7.1.2.1547`), `>=` or `*`.
 
 **Out of date.** A lock is out of date when a dependency was added or removed
 in any table, a constraint no longer admits the locked version, `labview` changed, the
-hosted `[sources]` changed, including their order, or a dependency's `github`
-repo was added, removed or changed. New releases upstream do not make it so, and
+hosted `[sources]` changed, including their order, a dependency's `github`
+repo was added, removed or changed, or `[policy]` changed. New releases upstream do not make it so, and
 neither does the per-user `sources.local`. `lvpm lock --check` writes nothing:
 it exits 0 if `lvpm.lock` exists and is current, and otherwise exits non-zero
 with the reason on one line. It reads no source, so it is cheap.
@@ -376,6 +376,58 @@ release, creating the release if there is none, and replacing the file if the
 tag is pushed again. The template names the lvpm release it builds with in
 `LVPM_VERSION`; raise it to use a newer one. Projects depend on the package
 under its `[project]` `name`.
+
+## [policy]
+
+By default lvpm trusts a GitHub release on first use: the lock pins its
+SHA-256 and says nothing about who built it. A `[policy]` table in `lvpm.toml`
+asks for more. Copy this and change the repository:
+
+```toml
+[policy]
+require-signature = true                               # refuse a release with no attestation
+trusted-publishers = ["https://github.com/hexagon/*"] # refuse an attestation from any other repository
+```
+
+A signature here is a GitHub artifact attestation: a statement, signed by the
+publisher's GitHub Actions workflow, that this workflow built this archive.
+`trusted-publishers` lists patterns for the repository that ran the workflow.
+In a pattern `*` matches any run of characters except `/`, so
+`https://github.com/hexagon/*` is every repository of `hexagon`. Case does not
+matter and every pattern starts with `https://github.com/`. A non-empty list
+also refuses a release with no attestation, as `require-signature` does.
+
+When `lvpm lock` fetches a GitHub package it asks GitHub whether the archive
+has an attestation, and if it has, checks it with `gh attestation verify`. It
+writes the workflow as `signer` and the repository as `subject` under the
+package in `lvpm.lock`. Needed for that: the GitHub CLI 2.49 or newer
+(`gh`), and a token for it, which `gh auth login` or `GH_TOKEN` gives; without
+them lvpm cannot check. If anything is refused, `lvpm lock` names every
+package and why, writes no lock and exits 1.
+
+- An attestation that `gh` rejects is refused whatever the policy says.
+- A release with no attestation, or one that lvpm could not check, is
+  refused when the policy requires an attestation; the error says what to do.
+- An attestation from a repository that no pattern matches is refused.
+
+**What it covers.** Only packages from a GitHub repo. Packages from a feed,
+vipm.io, NI or a local folder are not checked, `[policy]` or not. A package
+the lock already holds keeps the signer it was locked with and is only judged
+again under the current policy, with no network. An up-to-date lock is not
+checked again, so `lvpm sync` from it checks nothing new; changing `[policy]`
+makes the lock out of date, and the next `lvpm lock` checks it again.
+
+**The fail-open limit.** With no `[policy]`, a release lvpm cannot check
+(no `gh`, no token, GitHub unreachable or rate limited) is locked with no
+signer, and after the summary a warning says which packages and why. To record
+a signer later, fix the cause and set `require-signature = true`: the next
+`lvpm lock` checks every GitHub package that has none, or delete `lvpm.lock`.
+
+**Publishing.** A release carries an attestation when it is built with the
+[release template](https://github.com/ThatsTheEnd/lvpm/blob/main/.github/workflow-templates/lvpm-release.yml)
+(see [GitHub dependencies](#github-dependencies)), which attests
+`dist/*.lvpkg` before it uploads it. A release made any other way has none and
+fails a policy that requires one.
 
 ## Per-project dependencies (venvs)
 

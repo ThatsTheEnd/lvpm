@@ -77,7 +77,6 @@ impl Downloads {
     /// Whether a GitHub entry's archive, held in the cache under `sha256`, has
     /// an attestation; see [`github::attestation::outcome`]. An entry that is
     /// not from GitHub has nothing to ask.
-    #[allow(dead_code)] // Called by the lock pass that follows (S6 slice 3).
     pub(super) fn attestation(&self, entry: &Entry, sha256: &str) -> Outcome {
         let Some(repo) = index::github_repo(entry) else {
             return Outcome::Unchecked("not a GitHub release".to_string());

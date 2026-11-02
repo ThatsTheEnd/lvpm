@@ -3,12 +3,15 @@
 //! the manifest and the commands to type are the CLI's.
 
 use super::{Renderer, Stream};
-use lvpm_core::errors::{ArchiveFailure, ArchiveFault, LockError, LockedArchiveProblem};
+use lvpm_core::errors::{
+    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem,
+};
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::released;
 use lvpm_core::solve::{AllHeldBack, Conflict, Fact};
+use lvpm_core::verify::Refusal;
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -64,6 +67,23 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 if *packages == 1 { "" } else { "s" }
             ),
         ),
+        Event::AttestationChecking { name, version } => r.line(
+            Stream::Err,
+            &format!("checking attestation of {name} {version}"),
+        ),
+        Event::AttestationsNotChecked { packages, reason } => {
+            let named: Vec<String> = (packages.iter())
+                .map(|(name, version)| format!("{name} {version}"))
+                .collect();
+            r.line(
+                Stream::Err,
+                &format!(
+                    "warning: did not check the attestation of {}: {reason}; {}",
+                    named.join(", "),
+                    cannot_check_hint(reason, None)
+                ),
+            )
+        }
         Event::ManifestUpdated { name, from, to } => r.line(
             Stream::Out,
             &format!("lvpm.toml was updated: {name} \"{from}\" -> \"{to}\""),
@@ -163,6 +183,10 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
         LockError::Conflict(conflict) => conflict_text(conflict, rerun),
         LockError::ArchivesUnavailable(failures) => archives_text(failures, rerun),
         LockError::LockedArchives(problems) => locked_archives_text(problems, rerun),
+        LockError::Refused {
+            refusals,
+            trusted_publishers,
+        } => refused_text(refusals, trusted_publishers),
         // `lvpm lock --check` fails with one line: a script reads it.
         LockError::NoLock { .. } => {
             "there is no lvpm.lock; run `lvpm lock` to create it".to_string()
@@ -365,6 +389,103 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
          lvpm.lock to lock the archives as they are now, then run {rerun} again"
     ));
     text
+}
+
+/// Every package the policy refuses, each with what to do about it. No hint
+/// says to turn the policy off.
+fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) -> String {
+    let plural = if refusals.len() == 1 { "" } else { "s" };
+    let mut text = format!("lvpm refused {} package{plural}:", refusals.len());
+    for refusal in refusals {
+        let AttestationRefusal {
+            name,
+            version,
+            repo,
+            kind,
+        } = refusal;
+        text.push_str("\n  ");
+        text.push_str(&match kind {
+            Refusal::NoAttestation => format!(
+                "{name} {version} from github.com/{repo} has no attestation\n    \
+                 hint: ask the publisher to build with the lvpm release template"
+            ),
+            Refusal::UntrustedSigner { subject, signer } => format!(
+                "{name} {version} was attested by repository {subject} (workflow {signer})\n    \
+                 which [policy] trusted-publishers does not list: {}\n    \
+                 hint: add the repository to [policy] trusted-publishers, or depend on a release \
+                 built by a trusted repository",
+                trusted_publishers.join(", ")
+            ),
+            Refusal::DoesNotVerify { stderr } => format!(
+                "the attestation of {name} {version} from github.com/{repo} does not verify:{}\n    \
+                 hint: report this to the publisher; the archive may have been tampered with. \
+                 lvpm refuses it whatever [policy] says",
+                gh_said(stderr)
+            ),
+            Refusal::CannotCheck { reason } => format!(
+                "cannot check the attestation of {name} {version}: {reason}\n    hint: {}",
+                cannot_check_hint(reason, Some(repo))
+            ),
+        });
+    }
+    text
+}
+
+/// What lvpm itself says when gh's output cannot be read or is not about the
+/// archive: it stands on the refusal's line, where gh's stderr goes below it.
+const OWN_WORDS: [&str; 2] = [
+    "unrecognised gh output",
+    "gh's attestation does not match the archive",
+];
+
+/// The end of a "does not verify:" line: lvpm's own reason after a space, or
+/// the first 5 lines of gh's stderr, without ANSI codes, one to a line and
+/// indented four spaces.
+fn gh_said(stderr: &str) -> String {
+    let plain = strip_ansi(stderr);
+    if OWN_WORDS.contains(&plain.trim()) {
+        return format!(" {}", plain.trim());
+    }
+    (plain.lines().take(5)).fold(String::new(), |text, line| format!("{text}\n    {line}"))
+}
+
+/// `text` without its ANSI escape sequences (`ESC [`, parameters, one final
+/// byte), which gh colours its messages with.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for end in chars.by_ref() {
+                if ('@'..='~').contains(&end) {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// What to do about a reason lvpm could not check an attestation. `repo` is
+/// the repository the package is from, when it is one package that is asked about.
+fn cannot_check_hint(reason: &str, repo: Option<&str>) -> String {
+    let hint = match reason {
+        "gh is not installed" => "install the GitHub CLI 2.49 or newer: https://cli.github.com",
+        "gh is too old to verify attestations" => "upgrade the GitHub CLI to 2.49 or newer",
+        "lvpm has no GitHub token"
+        | "GitHub rate limit reached (60/h without a token)"
+        | "GitHub returned HTTP 401" => "run `gh auth login` or set GH_TOKEN",
+        "could not reach GitHub" => "check your network connection and try again",
+        reason if reason.starts_with("GitHub refused the attestation lookup") => {
+            let repo = repo.unwrap_or("the repository");
+            return format!("check that your token can read {repo}");
+        }
+        _ => "try again later",
+    };
+    hint.to_string()
 }
 
 #[cfg(test)]
@@ -931,5 +1052,193 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    fn refusal(name: &str, version: &str, repo: &str, kind: Refusal) -> AttestationRefusal {
+        AttestationRefusal {
+            name: name.into(),
+            version: version.into(),
+            repo: repo.into(),
+            kind,
+        }
+    }
+
+    fn refused(refusals: Vec<AttestationRefusal>) -> String {
+        error(&LockError::Refused {
+            refusals,
+            trusted_publishers: vec!["https://github.com/a/*".into()],
+        })
+    }
+
+    #[test]
+    fn two_refused_packages_are_one_block_with_a_hint_each() {
+        let text = refused(vec![
+            refusal("serializer", "1.2.0", "b/x", Refusal::NoAttestation),
+            refusal(
+                "helper",
+                "0.3.0",
+                "b/x",
+                Refusal::UntrustedSigner {
+                    subject: "https://github.com/b/x".into(),
+                    signer: "https://github.com/b/x/.github/workflows/release.yml@refs/tags/v0.3.0"
+                        .into(),
+                },
+            ),
+        ]);
+        assert_eq!(
+            text,
+            "lvpm refused 2 packages:\n\
+             \x20 serializer 1.2.0 from github.com/b/x has no attestation\n\
+             \x20   hint: ask the publisher to build with the lvpm release template\n\
+             \x20 helper 0.3.0 was attested by repository https://github.com/b/x (workflow \
+             https://github.com/b/x/.github/workflows/release.yml@refs/tags/v0.3.0)\n\
+             \x20   which [policy] trusted-publishers does not list: https://github.com/a/*\n\
+             \x20   hint: add the repository to [policy] trusted-publishers, or depend on a \
+             release built by a trusted repository"
+        );
+    }
+
+    #[test]
+    fn the_header_says_package_for_one_and_packages_for_more() {
+        let text = refused(vec![refusal("p", "1.0.0", "o/r", Refusal::NoAttestation)]);
+        assert!(text.starts_with("lvpm refused 1 package:\n"), "{text}");
+    }
+
+    #[test]
+    fn a_cannot_check_refusal_carries_the_hint_for_its_cause_and_none_turns_the_policy_off() {
+        let table = [
+            (
+                "gh is not installed",
+                "install the GitHub CLI 2.49 or newer: https://cli.github.com",
+            ),
+            (
+                "gh is too old to verify attestations",
+                "upgrade the GitHub CLI to 2.49 or newer",
+            ),
+            (
+                "lvpm has no GitHub token",
+                "run `gh auth login` or set GH_TOKEN",
+            ),
+            (
+                "GitHub rate limit reached (60/h without a token)",
+                "run `gh auth login` or set GH_TOKEN",
+            ),
+            (
+                "GitHub returned HTTP 401",
+                "run `gh auth login` or set GH_TOKEN",
+            ),
+            (
+                "could not reach GitHub",
+                "check your network connection and try again",
+            ),
+            (
+                "GitHub refused the attestation lookup (HTTP 403)",
+                "check that your token can read o/r",
+            ),
+            ("GitHub rate limit reached", "try again later"),
+            ("GitHub returned HTTP 500", "try again later"),
+            ("GitHub returned an unreadable answer", "try again later"),
+            ("gh could not be started: access denied", "try again later"),
+            ("gh timed out", "try again later"),
+        ];
+        for (reason, hint) in table {
+            let text = refused(vec![refusal(
+                "p",
+                "1.0.0",
+                "o/r",
+                Refusal::CannotCheck {
+                    reason: reason.into(),
+                },
+            )]);
+            assert_eq!(
+                text,
+                format!(
+                    "lvpm refused 1 package:\n  \
+                     cannot check the attestation of p 1.0.0: {reason}\n    hint: {hint}"
+                )
+            );
+            assert!(!text.contains("policy"), "{text}");
+        }
+    }
+
+    #[test]
+    fn gh_stderr_is_stripped_of_colour_cut_to_5_lines_and_indented_4() {
+        let stderr: String = (1..=8)
+            .map(|n| match n % 2 {
+                0 => format!("\x1b[31;1mline {n}\x1b[0m\n"),
+                _ => format!("line {n}\n"),
+            })
+            .collect();
+        let text = refused(vec![refusal(
+            "p",
+            "1.0.0",
+            "o/r",
+            Refusal::DoesNotVerify { stderr },
+        )]);
+        assert_eq!(
+            text,
+            "lvpm refused 1 package:\n\
+             \x20 the attestation of p 1.0.0 from github.com/o/r does not verify:\n\
+             \x20   line 1\n    line 2\n    line 3\n    line 4\n    line 5\n\
+             \x20   hint: report this to the publisher; the archive may have been tampered with. \
+             lvpm refuses it whatever [policy] says"
+        );
+    }
+
+    #[test]
+    fn what_lvpm_itself_found_wrong_with_ghs_output_stands_on_the_line() {
+        for own in [
+            "unrecognised gh output",
+            "gh's attestation does not match the archive",
+        ] {
+            let text = refused(vec![refusal(
+                "p",
+                "1.0.0",
+                "o/r",
+                Refusal::DoesNotVerify { stderr: own.into() },
+            )]);
+            assert!(
+                text.contains(&format!(
+                    "  the attestation of p 1.0.0 from github.com/o/r does not verify: {own}\n    hint: report this"
+                )),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn checking_is_a_progress_line_on_stderr() {
+        let (mut renderer, out, err) = renderer();
+        renderer.render(&Event::AttestationChecking {
+            name: "p".into(),
+            version: "1.0.0".into(),
+        });
+        assert_eq!(err.text(), "checking attestation of p 1.0.0\n");
+        assert_eq!(out.text(), "");
+    }
+
+    #[test]
+    fn unchecked_packages_collapse_to_one_warning_per_reason_with_its_hint() {
+        let (mut renderer, out, err) = renderer();
+        let package = |name: &str, version: &str| (name.to_string(), version.to_string());
+        for (packages, reason) in [
+            (
+                vec![package("a", "1.0.0"), package("b", "2.0.0")],
+                "gh is not installed",
+            ),
+            (vec![package("c", "3.0.0")], "gh timed out"),
+        ] {
+            renderer.render(&Event::AttestationsNotChecked {
+                packages,
+                reason: reason.into(),
+            });
+        }
+        assert_eq!(
+            err.text(),
+            "warning: did not check the attestation of a 1.0.0, b 2.0.0: gh is not installed; \
+             install the GitHub CLI 2.49 or newer: https://cli.github.com\n\
+             warning: did not check the attestation of c 3.0.0: gh timed out; try again later\n"
+        );
+        assert_eq!(out.text(), "");
     }
 }

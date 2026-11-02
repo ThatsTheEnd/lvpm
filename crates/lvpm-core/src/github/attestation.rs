@@ -95,7 +95,8 @@ fn classify(run: GhRun, sha: &str) -> Outcome {
         } => parse_gh_json(&stdout, sha),
         GhRun::Spawned { stderr, .. } => {
             let stderr = String::from_utf8_lossy(&stderr);
-            if stderr.contains(r#"unknown command "attestation""#) {
+            // Anchored: gh's usage error leads its stderr, and a verify failure must not pass for it.
+            if (stderr.trim_start()).starts_with(r#"unknown command "attestation" for "gh""#) {
                 Outcome::Unchecked("gh is too old to verify attestations".to_string())
             } else {
                 Outcome::Invalid(stderr.into_owned())
@@ -455,6 +456,15 @@ mod tests {
                 r#"says unknown command "attestation""#,
                 spawned(1, "", "unknown command \"attestation\" for \"gh\"\n"),
                 Outcome::Unchecked("gh is too old to verify attestations".into()),
+            ),
+            (
+                r#"fails verification quoting unknown command "attestation""#,
+                spawned(
+                    1,
+                    "",
+                    "error: ref unknown command \"attestation\" for \"gh\"",
+                ),
+                Outcome::Invalid("error: ref unknown command \"attestation\" for \"gh\"".into()),
             ),
             (
                 "times out",

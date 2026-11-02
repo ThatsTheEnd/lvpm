@@ -334,7 +334,8 @@ fn commit(
         });
     }
     // Locking warns about the requirements no source lists.
-    let (lock, changes) = locking::relock_with(env, &edit.project, index, previous.as_ref())?;
+    let (lock, changes, after) =
+        locking::relock_with(env, &edit.project, index, previous.as_ref())?;
     // The edited group is installed with the default selection. A package the
     // lock lists stays where it is: only what the lock drops goes.
     let selection = Selection {
@@ -375,7 +376,7 @@ fn commit(
     restoring_on_failure(&[&manifest_path, &lock_path], || {
         write_manifest_and_lock(manifest, &lock_path, &lock_text)?;
         announce_edit(env, &edit, &lock, false);
-        announce_written(env, lock_path.clone(), &lock, changes);
+        announce_written(env, lock_path.clone(), &lock, changes, after);
         match plan.is_empty() {
             true => env.sink.emit(Event::SyncNothingToDo),
             false => {

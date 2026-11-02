@@ -22,7 +22,9 @@ can refuse unattested releases or releases attested by an untrusted repository.
 - `min-release-age`, Notation, OCI referrers (S7b), checks on feed packages.
 - Pinning the signing workflow (`gh --signer-workflow`). Trust is per repository.
 - Without `gh`, a lock written with the policy off carries no signer. Run
-  `lvpm lock` again after `gh auth login` to record one. The docs say so.
+  An up-to-date lock is left alone, so to record one after `gh auth login`,
+  set `require-signature = true` (the lock goes stale) or delete `lvpm.lock`.
+  The docs say so.
 
 ## Acceptance Criteria
 
@@ -515,10 +517,10 @@ Slices 1 to 3 ship together in one PR: `[policy]` must never be released parsed 
   - [x] Step 2.3: `Downloads::attestation`
 
 #### Wave 3
-- [ ] Slice 3: the check at lock time
-  - [ ] Step 3.1: errors, events, rendering
-  - [ ] Step 3.2: `attest_archives` pass
-  - [ ] Step 3.3: docs and cucumber
+- [x] Slice 3: the check at lock time
+  - [x] Step 3.1: errors, events, rendering
+  - [x] Step 3.2: `attest_archives` pass
+  - [x] Step 3.3: docs and cucumber
 
 ## Plan Review Summary
 

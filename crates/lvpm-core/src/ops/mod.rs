@@ -3,6 +3,7 @@
 //! front end called it.
 
 pub mod add_remove;
+mod attest;
 pub mod build;
 pub mod env;
 mod github_index;

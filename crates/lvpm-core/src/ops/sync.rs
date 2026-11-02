@@ -298,7 +298,7 @@ fn new_lock(
         return locking::lock(env);
     }
     let previous = Lockfile::read(lock_path).ok();
-    let (lock, changes) = locking::relock(env, found, previous.as_ref())?;
+    let (lock, changes, _) = locking::relock(env, found, previous.as_ref())?;
     if !changes.is_empty() {
         env.sink.emit(Event::LockWouldChange { changes });
     }
