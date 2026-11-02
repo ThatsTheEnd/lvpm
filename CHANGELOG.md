@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.18.0...v0.19.0) (2026-11-01)
+
+
+### Features
+
+* **s11:** dependency groups ([#104](https://github.com/ThatsTheEnd/lvpm/issues/104)) ([29eef60](https://github.com/ThatsTheEnd/lvpm/commit/29eef607a1493e9b155e6f9bb97c32e105dce0ff))
+
 ## [0.18.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.17.0...v0.18.0) (2026-11-01)
 
 
