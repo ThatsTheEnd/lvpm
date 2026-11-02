@@ -6,6 +6,7 @@
 use super::staging::Staging;
 use crate::events::{Event, EventSink};
 use crate::launch::{self, Instance};
+use crate::linker::Rsrc;
 use crate::venv::Venv;
 use crate::viserver::Connection;
 use anyhow::{Result, bail};
@@ -132,39 +133,12 @@ pub(crate) fn is_lv_file(path: &Path) -> bool {
         .is_some_and(|e| ["vi", "ctl", "vit"].contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// The LabVIEW major version a file was saved in, read from the `vers`
-/// resource (id 4) of its RSRC header, with no LabVIEW: 26 for LabVIEW 2026.
-/// None for a file that is not one, or is cut short.
+/// The LabVIEW major version a file was saved in, read from its RSRC header
+/// with no LabVIEW: 26 for LabVIEW 2026. None for a file that is not one, is
+/// cut short, or was saved before LabVIEW 9.
 pub(crate) fn saved_major(path: &Path) -> Option<u32> {
-    read_major(&std::fs::read(path).ok()?)
-}
-
-fn read_major(b: &[u8]) -> Option<u32> {
-    let u32_at = |at: usize| -> Option<usize> {
-        let bytes = b.get(at..at.checked_add(4)?)?;
-        Some(u32::from_be_bytes(bytes.try_into().ok()?) as usize)
-    };
-    if !b.starts_with(b"RSRC\r\n") {
-        return None;
-    }
-    let (info, data) = (u32_at(16)?, u32_at(24)?);
-    let base = info.checked_add(u32_at(info.checked_add(44)?)?)?;
-    for kind in 0..=u32_at(base)? {
-        let entry = base + 4 + 12 * kind;
-        if b.get(entry..entry + 4)? != b"vers" {
-            continue;
-        }
-        let list = base + u32_at(entry + 8)?;
-        for section in 0..=u32_at(entry + 4)? {
-            let at = list + 20 * section;
-            if u32_at(at)? == 4 {
-                // Binary-coded decimal: 0x26 is 26.
-                let major = *b.get(data + u32_at(at + 12)? + 4)?;
-                return Some(u32::from(major >> 4) * 10 + u32::from(major & 0x0f));
-            }
-        }
-    }
-    None
+    let bytes = std::fs::read(path).ok()?;
+    Some(Rsrc::read(&bytes).ok()?.save_year()? - 2000)
 }
 
 /// One LabVIEW for a run's resaves, started for the first package that needs
@@ -894,6 +868,11 @@ mod tests {
         install(&env, Some("alpha"), &dry_run()).unwrap();
 
         assert_eq!(planned(&sink.events()), None);
+    }
+
+    /// The saved major of RSRC bytes, as `saved_major` has it for a file.
+    fn read_major(b: &[u8]) -> Option<u32> {
+        Some(Rsrc::read(b).ok()?.save_year()? - 2000)
     }
 
     /// The smallest RSRC file `read_major` reads: one `vers` resource, id 4,
