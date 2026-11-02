@@ -87,6 +87,19 @@ facility (the `Server:Logging Enabled` application property), and loopback
 packet captures of traffic between processes we ran ourselves. No NI binary
 was decompiled or disassembled.
 
+## Linker format
+
+The VI file facts that [crates/lvpm-core/src/linker.rs](crates/lvpm-core/src/linker.rs) reads (RSRC block
+list, `vers` save version, the `LIvi`/`LIfp`/`LIbd` link tables and their
+`PTH0` records, the `LVSR` separate-compiled-code bit) were worked out by
+reading VI files we own or that are openly licensed: the fixtures in
+[tests/fixtures/check/](tests/fixtures/check/README.md), saved on 2026-11-02
+with our licensed LabVIEW 2026, and the VIs inside the committed pilot
+packages. The compiled-code bit (`LVSR` u32 at byte 8, `0x400`) was found by
+comparing `Good.vi` with `NotSeparated.vi`, saved the same way except for
+that setting, and checked against every pilot library file. No NI binary was
+decompiled or disassembled.
+
 ## What is deliberately kept out of this repository
 
 Packet captures, install logs, and filesystem snapshots used during the
