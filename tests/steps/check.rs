@@ -5,11 +5,13 @@
 
 use crate::CliWorld;
 use crate::support::golden::Output;
+use crate::support::pilots::pilots_dir;
 use crate::support::project::{MANIFEST_FILE, ProjectManifest};
 use crate::support::venv::predicted_port;
 use cucumber::{given, then, when};
 use lvpm_core::linker::Rsrc;
 use serde_json::{Value, json};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// The VIs the scenarios copy into a project, by the names they are given.
@@ -19,6 +21,11 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/chec
 const INSTALLATION: &str = "LabVIEW 2026";
 /// The one NI file `UsesNi.vi` links to, below the installation.
 const NI_FILE: &str = "vi.lib/Utility/Get Current LV Bitness.vi";
+/// A VI saved in LabVIEW 2013, taken out of the committed pilot archive that holds it.
+const PILOT_VI_2013: &str = "the pilot VI saved in LabVIEW 2013";
+const PILOT_ARCHIVE: &str = "labview_open_source_lib_data_manipulation-1.6.0.16.vip";
+const PILOT_VI: &str =
+    "File Group 0/vi.lib/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi";
 /// The package a scenario's "installed package" is.
 const PACKAGE: &str = "check_fixture_dep";
 
@@ -75,6 +82,9 @@ impl CliWorld {
         let names = quoted(segment);
         if segment.starts_with("an empty folder ") {
             std::fs::create_dir_all(work.join(&names[0])).expect("make the folder");
+        } else if segment == PILOT_VI_2013 {
+            let bytes = pilot_vi_2013();
+            *last = Some(self.write(&work.join("KVP Parser.vi"), &bytes));
         } else if segment.starts_with("no ") {
             // A file the scenario leaves out says so, and nothing is put in.
         } else if segment.starts_with("a copy of it named ") {
@@ -151,6 +161,17 @@ impl CliWorld {
     }
 }
 
+fn pilot_vi_2013() -> Vec<u8> {
+    let archive = std::fs::File::open(pilots_dir().join(PILOT_ARCHIVE)).expect("a pilot archive");
+    let mut zip = zip::ZipArchive::new(archive).expect("a zip");
+    let mut bytes = Vec::new();
+    zip.by_name(PILOT_VI)
+        .expect("the pilot VI")
+        .read_to_end(&mut bytes)
+        .expect("read the pilot VI");
+    bytes
+}
+
 /// The text between each pair of double quotes in `text`.
 fn quoted(text: &str) -> Vec<String> {
     text.split('"')
@@ -165,6 +186,11 @@ fn quoted(text: &str) -> Vec<String> {
 #[given(regex = r#"^a check project with labview "([^"]+)" holding (.+)$"#)]
 async fn project_with_labview(world: &mut CliWorld, labview: String, holding: String) {
     world.check_project(Some(&labview), true, &holding);
+}
+
+#[given(regex = r"^a check project with no labview key holding (.+)$")]
+async fn project_without_labview(world: &mut CliWorld, holding: String) {
+    world.check_project(None, true, &holding);
 }
 
 #[given(regex = r"^a check project holding (.+)$")]
@@ -253,6 +279,31 @@ async fn stdout_has_no_line_containing(world: &mut CliWorld, text: String) {
 async fn stderr_says(world: &mut CliWorld, text: String) {
     let out = world.checked();
     assert!(out.stderr.contains(&text), "{out:?}");
+}
+
+#[then(regex = r#"^stderr has the line "([^"]+)"$"#)]
+async fn stderr_has_the_line(world: &mut CliWorld, line: String) {
+    let out = world.checked();
+    assert!(out.stderr.lines().any(|l| l == line), "{out:?}");
+}
+
+#[then("the finding lines are, in order:")]
+async fn finding_lines(world: &mut CliWorld, step: &cucumber::gherkin::Step) {
+    let want: Vec<&str> = step
+        .table
+        .as_ref()
+        .expect("a table of the lines")
+        .rows
+        .iter()
+        .map(|row| row[0].trim())
+        .collect();
+    // The findings come first, then the `next:` lines and the summary.
+    let got: Vec<&str> = world
+        .stdout_lines()
+        .into_iter()
+        .take_while(|l| !l.starts_with("next: ") && !l.starts_with("VIs checked: "))
+        .collect();
+    assert_eq!(got, want, "{:?}", world.checked());
 }
 
 #[then(regex = r#"^stderr has a line starting "([^"]+)"$"#)]

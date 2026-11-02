@@ -131,3 +131,38 @@ Feature: lvpm check finds broken links without LabVIEW
     When lvpm check runs with --json
     Then it exits 0
     And the JSON has "ok" true, "vis" 2 and no findings
+
+  Scenario: a VI too new for the project's LabVIEW
+    Given a check project with labview ">=2025" holding "Lib.lvlib", "Good.vi" and "Helper.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "Good.vi: saved in LabVIEW 2026, newer than the minimum 2025"
+    And stdout has the line "next: save the VI for LabVIEW 2025, or raise labview in lvpm.toml"
+
+  Scenario: a VI saved before the minimum passes
+    Given a check project with labview ">=2026" holding the pilot VI saved in LabVIEW 2013
+    When lvpm check runs
+    Then stdout has no line containing "newer than the minimum"
+
+  Scenario: no labview key means no save-version check
+    Given a check project with no labview key holding "Lib.lvlib", "Good.vi" and "Helper.vi"
+    When lvpm check runs
+    Then it exits 0
+    And stderr has the line "warning: lvpm.toml has no labview, so save versions were not checked"
+
+  Scenario: compiled code must be separated
+    Given a check project holding "NotSeparated.vi" and "Helper.vi"
+    When lvpm check runs
+    Then it exits 1
+    And stdout has the line "NotSeparated.vi: compiled code is not separated from the source"
+
+  Scenario: one VI breaking several rules gives one finding per rule, in order
+    Given a check project with labview ">=2025" holding "NotSeparated.vi", "Broken.vi" and an empty folder "Sub"
+    When lvpm check runs
+    Then the finding lines are, in order:
+      | Broken.vi: saved in LabVIEW 2026, newer than the minimum 2025           |
+      | Broken.vi: link not found: Sub/Gone.vi                                  |
+      | NotSeparated.vi: saved in LabVIEW 2026, newer than the minimum 2025     |
+      | NotSeparated.vi: compiled code is not separated from the source         |
+      | NotSeparated.vi: link not found: Helper.vi                              |
+      | NotSeparated.vi: link not found: Lib.lvlib                              |

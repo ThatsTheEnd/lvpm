@@ -52,6 +52,12 @@ pub fn warnings(checked: &Checked, dir: Option<&Path>) -> String {
         };
         text.push_str(&format!("warning: links not checked: {count} into {why}\n"));
     }
+    if !checked.saves_checked {
+        text.push_str(
+            "warning: lvpm.toml has no labview, so save versions were not checked
+",
+        );
+    }
     if checked.vis == 0 {
         let under = dir.map_or_else(|| "the project".to_string(), |d| d.display().to_string());
         text.push_str(&format!("warning: no VIs under {under}\n"));
@@ -73,7 +79,13 @@ fn finding(finding: &Finding) -> Value {
     let (kind, link, block, offset) = match &finding.problem {
         Problem::NotResource => ("not_resource", None, None, None),
         Problem::Unreadable { block, offset } => ("unreadable", None, Some(*block), Some(*offset)),
+        Problem::TooNew { .. } => ("too_new", None, None, None),
+        Problem::NotSeparated => ("not_separated", None, None, None),
         Problem::NotFound { link } => ("not_found", Some(link.as_str()), None, None),
+    };
+    let (saved, minimum) = match &finding.problem {
+        Problem::TooNew { saved, minimum } => (Some(saved), Some(minimum)),
+        _ => (None, None),
     };
     json!({
         "vi": finding.vi,
@@ -81,8 +93,8 @@ fn finding(finding: &Finding) -> Value {
         "link": link,
         "package": null,
         "table": null,
-        "saved": null,
-        "minimum": null,
+        "saved": saved,
+        "minimum": minimum,
         "block": block,
         "offset": offset,
     })
@@ -95,6 +107,10 @@ fn what(problem: &Problem) -> String {
         Problem::Unreadable { block, offset } => format!(
             "linker table not readable ({block} at byte {offset}): format not supported yet"
         ),
+        Problem::TooNew { saved, minimum } => {
+            format!("saved in LabVIEW {saved}, newer than the minimum {minimum}")
+        }
+        Problem::NotSeparated => "compiled code is not separated from the source".to_string(),
         Problem::NotFound { link } => format!("link not found: {link}"),
     }
 }
@@ -108,6 +124,12 @@ fn next(problem: &Problem) -> String {
         Problem::Unreadable { .. } => "report it at https://github.com/ThatsTheEnd/lvpm/issues \
                                        with the VI attached"
             .to_string(),
+        Problem::TooNew { minimum, .. } => {
+            format!("save the VI for LabVIEW {minimum}, or raise labview in lvpm.toml")
+        }
+        Problem::NotSeparated => {
+            "turn on \"Separate compiled code from source file\" in the VI's properties".to_string()
+        }
         Problem::NotFound { .. } => {
             "restore the file, or open the VI in LabVIEW and relink it".to_string()
         }
@@ -181,6 +203,73 @@ mod tests {
         assert!(
             text.starts_with("a?[31m.vi: link not found: <vilib>/b?.vi\n"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn the_save_rules_are_lines_and_advice_between_the_resource_rules_and_not_found() {
+        let findings = vec![
+            found(
+                "Broken.vi",
+                Problem::TooNew {
+                    saved: 2026,
+                    minimum: 2025,
+                },
+            ),
+            gone("Broken.vi", "Sub/Gone.vi"),
+            found("NotSeparated.vi", Problem::NotSeparated),
+        ];
+        assert_eq!(
+            listing(&checked(2, findings)),
+            "Broken.vi: saved in LabVIEW 2026, newer than the minimum 2025\n\
+             Broken.vi: link not found: Sub/Gone.vi\n\
+             NotSeparated.vi: compiled code is not separated from the source\n\
+             next: save the VI for LabVIEW 2025, or raise labview in lvpm.toml\n\
+             next: turn on \"Separate compiled code from source file\" in the VI's properties\n\
+             next: restore the file, or open the VI in LabVIEW and relink it\n\
+             VIs checked: 2, problems: 3, links not checked: 0\n"
+        );
+    }
+
+    #[test]
+    fn a_manifest_with_no_labview_is_a_warning_between_the_not_checked_ones_and_no_vis() {
+        let mut c = checked(0, vec![]);
+        c.saves_checked = false;
+        c.not_checked
+            .insert(Unchecked::Root("<resource>".into()), 1);
+        assert_eq!(
+            warnings(&c, None),
+            "warning: links not checked: 1 into <resource> (lvpm does not resolve this root)\n\
+             warning: lvpm.toml has no labview, so save versions were not checked\n\
+             warning: no VIs under the project\n"
+        );
+    }
+
+    #[test]
+    fn the_json_gives_both_years_of_a_too_new_vi_and_nothing_else_for_not_separated() {
+        let c = checked(
+            1,
+            vec![
+                found(
+                    "a.vi",
+                    Problem::TooNew {
+                        saved: 2026,
+                        minimum: 2025,
+                    },
+                ),
+                found("b.vi", Problem::NotSeparated),
+            ],
+        );
+        let findings = result(&c)["findings"].clone();
+        assert_eq!(
+            findings[0],
+            json!({"vi": "a.vi", "kind": "too_new", "link": null, "package": null,
+                   "table": null, "saved": 2026, "minimum": 2025, "block": null, "offset": null})
+        );
+        assert_eq!(
+            findings[1],
+            json!({"vi": "b.vi", "kind": "not_separated", "link": null, "package": null,
+                   "table": null, "saved": null, "minimum": null, "block": null, "offset": null})
         );
     }
 

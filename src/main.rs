@@ -393,12 +393,12 @@ enum Cmd {
         #[arg(long)]
         to: PathBuf,
     },
-    /// Read every VI under DIR without LabVIEW and name each link to a file that is
-    /// not there.
+    /// Read every VI under DIR without LabVIEW and name each one that breaks a
+    /// rule: saved in a newer LabVIEW than lvpm.toml's `labview`, compiled code
+    /// not separated from the source, or a link to a file that is not there.
     ///
-    /// DIR is the whole project when left out. A VI or link that breaks a rule is
-    /// listed with its VI; the exit code is 1 when there is any, and 0 when
-    /// there is none.
+    /// DIR is the whole project when left out. Each finding is listed with its
+    /// VI; the exit code is 1 when there is any, and 0 when there is none.
     Check {
         /// The folder to check, relative to the working directory. Default: the project.
         dir: Option<PathBuf>,

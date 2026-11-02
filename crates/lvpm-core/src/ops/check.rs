@@ -28,6 +28,11 @@ pub enum Problem {
     /// A linker table cannot be read: `block` is its four-character name and
     /// `offset` the file byte where the section or record that failed starts.
     Unreadable { block: &'static str, offset: usize },
+    /// The VI was saved in a newer LabVIEW (`saved`, a year) than the
+    /// project's minimum (`minimum`).
+    TooNew { saved: u32, minimum: u32 },
+    /// The VI keeps its compiled code in the file, not apart from the source.
+    NotSeparated,
     /// A link to a file that is not there. `link` is shown as stored for a
     /// symbolic root (`<vilib>/x.vi`), and otherwise as the resolved path
     /// relative to the project root, with `/`.
@@ -96,6 +101,12 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     let (_, manifest) = env
         .manifest_for(None, Some(&bound.repo))?
         .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
+    let minimum = manifest
+        .labview
+        .as_deref()
+        .map(project::labview_year)
+        .transpose()
+        .map_err(anyhow::Error::from)?;
 
     let start = dir.map_or_else(
         || bound.repo.clone(),
@@ -111,7 +122,7 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
     let mut checked = Checked {
         vis: files.len(),
         not_checked: BTreeMap::new(),
-        saves_checked: manifest.labview.is_some(),
+        saves_checked: minimum.is_some(),
         findings: Vec::new(),
     };
     for file in &files {
@@ -120,7 +131,14 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
         }
         let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
         let vi = shown(&bound.repo, file);
-        let broken = problems(&bytes, file, &search, &bound.repo, &mut checked.not_checked);
+        let broken = problems(
+            &bytes,
+            file,
+            &search,
+            &bound.repo,
+            minimum,
+            &mut checked.not_checked,
+        );
         checked
             .findings
             .extend(broken.into_iter().map(|problem| Finding {
@@ -195,16 +213,22 @@ fn is_vi_file(path: &Path) -> bool {
 }
 
 /// What one VI's bytes break. A link that is looked for and not found is a
-/// problem; one that cannot be looked for is counted in `unchecked`.
+/// problem; one that cannot be looked for is counted in `unchecked`. `minimum`
+/// is the oldest LabVIEW the project is for, when it says.
 fn problems(
     bytes: &[u8],
     vi: &Path,
     search: &Search,
     repo: &Path,
+    minimum: Option<u32>,
     unchecked: &mut BTreeMap<Unchecked, usize>,
 ) -> Vec<Problem> {
     match ViFacts::read(bytes) {
-        Ok(facts) => link_problems(&facts.links, vi, search, repo, unchecked),
+        Ok(facts) => {
+            let mut found = save_problems(&facts, minimum);
+            found.extend(link_problems(&facts.links, vi, search, repo, unchecked));
+            found
+        }
         // A header or directory that runs out is a cut-short file.
         Err(LinkerError::NotResource | LinkerError::Truncated { .. }) => {
             vec![Problem::NotResource]
@@ -213,6 +237,22 @@ fn problems(
             vec![Problem::Unreadable { block, offset }]
         }
     }
+}
+
+/// What the way a VI was saved breaks. A save too old to be a year (LabVIEW 8.x
+/// and older) is not too new. A VI whose compiled-code flag cannot be read is
+/// unreadable already, so it is neither separated nor not.
+fn save_problems(facts: &ViFacts, minimum: Option<u32>) -> Vec<Problem> {
+    let mut found = Vec::new();
+    if let (Some(minimum), Some(saved)) = (minimum, facts.save_year)
+        && saved > minimum
+    {
+        found.push(Problem::TooNew { saved, minimum });
+    }
+    if !facts.separate_compiled {
+        found.push(Problem::NotSeparated);
+    }
+    found
 }
 
 fn link_problems(
@@ -1027,6 +1067,150 @@ mod tests {
                 vi("a.vi", gone("a")),
                 vi("a.vi", gone("z")),
                 vi("b.vi", gone("z")),
+            ]
+        );
+    }
+
+    fn too_new(vi: &str, saved: u32, minimum: u32) -> Finding {
+        Finding {
+            vi: vi.into(),
+            problem: Problem::TooNew { saved, minimum },
+        }
+    }
+
+    fn not_separated(vi: &str) -> Finding {
+        Finding {
+            vi: vi.into(),
+            problem: Problem::NotSeparated,
+        }
+    }
+
+    /// The pilot VI saved in LabVIEW 2013 (see `a_pilot_control_is_read...`).
+    fn pilot_vi_2013() -> Vec<u8> {
+        use std::io::Read;
+        let vip = Path::new(FIXTURES)
+            .join("../pilots/labview_open_source_lib_data_manipulation-1.6.0.16.vip");
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(vip).unwrap()).unwrap();
+        let name =
+            "File Group 0/vi.lib/LabVIEW Open Source Project/Data Manipulation/KVP Parser.vi";
+        let mut bytes = Vec::new();
+        zip.by_name(name).unwrap().read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn a_vi_saved_after_the_minimum_is_too_new_and_each_names_both_years() {
+        let sandbox = Sandbox::new("too-new", Some("2025"));
+        sandbox.library();
+        let checked = sandbox.check();
+        assert!(checked.saves_checked);
+        assert_eq!(
+            checked.findings,
+            [
+                too_new("Good.vi", 2026, 2025),
+                too_new("Helper.vi", 2026, 2025)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_vi_saved_in_the_minimum_year_or_before_it_passes_and_one_year_after_does_not() {
+        // The pilot VI links to files this project has not got: only its age is looked at.
+        let too_new_under = |minimum: &str| {
+            let sandbox = Sandbox::new(&format!("saved-2013-under-{minimum}"), Some(minimum));
+            sandbox.write("KVP Parser.vi", &pilot_vi_2013());
+            let found = sandbox.check().findings;
+            found
+                .into_iter()
+                .filter(|f| matches!(f.problem, Problem::TooNew { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(too_new_under("2026"), []);
+        assert_eq!(too_new_under("2013"), []);
+        assert_eq!(
+            too_new_under("2012"),
+            [too_new("KVP Parser.vi", 2013, 2012)]
+        );
+    }
+
+    #[test]
+    fn without_a_minimum_no_vi_is_too_new() {
+        let sandbox = Sandbox::new("no-minimum", None);
+        sandbox.library();
+        let checked = sandbox.check();
+        assert!(!checked.saves_checked);
+        assert_eq!(checked.findings, []);
+    }
+
+    #[test]
+    fn a_save_older_than_labview_9_has_no_year_and_is_never_too_new() {
+        // The first byte of `vers` 4 is the major, in BCD: 0x08 is LabVIEW 8.
+        let mut bytes = std::fs::read(Path::new(FIXTURES).join("project/Good.vi")).unwrap();
+        let at = Rsrc::read(&bytes)
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|b| &b.kind == b"vers" && b.id == 4)
+            .unwrap()
+            .offset;
+        bytes[at + 4] = 0x08;
+        assert_eq!(Rsrc::read(&bytes).unwrap().save_year(), None);
+        let sandbox = Sandbox::new("vers-8", Some("2025"));
+        sandbox.library().write("Good.vi", &bytes);
+        assert_eq!(sandbox.check().findings, [too_new("Helper.vi", 2026, 2025)]);
+    }
+
+    #[test]
+    fn a_vi_that_keeps_its_compiled_code_is_named_and_a_separated_one_is_not() {
+        let sandbox = Sandbox::new("not-separated", None);
+        sandbox
+            .put("Lib.lvlib", "Lib.lvlib")
+            .put("Helper.vi", "Helper.vi")
+            .put("NotSeparated.vi", "NotSeparated.vi");
+        assert_eq!(sandbox.check().findings, [not_separated("NotSeparated.vi")]);
+    }
+
+    #[test]
+    fn a_vi_with_no_readable_compiled_code_flag_is_unreadable_never_a_pass() {
+        // The `LVSR` section's size set to 4: too short to hold the flags at byte 8.
+        let mut bytes = std::fs::read(Path::new(FIXTURES).join("project/Good.vi")).unwrap();
+        let at = Rsrc::read(&bytes)
+            .unwrap()
+            .blocks
+            .iter()
+            .find(|b| &b.kind == b"LVSR")
+            .unwrap()
+            .offset;
+        bytes[at..at + 4].copy_from_slice(&4u32.to_be_bytes());
+        let sandbox = Sandbox::new("no-flag", Some("2025"));
+        sandbox.write("Good.vi", &bytes);
+        let want = Finding {
+            vi: "Good.vi".into(),
+            problem: Problem::Unreadable {
+                block: "LVSR",
+                offset: at,
+            },
+        };
+        assert_eq!(sandbox.check().findings, [want]);
+    }
+
+    #[test]
+    fn one_vi_breaking_several_rules_gives_one_finding_per_rule_in_rule_order() {
+        let sandbox = Sandbox::new("several", Some("2025"));
+        sandbox
+            .put("NotSeparated.vi", "NotSeparated.vi")
+            .put("Broken.vi", "Broken.vi")
+            .mkdir("Sub");
+        // NotSeparated.vi links Helper.vi and Lib.lvlib, neither of which is here.
+        assert_eq!(
+            sandbox.check().findings,
+            [
+                too_new("Broken.vi", 2026, 2025),
+                not_found("Broken.vi", "Sub/Gone.vi"),
+                too_new("NotSeparated.vi", 2026, 2025),
+                not_separated("NotSeparated.vi"),
+                not_found("NotSeparated.vi", "Helper.vi"),
+                not_found("NotSeparated.vi", "Lib.lvlib"),
             ]
         );
     }
