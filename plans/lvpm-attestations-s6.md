@@ -97,7 +97,8 @@ error: lvpm refused 2 packages:
   - Without a token: `GitHub rate limit reached (60/h without a token)` → `run \`gh auth login\` or set GH_TOKEN`
   - With a token: `GitHub rate limit reached` → `try again later`
   - `could not reach GitHub` → `check your network connection and try again`
-  - `GitHub returned HTTP <n>` / `gh timed out` → `try again later`
+  - `GitHub returned HTTP 401` → `run \`gh auth login\` or set GH_TOKEN`
+  - any other `GitHub returned HTTP <n>`, `gh timed out`, `gh could not be started: …`, `GitHub returned an unreadable answer` → `try again later`
   - No hint ever suggests turning the policy off.
 - Policy-off warning, after the summary: `warning: did not check the attestation of a 1.0.0, b 2.0.0: gh is not installed`. One line per distinct reason, with that reason's hint.
 - Parse errors name the key:
@@ -319,7 +320,7 @@ Steps:
 ### Slice 3: the check at lock time
 
 **Depends-on:** 2
-**Files:** `crates/lvpm-core/src/ops/attest.rs`, `crates/lvpm-core/src/ops/mod.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/errors.rs`, `crates/lvpm-core/src/events.rs`, `src/render/lock.rs`, `src/render/mod.rs`, `docs/usage.md`, `tests/features/build-slices/s6-attestations.feature`, `tests/steps/github.rs`
+**Files:** `crates/lvpm-core/src/ops/attest.rs`, `crates/lvpm-core/src/ops/mod.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/ops/add_remove.rs`, `crates/lvpm-core/src/ops/session.rs`, `crates/lvpm-core/src/errors.rs`, `crates/lvpm-core/src/events.rs`, `src/render/lock.rs`, `src/render/mod.rs`, `docs/usage.md`, `tests/features/build-slices/s6-attestations.feature`, `tests/steps/github.rs`
 **File notes:** `attest.rs` is new. `src/render/mod.rs` gains the event's arm in its exhaustive dispatch. The TUI's log has a wildcard arm and `EditError`/`SyncError` wrap `LockError` transparently, so neither changes.
 
 ```gherkin

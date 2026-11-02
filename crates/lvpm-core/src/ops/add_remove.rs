@@ -353,6 +353,7 @@ fn commit(
         if !changes.is_empty() {
             env.sink.emit(Event::LockWouldChange { changes });
         }
+        after.into_iter().for_each(|event| env.sink.emit(event));
         env.sink.emit(match plan.is_empty() {
             true => Event::SyncNothingToDo,
             false => Event::SyncPlanned {

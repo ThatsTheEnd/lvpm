@@ -23,7 +23,8 @@ pub(super) struct Attested {
     /// Who built each package that has an attestation, by lowercased name.
     pub signers: HashMap<String, Attestation>,
     /// One [`Event::AttestationsNotChecked`] per distinct reason: packages the
-    /// policy let through that lvpm could not check. Said after the lock is written.
+    /// policy let through that lvpm could not check. Said after the lock is
+    /// written, or after what a dry run would change.
     pub not_checked: Vec<Event>,
 }
 

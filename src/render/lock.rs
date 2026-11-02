@@ -446,6 +446,9 @@ fn gh_said(stderr: &str) -> String {
     if OWN_WORDS.contains(&plain.trim()) {
         return format!(" {}", plain.trim());
     }
+    if plain.trim().is_empty() {
+        return " gh gave no reason".to_string();
+    }
     (plain.lines().take(5)).fold(String::new(), |text, line| format!("{text}\n    {line}"))
 }
 
@@ -1187,15 +1190,21 @@ mod tests {
 
     #[test]
     fn what_lvpm_itself_found_wrong_with_ghs_output_stands_on_the_line() {
-        for own in [
-            "unrecognised gh output",
-            "gh's attestation does not match the archive",
+        for (stderr, own) in [
+            ("unrecognised gh output", "unrecognised gh output"),
+            (
+                "gh's attestation does not match the archive",
+                "gh's attestation does not match the archive",
+            ),
+            (" \n", "gh gave no reason"),
         ] {
             let text = refused(vec![refusal(
                 "p",
                 "1.0.0",
                 "o/r",
-                Refusal::DoesNotVerify { stderr: own.into() },
+                Refusal::DoesNotVerify {
+                    stderr: stderr.into(),
+                },
             )]);
             assert!(
                 text.contains(&format!(

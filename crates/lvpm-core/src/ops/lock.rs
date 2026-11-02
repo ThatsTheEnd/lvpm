@@ -2516,6 +2516,7 @@ caraya = \"*\"
                     }
                 )]
             );
+            assert!(!project.lock_path().exists());
         }
 
         #[test]
