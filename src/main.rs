@@ -18,6 +18,7 @@ use lvpm_core::{config, git, launch, target, venv, viserver};
 mod render;
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::builder::TypedValueParser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
@@ -36,6 +37,16 @@ struct Cli {
     /// Install into a scratch directory instead of a LabVIEW installation.
     #[arg(long, global = true, value_name = "DIR")]
     prefix: Option<PathBuf>,
+
+    /// Pick the 32- or 64-bit LabVIEW when both of a version are installed.
+    #[arg(
+        long,
+        global = true,
+        value_name = "BITS",
+        value_parser = clap::builder::PossibleValuesParser::new(["32", "64"]).map(|bits| bits.parse::<u8>().expect("a possible value is a number")),
+        conflicts_with = "prefix"
+    )]
+    labview_bitness: Option<u8>,
 
     /// Use the LabVIEW installation itself, even from inside a project that
     /// has a venv.
@@ -511,6 +522,7 @@ fn op_env<'a>(cli: &Cli, sink: &'a dyn EventSink) -> Result<OpEnv<'a>> {
     );
     env.flags = DestinationFlags {
         labview_version: cli.labview_version.clone(),
+        labview_bitness: cli.labview_bitness,
         prefix: cli.prefix.clone(),
         global: cli.global,
         project: cli.project.clone(),
@@ -571,6 +583,7 @@ impl Report {
 /// an ignored --prefix would send installs into LabVIEW instead.
 fn tui_gets_options(cli: &Cli) -> bool {
     cli.labview_version.is_some()
+        || cli.labview_bitness.is_some()
         || cli.prefix.is_some()
         || cli.global
         || cli.project.is_some()
@@ -649,8 +662,8 @@ fn run(cli: &Cli) -> Result<Report> {
     match &cli.cmd {
         Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::Targets => {
-            let targets = ops::query::targets(&env);
-            Report::new(render::query::targets(targets), targets)
+            let targets = ops::query::targets(&env)?;
+            Report::new(render::query::targets(&targets), targets)
         }
         Cmd::Start { wait } => {
             let started = ops::start::start(&env, *wait)?;
@@ -1276,8 +1289,9 @@ mod tests {
                 continue;
             }
             let flag = format!("--{long}");
+            // 64 is a value every one of them takes: a year, a bitness, a folder.
             let args: Vec<&str> = if takes_value {
-                vec![&flag, "2026"]
+                vec![&flag, "64"]
             } else {
                 vec![&flag]
             };
@@ -1303,6 +1317,54 @@ mod tests {
             let cli = Cli::try_parse_from(args).unwrap();
             assert!(cli.yes, "{args:?}");
         }
+    }
+
+    #[test]
+    fn a_labview_bitness_of_32_or_64_parses_and_reaches_the_flags() {
+        for (value, bits) in [("32", 32), ("64", 64)] {
+            let cli = Cli::try_parse_from(["lvpm", "--labview-bitness", value, "targets"]).unwrap();
+            assert_eq!(cli.labview_bitness, Some(bits));
+        }
+        assert_eq!(
+            Cli::try_parse_from(["lvpm", "targets"])
+                .unwrap()
+                .labview_bitness,
+            None
+        );
+    }
+
+    #[test]
+    fn any_other_labview_bitness_is_a_usage_error_listing_the_two() {
+        for value in ["16", "40", "x64", "0"] {
+            let error = Cli::try_parse_from(["lvpm", "--labview-bitness", value, "targets"])
+                .err()
+                .unwrap_or_else(|| panic!("{value} parsed"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidValue,
+                "{value}"
+            );
+            assert_eq!(error.exit_code(), 2, "{value}");
+            let text = error.to_string();
+            assert!(
+                text.contains("[possible values: 32, 64]"),
+                "{value}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_labview_bitness_cannot_be_combined_with_a_prefix() {
+        let args = [
+            "lvpm",
+            "--prefix",
+            "dest",
+            "--labview-bitness",
+            "32",
+            "list",
+        ];
+        let error = Cli::try_parse_from(args).err().unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     fn lock_args(args: &[&str]) -> Result<Cli, clap::Error> {
