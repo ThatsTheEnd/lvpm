@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.20.0...v0.21.0) (2026-11-02)
+
+
+### Features
+
+* **s5:** lvpm check ([#109](https://github.com/ThatsTheEnd/lvpm/issues/109)) ([690d939](https://github.com/ThatsTheEnd/lvpm/commit/690d9393dd4c440416a762f441bb39e60f7832d4))
+
 ## [0.20.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.19.0...v0.20.0) (2026-11-02)
 
 
