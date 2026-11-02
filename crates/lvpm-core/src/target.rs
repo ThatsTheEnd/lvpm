@@ -223,6 +223,29 @@ pub fn select(targets: &[LvTarget], want: &str) -> Result<LvTarget> {
     );
 }
 
+/// The installations of `bitness` (`--labview-bitness`), so that [`select`]
+/// picks among them. No bitness, or nothing installed at all, leaves the list
+/// as it is: the latter is for `select` to report.
+pub fn of_bitness(targets: &[LvTarget], bitness: Option<u8>) -> Result<Vec<LvTarget>> {
+    let Some(bits) = bitness.filter(|_| !targets.is_empty()) else {
+        return Ok(targets.to_vec());
+    };
+    let kept: Vec<LvTarget> = targets
+        .iter()
+        .filter(|t| t.bitness == bits)
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        let known: Vec<String> = targets.iter().map(LvTarget::label).collect();
+        bail!(
+            "no {bits}-bit LabVIEW installation detected (detected: {})\n\
+             hint: `lvpm targets` lists detected LabVIEW installations",
+            known.join(", ")
+        );
+    }
+    Ok(kept)
+}
+
 /// The installation a project means: `requested` (`--labview-version`) if
 /// given, else the manifest's `labview` year, else, when that year is not
 /// installed, the oldest newer one, since the manifest's year is a minimum.
@@ -647,11 +670,58 @@ mod tests {
     }
 
     fn lv(year: u32) -> LvTarget {
+        lv_bits(year, 64)
+    }
+
+    fn lv_bits(year: u32, bitness: u8) -> LvTarget {
         LvTarget {
             version: f64::from(year - 2000),
-            bitness: 64,
-            path: PathBuf::from(format!("/usr/local/natinst/LabVIEW-{year}-64")),
+            bitness,
+            path: PathBuf::from(format!("/usr/local/natinst/LabVIEW-{year}-{bitness}")),
         }
+    }
+
+    #[test]
+    fn a_bitness_picks_that_installation_of_the_year() {
+        let both = [lv_bits(2026, 32), lv_bits(2026, 64)];
+        for bits in [32, 64] {
+            let picked = select(&of_bitness(&both, Some(bits)).unwrap(), "2026").unwrap();
+            assert_eq!(picked.bitness, bits);
+        }
+    }
+
+    #[test]
+    fn no_bitness_leaves_the_list_so_the_first_listed_wins() {
+        let both = [lv_bits(2026, 64), lv_bits(2026, 32)];
+        let picked = select(&of_bitness(&both, None).unwrap(), "2026").unwrap();
+        assert_eq!(picked.bitness, 64);
+    }
+
+    #[test]
+    fn a_bitness_nothing_has_is_refused_naming_what_was_found() {
+        let only_64 = [LvTarget {
+            version: 26.3,
+            ..lv_bits(2026, 64)
+        }];
+        let err = of_bitness(&only_64, Some(32)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "no 32-bit LabVIEW installation detected (detected: LabVIEW 2026 (64-bit)  v26.3)\n\
+             hint: `lvpm targets` lists detected LabVIEW installations"
+        );
+    }
+
+    #[test]
+    fn a_bitness_with_nothing_installed_is_not_narrowed_and_select_reports_it() {
+        let none = of_bitness(&[], Some(32)).unwrap();
+        assert!(none.is_empty());
+        // What `select` says about an empty list is unchanged by the narrowing;
+        // the `no LabVIEW installations detected` wording is the callers' own
+        // `is_empty` check, which still sees the empty list.
+        assert_eq!(
+            select(&none, "2026").unwrap_err().to_string(),
+            select(&[], "2026").unwrap_err().to_string()
+        );
     }
 
     #[cfg(not(windows))]
