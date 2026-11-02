@@ -27,9 +27,9 @@ path at run time, which the linker table cannot show.
   (`Search::owner`, already there). It is returned on `Checked` as the set of
   packages used by library members; `lvpm check`'s output does not change.
 - `ops::build::build(env, check: bool)`: when `check` is true, it runs
-  `ops::check::check(env, Some(library folder))` before reading any member,
-  keeps only findings whose VI is a library member, and returns a typed
-  refusal carrying those findings when any remain. Nothing is written to
+  `ops::check::check_library(env)` (check's loop over library members only)
+  before reading any member, and returns a typed refusal carrying the
+  findings when any remain. Nothing is written to
   `dist/` on refusal. `Built` gains the unused `[dependencies]` names.
 - The gate needs the venv binding, as `check` does. With no venv, build fails
   through `check`'s own error, with a hint to run `lvpm sync`.
@@ -55,7 +55,7 @@ path at run time, which the linker table cannot show.
    no venv, as S1's build does.
 8. Every other check rule (too new, not separated, unreadable, not a resource)
    on a member refuses the build too.
-9. Pilot A builds with the gate on (`@labview`-free; existing S0 scenario).
+9. Pilot A builds with the gate on (`@labview`-free; `@pilot-source` scenarios; S0 moves to `--no-check`).
 10. `docs/usage.md` documents the gate and `--no-check`.
 
 ## Glossary

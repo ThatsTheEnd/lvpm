@@ -86,6 +86,7 @@ Feature: check_library holds the members to the check
     When the library is checked
     Then there is a finding for "C/M.vi"
 
+  # unit test is #[cfg(windows)]: a case-sensitive filesystem has no such file
   Scenario: a member listed in another case is still a member (Windows)
     Given the library lists "good.vi" and the file on disk is "Good.vi" with a broken link
     When the library is checked
@@ -135,7 +136,7 @@ Output contract:
 
 | Case | stdout | stderr | exit |
 |---|---|---|---|
-| refused | `render::check::listing` of the members' findings | `render::check::warnings`, then `build refused: N problem(s) in library members, nothing written; fix them or pass --no-check` | 1 |
+| refused | `render::check::listing` of the members' findings | `render::check::warnings` (never the unused lines), then `build refused: N problem(s) in library members, nothing written; fix them or pass --no-check` | 1 |
 | built | `built <path> (<n> files)` | `render::check::warnings`; one line per unused name: `[dependencies] names <x>, which no member links to (ignore this if it is loaded by path at run time)` | 0 |
 | `--no-check` | `built ...` | `check skipped (--no-check)` | 0 |
 | no venv | | `no venv in <repo>: run lvpm venv create and lvpm sync, or pass --no-check` | 1 |
@@ -210,10 +211,10 @@ Feature: lvpm build checks the library's members first
 
     Examples:
       | is broken                                    | message                          |
-      | is saved in a LabVIEW newer than the minimum | saved in LabVIEW                 |
-      | keeps its compiled code                      | compiled code is not separated   |
-      | has its LIvi section size set past the end   | linker table not readable (LIvi  |
-      | contains "not a VI"                          | not a LabVIEW resource file      |
+      | is saved in a LabVIEW newer than the minimum | saved in LabVIEW                                |
+      | keeps its compiled code                      | compiled code is not separated from the source  |
+      | has its LIvi section size set past the end   | linker table not readable (LIvi at byte         |
+      | contains "not a VI"                          | not a LabVIEW resource file                     |
 
   Scenario: no venv refuses and says how to go on
     Given the project has no venv
@@ -234,8 +235,9 @@ Feature: lvpm build checks the library's members first
     Then it exits 1, dist holds no .lvpkg, and the JSON has "command": "build" and one finding for "Broken.vi"
 ```
 
-The `message` column is fixed in step 2.2 to the exact text `render::check`
-prints for each rule (read off `what()`), so each row tells the rules apart.
+The `message` column is the prefix of `render::check::what()`'s text for each
+rule. `<vilib>` in the Undeclared lines is literal: check shows a vi.lib link
+by its symbolic root, so the fixture installs `dep` at `vi.lib/dep/Dep.vi`.
 
 #### Step 2.1: `build(env, check)` and `Outcome`
 
@@ -287,7 +289,7 @@ passed. AC9 is checked in the PR evidence with that variable set.
     And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
 
   Scenario: the docs describe the check in build
-    Then docs/usage.md says lvpm build checks the library's members first, needs a venv, checks members only (so its "VIs checked" counts members), and documents --no-check
+    Then docs/usage.md contains "checks the library's members first", "needs a venv", "VIs checked" counts members, and "--no-check"
 ```
 
 #### Step 3.1: pilot scenarios
@@ -326,6 +328,7 @@ graph TD
 - [ ] `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
 - [ ] `/code-review` passes
 - [ ] Docs updated
+- [ ] AC9 evidence in the PR: the `LVPM_TEST_PILOT_A=... cargo test` command and its output, both pilot scenarios passed (not skipped)
 
 ## Risks & Open Questions
 
