@@ -49,6 +49,13 @@ Feature: lvpm build checks the library's members first
     And stderr has a line containing "Gone.vi, which is not on disk"
     And dist holds no .lvpkg
 
+  Scenario: a member in a dot-folder is checked
+    Given "Broken.vi" is a member of "Lib.lvlib" in the dot-folder ".hidden"
+    When lvpm build runs on it
+    Then it exits 1
+    And stdout has the line ".hidden/Broken.vi: link not found: .hidden/Sub/Gone.vi"
+    And dist holds no .lvpkg
+
   Scenario: a broken VI outside the library does not stop the build
     Given the project also holds "Broken.vi", not a member
     When lvpm build runs on it
@@ -78,6 +85,25 @@ Feature: lvpm build checks the library's members first
     Given member "UsesDep.vi" links into package "check_fixture_dep" installed in the venv, and "check_fixture_dep" in [dependencies]
     When lvpm build runs on it
     Then it exits 0, dist holds the package, and stderr is empty
+
+  Scenario: links lvpm cannot look for are warned of and no dependency is called unused
+    Given the bound installation folder does not exist
+    And "UsesNi.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
+    And [dependencies] names "spare"
+    When lvpm build runs on it
+    Then it exits 0 and dist holds the package
+    And stderr has a line starting "warning: links not checked: 1 into vi.lib"
+    And stderr has no line containing "no member links to"
+
+  Scenario: a broken link among links not checked still ends stderr on the refusal
+    Given the bound installation folder does not exist
+    And "UsesNi.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
+    And "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
+    And [dependencies] names "spare"
+    When lvpm build runs on it
+    Then it exits 1
+    And stderr has a line starting "warning: links not checked: 1 into vi.lib"
+    And stderr's last line is "build refused: 1 problem(s) in library members, nothing written; fix them or pass --no-check"
 
   Scenario Outline: every check rule on a member refuses the build
     Given the member "Good.vi" <is broken>
@@ -130,7 +156,8 @@ Feature: lvpm build checks the library's members first
     And stdout has the line "Source/HSE-Logger/LogRecord/Init.vi: link not found: Source/HSE-Logger/LogRecord/Generate Callchain.vi"
 
   Scenario: the docs describe the check in build
-    Then docs/usage.md contains "checks the library's members first", "needs a venv", "VIs checked" counts members, and "--no-check"
+    Then docs/usage.md contains "checks the library's members first", "needs a venv", "`VIs checked` counts the library's members", and "--no-check"
 
   Scenario: the release template builds unchecked and says so
     Then the release template runs "lvpm build --no-check" after printing "::warning::unchecked build"
+    And no line of the release template is "lvpm build"

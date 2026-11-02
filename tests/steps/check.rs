@@ -671,6 +671,12 @@ async fn member_and_empty_folder(world: &mut CliWorld, vi: String, folder: Strin
     std::fs::create_dir_all(world.sandbox.work_dir().join(folder)).expect("make the folder");
 }
 
+#[given(regex = r#"^"([^"]+)" is a member of "Lib\.lvlib" in the dot-folder "([^"]+)"$"#)]
+async fn member_in_a_dot_folder(world: &mut CliWorld, vi: String, folder: String) {
+    world.put_fixture(&vi, &world.sandbox.work_dir().join(&folder));
+    world.list_member(&format!("{folder}/{vi}"));
+}
+
 #[given(regex = r#"^"([^"]+)", a copy of "([^"]+)", is also a member$"#)]
 async fn copy_is_also_a_member(world: &mut CliWorld, copy: String, of: String) {
     let work = world.sandbox.work_dir();
@@ -814,6 +820,12 @@ async fn refused_naming(world: &mut CliWorld, first: String, second: String) {
 async fn stderr_has_no_line_containing(world: &mut CliWorld, text: String) {
     let out = world.checked();
     assert!(!out.stderr.lines().any(|l| l.contains(&text)), "{out:?}");
+}
+
+#[then(regex = r#"^stderr's last line is "([^"]+)"$"#)]
+async fn stderr_last_line(world: &mut CliWorld, text: String) {
+    let out = world.checked();
+    assert_eq!(out.stderr.lines().last(), Some(text.as_str()), "{out:?}");
 }
 
 #[then("dist holds only that package")]

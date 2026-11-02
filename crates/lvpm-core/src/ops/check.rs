@@ -106,24 +106,29 @@ impl Checked {
     pub fn not_checked_total(&self) -> usize {
         self.not_checked.values().sum()
     }
+
+    /// Whether no VI broke a rule.
+    pub fn passed(&self) -> bool {
+        self.findings.is_empty()
+    }
 }
 
 /// What a check of the library `[distribution]` names found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Library {
-    /// The check of the library's own VIs.
+    /// The check of the library's members.
     pub checked: Checked,
-    /// The `[dependencies]` no library VI links into, in manifest order.
+    /// The `[dependencies]` no member links into, in manifest order.
     pub unused: Vec<String>,
 }
 
-/// [`check`] for the library's own files only, and which of the declared
+/// [`check`] for the library's members only, and which of the declared
 /// dependencies none of them uses.
 pub fn check_library(env: &OpEnv) -> Result<Library, CheckError> {
     run(env, None, Scope::Members)
 }
 
-/// Read every `.vi .vit .ctl .ctt` under `dir` (the project root when None; a
+/// Read every `.vi .vit .vim .ctl .ctt` under `dir` (the project root when None; a
 /// relative one is taken from the directory the command ran in) and say which
 /// links lead nowhere. Findings are a result, not an error.
 pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
@@ -134,7 +139,8 @@ pub fn check(env: &OpEnv, dir: Option<&Path>) -> Result<Checked, CheckError> {
 #[derive(Clone, Copy)]
 enum Scope {
     All,
-    /// Only the files of the library `[distribution]` names.
+    /// Only the members of the library `[distribution]` names, read where the
+    /// library lists them: a build packages those, wherever they are.
     Members,
 }
 
@@ -145,9 +151,9 @@ fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckEr
         Some(repo) => env.cwd.join(repo),
         None => match scope {
             Scope::All => venv::locate(&env.cwd, &env.config.venv_dir)?,
+            // With no venv the binding check below says so.
             Scope::Members => match venv::probe(&env.cwd, &env.config.venv_dir) {
-                Found::Venv(dir) => Some(dir),
-                Found::ManifestOnly(dir) => return Err(CheckError::NoVenv(dir)),
+                Found::Venv(dir) | Found::ManifestOnly(dir) => Some(dir),
                 Found::Nothing => None,
             },
         }
@@ -192,16 +198,24 @@ fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckEr
         return Err(CheckError::NoDir(dir.map_or(start, Path::to_path_buf)));
     }
     let members = members(&manifest, &bound.repo)?;
-    let mut files = Vec::new();
-    let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
-    walk(&start, &venv, &mut files)?;
-    let files: Vec<_> = (files.into_iter())
-        .map(|file| {
-            let member = members.contains(&key(&file));
-            (file, member)
-        })
-        .filter(|(_, member)| *member || matches!(scope, Scope::All))
-        .collect();
+    let files: Vec<_> = match scope {
+        Scope::All => {
+            let mut files = Vec::new();
+            let venv = [bound.dir.clone(), venv::staging_of(&bound.dir)];
+            walk(&start, &venv, &mut files)?;
+            let keys: HashSet<_> = members.iter().map(|file| key(file)).collect();
+            (files.into_iter())
+                .map(|file| {
+                    let member = keys.contains(&key(&file));
+                    (file, member)
+                })
+                .collect()
+        }
+        Scope::Members => (members.into_iter())
+            .filter(|file| is_vi_file(file))
+            .map(|file| (file, true))
+            .collect(),
+    };
 
     let search = Search::of(&bound)?;
     let mut seen = Seen::default();
@@ -266,14 +280,14 @@ fn unused(manifest: &Project, seen: &Seen) -> Vec<String> {
         .collect()
 }
 
-/// The files of the library `[distribution]` names, as [`key`]s; none when the
-/// manifest has no such table.
-fn members(manifest: &Project, repo: &Path) -> Result<HashSet<PathBuf>> {
+/// The files of the library `[distribution]` names; none when the manifest has
+/// no such table.
+fn members(manifest: &Project, repo: &Path) -> Result<Vec<PathBuf>> {
     let Some(dist) = &manifest.distribution else {
-        return Ok(HashSet::new());
+        return Ok(Vec::new());
     };
     let library = repo.join(distribution::top_level_library(dist, repo)?);
-    Ok(lvlib::members(&library)?.iter().map(|p| key(p)).collect())
+    lvlib::members(&library)
 }
 
 /// A path as files are compared by: separators, `.` and `..` settled and, on
@@ -344,7 +358,8 @@ fn walk(dir: &Path, venv: &[PathBuf], out: &mut Vec<PathBuf>) -> Result<()> {
 
 fn is_vi_file(path: &Path) -> bool {
     path.extension().is_some_and(|ext| {
-        ["vi", "vit", "ctl", "ctt"].contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+        ["vi", "vit", "vim", "ctl", "ctt"]
+            .contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
     })
 }
 
@@ -1877,14 +1892,55 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_member_listed_in_another_case_is_still_a_member() {
+    fn a_member_listed_in_another_case_is_still_checked() {
         let sandbox = Sandbox::with_packages("lib-member-case", "");
         sandbox
             .library_of(&["good.vi"])
             .put("Broken.vi", "Good.vi")
             .mkdir("Sub");
         let checked = sandbox.check_library().checked;
-        assert_eq!(checked.findings, [not_found("Good.vi", "Sub/Gone.vi")]);
+        assert_eq!(checked.findings, [not_found("good.vi", "Sub/Gone.vi")]);
+    }
+
+    #[test]
+    fn a_member_under_a_dot_folder_is_checked_though_a_walk_skips_it() {
+        let sandbox = Sandbox::with_packages("lib-dot-member", "");
+        sandbox
+            .library_of(&[".hidden/Broken.vi"])
+            .put("Broken.vi", ".hidden/Broken.vi");
+        let checked = sandbox.check_library().checked;
+        assert_eq!(checked.vis, 1);
+        assert_eq!(
+            checked.findings,
+            [not_found(".hidden/Broken.vi", ".hidden/Sub/Gone.vi")]
+        );
+        assert_eq!(sandbox.check().vis, 0, "`lvpm check` still skips dot-names");
+    }
+
+    #[test]
+    fn a_library_check_with_no_venv_is_no_venv() {
+        let root = testing::scratch_dir("check-lib-no-venv");
+        let manifest = "[project]\n[distribution]\ntop-level-library = \"Lib.lvlib\"\n";
+        std::fs::write(root.join("lvpm.toml"), manifest).unwrap();
+        let no_venv = |root: &Path| {
+            let why = check_library(&testing::env(root)).unwrap_err();
+            assert!(matches!(why, CheckError::NoVenv(_)), "{why}");
+        };
+        no_venv(&root);
+        // A venv folder that was never bound is none either.
+        std::fs::create_dir_all(root.join(".lv-venv")).unwrap();
+        no_venv(&root);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_vi_file_is_a_vi_vit_vim_ctl_or_ctt_in_any_case() {
+        for yes in ["A.vi", "A.VIT", "A.vim", "A.ctl", "A.Ctt"] {
+            assert!(is_vi_file(Path::new(yes)), "{yes}");
+        }
+        for no in ["A.lvlib", "A.lvclass", "A.txt", "vi"] {
+            assert!(!is_vi_file(Path::new(no)), "{no}");
+        }
     }
 
     #[test]

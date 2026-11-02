@@ -23,14 +23,16 @@ path at run time, which the linker table cannot show.
 
 ## Architecture Specification
 
-- `ops::check` gains, per checked VI, the packages its resolved links belong to
-  (`Search::owner`, already there). It is returned on `Checked` as the set of
-  packages used by library members; `lvpm check`'s output does not change.
+- `ops::check` notes, per checked VI, the packages its resolved links belong to
+  (`Search::owner`, already there). `check_library(env)` returns
+  `Library { checked, unused }`: the `Checked` of the library's members and the
+  `[dependencies]` none of them links into; `lvpm check`'s output does not
+  change.
 - `ops::build::build(env, check: bool)`: when `check` is true, it runs
-  `ops::check::check_library(env)` (check's loop over library members only)
-  before reading any member, and returns a typed refusal carrying the
-  findings when any remain. Nothing is written to
-  `dist/` on refusal. `Built` gains the unused `[dependencies]` names.
+  `check_library` before reading any member and returns
+  `Outcome::Refused(Library)` when a member has findings. Nothing is written to
+  `dist/` on refusal. Otherwise `Outcome::Built(Built)`, whose `library` holds
+  the `Library` (`None` with `--no-check`).
 - The gate needs the venv binding, as `check` does. With no venv, build fails
   through `check`'s own error, with a hint to run `lvpm sync`.
 - `src/main.rs`: `Cmd::Build { no_check: bool }` (`--no-check`). A refusal

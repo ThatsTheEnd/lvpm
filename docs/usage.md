@@ -591,6 +591,7 @@ library's members, not every VI in the project:
 ```console
 $ lvpm build
 Broken.vi: link not found: Sub/Gone.vi
+next: restore the file, or open the VI in LabVIEW and relink it
 VIs checked: 3, problems: 1, links not checked: 0
 ```
 
@@ -607,8 +608,9 @@ nothing written; fix them or pass --no-check`. With `--json` the result is
   `check skipped (--no-check)`. Use it where there is no venv, such as a CI
   runner without LabVIEW; check the library with `lvpm check` or a plain
   `lvpm build` on a machine that has the venv.
-- A member under a folder whose name starts with a dot is packaged but not
-  checked, as `lvpm check` skips such names.
+- A member is checked wherever the library lists it, under a dot-folder or
+  behind a link too, since the build packages it there. Only `lvpm check`,
+  which walks a folder, skips such names.
 
 ### Installing a .lvpkg
 
@@ -704,7 +706,7 @@ lvpm check --json
 ```
 
 `DIR` is read from where the command runs; with none, it is the whole project.
-The walk takes `.vi`, `.vit`, `.ctl` and `.ctt` files, and skips the venv and its
+The walk takes `.vi`, `.vit`, `.vim`, `.ctl` and `.ctt` files, and skips the venv and its
 staging folder, every name that starts with a dot, and links.
 
 **The rules.** Each finding is one VI breaking one rule; a rule broken twice

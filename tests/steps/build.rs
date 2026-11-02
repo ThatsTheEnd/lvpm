@@ -74,7 +74,7 @@ impl CliWorld {
 
     /// `lvpm build` as the S1, S2 and S7a scenarios mean it: their members are
     /// text, not VIs, and they have no venv, so the member check is skipped.
-    pub(super) fn lvpm_build(&mut self) {
+    pub(super) fn lvpm_build_unchecked(&mut self) {
         self.lvpm_build_with(&["--no-check"]);
     }
 
@@ -363,21 +363,21 @@ async fn unreadable(world: &mut CliWorld) {
 
 #[given(regex = r#"^dist holds a built "([^"]+)"$"#)]
 async fn built_before(world: &mut CliWorld, _package: String) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
     world.succeeded();
     world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
 }
 
 #[when("lvpm build runs")]
 async fn build_runs(world: &mut CliWorld) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
 }
 
 #[when(
     "lvpm build runs, every member's modification time is set to a different value, dist is emptied, and lvpm build runs again"
 )]
 async fn build_twice(world: &mut CliWorld) {
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
     world.succeeded();
     world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
     let then = SystemTime::now() - Duration::from_secs(86_400);
@@ -390,7 +390,7 @@ async fn build_twice(world: &mut CliWorld) {
             .expect("set a time");
     }
     std::fs::remove_dir_all(world.work(DIST)).expect("empty dist");
-    world.lvpm_build();
+    world.lvpm_build_unchecked();
 }
 
 #[then(regex = r#"^it succeeds, prints the path of "([^"]+)", and dist holds no \.vip$"#)]

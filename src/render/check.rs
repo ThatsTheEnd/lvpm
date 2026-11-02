@@ -89,8 +89,8 @@ fn warnings_with(checked: &Checked, no_vis_where: &str) -> String {
     printable(text)
 }
 
-/// stderr of a build: a line for each declared dependency that no library VI
-/// links into.
+/// stderr of a build: a line for each declared dependency that no member links
+/// into.
 pub fn unused(names: &[String]) -> String {
     let lines: String = names
         .iter()
@@ -108,7 +108,7 @@ pub fn unused(names: &[String]) -> String {
 /// The `--json` result: the same shape whether the check passed or not.
 pub fn result(checked: &Checked) -> Value {
     json!({
-        "ok": checked.findings.is_empty(),
+        "ok": checked.passed(),
         "vis": checked.vis,
         "not_checked": checked.not_checked_total(),
         "findings": checked.findings.iter().map(finding).collect::<Vec<_>>(),

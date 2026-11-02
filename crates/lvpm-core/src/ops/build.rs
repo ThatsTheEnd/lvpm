@@ -7,14 +7,14 @@
 //! leaves the previous package as it was.
 //!
 //! With `check`, the library's members are checked first, as `lvpm check`
-//! does, and a member that breaks a rule refuses the build before anything is
-//! read or written.
+//! does, and a member that breaks a rule refuses the build before the members
+//! are packaged or the package is written.
 
 use super::check::{Library, check_library};
 use super::env::OpEnv;
-use crate::errors::{Cancelled, CheckError};
+use crate::errors::CheckError;
 use crate::{distribution, lvlib, lvpkg};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -36,15 +36,15 @@ pub enum Outcome {
     Refused(Library),
 }
 
-pub fn build(env: &OpEnv, check: bool) -> Result<Outcome> {
+pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
     let (root, d) = super::packaged(env, "build")?;
     let root = root.as_path();
     let checked = match check {
-        true => Some(check_members(env)?),
+        true => Some(check_library(env)?),
         false => None,
     };
     let checked = match checked {
-        Some(library) if !library.checked.findings.is_empty() => {
+        Some(library) if !library.checked.passed() => {
             return Ok(Outcome::Refused(library));
         }
         other => other,
@@ -110,19 +110,6 @@ pub fn build(env: &OpEnv, check: bool) -> Result<Outcome> {
         files: files.len(),
         library: checked,
     }))
-}
-
-/// [`check_library`], with the error of a project that has no venv saying how
-/// to go on.
-fn check_members(env: &OpEnv) -> Result<Library> {
-    check_library(env).map_err(|why| match why {
-        CheckError::NoVenv(repo) => anyhow!(
-            "no venv in {}: run lvpm venv create and lvpm sync, or pass --no-check",
-            repo.display()
-        ),
-        CheckError::Cancelled => Cancelled.into(),
-        other => other.into(),
-    })
 }
 
 /// Write the package beside `path` and rename it over `path` once complete;

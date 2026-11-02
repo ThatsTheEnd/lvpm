@@ -6,7 +6,8 @@
   "packages": {
     ".": {
       "extra-files": [
-        { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" }
+        { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" },
+        { "type": "generic", "path": ".github/workflow-templates/lvpm-release.yml" }
       ]
     }
   }

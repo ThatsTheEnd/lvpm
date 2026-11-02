@@ -4,6 +4,7 @@
 // it from `lvpm-core` only.
 #![allow(clippy::disallowed_methods)]
 
+use lvpm_core::errors::CheckError;
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
@@ -404,6 +405,10 @@ enum Cmd {
     /// Reads lvpm.toml's [distribution] and the library's member list, and
     /// writes the members into a .lvpkg; LabVIEW is not needed. Building the same files twice
     /// gives the same bytes.
+    ///
+    /// First checks the library's members as `lvpm check` does, and writes
+    /// nothing when one breaks a rule. The check needs a venv; --no-check
+    /// skips it.
     Build {
         /// Skip the member check; builds without a venv.
         #[arg(long)]
@@ -838,7 +843,7 @@ fn run(cli: &Cli) -> Result<Report> {
                 render::check::result(&checked),
             )?
             .warning(warning)
-            .failed(!checked.findings.is_empty()))
+            .failed(!checked.passed()))
         }
         Cmd::Launch { lvproj } => {
             let launched = ops::launch_cmd::launch(&env, lvproj.as_deref())?;
@@ -909,25 +914,22 @@ fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyA
 /// A refused build is a result, not an error: its stdout and `--json` are
 /// `check`'s, and the exit code is 1.
 fn cmd_build(env: &OpEnv, check: bool) -> Result<Report> {
-    match ops::build::build(env, check)? {
+    let outcome = ops::build::build(env, check).map_err(|why| match why {
+        CheckError::NoVenv(repo) => anyhow!(render::build::no_venv(&repo)),
+        other => other.into(),
+    })?;
+    match outcome {
         ops::build::Outcome::Refused(library) => {
             let checked = &library.checked;
-            let mut result = render::check::result(checked);
-            result["command"] = json!("build");
-            let warning = render::check::member_warnings(checked)
-                + &render::build::refused(checked.findings.len());
-            Ok(Report::new(render::check::listing(checked), result)?
-                .warning(warning)
-                .failed(true))
+            Ok(Report::new(
+                render::check::listing(checked),
+                render::build::refusal_result(checked),
+            )?
+            .warning(render::build::refusal_warning(checked))
+            .failed(true))
         }
         ops::build::Outcome::Built(built) => {
-            let warning = match &built.library {
-                Some(library) => {
-                    render::check::member_warnings(&library.checked)
-                        + &render::check::unused(&library.unused)
-                }
-                None => render::build::SKIPPED.to_string(),
-            };
+            let warning = render::build::built_warning(built.library.as_ref());
             Ok(Report::said(render::build::built(&built), "build").warning(warning))
         }
     }

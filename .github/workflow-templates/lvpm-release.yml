@@ -19,7 +19,7 @@ concurrency:
 
 env:
   # The lvpm that builds. Raise it to build with a newer one.
-  LVPM_VERSION: "0.15.0"
+  LVPM_VERSION: "0.22.0" # x-release-please-version
 
 jobs:
   publish:
