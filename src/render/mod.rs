@@ -5,7 +5,8 @@
 //! any other output starts on a line of its own. One file per core module holds
 //! the wording of that module's events; this file routes events to them and
 //! owns the two streams. `query` words what a query returns instead, and the
-//! `init`, `launch`, `venv` and `viserver` files also word what their commands return.
+//! `check`, `init`, `launch`, `venv` and `viserver` files also word what their
+//! commands return.
 
 pub mod build;
 pub mod check;

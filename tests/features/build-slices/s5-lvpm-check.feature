@@ -27,13 +27,15 @@ Feature: lvpm check finds broken links without LabVIEW
   Scenario: a missing .llb fails every link through it
     Given a check project holding "UsesLlb.vi" and no "Archive.llb"
     When lvpm check runs
-    Then stdout has the line "UsesLlb.vi: link not found: Archive.llb/InLlb.vi"
+    Then it exits 1
+    And stdout has the line "UsesLlb.vi: link not found: Archive.llb/InLlb.vi"
     And stdout has the line "UsesLlb.vi: link not found: Archive.llb/Removed.vi"
 
   Scenario: two VIs with the same missing link give two findings
     Given a check project holding "Broken.vi", and a copy of it named "Broken2.vi"
     When lvpm check runs
-    Then stdout has the line "Broken.vi: link not found: Sub/Gone.vi"
+    Then it exits 1
+    And stdout has the line "Broken.vi: link not found: Sub/Gone.vi"
     And stdout has the line "Broken2.vi: link not found: Sub/Gone.vi"
     And stdout ends with "VIs checked: 2, problems: 2, links not checked: 0"
 
@@ -139,15 +141,17 @@ Feature: lvpm check finds broken links without LabVIEW
     And stdout has the line "Good.vi: saved in LabVIEW 2026, newer than the minimum 2025"
     And stdout has the line "next: save the VI for LabVIEW 2025, or raise labview in lvpm.toml"
 
-  Scenario: a VI saved before the minimum passes
+  Scenario: a VI saved before the minimum is not too new
     Given a check project with labview ">=2026" holding the pilot VI saved in LabVIEW 2013
     When lvpm check runs
     Then stdout has no line containing "newer than the minimum"
+    And stdout ends with "VIs checked: 1, problems: 2, links not checked: 0"
 
   Scenario: no labview key means no save-version check
     Given a check project with no labview key holding "Lib.lvlib", "Good.vi" and "Helper.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 2, problems: 0, links not checked: 0"
     And stderr has the line "warning: lvpm.toml has no labview, so save versions were not checked"
 
   Scenario: compiled code must be separated
@@ -177,6 +181,7 @@ Feature: lvpm check finds broken links without LabVIEW
     Given a check project with [dependencies] holding "check_fixture_dep", holding "Lib.lvlib" and "UsesDep.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: an undeclared dependency is named with the VI, link and package
     Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
@@ -208,11 +213,13 @@ Feature: lvpm check finds broken links without LabVIEW
     Given a check project with [dev-dependencies] holding "check_fixture_other", holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: a test VI may use a dependency group
     Given a check project with [dependency-groups] "ci" holding "check_fixture_other", holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: a test VI may not use a package in no table
     Given a check project with every dependency table empty, holding "Lib.lvlib" and "Tests/TestDevOnly.vi"
@@ -230,12 +237,14 @@ Feature: lvpm check finds broken links without LabVIEW
     And the bound installation folder holds the vi.lib file it links to
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: a file in the installation wins over a package
     Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
     And the bound installation folder also holds "vi.lib/Check Fixture/Dep.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: package links are checked with the installation absent
     Given a check project with [dependencies] empty, holding "Lib.lvlib" and "UsesDep.vi"
@@ -248,6 +257,7 @@ Feature: lvpm check finds broken links without LabVIEW
     Given a check project with no [distribution] table and [dev-dependencies] holding "check_fixture_other", holding "UsesDevOnly.vi"
     When lvpm check runs
     Then it exits 0
+    And stdout ends with "VIs checked: 1, problems: 0, links not checked: 0"
 
   Scenario: the top-level library cannot be read
     Given a check project with [distribution] top-level-library "Nope.lvlib", holding "UsesDep.vi"

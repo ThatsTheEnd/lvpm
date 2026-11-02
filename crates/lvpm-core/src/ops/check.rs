@@ -425,8 +425,8 @@ impl Uses<'_> {
     }
 }
 
-/// Where a link leads. The file of a `File` is looked up among those the
-/// venv's packages own.
+/// Where a link leads. `File` is the path it resolved to; which package owns
+/// that file is a separate lookup, [`Search::owner`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Resolved {
     /// The file it names, or, inside a file, the path below that file.

@@ -345,6 +345,16 @@ Decide in `/specs`: rate limits without a token; how the release file is named.
 
 ### Slice S5: `lvpm check`
 
+**Shipped** in #63 ([Checking a project](../usage.md#checking-a-project)). It
+differs from the plan below in three ways. A VI that is not a library member,
+such as a test, may also use `[dev-dependencies]` and dependency groups;
+library members are held to `[dependencies]`. Of the prototype's gaps, exact-path
+resolution and `.llb` members are closed; the old OpenG `PTH0` flavour is not
+read yet (the table is reported as not readable) and waits for a sample in
+[#108](https://github.com/ThatsTheEnd/lvpm/issues/108). Links lvpm cannot look
+for (an absolute path saved elsewhere, a network path, a root such as
+`<resource>`) are counted as not checked, with a warning.
+
 **Depends-on:** none
 **Files:** `crates/lvpm-core/src/linker.rs`, `crates/lvpm-core/src/lvlib.rs`, `crates/lvpm-core/src/viserver.rs`, `crates/lvpm-core/src/ops/check.rs`, `src/main.rs`, `src/render/check.rs`, `crates/lvpm-core/src/events.rs`, `src/render/mod.rs`
 

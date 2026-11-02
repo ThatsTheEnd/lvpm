@@ -27,7 +27,7 @@
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Package the project's library as `dist/<name>-<version>.lvpkg`, from `[distribution]` ([Building a package](#building-a-package))              |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
-| `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not list; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
+| `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -608,8 +608,8 @@ lvpm check --json
 ```
 
 `DIR` is read from where the command runs; with none, it is the whole project.
-The walk takes `.vi`, `.vit`, `.ctl` and `.ctt` files, and skips the venv, folders
-that start with a dot and linked folders.
+The walk takes `.vi`, `.vit`, `.ctl` and `.ctt` files, and skips the venv and its
+staging folder, every name that starts with a dot, and links.
 
 **The rules.** Each finding is one VI breaking one rule; a rule broken twice
 by the same link is one finding.
@@ -646,13 +646,13 @@ then link. Paths are relative to the project and use `/`. A link is shown as
 stored for `<vilib>` and the other roots, and otherwise as the path it led to.
 
 ```text
-x.vi: not a LabVIEW resource file
-Good.vi: linker table not readable (LIvi at byte 1234): format not supported yet
-Good.vi: saved in LabVIEW 2026, newer than the minimum 2025
+Broken.vi: link not found: Sub/Gone.vi
+Garbled.vi: linker table not readable (LIvi at byte 1234): format not supported yet
+New.vi: saved in LabVIEW 2026, newer than the minimum 2025
 NotSeparated.vi: compiled code is not separated from the source
-Broken.vi: link not found: Gone.vi
 UsesDep.vi: <vilib>/Check Fixture/Dep.vi is in check_fixture_dep, which is not in [dependencies]
 UsesDevOnly.vi: <vilib>/Check Fixture Dev/DevDep.vi is in check_fixture_other, which is only in [dev-dependencies]
+x.vi: not a LabVIEW resource file
 ```
 
 A package in a dependency group reads `only in [dependency-groups] ci`. Then
@@ -673,9 +673,11 @@ warning on stderr that says why (`warning: links not checked: 57 into vi.lib (th
 bound installation ... is not on this machine)`, `... into <resource> (lvpm
 does not resolve this root)`, or `warning: links not checked: 7 absolute paths
 not on this machine (saved elsewhere; LabVIEW searches for them when it
-loads)`). LabVIEW stores the absolute path a file had where the VI was saved,
-and looks for the file by name when it loads, so such a path on another machine
-is not a broken link. A venv package's own files are still checked when the
+loads)`). In pilots A and B such a path is where the file was on the machine
+that saved the VI, and LabVIEW 2026 finds the file by name when it loads the
+VI, so it is not a broken link here. A network path, or a name that would leave
+its folder (`..`, a separator), is counted the same way and never looked for.
+The warnings are text output only; `--json` carries the count, not the cause. A venv package's own files are still checked when the
 installation is absent.
 
 **Limits.**

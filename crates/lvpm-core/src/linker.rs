@@ -64,7 +64,7 @@ impl<'a> Cursor<'a> {
         ))
     }
 
-    fn u32(&mut self) -> Result<usize, LinkerError> {
+    fn u32_usize(&mut self) -> Result<usize, LinkerError> {
         Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("4 bytes")) as usize)
     }
 }
@@ -94,22 +94,28 @@ impl<'a> Rsrc<'a> {
         if !b.starts_with(b"RSRC\r\n") {
             return Err(LinkerError::NotResource);
         }
-        let (info, data) = (Cursor::at(b, 16).u32()?, Cursor::at(b, 24).u32()?);
-        let base = plus(info, Cursor::at(b, plus(info, 44)?).u32()?)?;
+        let (info, data) = (
+            Cursor::at(b, 16).u32_usize()?,
+            Cursor::at(b, 24).u32_usize()?,
+        );
+        let base = plus(info, Cursor::at(b, plus(info, 44)?).u32_usize()?)?;
         let mut head = Cursor::at(b, base);
         let mut blocks = Vec::new();
         // Counts are stored less one. A huge one runs off the end of `b`.
-        for _ in 0..=head.u32()? {
+        for _ in 0..=head.u32_usize()? {
             let kind: [u8; 4] = head.take(4)?.try_into().expect("4 bytes");
-            let (last, list) = (head.u32()?, head.u32()?);
+            let (last, list) = (head.u32_usize()?, head.u32_usize()?);
             let mut entry = Cursor::at(b, plus(base, list)?);
             for _ in 0..=last {
-                let id = entry.u32()? as u32;
+                let id = entry.u32_usize()? as u32;
                 entry.take(8)?; // name and attribute offsets
-                let offset = plus(data, entry.u32()?)?;
+                let offset = plus(data, entry.u32_usize()?)?;
                 entry.take(4)?;
                 let mut record = Cursor::at(b, offset);
-                let bytes = record.u32().ok().and_then(|size| record.take(size).ok());
+                let bytes = record
+                    .u32_usize()
+                    .ok()
+                    .and_then(|size| record.take(size).ok());
                 blocks.push(Block {
                     kind,
                     id,
@@ -146,7 +152,7 @@ impl<'a> Rsrc<'a> {
     /// file, has it clear (0x200). None when there is no such `LVSR`.
     pub fn separate_compiled(&self) -> Option<bool> {
         let lvsr = self.blocks.iter().find(|b| &b.kind == b"LVSR")?;
-        let flags = Cursor::at(lvsr.data?, 8).u32().ok()?;
+        let flags = Cursor::at(lvsr.data?, 8).u32_usize().ok()?;
         Some(flags & 0x400 != 0)
     }
 
@@ -192,7 +198,7 @@ impl<'a> Rsrc<'a> {
                 // the record's own bytes follow the section's 4-byte size
                 offset: block.offset + 4 + start,
             };
-            if Cursor::at(data, start + 4).u32().map_err(|_| bad)? == 0 {
+            if Cursor::at(data, start + 4).u32_usize().map_err(|_| bad)? == 0 {
                 at = start + 8;
                 continue;
             }
@@ -369,7 +375,7 @@ pub fn decode_pth0(b: &[u8]) -> Result<(LinkPath, usize)> {
     let mut record = Cursor::at(b, 0);
     let magic = record.take(4)?;
     ensure!(magic == b"PTH0", "expected a PTH0 record, got {magic:02x?}");
-    let len = record.u32()?;
+    let len = record.u32_usize()?;
     ensure!(len >= 4, "PTH0 length {len} is too small");
     let mut body = Cursor::at(record.take(len)?, 0);
     let (kind, levels) = (body.u16()?, body.u16()?);
