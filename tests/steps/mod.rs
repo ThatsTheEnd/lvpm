@@ -5,6 +5,7 @@
 pub mod add_remove;
 pub mod build;
 pub mod cancel;
+pub mod check;
 pub mod core_io;
 pub mod destination;
 pub mod docs;

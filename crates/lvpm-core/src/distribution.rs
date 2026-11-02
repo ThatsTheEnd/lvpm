@@ -200,11 +200,11 @@ fn required(t: &toml::Table, table: &str, key: &str) -> Result<String> {
     }
 }
 
-fn top_level_library(dist: &toml::Table, root: &Path) -> Result<PathBuf> {
+pub(crate) fn top_level_library(dist: &toml::Table, root: &Path) -> Result<PathBuf> {
     const KEY: &str = "distribution.top-level-library";
     let Some(rel) = string(dist, "distribution", "top-level-library")? else {
         bail!(
-            "{KEY}: lvpm build needs the library to package, like top-level-library = \"My Lib.lvlib\""
+            "{KEY}: missing; it names the library to package, like top-level-library = \"My Lib.lvlib\""
         );
     };
     let path = Path::new(&rel);

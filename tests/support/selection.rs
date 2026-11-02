@@ -22,6 +22,12 @@ pub const GLOBAL_TAG: &str = "global-labview";
 pub const PILOT_SOURCE_TAG: &str = "pilot-source";
 /// A checkout of pilot A at its pinned commit, for the `@pilot-source` scenarios.
 pub const PILOT_A_ENV_VAR: &str = "LVPM_TEST_PILOT_A";
+/// A scenario that checks pilot B's source. Its source is public, but a
+/// checkout is a clone someone makes, so it runs only when
+/// `LVPM_TEST_PILOT_B` names one.
+pub const PILOT_B_SOURCE_TAG: &str = "pilot-b-source";
+/// A checkout of pilot B at its pinned commit, for the `@pilot-b-source` scenarios.
+pub const PILOT_B_ENV_VAR: &str = "LVPM_TEST_PILOT_B";
 
 /// Whether a scenario runs, and if not, why.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +46,8 @@ pub enum Selection {
     GlobalBusy,
     /// A `@pilot-source` scenario without `LVPM_TEST_PILOT_A`.
     NeedsPilotSource,
+    /// A `@pilot-b-source` scenario without `LVPM_TEST_PILOT_B`.
+    NeedsPilotBSource,
 }
 
 /// What the environment of a run allows.
@@ -55,6 +63,8 @@ pub struct Env {
     pub global_busy: bool,
     /// `LVPM_TEST_PILOT_A` is set.
     pub pilot_a: bool,
+    /// `LVPM_TEST_PILOT_B` is set.
+    pub pilot_b: bool,
 }
 
 pub fn select(tags: &[String], env: &Env) -> Selection {
@@ -64,6 +74,7 @@ pub fn select(tags: &[String], env: &Env) -> Selection {
         _ if tags.iter().any(|tag| tag.starts_with(PENDING_TAG_PREFIX)) => Selection::Pending,
         _ if has(LABVIEW_TAG) && !env.test_labview => Selection::NeedsLabview,
         _ if has(PILOT_SOURCE_TAG) && !env.pilot_a => Selection::NeedsPilotSource,
+        _ if has(PILOT_B_SOURCE_TAG) && !env.pilot_b => Selection::NeedsPilotBSource,
         _ if has(INTERACTIVE_TAG) && env.headless_labview => Selection::Interactive,
         _ if has(GLOBAL_TAG) && env.global_busy => Selection::GlobalBusy,
         _ if !has(LABVIEW_TAG) && env.only_labview => Selection::NotLabview,
@@ -163,6 +174,30 @@ mod tests {
     }
 
     #[test]
+    fn a_pilot_b_scenario_needs_its_own_checkout() {
+        let pilot = tags(&["pilot-b-source"]);
+        assert_eq!(
+            select(&pilot, &Env::default()),
+            Selection::NeedsPilotBSource
+        );
+        let only_a = Env {
+            pilot_a: true,
+            ..Env::default()
+        };
+        assert_eq!(select(&pilot, &only_a), Selection::NeedsPilotBSource);
+        let env = Env {
+            pilot_b: true,
+            ..Env::default()
+        };
+        assert_eq!(select(&pilot, &env), Selection::Run);
+        // and pilot A's scenarios do not wait for B
+        assert_eq!(
+            select(&tags(&["pilot-source"]), &env),
+            Selection::NeedsPilotSource
+        );
+    }
+
+    #[test]
     fn labview_is_asked_for_before_a_pilot_checkout() {
         let tagged = tags(&["labview", "pilot-source"]);
         assert_eq!(select(&tagged, &Env::default()), Selection::NeedsLabview);
@@ -178,6 +213,10 @@ mod tests {
         assert_eq!(
             pilot_not_run_line(3, PILOT_SOURCE_TAG, PILOT_A_ENV_VAR, "A"),
             "3 @pilot-source scenarios not run (set LVPM_TEST_PILOT_A to a checkout of pilot A)"
+        );
+        assert_eq!(
+            pilot_not_run_line(2, PILOT_B_SOURCE_TAG, PILOT_B_ENV_VAR, "B"),
+            "2 @pilot-b-source scenarios not run (set LVPM_TEST_PILOT_B to a checkout of pilot B)"
         );
     }
 }
