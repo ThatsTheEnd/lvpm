@@ -448,7 +448,7 @@ impl Cache {
         }
     }
 
-    fn blob_path(&self, sha: &str) -> PathBuf {
+    pub(crate) fn blob_path(&self, sha: &str) -> PathBuf {
         self.root
             .join("content")
             .join("sha256")

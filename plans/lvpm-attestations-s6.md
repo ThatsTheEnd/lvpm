@@ -509,10 +509,10 @@ Slices 1 to 3 ship together in one PR: `[policy]` must never be released parsed 
   - [x] Step T.1: template and its check
 
 #### Wave 2
-- [ ] Slice 2: asking GitHub and gh
-  - [ ] Step 2.1: API lookup and gh JSON parse
-  - [ ] Step 2.2: gh runner on `GitHub`
-  - [ ] Step 2.3: `Downloads::attestation`
+- [x] Slice 2: asking GitHub and gh
+  - [x] Step 2.1: API lookup and gh JSON parse
+  - [x] Step 2.2: gh runner on `GitHub`
+  - [x] Step 2.3: `Downloads::attestation`
 
 #### Wave 3
 - [ ] Slice 3: the check at lock time

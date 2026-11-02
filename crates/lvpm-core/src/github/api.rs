@@ -11,7 +11,7 @@ use crate::fetch::Rejected;
 use crate::version::Version;
 use anyhow::Result;
 use reqwest::StatusCode;
-use reqwest::blocking::Client;
+use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, HeaderMap, LINK, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -218,22 +218,30 @@ fn fetch_all(
     )))
 }
 
+/// A GET of `url` as every API call is made: the API's headers, the timeout
+/// and, when there is one, the token.
+pub(super) fn request(client: &Client, url: &str, auth: &GitHubAuth) -> RequestBuilder {
+    let request = client
+        .get(url)
+        .header(ACCEPT, "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", API_VERSION)
+        .header(USER_AGENT, concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+        .timeout(REQUEST_TIMEOUT);
+    match auth.token() {
+        Some(token) => request.bearer_auth(token),
+        None => request,
+    }
+}
+
 /// One API call: the body, and the `Link` header.
 fn get(
     client: &Client,
     url: &str,
     auth: &GitHubAuth,
 ) -> Result<(Vec<u8>, Option<String>), GitHubFault> {
-    let mut request = client
-        .get(url)
-        .header(ACCEPT, "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", API_VERSION)
-        .header(USER_AGENT, concat!("lvpm/", env!("CARGO_PKG_VERSION")))
-        .timeout(REQUEST_TIMEOUT);
-    if let Some(token) = auth.token() {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().map_err(|error| transport(&error))?;
+    let response = request(client, url, auth)
+        .send()
+        .map_err(|error| transport(&error))?;
     let status = response.status();
     let headers = response.headers().clone();
     let mut body = Vec::new();
