@@ -532,7 +532,7 @@ Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults
 
 #### Wave 2
 - [ ] Slice 2: resolve and lock a pinned package
-  - [ ] Step 2.1: source pins decide the owner in the first-wins filter
+  - [x] Step 2.1: source pins decide the owner in the first-wins filter
   - [ ] Step 2.2: failure messages name the package and the pinned source
   - [ ] Step 2.3: source pins are lock inputs
 
