@@ -131,7 +131,8 @@ inferences and are in the Ambiguity Log.
     before this slice is not stale because of it, and its bytes do not
     change on `lvpm lock`. *(inference)*
 12. **Documented.** docs/usage.md and docs/manifest.md show the `index` key,
-    the no-fallback rule, that a pin beats local inputs, and `--index`.
+    the no-fallback rule, that a pin beats local inputs, and `--index`. The GitHub Pages site
+    and cli reference reflect this new behaviour.
     *(inference: build-slices rules require docs for behaviour users see)*
 
 Demo: pilot A pinned to a hosted index of its own, with a same-named,
