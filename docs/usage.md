@@ -10,7 +10,7 @@
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
-| `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
+| `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
 | `lvpm uninstall <name>` / `--all`                    | Remove exactly the files that were installed and prune empty folders                                                                         |

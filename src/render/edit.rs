@@ -81,18 +81,35 @@ fn edit_line(edit: &ManifestEdit, table: &DependencyTable, dry_run: bool) -> Str
         DependencyTable::Dependencies => String::new(),
         _ => format!(" {header}"),
     };
+    // A package pinned to a source says where it comes from, last.
+    let source = match edit {
+        ManifestEdit::Added { index, .. } | ManifestEdit::Updated { index, .. } => index
+            .as_ref()
+            .map_or_else(String::new, |name| format!(" (from {name})")),
+        ManifestEdit::Removed { .. } => String::new(),
+    };
     match (edit, dry_run) {
-        (ManifestEdit::Added { name, constraint }, false) => {
-            format!("lvpm.toml: added {name} = \"{constraint}\" to {header}")
+        (
+            ManifestEdit::Added {
+                name, constraint, ..
+            },
+            false,
+        ) => {
+            format!("lvpm.toml: added {name} = \"{constraint}\" to {header}{source}")
         }
-        (ManifestEdit::Added { name, constraint }, true) => {
-            format!("lvpm.toml would get: {name} = \"{constraint}\"{table}")
+        (
+            ManifestEdit::Added {
+                name, constraint, ..
+            },
+            true,
+        ) => {
+            format!("lvpm.toml would get: {name} = \"{constraint}\"{table}{source}")
         }
-        (ManifestEdit::Updated { name, from, to }, false) => {
-            format!("lvpm.toml was updated: {name} \"{from}\" -> \"{to}\"{table}")
+        (ManifestEdit::Updated { name, from, to, .. }, false) => {
+            format!("lvpm.toml was updated: {name} \"{from}\" -> \"{to}\"{table}{source}")
         }
-        (ManifestEdit::Updated { name, from, to }, true) => {
-            format!("lvpm.toml would be updated: {name} \"{from}\" -> \"{to}\"{table}")
+        (ManifestEdit::Updated { name, from, to, .. }, true) => {
+            format!("lvpm.toml would be updated: {name} \"{from}\" -> \"{to}\"{table}{source}")
         }
         (ManifestEdit::Removed { name, constraint }, false) => {
             format!("lvpm.toml: removed {name} = \"{constraint}\"{table}")
@@ -183,6 +200,7 @@ mod tests {
         ManifestEdit::Added {
             name: "gamma".into(),
             constraint: ">=1.0".into(),
+            index: None,
         }
     }
 
@@ -198,6 +216,7 @@ mod tests {
                     name: "beta".into(),
                     from: ">=1.0".into(),
                     to: ">=0.5".into(),
+                    index: None,
                 },
                 false,
                 false,
@@ -228,6 +247,64 @@ mod tests {
              lvpm.toml would lose: gamma = \">=1.0\" [dev-dependencies]\n"
         );
         assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn a_package_pinned_to_a_source_says_where_it_comes_from_at_the_end_of_the_line() {
+        let (mut renderer, out, _) = renderer();
+        let pinned = |edit: ManifestEdit, dry_run: bool| Event::ManifestEdited {
+            edit,
+            dev: false,
+            group: Some("ci".into()),
+            created_table: false,
+            dry_run,
+        };
+        let added = ManifestEdit::Added {
+            name: "gamma".into(),
+            constraint: ">=1.0".into(),
+            index: Some("second".into()),
+        };
+        let updated = ManifestEdit::Updated {
+            name: "gamma".into(),
+            from: "*".into(),
+            to: ">=1.0".into(),
+            index: Some("second".into()),
+        };
+        for (edit, dry_run) in [
+            (added.clone(), false),
+            (added, true),
+            (updated.clone(), false),
+            (updated, true),
+        ] {
+            renderer.render(&pinned(edit, dry_run));
+        }
+        assert_eq!(
+            out.text(),
+            "lvpm.toml: added gamma = \">=1.0\" to [dependency-groups.ci] (from second)\n\
+             lvpm.toml would get: gamma = \">=1.0\" [dependency-groups.ci] (from second)\n\
+             lvpm.toml was updated: gamma \"*\" -> \">=1.0\" [dependency-groups.ci] (from second)\n\
+             lvpm.toml would be updated: gamma \"*\" -> \">=1.0\" [dependency-groups.ci] (from second)\n"
+        );
+    }
+
+    #[test]
+    fn the_json_of_an_edit_has_an_index_only_when_the_package_is_pinned() {
+        let json = |index: Option<&str>| {
+            serde_json::to_value(ManifestEdit::Added {
+                name: "gamma".into(),
+                constraint: ">=1.0".into(),
+                index: index.map(str::to_string),
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            json(None),
+            serde_json::json!({"edit": "added", "name": "gamma", "constraint": ">=1.0"})
+        );
+        assert_eq!(
+            json(Some("second")),
+            serde_json::json!({"edit": "added", "name": "gamma", "constraint": ">=1.0", "index": "second"})
+        );
     }
 
     #[test]

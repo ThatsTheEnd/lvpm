@@ -275,6 +275,9 @@ enum Cmd {
         /// Add it to [dependency-groups.<NAME>], which is made if it is new.
         #[arg(long, value_name = "NAME", conflicts_with = "dev")]
         group: Option<String>,
+        /// Take this package only from this [sources] name; writes index = "<NAME>".
+        #[arg(long = "index", value_name = "NAME")]
+        source_pin: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
     },
@@ -738,7 +741,7 @@ fn run(cli: &Cli) -> Result<Report> {
                     env.sink.emit(Event::InstallAddsToProject {
                         package: spec.to_string(),
                     });
-                    cmd_add(&env, spec, DependencyTable::Dependencies, apply)
+                    cmd_add(&env, spec, DependencyTable::Dependencies, None, apply)
                 }
                 (InstallMode::Add | InstallMode::Additive, package) => {
                     ops::install::install(&env, package, &apply.options(*no_deps, *allow_downgrade))
@@ -750,11 +753,13 @@ fn run(cli: &Cli) -> Result<Report> {
             package,
             dev,
             group,
+            source_pin,
             apply,
         } => cmd_add(
             &env,
             package,
             dependency_table(*dev, group.as_deref())?,
+            source_pin.as_deref(),
             apply,
         )
         .map(|()| Report::done("add")),
@@ -901,9 +906,21 @@ fn dependency_table(dev: bool, group: Option<&str>) -> Result<DependencyTable> {
     Ok(table)
 }
 
-fn cmd_add(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {
-    ops::add_remove::add(env, package, table, &apply.options(false, false))
-        .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
+fn cmd_add(
+    env: &OpEnv,
+    package: &str,
+    table: DependencyTable,
+    source_pin: Option<&str>,
+    apply: &ApplyArgs,
+) -> Result<()> {
+    ops::add_remove::add(
+        env,
+        package,
+        table,
+        source_pin,
+        &apply.options(false, false),
+    )
+    .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm add`")))
 }
 
 fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyArgs) -> Result<()> {

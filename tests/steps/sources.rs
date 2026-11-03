@@ -98,6 +98,8 @@ impl CliWorld {
 async fn two_sources(world: &mut CliWorld, year: String) {
     world.sandbox.clear_local_packages();
     world.sandbox.use_project_sources(&year, &[FIRST, SECOND]);
+    // `a current lock` snapshots the destination, so the project has one.
+    world.sandbox.make_empty_dest();
     // Each lists nothing until a step says otherwise.
     for dir in [FIRST, SECOND] {
         world.sandbox.feed().publish(dir, &listing(&[], true));
@@ -407,6 +409,40 @@ async fn depends_on_with_a_lock_from_before_source_pins(
         .replace("{SECOND}", &world.source_url("second"));
     std::fs::write(world.lock_path(), lock).expect("write lvpm.lock");
     world.lock.before = world.lock_bytes();
+}
+
+/// `alpha` is a GitHub dependency: the line `depend` made gets `github`.
+#[given(regex = r#"^the project depends on "([^"]+)" via github "([^"]+)"$"#)]
+async fn depends_on_via_github(world: &mut CliWorld, name: String, repo: String) {
+    world.depend(DependencyTable::Dependencies, &name, "*");
+    let line = format!("\n{name} = \"*\"");
+    let github = format!("\n{name} = {{ github = \"{repo}\", version = \"*\" }}");
+    world.rewrite_manifest(|text| text.replacen(&line, &github, 1));
+}
+
+/// The manifest has `name` in `[table]` as a table with `version` and `index`.
+#[then(regex = r#"^lvpm\.toml pins "([^"]+)" to "([^"]+)" with "([^"]*)"(?: in \[([^\]]+)\])?$"#)]
+async fn the_manifest_pins(
+    world: &mut CliWorld,
+    name: String,
+    source: String,
+    constraint: String,
+    table: String,
+) {
+    let manifest: toml::Table = world.manifest_text().parse().expect("lvpm.toml is TOML");
+    let table = if table.is_empty() {
+        "dependencies"
+    } else {
+        &table
+    };
+    let entry = (table.split('.').chain([name.as_str()]))
+        .try_fold(&toml::Value::Table(manifest), |at, key| at.get(key))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {name} in [{table}] of:\n{}", world.manifest_text()));
+    let wanted: toml::Table = format!("version = {constraint:?}\nindex = {source:?}")
+        .parse()
+        .expect("a table");
+    assert_eq!(entry, toml::Value::Table(wanted), "{name} in [{table}]");
 }
 
 #[when(regex = r#"^I pin "([^"]+)" to "([^"]+)" in lvpm\.toml$"#)]

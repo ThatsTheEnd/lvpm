@@ -31,7 +31,9 @@ use std::path::PathBuf;
 /// and sync the destination. Without a constraint the entry is a floor at the
 /// version the new lock holds for it (`>=1.0`); with one, the constraint is
 /// written as given. An entry that is already there has its constraint
-/// replaced.
+/// replaced. With a `source_pin` the entry is `index = "<source_pin>"` too, so
+/// the package comes only from that `[sources]` entry; without one an `index`
+/// the entry has stays.
 ///
 /// Both files are written only once the lock is made and every archive of the
 /// sync is in hand. With `options.dry_run` nothing is written, and the manifest
@@ -40,9 +42,10 @@ pub fn add(
     env: &OpEnv,
     spec: &str,
     table: DependencyTable,
+    source_pin: Option<&str>,
     options: &InstallOptions,
 ) -> Result<(), EditError> {
-    let request = Request::parse(spec)?;
+    let request = Request::parse(spec, source_pin)?;
     let prepared = Prepared::of(env)?;
     let dest = env.destination()?;
     announce_project(env, &prepared, &dest);
@@ -51,15 +54,16 @@ pub fn add(
     // narrowed constraint on a GitHub dependency is judged as written; with no
     // constraint given, as `*`, which `floor` then narrows.
     let asked = request.constraint.as_deref().unwrap_or("*");
-    let edit = prepared.set(&table, &request.name, asked)?;
+    let source_pin = request.source_pin.as_deref();
+    let edit = prepared.set(&table, &request.name, asked, source_pin)?;
     let edited = (prepared.found.0.clone(), edit.project.clone());
     let moving = Moving::Nothing;
     let index = locking::load_index(env, Some(&edited), prepared.previous.as_ref(), &moving)?;
     let edit = match request.constraint {
         Some(_) => edit,
         None => {
-            let floor = floor(env, &prepared, &index, &table, &request.name)?;
-            prepared.set(&table, &request.name, &floor)?
+            let floor = floor(env, &prepared, &index, &table, &request.name, source_pin)?;
+            prepared.set(&table, &request.name, &floor, source_pin)?
         }
     };
     commit(env, prepared, edit, &index, dest, options)
@@ -96,15 +100,17 @@ pub fn remove(
     commit(env, prepared, edit, &index, dest, options)
 }
 
-/// What `add` was asked for: a package, and the constraint if one was written.
+/// What `add` was asked for: a package, the constraint if one was written, and
+/// the `[sources]` name it is to come from if `--index` named one.
 #[derive(Debug, PartialEq)]
 struct Request {
     name: String,
     constraint: Option<String>,
+    source_pin: Option<String>,
 }
 
 impl Request {
-    fn parse(spec: &str) -> Result<Request, EditError> {
+    fn parse(spec: &str, source_pin: Option<&str>) -> Result<Request, EditError> {
         let PackageArg { name, constraint } = PackageArg::parse(spec).map_err(|why| match why {
             PackageArgError::EmptyConstraint { name } => EditError::EmptyConstraint { name },
             other => anyhow!(other).into(),
@@ -112,7 +118,11 @@ impl Request {
         if let Some(written) = &constraint {
             Constraint::parse(written)?;
         }
-        Ok(Request { name, constraint })
+        Ok(Request {
+            name,
+            constraint,
+            source_pin: source_pin.map(str::to_string),
+        })
     }
 }
 
@@ -157,20 +167,34 @@ impl Prepared {
             .find(|(entry, _)| project::same_name(entry, name))
     }
 
-    /// The manifest with `name` in `table` asking for `constraint`.
+    /// The source `name` is pinned to in the manifest, in any table.
+    fn source_of(&self, name: &str) -> Option<&str> {
+        let (_, source) =
+            (self.found.1.index.iter()).find(|(pinned, _)| project::same_name(pinned, name))?;
+        Some(source)
+    }
+
+    /// The manifest with `name` in `table` asking for `constraint`, and with a
+    /// `source_pin` coming only from that source. An entry that is not given
+    /// one keeps the one it has.
     fn set(
         &self,
         table: &DependencyTable,
         name: &str,
         constraint: &str,
+        source_pin: Option<&str>,
     ) -> Result<Edit, EditError> {
+        let pinned = self.source_of(name);
+        let index = source_pin.or(pinned).map(str::to_string);
         let (key, change) = match self.entry(table, name) {
             Some((entry, old)) => {
                 let from = constraint_text(old);
-                let change = (from != constraint).then(|| ManifestEdit::Updated {
+                let moved = source_pin.is_some_and(|source| pinned != Some(source));
+                let change = (from != constraint || moved).then(|| ManifestEdit::Updated {
                     name: entry.clone(),
                     from,
                     to: constraint.to_string(),
+                    index,
                 });
                 (entry.as_str(), change)
             }
@@ -179,10 +203,11 @@ impl Prepared {
                 Some(ManifestEdit::Added {
                     name: name.to_string(),
                     constraint: constraint.to_string(),
+                    index,
                 }),
             ),
         };
-        let text = manifest_edit::set(&self.text, table, key, constraint)?;
+        let text = manifest_edit::set_pinned(&self.text, table, key, constraint, source_pin)?;
         Edit::of(text, change, table, self.is_new_group(table))
     }
 
@@ -272,6 +297,7 @@ fn floor(
     index: &Index,
     table: &DependencyTable,
     name: &str,
+    source_pin: Option<&str>,
 ) -> Result<String, EditError> {
     let project = &prepared.found.1;
     let gate = locking::lv_gate(project.labview.as_deref().ok_or(LockError::NoLabview)?)?;
@@ -289,7 +315,7 @@ fn floor(
         }
         .into());
     }
-    let any = prepared.set(table, name, "*")?;
+    let any = prepared.set(table, name, "*", source_pin)?;
     let resolved =
         locking::resolved_version(env, &any.project, index, prepared.previous.as_ref(), name)?;
     Ok(resolved.map_or_else(|| "*".to_string(), |version| format!(">={version}")))
@@ -473,12 +499,13 @@ mod tests {
 
     #[test]
     fn a_request_is_a_name_and_a_constraint_that_is_written_when_it_is_given() {
-        let parsed = |spec: &str| Request::parse(spec).unwrap();
+        let parsed = |spec: &str| Request::parse(spec, None).unwrap();
         assert_eq!(
             parsed("gamma"),
             Request {
                 name: "gamma".into(),
-                constraint: None
+                constraint: None,
+                source_pin: None
             }
         );
         assert_eq!(parsed(" gamma@>=0.5 ").constraint.as_deref(), Some(">=0.5"));
@@ -491,7 +518,7 @@ mod tests {
         // An unquoted `gamma@>=0.5` reaches the program as `gamma@`.
         for spec in ["gamma@", "gamma@ "] {
             assert!(
-                matches!(Request::parse(spec), Err(EditError::EmptyConstraint { name }) if name == "gamma"),
+                matches!(Request::parse(spec, None), Err(EditError::EmptyConstraint { name }) if name == "gamma"),
                 "{spec:?}"
             );
         }
@@ -500,7 +527,7 @@ mod tests {
     #[test]
     fn no_name_and_a_constraint_lvpm_cannot_read_are_refused_before_anything_is_read() {
         for spec in ["", "@1.0", "gamma@<2.0", "gamma@~1.0"] {
-            let why = Request::parse(spec).unwrap_err().to_string();
+            let why = Request::parse(spec, None).unwrap_err().to_string();
             assert!(
                 why.contains("not a package name") || why.contains("unsupported version"),
                 "{spec:?}: {why}"
@@ -512,7 +539,7 @@ mod tests {
     fn a_new_entry_goes_at_the_end_of_its_table_and_nothing_else_changes() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(&DependencyTable::Dependencies, "gamma", ">=1.0")
+            .set(&DependencyTable::Dependencies, "gamma", ">=1.0", None)
             .unwrap();
         assert_eq!(
             edit.text,
@@ -522,7 +549,8 @@ mod tests {
             edit.change,
             Some(ManifestEdit::Added {
                 name: "gamma".into(),
-                constraint: ">=1.0".into()
+                constraint: ">=1.0".into(),
+                index: None
             })
         );
         assert!(!edit.dev);
@@ -533,7 +561,7 @@ mod tests {
     fn an_entry_that_is_there_is_updated_under_its_own_spelling() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(&DependencyTable::Dependencies, "beta", ">=0.5")
+            .set(&DependencyTable::Dependencies, "beta", ">=0.5", None)
             .unwrap();
         assert_eq!(edit.text, MANIFEST.replace(">=1.0", ">=0.5"));
         assert_eq!(
@@ -541,16 +569,123 @@ mod tests {
             Some(ManifestEdit::Updated {
                 name: "Beta".into(),
                 from: ">=1.0".into(),
-                to: ">=0.5".into()
+                to: ">=0.5".into(),
+                index: None
             })
         );
+    }
+
+    const PINNED: &str = "[project]\nlabview = \">=2024\"\n\n[sources]\n\
+                          first = \"http://host/first\"\nsecond = \"http://host/second\"\n\n\
+                          [dependencies]\n\
+                          alpha = { version = \"1.0\", index = \"first\" }\nbeta = \"*\"\n";
+
+    #[test]
+    fn a_new_entry_with_a_source_pin_is_added_as_a_table_and_says_where_it_comes_from() {
+        let project = prepared(PINNED);
+        let edit = project
+            .set(
+                &DependencyTable::Dependencies,
+                "gamma",
+                ">=1.0",
+                Some("second"),
+            )
+            .unwrap();
+        assert_eq!(
+            edit.change,
+            Some(ManifestEdit::Added {
+                name: "gamma".into(),
+                constraint: ">=1.0".into(),
+                index: Some("second".into())
+            })
+        );
+        assert_eq!(
+            edit.project.index.get("gamma").map(String::as_str),
+            Some("second")
+        );
+    }
+
+    #[test]
+    fn a_pin_alone_is_a_change_and_the_same_pin_and_constraint_is_none() {
+        let project = prepared(PINNED);
+        let table = DependencyTable::Dependencies;
+        let moved = project.set(&table, "alpha", "1.0", Some("second")).unwrap();
+        assert_eq!(
+            moved.change,
+            Some(ManifestEdit::Updated {
+                name: "alpha".into(),
+                from: "1.0".into(),
+                to: "1.0".into(),
+                index: Some("second".into())
+            })
+        );
+        assert!(moved.text.contains("index = \"second\""), "{}", moved.text);
+        let pinned = project.set(&table, "beta", "*", Some("first")).unwrap();
+        assert!(pinned.change.is_some(), "a short line gaining a pin");
+        let same = project.set(&table, "alpha", "1.0", Some("first")).unwrap();
+        assert_eq!((same.change, same.text.as_str()), (None, PINNED));
+    }
+
+    #[test]
+    fn no_source_pin_keeps_the_pin_an_entry_has_and_says_it_is_from_that_source() {
+        let project = prepared(PINNED);
+        let edit = project
+            .set(&DependencyTable::Dependencies, "alpha", "2.0", None)
+            .unwrap();
+        assert!(edit.text.contains("index = \"first\""), "{}", edit.text);
+        assert_eq!(
+            edit.change,
+            Some(ManifestEdit::Updated {
+                name: "alpha".into(),
+                from: "1.0".into(),
+                to: "2.0".into(),
+                index: Some("first".into())
+            })
+        );
+    }
+
+    #[test]
+    fn a_source_pin_that_names_no_source_is_refused_naming_the_line() {
+        let project = prepared(PINNED);
+        let why = project
+            .set(&DependencyTable::Dependencies, "gamma", "*", Some("nope"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{why:#}")
+                .contains("[dependencies] gamma: index = \"nope\" is not a [sources] name"),
+            "{why:#}"
+        );
+    }
+
+    #[test]
+    fn a_source_pin_on_a_github_line_is_refused() {
+        let manifest = PINNED.replace(
+            "beta = \"*\"",
+            "beta = { github = \"o/r\", version = \"*\" }",
+        );
+        let why = prepared(&manifest)
+            .set(&DependencyTable::Dependencies, "beta", "*", Some("first"))
+            .err()
+            .unwrap();
+        assert!(
+            format!("{why:#}").contains("github and index cannot be used together"),
+            "{why:#}"
+        );
+    }
+
+    #[test]
+    fn a_request_carries_the_source_pin_it_was_given() {
+        let request = Request::parse("gamma@1.0", Some("second")).unwrap();
+        assert_eq!(request.source_pin.as_deref(), Some("second"));
+        assert_eq!(Request::parse("gamma", None).unwrap().source_pin, None);
     }
 
     #[test]
     fn the_constraint_an_entry_already_has_is_no_change() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(&DependencyTable::Dependencies, "Beta", ">=1.0")
+            .set(&DependencyTable::Dependencies, "Beta", ">=1.0", None)
             .unwrap();
         assert_eq!(edit.text, MANIFEST);
         assert_eq!(edit.change, None);
@@ -560,7 +695,7 @@ mod tests {
     fn a_dev_entry_goes_to_the_dev_table() {
         let project = prepared(MANIFEST);
         let edit = project
-            .set(&DependencyTable::DevDependencies, "delta", "1.0")
+            .set(&DependencyTable::DevDependencies, "delta", "1.0", None)
             .unwrap();
         assert!(edit.dev);
         assert_eq!(edit.project.dev_dependencies.len(), 2);
@@ -642,7 +777,7 @@ mod tests {
     #[test]
     fn an_entry_of_a_group_that_is_not_there_yet_says_the_edit_made_its_table() {
         let project = prepared(MANIFEST);
-        let edit = project.set(&ci(), "gamma", "*").unwrap();
+        let edit = project.set(&ci(), "gamma", "*", None).unwrap();
         assert_eq!(
             (edit.dev, edit.group.as_deref(), edit.created_table),
             (false, Some("ci"), true)
@@ -650,7 +785,7 @@ mod tests {
         assert_eq!(edit.project.groups.len(), 1);
 
         let again = prepared(&edit.text);
-        let edit = again.set(&ci(), "delta", "*").unwrap();
+        let edit = again.set(&ci(), "delta", "*", None).unwrap();
         assert_eq!(
             (edit.dev, edit.group.as_deref(), edit.created_table),
             (false, Some("ci"), false)
@@ -666,7 +801,7 @@ mod tests {
             DependencyTable::Dependencies,
             DependencyTable::DevDependencies,
         ] {
-            let edit = project.set(&table, "delta", "*").unwrap();
+            let edit = project.set(&table, "delta", "*", None).unwrap();
             assert_eq!((edit.group, edit.created_table), (None, false));
         }
     }
@@ -802,6 +937,7 @@ mod tests {
             &world.env(&Recorder::default()),
             spec,
             DependencyTable::Dependencies,
+            None,
             options,
         )
     }
@@ -814,6 +950,7 @@ mod tests {
             &world.env(&sink),
             "gamma",
             DependencyTable::Dependencies,
+            None,
             &InstallOptions::default(),
         )
         .unwrap();
@@ -829,7 +966,8 @@ mod tests {
         assert!(sink.events().contains(&Event::ManifestEdited {
             edit: ManifestEdit::Added {
                 name: "gamma".into(),
-                constraint: ">=1.0".into()
+                constraint: ">=1.0".into(),
+                index: None
             },
             dev: false,
             group: None,
@@ -903,6 +1041,7 @@ mod tests {
             &world.env(&sink),
             "delta",
             DependencyTable::Dependencies,
+            None,
             &InstallOptions::default(),
         )
         .unwrap();
@@ -937,6 +1076,7 @@ mod tests {
             &world.env(&sink),
             "gamma",
             DependencyTable::Dependencies,
+            None,
             &options,
         )
         .unwrap();
@@ -980,6 +1120,27 @@ mod tests {
         );
         assert_eq!(world.manifest(), manifest);
         assert_eq!(world.lock(), None);
+    }
+
+    #[test]
+    fn a_source_pin_that_names_no_source_changes_nothing_and_names_the_line() {
+        let world = World::new("unknown-source", PROJECT);
+        let why = add(
+            &world.env(&Recorder::default()),
+            "gamma",
+            DependencyTable::Dependencies,
+            Some("nope"),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
+        let said = format!("{why:#}");
+        assert!(
+            said.contains("[dependencies] gamma: index = \"nope\" is not a [sources] name"),
+            "{said}"
+        );
+        assert_eq!(world.manifest(), PROJECT);
+        assert_eq!(world.lock(), None);
+        assert_eq!(world.installed(), Vec::<String>::new());
     }
 
     #[test]
@@ -1035,7 +1196,14 @@ mod tests {
         std::fs::create_dir_all(world.root.join("dest/LabVIEW").join(payload_path("gamma")))
             .unwrap();
         let sink = Recorder::default();
-        let why = add(&world.env(&sink), "gamma", ci(), &InstallOptions::default()).unwrap_err();
+        let why = add(
+            &world.env(&sink),
+            "gamma",
+            ci(),
+            None,
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
 
         assert!(
             matches!(&why, EditError::Sync(SyncError::Incomplete { done, left, .. })
@@ -1162,7 +1330,14 @@ mod tests {
     fn adding_to_a_new_group_makes_its_table_locks_and_installs_it_and_a_later_add_keeps_it() {
         let world = World::new("group-add", PROJECT);
         let sink = Recorder::default();
-        add(&world.env(&sink), "gamma", ci(), &InstallOptions::default()).unwrap();
+        add(
+            &world.env(&sink),
+            "gamma",
+            ci(),
+            None,
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(
             world.manifest(),
             format!("{PROJECT}\n[dependency-groups.ci]\ngamma = \">=1.0\"\n")
@@ -1173,7 +1348,8 @@ mod tests {
         assert!(sink.events().contains(&Event::ManifestEdited {
             edit: ManifestEdit::Added {
                 name: "gamma".into(),
-                constraint: ">=1.0".into()
+                constraint: ">=1.0".into(),
+                index: None
             },
             dev: false,
             group: Some("ci".into()),
@@ -1200,7 +1376,7 @@ mod tests {
         let world = World::new("group-remove", PROJECT);
         let sink = Recorder::default();
         let env = world.env(&sink);
-        add(&env, "gamma", ci(), &InstallOptions::default()).unwrap();
+        add(&env, "gamma", ci(), None, &InstallOptions::default()).unwrap();
         remove(&env, "gamma", ci(), &InstallOptions::default()).unwrap();
         assert_eq!(
             world.manifest(),

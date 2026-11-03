@@ -175,3 +175,66 @@ Feature: a dependency can be pinned to one source
     Then the command succeeds
     When I run "lvpm lock"
     Then lvpm.lock is byte-identical to before
+
+  Scenario: lvpm add --index writes the table form with the pinned source's version
+    Given "first" lists "alpha" 2.0
+    And "second" lists "alpha" 1.0
+    When I run "lvpm add alpha --index second --prefix dest"
+    Then the command succeeds
+    And lvpm.toml pins "alpha" to "second" with ">=1.0"
+    And lvpm.lock takes "alpha" 1.0 from "second"
+    And the output says "(from second)"
+
+  Scenario: lvpm add --dev --index writes the pin into [dev-dependencies]
+    Given "second" lists "alpha" 1.0
+    When I run "lvpm add alpha --dev --index second --prefix dest"
+    Then the command succeeds
+    And lvpm.toml pins "alpha" to "second" with ">=1.0" in [dev-dependencies]
+
+  Scenario: lvpm add --index into a group
+    Given "second" lists "alpha" 1.0
+    When I run "lvpm add alpha --index second --group ci --prefix dest"
+    Then the command succeeds
+    And lvpm.toml pins "alpha" to "second" with ">=1.0" in [dependency-groups.ci]
+
+  Scenario: lvpm add --index moves an existing pin
+    Given "first" lists "alpha" 1.0
+    And "second" lists "alpha" 2.0
+    And the project depends on "alpha" "*" pinned to "first"
+    When I run "lvpm add alpha --index second --prefix dest"
+    Then the command succeeds
+    And lvpm.toml pins "alpha" to "second" with ">=2.0"
+
+  Scenario: lvpm add without --index keeps an existing pin
+    Given "second" lists "alpha" 1.0, "alpha" 2.0
+    And the project depends on "alpha" "1.0" pinned to "second"
+    When I run "lvpm add alpha@2.0 --prefix dest"
+    Then the command succeeds
+    And lvpm.toml pins "alpha" to "second" with "2.0"
+
+  Scenario: lvpm add --index naming an unknown source changes nothing
+    Given "first" lists "alpha" 1.0
+    And the project depends on "alpha" "*"
+    And a current lock
+    When I run "lvpm add alpha --index nope --prefix dest"
+    Then the exit code is non-zero
+    And the error says "index = \"nope\" is not a [sources] name"
+    And lvpm.toml and lvpm.lock are byte-identical to before
+
+  Scenario: lvpm add --index to a source that does not list the package changes nothing
+    Given "first" lists "alpha" 1.0
+    And "second" lists "gamma" 1.0
+    And the project depends on "gamma" "*"
+    And a current lock
+    When I run "lvpm add alpha --index second --prefix dest"
+    Then the command fails naming "alpha" and "second"
+    And lvpm.toml and lvpm.lock are byte-identical to before
+
+  Scenario: lvpm add --index on a github line fails
+    Given the repo "owner/repo" has release "v1.0" with "alpha-1.0.vip"
+    And the project depends on "alpha" via github "owner/repo"
+    And a current lock
+    When I run "lvpm add alpha --index second --prefix dest"
+    Then the exit code is non-zero
+    And the error says "github and index cannot be used together"
+    And lvpm.toml and lvpm.lock are byte-identical to before
