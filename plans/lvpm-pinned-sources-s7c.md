@@ -526,9 +526,9 @@ Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: the `index` key in the manifest
-  - [ ] Step 1.1: parse `index` and check it against `[sources]`
-  - [ ] Step 1.2: the scenarios for a bad pin
+- [x] Slice 1: the `index` key in the manifest
+  - [x] Step 1.1: parse `index` and check it against `[sources]`
+  - [x] Step 1.2: the scenarios for a bad pin
 
 #### Wave 2
 - [ ] Slice 2: resolve and lock a pinned package
