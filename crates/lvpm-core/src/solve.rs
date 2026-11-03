@@ -582,15 +582,31 @@ pub enum Fact {
         days: u32,
     },
     /// No version source `from` lists of `package` is within `wanted`. A
-    /// later source is never asked (ADR 4).
+    /// later source is never asked (ADR 4). `pinned` is the `[sources]` name
+    /// `package` is pinned to, which `from` is the feed of; the solver never
+    /// sets it, `ops::lock` does.
     NoVersion {
         package: String,
         wanted: String,
         from: String,
+        pinned: Option<String>,
     },
     /// No source lists `package` at all.
     NotListed { package: String },
+    /// `package` is pinned to the `[sources]` entry `source`, whose feed is
+    /// `feed`, so no other was asked. The solver never produces it:
+    /// `ops::lock` adds it to a failure that names a pinned package without
+    /// saying where its versions come from.
+    SourcePinned {
+        package: String,
+        source: String,
+        feed: String,
+    },
 }
+
+/// What a failure says of a package pinned to one source: no other source is
+/// asked for it.
+pub(crate) const OTHER_SOURCES_IGNORED: &str = "other sources are ignored for a pinned package";
 
 /// Every version of `package` that `wanted` admits and the project's LabVIEW
 /// runs was released less than `days` days ago: `versions` are those, newest
@@ -614,6 +630,7 @@ impl Fact {
             Fact::NeedsLabview { .. } | Fact::AllHeldBack(_) | Fact::VersionHeldBack { .. } => 2,
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
+            Fact::SourcePinned { .. } => 5,
         }
     }
 }
@@ -674,12 +691,30 @@ impl fmt::Display for Fact {
                 package,
                 wanted,
                 from,
+                pinned: Some(source),
+            } => write!(
+                f,
+                "no version of {package} {wanted} is available from \"{source}\" ({from}), its pinned source; {OTHER_SOURCES_IGNORED}"
+            ),
+            Fact::NoVersion {
+                package,
+                wanted,
+                from,
+                pinned: None,
             } => write!(
                 f,
                 "no version of {package} {wanted} is available from {from}{}",
                 github_note(from)
             ),
             Fact::NotListed { package } => write!(f, "{package} is in no configured source"),
+            Fact::SourcePinned {
+                package,
+                source,
+                feed,
+            } => write!(
+                f,
+                "{package} is pinned to \"{source}\" ({feed}); {OTHER_SOURCES_IGNORED}"
+            ),
         }
     }
 }
@@ -858,7 +893,8 @@ fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&
         Fact::Pinned { .. }
         | Fact::NotListed { .. }
         | Fact::AllHeldBack(_)
-        | Fact::VersionHeldBack { .. } => false,
+        | Fact::VersionHeldBack { .. }
+        | Fact::SourcePinned { .. } => false,
     }
 }
 
@@ -949,6 +985,7 @@ fn collect_facts(
                 package: names.of(package),
                 wanted: describe(wanted),
                 from: names.source(package),
+                pinned: None,
             },
         },
         // The root's hand-off to a stand-in says nothing the stand-in's own
@@ -1942,6 +1979,7 @@ mod tests {
                 package: "c".into(),
                 wanted: ">= 2.0".into(),
                 from: String::new(),
+                pinned: None,
             },
         ];
         let merged = merge_held_back(facts.clone(), vec![held_version("b", "2.0", 3)]);

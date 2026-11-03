@@ -128,22 +128,37 @@ pub fn create_file(path: &Path, text: &str) -> std::io::Result<()> {
 /// end of the table (the table is appended to the file when it is missing), an
 /// existing one changes its value only, keeping its same-line comment. An
 /// entry that is a table, `{ github = "o/r", version = "1.0" }`, changes only
-/// its `version`.
+/// its `version`, and keeps an `index` it has.
 pub fn set(text: &str, table: &DependencyTable, name: &str, constraint: &str) -> Result<String> {
+    set_source_pinned(text, table, name, constraint, None)
+}
+
+/// [`set`], and with a `source_pin` the entry is also `index = "<source_pin>"`:
+/// a short line becomes `{ version = "..", index = ".." }`, a table line gets
+/// the key or has its own replaced. `None` leaves any `index` as it is.
+pub fn set_source_pinned(
+    text: &str,
+    table: &DependencyTable,
+    name: &str,
+    constraint: &str,
+    source_pin: Option<&str>,
+) -> Result<String> {
     let mut doc = parse(text)?;
     if lookup(&doc, table).is_none() {
-        return match with_group_in_inline_groups(&mut doc, table, name, constraint)? {
+        return match with_group_in_inline_groups(&mut doc, table, name, constraint, source_pin)? {
             true => Ok(render(text, &doc)),
-            false => Ok(with_appended_table(text, table, name, constraint)),
+            false => Ok(with_appended_table(
+                text, table, name, constraint, source_pin,
+            )),
         };
     }
     let entries = lookup_mut(&mut doc, table)
         .and_then(Item::as_table_like_mut)
         .with_context(|| format!("[{}] is not a table", table.key()))?;
     let changed = match entries.get_mut(name) {
-        Some(entry) => set_entry(entry, constraint),
+        Some(entry) => set_entry(entry, constraint, source_pin),
         None => {
-            entries.insert(name, Item::Value(constraint.into()));
+            entries.insert(name, Item::Value(new_entry(constraint, source_pin)));
             true
         }
     };
@@ -153,16 +168,55 @@ pub fn set(text: &str, table: &DependencyTable, name: &str, constraint: &str) ->
     Ok(render(text, &doc))
 }
 
-/// Gives `entry` the constraint, whether it is a string or a table. False
-/// when it already had it, and nothing was touched.
-fn set_entry(entry: &mut Item, constraint: &str) -> bool {
-    let Some(fields) = entry.as_table_like_mut() else {
-        return set_string(entry, constraint);
+/// A new entry's value: the constraint string, or with a source pin the table
+/// that holds it.
+fn new_entry(constraint: &str, source_pin: Option<&str>) -> Value {
+    let Some(source) = source_pin else {
+        return constraint.into();
     };
-    match fields.get_mut("version") {
-        Some(version) => set_string(version, constraint),
+    let mut fields = InlineTable::new();
+    fields.insert("version", constraint.into());
+    fields.insert("index", source.into());
+    fields.into()
+}
+
+/// Gives `entry` the constraint and the source pin, whether it is a string or
+/// a table. False when it already had them, and nothing was touched.
+fn set_entry(entry: &mut Item, constraint: &str, source_pin: Option<&str>) -> bool {
+    let last_key = entry
+        .as_inline_table()
+        .and_then(|fields| fields.iter().last().map(|(key, _)| key.to_string()));
+    let Some(fields) = entry.as_table_like_mut() else {
+        let Some(source) = source_pin else {
+            return set_string(entry, constraint);
+        };
+        let mut new = new_entry(constraint, Some(source));
+        if let Item::Value(old) = &*entry {
+            *new.decor_mut() = old.decor().clone();
+        }
+        *entry = Item::Value(new);
+        return true;
+    };
+    let key_count_before = fields.len();
+    // Both keys are set, so no `||`: the first change must not skip the second.
+    let version_changed = set_key(fields, "version", constraint);
+    let index_changed = source_pin.is_some_and(|source| set_key(fields, "index", source));
+    if fields.len() > key_count_before {
+        // The space before `}` was the old last value's; the new last value has its own.
+        let old_last = entry.as_inline_table_mut().zip(last_key);
+        if let Some(value) = old_last.and_then(|(fields, key)| fields.get_mut(&key)) {
+            value.decor_mut().set_suffix("");
+        }
+    }
+    version_changed | index_changed
+}
+
+/// Gives `fields` the string `value` under `key`; false when it already had it.
+fn set_key(fields: &mut dyn toml_edit::TableLike, key: &str, value: &str) -> bool {
+    match fields.get_mut(key) {
+        Some(item) => set_string(item, value),
         None => {
-            fields.insert("version", Item::Value(constraint.into()));
+            fields.insert(key, Item::Value(value.into()));
             true
         }
     }
@@ -273,9 +327,10 @@ fn with_appended_table(
     table: &DependencyTable,
     name: &str,
     constraint: &str,
+    source_pin: Option<&str>,
 ) -> String {
     let mut entries = Table::new();
-    entries.insert(name, Item::Value(constraint.into()));
+    entries.insert(name, Item::Value(new_entry(constraint, source_pin)));
     let path = table.path();
     // The tables above the entries' own are implicit: no header of theirs is written.
     let nested = path[1..]
@@ -311,6 +366,7 @@ fn with_group_in_inline_groups(
     table: &DependencyTable,
     name: &str,
     constraint: &str,
+    source_pin: Option<&str>,
 ) -> Result<bool> {
     let DependencyTable::Group(group) = table else {
         return Ok(false);
@@ -325,7 +381,7 @@ fn with_group_in_inline_groups(
         .as_table_like_mut()
         .context("[dependency-groups] is not a table")?;
     let mut entries = InlineTable::new();
-    entries.insert(name, constraint.into());
+    entries.insert(name, new_entry(constraint, source_pin));
     groups.insert(group, Item::Value(entries.into()));
     Ok(true)
 }
@@ -638,6 +694,120 @@ version = \"*\"
             set(text, &Dependencies, "alpha", ">=2.0").unwrap(),
             "[dependencies.alpha]\ngithub = \"o/r\"  # the repo\nversion = \">=2.0\"\n"
         );
+    }
+
+    /// `text` read back: the `[dependencies]` entry `name`, as TOML.
+    fn entry_of(text: &str, name: &str) -> toml::Value {
+        let parsed: toml::Table = text.parse().unwrap_or_else(|why| panic!("{text}: {why}"));
+        parsed["dependencies"][name].clone()
+    }
+
+    fn pinned(version: &str, source: &str) -> toml::Value {
+        let fields = format!("version = \"{version}\"\nindex = \"{source}\"\n");
+        toml::Value::Table(fields.parse().unwrap())
+    }
+
+    #[test]
+    fn a_short_line_becomes_a_table_that_holds_the_version_and_the_source_pin() {
+        let after =
+            set_source_pinned(MANIFEST, &Dependencies, "alpha", ">=2.0", Some("mirror")).unwrap();
+        assert_eq!(entry_of(&after, "alpha"), pinned(">=2.0", "mirror"));
+        assert_eq!(entry_of(&after, "beta"), toml::Value::from(">=1.0"));
+    }
+
+    #[test]
+    fn a_short_line_keeps_its_comment_when_it_becomes_a_table() {
+        let text = "[dependencies]\nalpha = \"1.0\"  # for DQMH\n";
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            "[dependencies]\nalpha = { version = \"1.0\", index = \"mirror\" }  # for DQMH\n"
+        );
+    }
+
+    #[test]
+    fn a_new_entry_with_a_source_pin_is_a_table_in_each_kind_of_table() {
+        let new = |text: &str, table: &DependencyTable| {
+            let after = set_source_pinned(text, table, "gamma", "*", Some("mirror")).unwrap();
+            let parsed: toml::Table = after.parse().unwrap_or_else(|why| panic!("{after}: {why}"));
+            let mut value = &parsed[table.path()[0]];
+            for step in &table.path()[1..] {
+                value = &value[step];
+            }
+            value["gamma"].clone()
+        };
+        let expected = pinned("*", "mirror");
+        assert_eq!(new(MANIFEST, &Dependencies), expected);
+        assert_eq!(new(MANIFEST, &DevDependencies), expected);
+        assert_eq!(new(MANIFEST, &ci()), expected);
+        assert_eq!(new("[project]\nname = \"x\"\n", &Dependencies), expected);
+        assert_eq!(
+            new("dependency-groups = { docs = { sphinx = \"*\" } }\n", &ci()),
+            expected
+        );
+    }
+
+    #[test]
+    fn a_table_line_without_an_index_gets_one_and_keeps_its_comment_and_its_other_keys() {
+        let text = "[dependencies]\nalpha = { version = \"1.0\" }  # pinned\nbeta = \"*\"\n";
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            "[dependencies]\nalpha = { version = \"1.0\", index = \"mirror\" }  # pinned\nbeta = \"*\"\n"
+        );
+    }
+
+    #[test]
+    fn a_different_index_is_replaced_and_the_same_one_is_left_alone() {
+        let text = "[dependencies]\nalpha = { index = 'first',   version = \"1.0\" }  # x\n";
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("second")).unwrap(),
+            "[dependencies]\nalpha = { index = \"second\",   version = \"1.0\" }  # x\n"
+        );
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("first")).unwrap(),
+            text
+        );
+    }
+
+    #[test]
+    fn a_new_version_and_a_new_index_are_both_written() {
+        let text = "[dependencies]\nalpha = { version = \"1.0\", index = \"first\" }\n";
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", ">=2.0", Some("second")).unwrap(),
+            "[dependencies]\nalpha = { version = \">=2.0\", index = \"second\" }\n"
+        );
+    }
+
+    #[test]
+    fn no_source_pin_changes_only_the_version_of_a_pinned_line() {
+        let text = "[dependencies]\nalpha = { version = \"1.0\", index = \"first\" }  # x\n";
+        assert_eq!(
+            set(text, &Dependencies, "alpha", "2.0").unwrap(),
+            "[dependencies]\nalpha = { version = \"2.0\", index = \"first\" }  # x\n"
+        );
+        assert_eq!(set(text, &Dependencies, "alpha", "1.0").unwrap(), text);
+    }
+
+    #[test]
+    fn a_table_written_as_its_own_section_gets_an_index_key() {
+        let text = "[dependencies.alpha]\nversion = \"1.0\"  # the version\n";
+        assert_eq!(
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            "[dependencies.alpha]\nversion = \"1.0\"  # the version\nindex = \"mirror\"\n"
+        );
+    }
+
+    #[test]
+    fn the_same_pinned_edit_twice_is_byte_identical() {
+        let once =
+            set_source_pinned(MANIFEST, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
+        let twice =
+            set_source_pinned(&once, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
+        assert_eq!(twice, once);
+        let new_once =
+            set_source_pinned(MANIFEST, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
+        let new_twice =
+            set_source_pinned(&new_once, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
+        assert_eq!(new_twice, new_once);
     }
 
     #[test]

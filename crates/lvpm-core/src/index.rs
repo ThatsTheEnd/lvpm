@@ -19,7 +19,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// (index url, base url that `Package.URL` is relative to)
@@ -413,24 +413,53 @@ fn import_bytes(
     })
 }
 
+/// A source folder's URL with the trailing slash that `Package.URL` is
+/// relative to.
+fn folder_base(folder: &str) -> String {
+    match folder.ends_with('/') {
+        true => folder.to_string(),
+        false => format!("{folder}/"),
+    }
+}
+
+/// The index URL of the hosted source at `folder`, which is what `Entry.source`
+/// holds for its entries.
+pub(crate) fn feed_url(folder: &str) -> String {
+    format!("{}index.vipr", folder_base(folder))
+}
+
 /// The feeds `load` reads, in the order a name is looked for: each hosted
 /// index folder in `extra`, then the public ones unless `defaults` is off, as
 /// (index URL, base URL that `Package.URL` is relative to).
 pub(crate) fn feeds(extra: &[String], defaults: bool) -> Vec<(String, String)> {
     let mut feeds: Vec<(String, String)> = extra
         .iter()
-        .map(|repo| {
-            let base = match repo.ends_with('/') {
-                true => repo.clone(),
-                false => format!("{repo}/"),
-            };
-            (format!("{base}index.vipr"), base)
-        })
+        .map(|repo| (feed_url(repo), folder_base(repo)))
         .collect();
     if defaults {
         feeds.extend(SOURCES.iter().map(|(a, b)| (a.to_string(), b.to_string())));
     }
     feeds
+}
+
+/// The feed that owns each source-pinned package: `name_key` to the owner's
+/// index URL, or `None` when the pin names no source (see [`owners`]).
+pub(crate) type Owners = HashMap<String, Option<String>>;
+
+/// The [`Owners`] of `pinned`, which is package name to source name, with
+/// `sources` as (name, folder URL) pairs. A pin naming no source in `sources`
+/// has no owner, so no entry matches it and its name is listed nowhere: it
+/// fails closed. The manifest reader already refuses such a pin.
+pub(crate) fn owners(sources: &[(String, String)], pinned: &BTreeMap<String, String>) -> Owners {
+    pinned
+        .iter()
+        .map(|(package, source)| {
+            let owner = (sources.iter())
+                .find(|(name, _)| name == source)
+                .map(|(_, folder)| feed_url(folder));
+            (crate::project::name_key(package), owner)
+        })
+        .collect()
 }
 
 /// Where an entry with this `url` came from: the index URL of the feed whose
@@ -440,9 +469,15 @@ pub(crate) fn source_of(url: &str, feeds: &[(String, String)]) -> String {
     if is_local_url(url) {
         return crate::lockfile::LOCAL_SOURCE.to_string();
     }
+    // Parsed as the download parses it, so `team/x/../../y` is not credited to `team/`.
+    let parsed = |s: &str| reqwest::Url::parse(s).map_or_else(|_| s.to_string(), String::from);
+    let target = parsed(url);
     feeds
         .iter()
-        .filter(|(_, base)| url.starts_with(base.as_str()))
+        .map(|(index_url, base)| (index_url, parsed(base)))
+        .filter(|(_, base)| target.starts_with(base.as_str()))
+        // `rev`: of equal matches, the first feed read wins, as it did before parsing.
+        .rev()
         .max_by_key(|(_, base)| base.len())
         .map_or_else(|| url.to_string(), |(index_url, _)| index_url.clone())
 }
@@ -457,23 +492,24 @@ pub(crate) fn source_of(url: &str, feeds: &[(String, String)]) -> String {
 pub fn load(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    sources: &SourceSet,
     sink: &dyn EventSink,
     cancel: &CancelToken,
 ) -> Result<Index> {
-    let loaded = read_each(
-        cache_dir,
-        refresh,
-        extra,
-        local_sources,
-        defaults,
-        sink,
-        cancel,
-        |_, error| Err(error),
-    )?;
+    let loaded = read_each(cache_dir, refresh, sources, sink, cancel, |_, error| {
+        Err(error)
+    })?;
     Ok(loaded.index)
+}
+
+/// Where [`load`] looks, besides the cache's imported archives.
+pub struct SourceSet<'a> {
+    /// Hosted index folders, read before the public ones.
+    pub extra: &'a [String],
+    /// Local package folders.
+    pub local: &'a [PathBuf],
+    /// Whether the public indexes are read too.
+    pub defaults: bool,
 }
 
 /// What [`load_each`] read, and the name of every source it was asked to.
@@ -485,47 +521,41 @@ pub struct Loaded {
 
 /// [`load`], handing a source that cannot be read to `on_fail` with its name:
 /// an `Err` back ends the load, an `Ok` skips that source. A cache error while
-/// reading a source counts as that source failing. Each name keeps only the
-/// entries of the first source that lists it.
-#[allow(clippy::too_many_arguments)]
+/// reading a source counts as that source failing. `owners` is what [`owners`]
+/// builds; [`first_source_wins`] says what it does to the entries.
 pub fn load_each(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    sources: &SourceSet,
+    owners: &Owners,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
-    let Loaded { index, sources } = read_each(
-        cache_dir,
-        refresh,
-        extra,
-        local_sources,
-        defaults,
-        sink,
-        cancel,
-        on_fail,
-    )?;
+    let read = read_each(cache_dir, refresh, sources, sink, cancel, on_fail)?;
     let index = Index {
-        entries: first_source_wins(index.entries),
+        entries: first_source_wins(read.index.entries, owners),
     };
-    Ok(Loaded { index, sources })
+    Ok(Loaded {
+        index,
+        sources: read.sources,
+    })
 }
 
 /// [`load_each`] with every source's entries.
-#[allow(clippy::too_many_arguments)]
 fn read_each(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    source_set: &SourceSet,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     mut on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
+    let SourceSet {
+        extra,
+        local,
+        defaults,
+    } = source_set;
     let mut entries = Vec::new();
     let mut sources = Vec::new();
     let cache = Cache::open(cache_dir)?;
@@ -540,7 +570,7 @@ fn read_each(
         });
     }
 
-    for dir in local_sources {
+    for dir in *local {
         let name = dir.to_string_lossy().into_owned();
         let start = entries.len();
         let scanned = match dir.is_dir() {
@@ -560,7 +590,7 @@ fn read_each(
         sources.push(name);
     }
 
-    let feeds = feeds(extra, defaults);
+    let feeds = feeds(extra, *defaults);
     if feeds.is_empty() {
         let index = Index { entries };
         return Ok(Loaded { index, sources });
@@ -587,15 +617,22 @@ fn read_each(
     Ok(Loaded { index, sources })
 }
 
-/// `entries` in source order, without every entry whose name an earlier
-/// source already lists: a later source never adds versions to a name (ADR 4).
-fn first_source_wins(entries: Vec<Entry>) -> Vec<Entry> {
-    let mut owner: HashMap<String, String> = HashMap::new();
+/// `entries` in source order, cut down to one source per name. A name in
+/// `owners` is source-pinned: it keeps only the entries whose `source` is its
+/// owner, so the cache, a local folder and every other feed lose it even when
+/// they list it first. Any other name keeps the entries of the first source
+/// that lists it, and a later source never adds versions (ADR 4).
+fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
+    let mut first_listed: HashMap<String, String> = HashMap::new();
     entries
         .into_iter()
         .filter(|entry| {
-            let first = owner
-                .entry(crate::project::name_key(&entry.name))
+            let key = crate::project::name_key(&entry.name);
+            if let Some(owner) = owners.get(&key) {
+                return owner.as_deref() == Some(entry.source.as_str());
+            }
+            let first = first_listed
+                .entry(key)
                 .or_insert_with(|| entry.source.clone());
             *first == entry.source
         })
@@ -708,6 +745,27 @@ fn feed_body(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Whether `{base}{rel}`, parsed the way the download parses it, is still in
+/// the feed's folder. `source_of` names a feed by that folder, so an entry
+/// that leaves it would be credited to a feed it does not come from.
+fn stays_in_folder(base: &str, rel: &str) -> bool {
+    let lower = rel.to_ascii_lowercase();
+    // Some servers decode these (twice, for `%25`), or drop `;` path parameters, and resolve what the client kept literal.
+    if ["%2f", "%5c", "%25", ";", "%3b"]
+        .iter()
+        .any(|bad| lower.contains(bad))
+    {
+        return false;
+    }
+    match (
+        reqwest::Url::parse(base),
+        reqwest::Url::parse(&format!("{base}{rel}")),
+    ) {
+        (Ok(base), Ok(url)) => url.as_str().starts_with(base.as_str()),
+        _ => false,
+    }
+}
+
 fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
     let mut cur: Option<(String, HashMap<String, String>)> = None;
 
@@ -719,6 +777,9 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
         let Some(rel) = kv.get("Package.URL") else {
             return;
         };
+        if !stays_in_folder(base_url, rel) {
+            return;
+        }
         out.push(Entry {
             name,
             version,
@@ -880,9 +941,11 @@ mod tests {
         super::load(
             cache_dir,
             refresh,
-            extra,
-            local_sources,
-            defaults,
+            &SourceSet {
+                extra,
+                local: local_sources,
+                defaults,
+            },
             sink,
             &CancelToken::new(),
         )
@@ -1253,7 +1316,12 @@ mod tests {
         let feeds = [first.url.clone(), second.url.clone()];
         let (root, _cache) = test_cache("cancel-between-feeds");
         let load_with = |token: &CancelToken, sink: &dyn EventSink| {
-            super::load(&root, false, &feeds, &[], false, sink, token)
+            let sources = SourceSet {
+                extra: &feeds,
+                local: &[],
+                defaults: false,
+            };
+            super::load(&root, false, &sources, sink, token)
         };
 
         // Cancelled before the first request: no feed is asked.
@@ -1304,6 +1372,48 @@ Package.Display Name=A Thing
         assert_eq!(e.requires.len(), 2);
         assert_eq!(e.requires[0].name, "oglib_error");
         assert_eq!(e.requires[0].min.as_ref().unwrap().raw, "4.2.0.23");
+    }
+
+    #[test]
+    fn a_feed_entry_whose_url_leaves_the_feeds_folder_is_dropped() {
+        let feed = "[Package up-1.0]\nPackage.URL=../x.vip\n\n\
+                    [Package encoded-1.0]\nPackage.URL=%2E%2e/x.vip\n\n\
+                    [Package backslash-1.0]\nPackage.URL=..\\x.vip\n\n\
+                    [Package tab-1.0]\nPackage.URL=.\t./x.vip\n\n\
+                    [Package cr-1.0]\nPackage.URL=.\r./x.vip\n\n\
+                    [Package slash-1.0]\nPackage.URL=..%2Fx.vip\n\n\
+                    [Package semicolon-1.0]\nPackage.URL=..;/x.vip\n\n\
+                    [Package encoded-semicolon-1.0]\nPackage.URL=team/.%2e;/x.vip\n\n\
+                    [Package escaped-semicolon-1.0]\nPackage.URL=team/..%3B/x.vip\n\n\
+                    [Package twice-1.0]\nPackage.URL=%252e%252e/x.vip\n\n\
+                    [Package inside-1.0]\nPackage.URL=team/../x.vip\n\n\
+                    [Package dots-1.0]\nPackage.URL=team/x..y.vip\n";
+        let mut out = Vec::new();
+        parse_into(feed, "http://example.test/feed/", &mut out);
+        let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["inside", "dots"]);
+    }
+
+    #[test]
+    fn an_entry_whose_url_resolves_out_of_a_nested_feed_is_credited_to_the_outer_one() {
+        let feeds = [
+            ("outer-index".to_string(), "http://h/vipm/".to_string()),
+            ("team-index".to_string(), "http://h/vipm/team/".to_string()),
+        ];
+        assert_eq!(
+            source_of("http://h/vipm/team/x/../../y.vip", &feeds),
+            "outer-index"
+        );
+        assert_eq!(source_of("http://h/vipm/team/y.vip", &feeds), "team-index");
+    }
+
+    #[test]
+    fn of_two_feeds_whose_folders_parse_alike_the_first_read_is_credited() {
+        let feeds = [
+            ("first".to_string(), "http://H/feed/".to_string()),
+            ("second".to_string(), "http://h/feed/".to_string()),
+        ];
+        assert_eq!(source_of("http://h/feed/y.vip", &feeds), "first");
     }
 
     #[test]
@@ -1493,12 +1603,15 @@ Package.Display Name=A Thing
                 None,
             )
         };
-        let kept = first_source_wins(vec![
-            listed("Alpha", "1.0", "hosted"),
-            listed("alpha", "1.1", "hosted"),
-            listed("ALPHA", "9.0", "ni"),
-            listed("beta", "2.0", "ni"),
-        ]);
+        let kept = first_source_wins(
+            vec![
+                listed("Alpha", "1.0", "hosted"),
+                listed("alpha", "1.1", "hosted"),
+                listed("ALPHA", "9.0", "ni"),
+                listed("beta", "2.0", "ni"),
+            ],
+            &HashMap::new(),
+        );
         let kept: Vec<(&str, String, &str)> = kept
             .iter()
             .map(|e| (e.name.as_str(), e.version.to_string(), e.source.as_str()))
@@ -1514,6 +1627,114 @@ Package.Display Name=A Thing
     }
 
     #[test]
+    fn a_source_pin_is_owned_by_the_feed_url_of_its_folder_with_or_without_a_slash() {
+        let sources = [
+            ("first".to_string(), "http://h/one".to_string()),
+            ("second".to_string(), "http://h/two/".to_string()),
+        ];
+        let pinned = BTreeMap::from([
+            ("Alpha".to_string(), "first".to_string()),
+            ("beta".to_string(), "second".to_string()),
+            // Names no entry of `sources`: nothing owns it.
+            ("gamma".to_string(), "nope".to_string()),
+        ]);
+        assert_eq!(
+            owners(&sources, &pinned),
+            HashMap::from([
+                (
+                    "alpha".to_string(),
+                    Some("http://h/one/index.vipr".to_string())
+                ),
+                (
+                    "beta".to_string(),
+                    Some("http://h/two/index.vipr".to_string())
+                ),
+                ("gamma".to_string(), None),
+            ])
+        );
+        assert!(owners(&sources, &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_source_pin_owns_its_name_over_the_cache_a_local_folder_and_earlier_feeds() {
+        let listed = |name: &str, version: &str, source: &str| Entry {
+            source: source.to_string(),
+            ..local_entry(
+                LocalEntry {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    display_name: None,
+                    requires: Vec::new(),
+                    lv_min: None,
+                },
+                String::new(),
+                None,
+            )
+        };
+        let owners = HashMap::from([("alpha".to_string(), Some("second".to_string()))]);
+        let kept = |entries: Vec<Entry>| -> Vec<(String, String)> {
+            first_source_wins(entries, &owners)
+                .iter()
+                .map(|e| (e.name.clone(), e.source.clone()))
+                .collect()
+        };
+        let pair = |name: &str, source: &str| (name.to_string(), source.to_string());
+
+        // The pinned name comes from "second" alone; "gamma" stays first-wins.
+        let entries = vec![
+            listed("alpha", "9.0", CACHE_SOURCE),
+            listed("alpha", "8.0", "/local/folder"),
+            listed("Alpha", "2.0", "first"),
+            listed("gamma", "1.0", "first"),
+            listed("Alpha", "1.0", "second"),
+            listed("gamma", "5.0", "second"),
+        ];
+        assert_eq!(
+            kept(entries),
+            [pair("gamma", "first"), pair("Alpha", "second"),]
+        );
+
+        // The pinned source does not list the name: nothing is left, and no
+        // other source takes its place.
+        let entries = vec![
+            listed("alpha", "2.0", "first"),
+            listed("gamma", "1.0", "second"),
+        ];
+        assert_eq!(kept(entries), [pair("gamma", "second")]);
+    }
+
+    #[test]
+    fn a_source_pin_naming_an_unknown_source_matches_no_entry_and_does_not_fall_back() {
+        let owners = owners(
+            &[("second".to_string(), "http://h/two".to_string())],
+            &BTreeMap::from([("alpha".to_string(), "nope".to_string())]),
+        );
+        let listed = |name: &str, source: &str| Entry {
+            source: source.to_string(),
+            ..local_entry(
+                LocalEntry {
+                    name: name.to_string(),
+                    version: "1.0".to_string(),
+                    display_name: None,
+                    requires: Vec::new(),
+                    lv_min: None,
+                },
+                String::new(),
+                None,
+            )
+        };
+        let kept = first_source_wins(
+            vec![
+                listed("alpha", "http://h/two/index.vipr"),
+                listed("beta", "http://h/two/index.vipr"),
+            ],
+            &owners,
+        );
+        let names: Vec<&str> = kept.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["beta"]);
+    }
+
+    #[test]
     fn an_imported_archive_wins_over_a_local_folder() {
         let (root, _cache) = test_cache("import-over-folder");
         let imports = root.join("imports");
@@ -1525,12 +1746,16 @@ Package.Display Name=A Thing
         cache_add(&root, &imports, false).unwrap();
 
         let folders = [folder];
+        let sources = SourceSet {
+            extra: &[],
+            local: &folders,
+            defaults: false,
+        };
         let resolved = load_each(
             &root,
             false,
-            &[],
-            &folders,
-            false,
+            &sources,
+            &HashMap::new(),
             &NullSink,
             &CancelToken::new(),
             |_, error| Err(error),

@@ -279,7 +279,7 @@ fn edit_cancelled_at(
     let options = InstallOptions::default();
     let table = DependencyTable::Dependencies;
     let result = match edit {
-        Edit::Add(name) => add_remove::add(&env, name, table, &options),
+        Edit::Add(name) => add_remove::add(&env, name, table, None, &options),
         Edit::Remove(name) => add_remove::remove(&env, name, table, &options),
     };
     assert!(

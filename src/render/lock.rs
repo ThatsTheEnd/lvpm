@@ -9,6 +9,7 @@ use lvpm_core::errors::{
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
 use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::project::same_name;
 use lvpm_core::released;
 use lvpm_core::solve::{AllHeldBack, Conflict, Fact};
 use lvpm_core::verify::{Invalid, NotChecked, Refusal};
@@ -216,6 +217,11 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
              next: pick a version that runs on LabVIEW {project_year}, or raise labview in \
              lvpm.toml, then run `lvpm lock --upgrade-package {name}@<version>` again"
         ),
+        LockError::PinnedNotListed { package, .. } => format!(
+            "{error}\n\
+             next: list {package} in that source, or remove the index key from {package} in \
+             lvpm.toml, then run {rerun} again"
+        ),
         LockError::Cancelled => {
             format!("{error}; lvpm.lock is unchanged\nnext: run {rerun} again")
         }
@@ -225,12 +231,26 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
 
 /// A conflict: a block for each package whose versions are all held back by
 /// min-age-days, then, when something else is wrong too, the general report.
+/// A `SourcePinned` fact is a note on a package, not a failure of its own: it
+/// goes in the held-back block of its package, and is a line of the general
+/// report only when the package has no such block.
 fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
+    let pin_note = |package: &str| {
+        (conflict.facts.iter()).find(|fact| {
+            matches!(fact, Fact::SourcePinned { package: pinned, .. } if same_name(pinned, package))
+        })
+    };
     let mut blocks = Vec::new();
     let mut rest = Vec::new();
     for fact in &conflict.facts {
         match fact {
-            Fact::AllHeldBack(held) => blocks.push(all_held_back_text(held)),
+            Fact::AllHeldBack(held) => {
+                blocks.push(all_held_back_text(held, pin_note(&held.package)))
+            }
+            Fact::SourcePinned { package, .. }
+                if (conflict.facts.iter()).any(
+                    |other| matches!(other, Fact::AllHeldBack(held) if same_name(&held.package, package)),
+                ) => {}
             other => rest.push(other),
         }
     }
@@ -241,8 +261,9 @@ fn conflict_text(conflict: &Conflict, rerun: &str) -> String {
 }
 
 /// Every version of `package` that `wanted` admits is held back: each with
-/// its release and the day it is eligible, and the way on.
-fn all_held_back_text(held: &AllHeldBack) -> String {
+/// its release and the day it is eligible, then `pinned` (the package's
+/// `SourcePinned` fact, if it has one), and the way on.
+fn all_held_back_text(held: &AllHeldBack, pinned: Option<&Fact>) -> String {
     let AllHeldBack {
         package,
         versions,
@@ -264,6 +285,9 @@ fn all_held_back_text(held: &AllHeldBack) -> String {
             released::day(*released),
             released::first_whole_day_from(*eligible)
         ));
+    }
+    if let Some(note) = pinned {
+        text.push_str(&format!("\n  {note}"));
     }
     let earliest = eligible
         .iter()
@@ -904,6 +928,89 @@ mod tests {
             required_by: requirer.map(String::from),
             days,
         })
+    }
+
+    fn alpha_is_pinned() -> Fact {
+        Fact::SourcePinned {
+            package: "Alpha".into(),
+            source: "second".into(),
+            feed: "http://second.example/index.vipr".into(),
+        }
+    }
+
+    #[test]
+    fn a_source_pin_beside_a_held_back_package_is_a_note_in_its_block_not_a_second_report() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![all_held(None, 14), alpha_is_pinned()],
+        }));
+        assert_eq!(
+            text,
+            "alpha >=1.1: every version is held back by min-age-days = 14\n\
+             \x20 1.2 released 2023-11-12, eligible 2023-11-27\n\
+             \x20 1.1 released 2023-11-11, eligible 2023-11-26\n\
+             \x20 Alpha is pinned to \"second\" (http://second.example/index.vipr); \
+             other sources are ignored for a pinned package\n\
+             next: wait until 2023-11-26, lower min-age-days, or pin an exact version of alpha \
+             in lvpm.toml"
+        );
+        assert_eq!(text.matches("next:").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn a_source_pin_beside_a_labview_gate_is_one_line_of_the_general_report() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                manifest("Alpha", "*"),
+                Fact::NeedsLabview {
+                    package: "Alpha".into(),
+                    versions: "= 2.0".into(),
+                    from: "http://second.example/index.vipr".into(),
+                    needs_year: 2026,
+                    project_year: 2024,
+                },
+                alpha_is_pinned(),
+            ],
+        }));
+        assert_eq!(
+            text,
+            "cannot lock: no set of versions satisfies lvpm.toml:\n\
+             \x20 lvpm.toml: Alpha = \"*\"\n\
+             \x20 Alpha = 2.0 from http://second.example/index.vipr needs LabVIEW 2026, \
+             and the project's is 2024\n\
+             \x20 Alpha is pinned to \"second\" (http://second.example/index.vipr); \
+             other sources are ignored for a pinned package\n\
+             next: change one of these in lvpm.toml, then run `lvpm lock` again"
+        );
+    }
+
+    #[test]
+    fn a_pin_note_for_one_package_does_not_join_the_held_back_block_of_another() {
+        let other = Fact::SourcePinned {
+            package: "beta".into(),
+            source: "second".into(),
+            feed: "http://second.example/index.vipr".into(),
+        };
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![all_held(None, 14), other],
+        }));
+        assert!(!text.contains("\n  Alpha is pinned"), "{text}");
+        assert!(text.contains("\n  beta is pinned to \"second\""), "{text}");
+    }
+
+    #[test]
+    fn a_pinned_package_its_source_does_not_list_says_what_to_change() {
+        let text = error(&LockError::PinnedNotListed {
+            package: "alpha".into(),
+            source_name: "second".into(),
+            feed: "http://second.example/index.vipr".into(),
+        });
+        assert_eq!(
+            text,
+            "alpha is pinned to \"second\" (http://second.example/index.vipr), which does not \
+             list it; other sources are ignored for a pinned package\n\
+             next: list alpha in that source, or remove the index key from alpha in lvpm.toml, \
+             then run `lvpm lock` again"
+        );
     }
 
     #[test]

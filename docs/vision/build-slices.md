@@ -508,7 +508,7 @@ Acceptance criteria:
 - [ ] A pinned package is taken from its source although another source lists a higher version.
 - [ ] A pinned package its source doesn't list fails naming the package and the source.
 - [ ] A pinned package whose source can't be reached fails naming the source.
-- [ ] `lvpm add @org/name --index <name>` writes the table form; the short form still parses.
+- [ ] `lvpm add <pkg> --index <name>` writes the table form; the short form still parses.
 - [ ] A pin naming a source that `[sources]` doesn't define fails when the manifest is read.
 - [ ] Adding, changing or removing a pin makes `lock --check` fail.
 - [ ] A transitive dependency listed as `name = { version = "*", index = "<name>" }` resolves from that source.

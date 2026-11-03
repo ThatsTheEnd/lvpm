@@ -21,9 +21,11 @@ async fn core_loads_the_index(world: &mut CliWorld) {
     index::load(
         &world.sandbox.cache_dir(),
         false,
-        &project.resolved_sources().expect("the project's sources"),
-        &[],
-        project.default_sources,
+        &index::SourceSet {
+            extra: &project.resolved_sources().expect("the project's sources"),
+            local: &[],
+            defaults: project.default_sources,
+        },
         &sink,
         &CancelToken::new(),
     )

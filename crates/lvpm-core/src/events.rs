@@ -536,24 +536,41 @@ pub struct PackageRef {
 }
 
 /// What `add` or `remove` did to one entry of the manifest. A constraint is as
-/// the manifest writes it.
+/// the manifest writes it, and `index` is the `[sources]` name the package is
+/// pinned to, if it is.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "edit", rename_all = "snake_case")]
 pub enum ManifestEdit {
     Added {
         name: String,
         constraint: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        index: Option<String>,
     },
-    /// The entry was there, with another constraint.
+    /// The entry was there, with another constraint or another source.
     Updated {
         name: String,
         from: String,
         to: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        index: Option<String>,
     },
     Removed {
         name: String,
         constraint: String,
     },
+}
+
+impl ManifestEdit {
+    /// The `[sources]` name the edited entry is pinned to; a removal has none.
+    pub fn source_pin(&self) -> Option<&str> {
+        match self {
+            ManifestEdit::Added { index, .. } | ManifestEdit::Updated { index, .. } => {
+                index.as_deref()
+            }
+            ManifestEdit::Removed { .. } => None,
+        }
+    }
 }
 
 /// One difference between two locks.

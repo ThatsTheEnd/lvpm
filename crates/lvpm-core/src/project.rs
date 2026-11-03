@@ -15,6 +15,7 @@
 //! oglib_error = ">=6.0.1"           # the newest version satisfying the floor
 //! jki_lib_caraya = "*"              # the newest version
 //! zalign = { github = "Zuehlke/ZAlign", version = ">=1.0" }  # from that repo's releases
+//! tools = { index = "mirror", version = "*" }  # from that [sources] entry, and no other
 //!
 //! [dev-dependencies]                # test and CI tooling, same syntax
 //! jki_lib_unit_test = "*"
@@ -195,6 +196,10 @@ pub struct Project {
     /// The `github = "owner/repo"` of every dependency that has one, in any
     /// table, by the name the line is written under.
     pub github: BTreeMap<String, String>,
+    /// The `index = "<source>"` of every dependency that has one, in any table,
+    /// by the name the line is written under: the `[sources]` name that
+    /// package comes from and from no other.
+    pub source_pins: BTreeMap<String, String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
     /// `[distribution]`, as written: `lvpm build` reads it through
@@ -218,6 +223,7 @@ impl Default for Project {
             dev_dependencies: Vec::new(),
             groups: Vec::new(),
             github: BTreeMap::new(),
+            source_pins: BTreeMap::new(),
             nipm: Vec::new(),
             distribution: None,
             policy: Policy::default(),
@@ -235,6 +241,12 @@ impl Project {
             }
         }
         Ok(self.sources.iter().map(|(_, s)| s.clone()).collect())
+    }
+
+    /// The `[sources]` name `name` is pinned to, in any table, whatever the
+    /// case either is written in.
+    pub fn source_pin_of(&self, name: &str) -> Option<&str> {
+        stated_for(&self.source_pins, name).map(String::as_str)
     }
 
     /// Every dependency table, with its lines: `[dependencies]`,
@@ -304,6 +316,11 @@ pub fn read(path: &Path) -> Result<Project> {
     parse(&text).with_context(|| format!("parsing manifest {}", path.display()))
 }
 
+const DEFAULTS: &str = "defaults";
+const MIN_AGE_DAYS: &str = "min-age-days";
+/// The keys of `[sources]` that are settings and never source names.
+const SOURCE_SETTINGS: [&str; 2] = [DEFAULTS, MIN_AGE_DAYS];
+
 pub(crate) fn parse(text: &str) -> Result<Project> {
     let f: File = toml::from_str(text)?;
     let mut p = Project {
@@ -320,17 +337,15 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     };
     for (key, value) in f.sources {
         match (key.as_str(), value) {
-            ("defaults", toml::Value::Boolean(b)) => p.default_sources = b,
+            (DEFAULTS, toml::Value::Boolean(b)) => p.default_sources = b,
             // Before the string arm: `min-age-days = "14"` is not a source.
-            ("min-age-days", value) => {
-                match value.as_integer().and_then(|n| u32::try_from(n).ok()) {
-                    Some(days) => p.min_age_days = days,
-                    None => bail!(
-                        "[sources] min-age-days must be a whole number of days, 0 or more \
+            (MIN_AGE_DAYS, value) => match value.as_integer().and_then(|n| u32::try_from(n).ok()) {
+                Some(days) => p.min_age_days = days,
+                None => bail!(
+                    "[sources] min-age-days must be a whole number of days, 0 or more \
                          (got {value}), for example min-age-days = 14"
-                    ),
-                }
-            }
+                ),
+            },
             (_, toml::Value::String(s)) => p.sources.push((key, s)),
             (k, other) => {
                 bail!(
@@ -340,9 +355,17 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
             }
         }
     }
-    p.dependencies = parse_dependencies("dependencies", f.dependencies, &mut p.github)?;
-    p.dev_dependencies = parse_dependencies("dev-dependencies", f.dev_dependencies, &mut p.github)?;
-    p.groups = parse_groups(f.dependency_groups, &mut p.github)?;
+    let mut stated = Stated::default();
+    p.dependencies = parse_dependencies("dependencies", f.dependencies, &mut stated)?;
+    p.dev_dependencies = parse_dependencies("dev-dependencies", f.dev_dependencies, &mut stated)?;
+    p.groups = parse_groups(f.dependency_groups, &mut stated)?;
+    check_source_pins(&p.sources, &stated.index)?;
+    p.github = (stated.github.into_iter())
+        .map(|(name, (repo, _))| (name, repo))
+        .collect();
+    p.source_pins = (stated.index.into_iter())
+        .map(|(name, (source, _))| (name, source))
+        .collect();
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
     Ok(p)
@@ -434,10 +457,7 @@ type Entries = Vec<(String, Constraint)>;
 
 /// `[dependency-groups]`: each key a group name, each value that group's
 /// dependency table, in file order. `dev` is `[dev-dependencies]`, not a group.
-fn parse_groups(
-    groups: toml::Table,
-    github: &mut BTreeMap<String, String>,
-) -> Result<Vec<(String, Entries)>> {
+fn parse_groups(groups: toml::Table, stated: &mut Stated) -> Result<Vec<(String, Entries)>> {
     groups
         .into_iter()
         .map(|(name, value)| {
@@ -454,46 +474,140 @@ fn parse_groups(
                 );
             };
             let entries =
-                parse_dependencies(&format!("dependency-groups.{name}"), entries, github)?;
+                parse_dependencies(&format!("dependency-groups.{name}"), entries, stated)?;
             Ok((name, entries))
         })
         .collect()
 }
 
+/// What the dependency lines read so far say about where a package comes
+/// from. One name says it once across the tables: a second table may repeat
+/// it but not change it.
+#[derive(Default)]
+struct Stated {
+    /// Name to its repo and the table that line is in.
+    github: BTreeMap<String, (String, String)>,
+    /// Name to the source it is pinned to and the table that line is in.
+    index: BTreeMap<String, (String, String)>,
+}
+
+/// What `name` was stated as, whatever the case it was written in.
+fn stated_for<'a, V>(stated: &'a BTreeMap<String, V>, name: &str) -> Option<&'a V> {
+    (stated.iter()).find_map(|(key, value)| same_name(key, name).then_some(value))
+}
+
+impl Stated {
+    /// `name = { github = repo }` in `table`.
+    fn state_github(&mut self, table: &str, name: &str, repo: String) -> Result<()> {
+        if let Some((_, pinned_in)) = stated_for(&self.index, name) {
+            bail!(
+                "[{table}] {name}: github and index cannot be used together; {name} has an index in [{pinned_in}], and a github dependency comes only from its repo"
+            );
+        }
+        match stated_for(&self.github, name) {
+            Some((other, _)) if !other.eq_ignore_ascii_case(&repo) => bail!(
+                "[{table}] {name}: github = {repo:?} differs from {other:?} in the other dependency table"
+            ),
+            Some(_) => {}
+            None => {
+                self.github
+                    .insert(name.to_string(), (repo, table.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// `name = { index = source }` in `table`.
+    fn state_index(&mut self, table: &str, name: &str, source: String) -> Result<()> {
+        if let Some((_, github_in)) = stated_for(&self.github, name) {
+            bail!(
+                "[{table}] {name}: github and index cannot be used together; {name} has github in [{github_in}], and a github dependency comes only from its repo"
+            );
+        }
+        match stated_for(&self.index, name) {
+            Some((other, other_table)) if *other != source => bail!(
+                "[{table}] {name}: index = {source:?} differs from {other:?} in [{other_table}]"
+            ),
+            Some(_) => {}
+            None => {
+                self.index
+                    .insert(name.to_string(), (source, table.to_string()));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One dependency table, in file order. `table` names it in error messages;
-/// the `github` repo of a line that has one goes to `github`.
+/// the `github` repo and the `index` source of a line that has them go to
+/// `stated`.
 fn parse_dependencies(
     table: &str,
     entries: toml::Table,
-    github: &mut BTreeMap<String, String>,
+    stated: &mut Stated,
 ) -> Result<Vec<(String, Constraint)>> {
     entries
         .into_iter()
         .map(|(name, value)| {
-            let (constraint, repo) = dependency(table, &name, value)?;
-            if let Some(repo) = repo {
-                // One name, one repo: the other table may have set it.
-                let other = (github.iter()).find_map(|(key, other)| same_name(key, &name).then_some(other));
-                match other {
-                    Some(other) if !other.eq_ignore_ascii_case(&repo) => bail!(
-                        "[{table}] {name}: github = {repo:?} differs from {other:?} in the other dependency table"
-                    ),
-                    Some(_) => {}
-                    None => {
-                        github.insert(name.clone(), repo);
-                    }
-                }
+            let (constraint, keys) = dependency(table, &name, value)?;
+            if let Some(repo) = keys.github {
+                stated.state_github(table, &name, repo)?;
+            }
+            if let Some(source) = keys.index {
+                stated.state_index(table, &name, source)?;
             }
             Ok((name, constraint))
         })
         .collect()
 }
 
+/// A source pin names a `[sources]` entry: `defaults` and `min-age-days` are
+/// keys of that table but never entries, so they are refused like any other
+/// name it does not have.
+fn check_source_pins(
+    sources: &[(String, String)],
+    pins: &BTreeMap<String, (String, String)>,
+) -> Result<()> {
+    for (name, (source, table)) in pins {
+        // A string `defaults = "<url>"` lands in `sources`; it is still a setting.
+        let is_setting = SOURCE_SETTINGS.contains(&source.as_str());
+        if !is_setting && sources.iter().any(|(known, _)| known == source) {
+            continue;
+        }
+        let listed: Vec<&str> = (sources.iter())
+            .map(|(known, _)| known.as_str())
+            .filter(|known| !SOURCE_SETTINGS.contains(known))
+            .collect();
+        let known = match listed.is_empty() {
+            true => "lists no index".to_string(),
+            false => format!("has {}", listed.join(", ")),
+        };
+        let setting = match is_setting {
+            true => format!(
+                "; {} are settings, not sources",
+                SOURCE_SETTINGS.join(" and ")
+            ),
+            false => String::new(),
+        };
+        bail!(
+            "[{table}] {name}: index = {source:?} is not a [sources] name; [sources] {known}{setting}"
+        );
+    }
+    Ok(())
+}
+
+/// The keys of a table-form dependency line that name where it comes from.
+#[derive(Default)]
+struct LineKeys {
+    github: Option<String>,
+    index: Option<String>,
+}
+
 /// One dependency line: a version string, or a table with `version` and,
-/// optionally, `github`.
-fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, Option<String>)> {
-    let (version, repo) = match value {
-        toml::Value::String(version) => (version, None),
+/// optionally, `github` or `index`.
+fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, LineKeys)> {
+    let (version, keys) = match value {
+        toml::Value::String(version) => (version, LineKeys::default()),
         toml::Value::Table(fields) => dependency_table(table, name, fields)?,
         other => bail!(
             "[{table}] {name}: expected a quoted version or a table, got {}",
@@ -501,30 +615,27 @@ fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint
         ),
     };
     let constraint = Constraint::parse(&version).with_context(|| format!("[{table}] {name}"))?;
-    Ok((constraint, repo))
+    Ok((constraint, keys))
 }
 
-/// The `version` and `github` of a table-form dependency line. `index` and
-/// any key not known yet are refused, never ignored.
+/// The `version`, `github` and `index` of a table-form dependency line. Any
+/// key not known yet is refused, never ignored.
 fn dependency_table(
     table: &str,
     name: &str,
     mut fields: toml::Table,
-) -> Result<(String, Option<String>)> {
+) -> Result<(String, LineKeys)> {
     let at = format!("[{table}] {name}");
-    if fields.contains_key("index") {
-        if fields.contains_key("github") {
-            bail!(
-                "{at}: github and index cannot be used together; a github dependency comes only from its repo"
-            );
-        }
-        bail!("{at}: index is not supported yet");
+    if fields.contains_key("index") && fields.contains_key("github") {
+        bail!(
+            "{at}: github and index cannot be used together; a github dependency comes only from its repo"
+        );
     }
     if let Some(key) = fields
         .keys()
-        .find(|k| !matches!(k.as_str(), "version" | "github"))
+        .find(|k| !matches!(k.as_str(), "version" | "github" | "index"))
     {
-        bail!("{at}: unknown key {key:?}; expected version or github");
+        bail!("{at}: unknown key {key:?}; expected version, github or index");
     }
     let Some(version) = fields.remove("version") else {
         bail!(
@@ -537,11 +648,21 @@ fn dependency_table(
             version.type_str()
         );
     };
-    let repo = fields
+    let github = fields
         .remove("github")
         .map(|value| github_repo(&at, value))
         .transpose()?;
-    Ok((version, repo))
+    let index = fields
+        .remove("index")
+        .map(|value| match value {
+            toml::Value::String(source) => Ok(source),
+            other => bail!(
+                "{at}: expected index to be a quoted [sources] name, got {}",
+                other.type_str()
+            ),
+        })
+        .transpose()?;
+    Ok((version, LineKeys { github, index }))
 }
 
 /// `value` as `owner/repo`: a string of two non-empty parts around one `/`,
@@ -928,12 +1049,8 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
                 github_and_index,
             ),
             (
-                "pkg = { index = \"internal\", version = \"*\" }",
-                "[dependencies] pkg: index is not supported yet",
-            ),
-            (
                 "pkg = { github = \"o/r\", version = \"*\", hooks = \"run\" }",
-                "[dependencies] pkg: unknown key \"hooks\"; expected version or github",
+                "[dependencies] pkg: unknown key \"hooks\"; expected version, github or index",
             ),
             ("pkg = { github = \"o/r\" }", a_table_needs_version),
             ("pkg = {}", a_table_needs_version),
@@ -1248,6 +1365,219 @@ e = \"*\"
     fn a_pattern_starts_with_the_github_url_in_any_case() {
         let p = parse("[policy]\ntrusted-publishers = [\"HTTPS://GitHub.com/A/*\"]\n").unwrap();
         assert_eq!(p.policy.trusted_publishers, ["HTTPS://GitHub.com/A/*"]);
+    }
+
+    /// A manifest whose `[sources]` are `first` and `second`, then `tables`.
+    fn with_two_sources(tables: &str) -> Result<Project> {
+        parse(&format!(
+            "[sources]\nfirst = \"http://h/a\"\nsecond = \"http://h/b\"\n\n{tables}"
+        ))
+    }
+
+    #[test]
+    fn a_source_pin_is_read_from_a_line_in_every_kind_of_table() {
+        let p = with_two_sources(
+            "[dependencies]\nalpha = { version = \">=1.0\", index = \"first\" }\n\n\
+             [dev-dependencies]\nCaraya = { index = \"second\", version = \"*\" }\n\n\
+             [dependency-groups.ci]\nci_tools = { index = \"first\", version = \"2.0\" }\nplain = \"1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            p.source_pins.into_iter().collect::<Vec<_>>(),
+            [
+                ("Caraya".to_string(), "second".to_string()),
+                ("alpha".to_string(), "first".to_string()),
+                ("ci_tools".to_string(), "first".to_string()),
+            ],
+            "by the name as written; the short form has no pin"
+        );
+    }
+
+    #[test]
+    fn a_pinned_line_reads_like_an_unpinned_one_but_for_the_pin() {
+        let pinned = with_two_sources(
+            "[dependencies]\na = { version = \">=1.2\", index = \"first\" }\nb = { index = \"second\", version = \"1.0\" }\n",
+        )
+        .unwrap();
+        let plain = with_two_sources("[dependencies]\na = \">=1.2\"\nb = \"1.0\"\n").unwrap();
+        assert_eq!(
+            Project {
+                source_pins: BTreeMap::new(),
+                ..pinned
+            },
+            plain
+        );
+    }
+
+    #[test]
+    fn the_short_form_and_a_table_without_index_pin_nothing() {
+        let p = with_two_sources(
+            "[dependencies]\na = \"1.0\"\nb = { version = \"*\" }\nc = { github = \"o/r\", version = \"*\" }\n",
+        )
+        .unwrap();
+        assert!(p.source_pins.is_empty());
+    }
+
+    #[test]
+    fn a_pin_naming_a_source_that_is_not_listed_is_refused_naming_the_line_and_the_sources() {
+        let unknown = |line: &str| {
+            format!(
+                "{:#}",
+                with_two_sources(&format!("[dependencies]\n{line}\n")).unwrap_err()
+            )
+        };
+        let said = "[dependencies] alpha: index = \"nope\" is not a [sources] name; [sources] has first, second";
+        assert_eq!(
+            unknown("alpha = { index = \"nope\", version = \"*\" }"),
+            said
+        );
+        // The group's own name, as written, is in the text.
+        let in_group = with_two_sources(
+            "[dependency-groups.ci]\nalpha = { index = \"nope\", version = \"*\" }\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            in_group.starts_with("[dependency-groups.ci] alpha: index = \"nope\""),
+            "{in_group}"
+        );
+        // A source name is spelled exactly: `First` is not `first`.
+        assert!(
+            unknown("alpha = { index = \"First\", version = \"*\" }")
+                .contains("index = \"First\" is not")
+        );
+    }
+
+    #[test]
+    fn a_pin_in_a_manifest_with_no_sources_says_it_lists_no_index() {
+        let why = refusal(
+            "dependencies",
+            "alpha = { index = \"nope\", version = \"*\" }",
+        );
+        assert_eq!(
+            why,
+            "[dependencies] alpha: index = \"nope\" is not a [sources] name; [sources] lists no index"
+        );
+        let defaults_only = parse("[sources]\ndefaults = false\n\n[dependencies]\nalpha = { index = \"nope\", version = \"*\" }\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            defaults_only.ends_with("[sources] lists no index"),
+            "{defaults_only}"
+        );
+    }
+
+    #[test]
+    fn a_pin_naming_a_setting_of_sources_says_it_is_not_a_source() {
+        for key in ["defaults", "min-age-days"] {
+            let why = with_two_sources(&format!(
+                "[dependencies]\nalpha = {{ index = \"{key}\", version = \"*\" }}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert_eq!(
+                why,
+                format!(
+                    "[dependencies] alpha: index = \"{key}\" is not a [sources] name; [sources] has first, second; defaults and min-age-days are settings, not sources"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_pin_naming_defaults_is_refused_even_when_defaults_holds_a_url() {
+        let why = parse(
+            "[sources]
+defaults = \"https://example.com/\"
+
+[dependencies]
+alpha = { index = \"defaults\", version = \"*\" }
+",
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            why,
+            "[dependencies] alpha: index = \"defaults\" is not a [sources] name; [sources] lists no index; defaults and min-age-days are settings, not sources"
+        );
+    }
+
+    #[test]
+    fn a_name_with_github_in_one_table_and_an_index_in_another_is_refused_naming_both() {
+        let both = |first: &str, second: &str| {
+            with_two_sources(&format!(
+                "[dependencies]\nalpha = {first}\n\n[dev-dependencies]\nAlpha = {second}\n"
+            ))
+            .unwrap_err()
+            .to_string()
+        };
+        let github = "{ github = \"o/r\", version = \"*\" }";
+        let index = "{ index = \"first\", version = \"*\" }";
+        assert_eq!(
+            both(github, index),
+            "[dev-dependencies] Alpha: github and index cannot be used together; Alpha has github in [dependencies], and a github dependency comes only from its repo"
+        );
+        assert_eq!(
+            both(index, github),
+            "[dev-dependencies] Alpha: github and index cannot be used together; Alpha has an index in [dependencies], and a github dependency comes only from its repo"
+        );
+    }
+
+    #[test]
+    fn a_pin_that_is_not_a_string_is_refused_naming_the_line() {
+        for (value, kind) in [
+            ("5", "integer"),
+            ("true", "boolean"),
+            ("[\"first\"]", "array"),
+        ] {
+            let why = with_two_sources(&format!(
+                "[dependencies]\nalpha = {{ index = {value}, version = \"*\" }}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert_eq!(
+                why,
+                format!(
+                    "[dependencies] alpha: expected index to be a quoted [sources] name, got {kind}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn one_name_pinned_to_two_sources_in_two_tables_is_refused_naming_both() {
+        let both = |dev: &str| {
+            with_two_sources(&format!(
+                "[dependencies]\nalpha = {{ index = \"first\", version = \"*\" }}\n\n[dev-dependencies]\nAlpha = {dev}\n"
+            ))
+        };
+        assert_eq!(
+            both("{ index = \"second\", version = \"*\" }")
+                .unwrap_err()
+                .to_string(),
+            "[dev-dependencies] Alpha: index = \"second\" differs from \"first\" in [dependencies]"
+        );
+        let same = both("{ index = \"first\", version = \"1.0\" }").unwrap();
+        assert_eq!(
+            same.source_pins.len(),
+            1,
+            "one pin, whatever the case of the name"
+        );
+        both("\"1.0\"").unwrap();
+    }
+
+    #[test]
+    fn a_name_pinned_in_a_group_and_in_dependencies_has_one_source() {
+        let why = with_two_sources(
+            "[dependency-groups.a]\npkg = { index = \"first\", version = \"*\" }\n\n\
+             [dependency-groups.b]\npkg = { index = \"second\", version = \"*\" }\n",
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            why,
+            "[dependency-groups.b] pkg: index = \"second\" differs from \"first\" in [dependency-groups.a]"
+        );
     }
 
     #[test]

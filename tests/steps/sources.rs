@@ -53,6 +53,48 @@ impl CliWorld {
         let path = self.sandbox.work_dir().join(MANIFEST_FILE);
         std::fs::write(&path, edit(self.manifest_text())).expect("write lvpm.toml");
     }
+
+    /// The `[dependencies]` line of `name` written with the source pin
+    /// `source`, or with none; its constraint stays.
+    fn set_source_pin(&self, name: &str, source: Option<&str>) {
+        self.rewrite_manifest(|text| {
+            let table = text.find("[dependencies]").expect("a [dependencies] table");
+            // The line must be in `[dependencies]`, not in a table after it.
+            let table_end = text[table + 1..]
+                .find("\n[")
+                .map_or(text.len(), |at| table + 1 + at);
+            let start = table
+                + text[table..table_end]
+                    .find(&format!("\n{name} = "))
+                    .expect("the dependency line in [dependencies]")
+                + 1;
+            let end = start + text[start..].find('\n').unwrap_or(text.len() - start);
+            // The line's first quoted text is its constraint, in the short form
+            // (`name = "1.0"`) and in the table form with `version` first.
+            let constraint = text[start..end].split('"').nth(1).expect("a constraint");
+            let line = match source {
+                Some(source) => {
+                    format!("{name} = {{ version = \"{constraint}\", index = \"{source}\" }}")
+                }
+                None => format!("{name} = \"{constraint}\""),
+            };
+            format!("{}{line}{}", &text[..start], &text[end..])
+        });
+    }
+
+    /// The package depends on `constraint`, from `[table]`, with the source pin
+    /// written as `{ version = ..., index = ... }` into the line `depend` made.
+    fn depend_pinned(&self, table: DependencyTable, name: &str, constraint: &str, source: &str) {
+        self.depend(table.clone(), name, constraint);
+        let header = format!("[{}]", table.key());
+        let line = format!("\n{name} = \"{constraint}\"");
+        let pinned = format!("\n{name} = {{ version = \"{constraint}\", index = \"{source}\" }}");
+        self.rewrite_manifest(|text| {
+            let from = text.find(&header).expect("the table is in lvpm.toml");
+            let at = from + text[from..].find(&line).expect("the line is in the table");
+            format!("{}{pinned}{}", &text[..at], &text[at + line.len()..])
+        });
+    }
 }
 
 #[given(
@@ -61,6 +103,8 @@ impl CliWorld {
 async fn two_sources(world: &mut CliWorld, year: String) {
     world.sandbox.clear_local_packages();
     world.sandbox.use_project_sources(&year, &[FIRST, SECOND]);
+    // `a current lock` snapshots the destination, so the project has one.
+    world.sandbox.make_empty_dest();
     // Each lists nothing until a step says otherwise.
     for dir in [FIRST, SECOND] {
         world.sandbox.feed().publish(dir, &listing(&[], true));
@@ -313,6 +357,116 @@ async fn dev_depends_on(world: &mut CliWorld, name: String, constraint: String) 
     world.depend(DependencyTable::DevDependencies, &name, &constraint);
 }
 
+#[given(regex = r#"^the project depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)"$"#)]
+async fn depends_on_pinned(world: &mut CliWorld, name: String, constraint: String, source: String) {
+    world.depend_pinned(DependencyTable::Dependencies, &name, &constraint, &source);
+}
+
+#[given(regex = r#"^the project dev-depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)"$"#)]
+async fn dev_depends_on_pinned(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    source: String,
+) {
+    world.depend_pinned(
+        DependencyTable::DevDependencies,
+        &name,
+        &constraint,
+        &source,
+    );
+}
+
+#[given(
+    regex = r#"^the project depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)" and lvpm\.lock is current$"#
+)]
+async fn depends_on_pinned_and_the_lock_is_current(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    source: String,
+) {
+    world.depend_pinned(DependencyTable::Dependencies, &name, &constraint, &source);
+    world.lock_the_project();
+}
+
+/// Today's `lvpm lock` output for `alpha = "*"` listed by `first`, with the
+/// two loopback URLs, which change per run, as `{FIRST}` and `{SECOND}`.
+const LOCK_BEFORE_SOURCE_PINS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/s7c-pre-pin.lock"
+);
+
+#[given(
+    regex = r#"^the project depends on "([^"]+)" "([^"]*)" and a lvpm\.lock written before pinned sources$"#
+)]
+async fn depends_on_with_a_lock_from_before_source_pins(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+) {
+    world.depend(DependencyTable::Dependencies, &name, &constraint);
+    // Git may check the template out with CRLF; lvpm writes LF.
+    let template = std::fs::read_to_string(LOCK_BEFORE_SOURCE_PINS)
+        .expect("the pre-pin lock template")
+        .replace("\r\n", "\n");
+    let lock = (template.replace("{FIRST}", &world.source_url("first")))
+        .replace("{SECOND}", &world.source_url("second"));
+    std::fs::write(world.lock_path(), lock).expect("write lvpm.lock");
+    world.lock.before = world.lock_bytes();
+}
+
+/// `alpha` is a GitHub dependency: the line `depend` made gets `github`.
+#[given(regex = r#"^the project depends on "([^"]+)" via github "([^"]+)"$"#)]
+async fn depends_on_via_github(world: &mut CliWorld, name: String, repo: String) {
+    world.depend(DependencyTable::Dependencies, &name, "*");
+    let line = format!("\n{name} = \"*\"");
+    let github = format!("\n{name} = {{ github = \"{repo}\", version = \"*\" }}");
+    world.rewrite_manifest(|text| text.replacen(&line, &github, 1));
+}
+
+/// The manifest has `name` in `[table]` as a table with `version` and `index`.
+#[then(regex = r#"^lvpm\.toml pins "([^"]+)" to "([^"]+)" with "([^"]*)"(?: in \[([^\]]+)\])?$"#)]
+async fn the_manifest_pins(
+    world: &mut CliWorld,
+    name: String,
+    source: String,
+    constraint: String,
+    table: String,
+) {
+    let manifest: toml::Table = world.manifest_text().parse().expect("lvpm.toml is TOML");
+    let table = if table.is_empty() {
+        "dependencies"
+    } else {
+        &table
+    };
+    let entry = (table.split('.').chain([name.as_str()]))
+        .try_fold(&toml::Value::Table(manifest), |at, key| at.get(key))
+        .cloned()
+        .unwrap_or_else(|| panic!("no {name} in [{table}] of:\n{}", world.manifest_text()));
+    let wanted: toml::Table = format!("version = {constraint:?}\nindex = {source:?}")
+        .parse()
+        .expect("a table");
+    assert_eq!(entry, toml::Value::Table(wanted), "{name} in [{table}]");
+}
+
+#[when(regex = r#"^I pin "([^"]+)" to "([^"]+)" in lvpm\.toml$"#)]
+async fn pin_in_the_manifest(world: &mut CliWorld, name: String, source: String) {
+    world.set_source_pin(&name, Some(&source));
+}
+
+#[when(regex = r#"^I remove the source pin of "([^"]+)"$"#)]
+async fn remove_the_source_pin(world: &mut CliWorld, name: String) {
+    world.set_source_pin(&name, None);
+}
+
+/// `lvpm check` finds the venv before it reads the manifest, so a scenario that
+/// wants it to read a bad one needs a venv to find.
+#[given("the project has a venv bound to a LabVIEW installation")]
+async fn project_has_a_bound_venv(world: &mut CliWorld) {
+    world.bind_venv();
+}
+
 #[given(regex = r#"^the project depends on "([^"]+)" "([^"]*)" and "([^"]+)" "([^"]*)"$"#)]
 async fn depends_on_two(
     world: &mut CliWorld,
@@ -344,6 +498,22 @@ async fn cannot_be_reached(world: &mut CliWorld, source: String) {
 #[given(regex = r#"^the local folder holds "([^"]+)" (\S+)$"#)]
 async fn local_folder_holds(world: &mut CliWorld, name: String, version: String) {
     world.sandbox.put_local_package(fixture(&name, &version));
+}
+
+/// The fixture archive is written outside the local package folder, so the
+/// cache is the only place that holds it.
+#[given(regex = r#"^"([^"]+)" (\S+) is in the cache$"#)]
+async fn package_is_in_the_cache(world: &mut CliWorld, name: String, version: String) {
+    let package = fixture(&name, &version);
+    let archive = world
+        .sandbox
+        .root()
+        .join("imports")
+        .join(package.file_name());
+    std::fs::create_dir_all(archive.parent().expect("a folder")).expect("create the folder");
+    std::fs::write(&archive, package.build_vip()).expect("write the archive");
+    let archive = archive.to_str().expect("a path");
+    world.sandbox.setup_lvpm(&["cache", "add", archive]);
 }
 
 #[when(r#"I swap "first" and "second" in [sources]"#)]
@@ -548,8 +718,10 @@ async fn error_does_not_mention_version(world: &mut CliWorld, version: String) {
     );
 }
 
-#[then(regex = r#"^the error says "([^"]+)"$"#)]
+/// `text` may hold quotes, written `\"` as in a table cell.
+#[then(regex = r#"^the error says "(.+)"$"#)]
 async fn error_says(world: &mut CliWorld, text: String) {
+    let text = text.replace("\\\"", "\"");
     let printed = world.printed();
     assert!(printed.contains(&text), "{text:?} is not in:\n{printed}");
 }

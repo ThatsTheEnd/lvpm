@@ -10,7 +10,7 @@
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
-| `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
+| `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
 | `lvpm uninstall <name>` / `--all`                    | Remove exactly the files that were installed and prune empty folders                                                                         |
@@ -183,6 +183,7 @@ defaults = true                   # false: only the sources listed here
 delacor_lib_qmh = "7.1.2.1547"    # exactly this version
 oglib_error = ">=6.0.1"           # the newest version satisfying the floor
 jki_lib_state_machine = "*"       # the newest version
+hexagon_lib_motion = { version = ">=2.0", index = "mirror" } # only from the mirror source
 
 [dev-dependencies]                # the group dev: test tooling; same syntax; skipped with --no-dev
 jki_lib_caraya = "*"
@@ -193,6 +194,9 @@ ni_vi_analyzer_tests = "1.2.0.3"
 [nipm.dependencies]               # NI Package Manager packages: reported, not installed
 ni-daqmx-labview-support = "26.0"
 ```
+
+The `hexagon_lib_motion` line carries a source pin: that package comes from
+`mirror` and from no other source ([Package sources](#package-sources)).
 
 `labview` is a minimum, not a pin: a venv binds to that version or a newer
 one. Dependencies a package carries are always floors, so what a project pins
@@ -228,8 +232,10 @@ fails. Constraints are exact (`7.1.2.1547`), `>=` or `*`.
 **Out of date.** A lock is out of date when a dependency was added or removed
 in any table, a constraint no longer admits the locked version, `labview` changed, the
 hosted `[sources]` changed, including their order, a dependency's `github`
-repo was added, removed or changed, or `[policy]` changed. New releases upstream do not make it so, and
-neither does the per-user `sources.local`. `lvpm lock --check` writes nothing:
+repo was added, removed or changed, a dependency's source pin (`index`) was
+added, removed or changed, or `[policy]` changed. New releases upstream do not make it so, and
+neither does the per-user `sources.local`. A lock written before source pins
+existed is not out of date because of them. `lvpm lock --check` writes nothing:
 it exits 0 if `lvpm.lock` exists and is current, and otherwise exits non-zero
 with the reason on one line. It reads no source, so it is cheap.
 
@@ -281,6 +287,7 @@ $ lvpm add oglib_error              # writes oglib_error = ">=<the version it lo
 $ lvpm add "gamma@>=0.5"            # with a constraint
 $ lvpm add --dev jki_lib_caraya     # into [dev-dependencies]
 $ lvpm add --group ci ci_tools      # into [dependency-groups.ci], made if it is new
+$ lvpm add gamma --index mirror     # a source pin: gamma comes only from the [sources] entry mirror
 $ lvpm remove gamma                 # --dev or --group ci if it is in another table
 ```
 
@@ -292,7 +299,22 @@ the group they edit, and never uninstall a package the new lock still lists, so
 what `lvpm sync --group ci` installed stays; plain `lvpm sync` is the exact one.
 `--dev` is `--group dev`. A misspelt `--group` on `add` makes a new group, and
 says `created [dependency-groups.<name>], a new group`. With `--json` the events
-keep `dev` and add `group`, and `created_table`, when they apply.
+keep `dev` and add `group`, and `created_table`, when they apply. An `added` or
+`updated` edit of a pinned line also carries `index`, the source's name.
+
+**A source pin.** `--index <NAME>` writes a source pin, as the table form
+`{ version = ">=<the newest version the source lists>", index = "<NAME>" }`, and
+takes that version from `<NAME>` alone. The `>=<newest>` applies only when no
+constraint is given: `add <name>@<constraint> --index <NAME>` writes the
+constraint as given. It works with `--dev` and `--group`.
+`<NAME>` must be a key of `[sources]`. If it is not, or the source does not
+list the package, `add` fails and puts `lvpm.toml` and `lvpm.lock` back. On a
+line that is already a table, `--index` sets or replaces `index` and keeps the
+other keys; on a line with `github` it fails, since the two cannot be
+combined. `add` without `--index` on a pinned line keeps the source pin and
+changes only `version`. No flag removes a source pin: edit the line, or
+`lvpm remove` the package. What a source pin does is described in
+[Package sources](#package-sources).
 
 **Quote a constraint.** PowerShell and cmd read `>` as a redirect, so
 `lvpm add gamma@>=0.5` sends lvpm's output into a file named `=0.5` and hands
@@ -810,7 +832,8 @@ directories reuse cached spec metadata when file size and modification time
 match; installation still reads their original archives unless imported.
 
 **The first source wins.** A package name comes from exactly one source: the
-first one, in this order, that lists it.
+first one, in this order, that lists it, unless the name has a source pin
+([below](#package-sources)).
 
 1. Packages imported with `lvpm cache add`.
 2. Each `sources.local` folder, in config order.
@@ -822,6 +845,43 @@ higher one. If the first source has no version that fits, or cannot be
 reached, the command fails and names that source. `lvpm search` and
 `lvpm info` show only the versions that source lists. To take a package from
 another source, list that source earlier.
+
+**Pinning a package to one source.** Listing a source first protects a package
+only while every manifest keeps that order. To make the source part of the
+dependency, name it with `index`, a key of `[sources]`:
+
+```toml
+[sources]
+internal = "http://host:8090/files"
+
+[dependencies]
+hexagon_lib_motion = { version = ">=2.0", index = "internal" }
+```
+
+`hexagon_lib_motion` is now pinned to one source: it comes from `internal` or
+not at all. If `internal` does not list it, lists no version that fits, or
+cannot be reached, lvpm fails and names the package and the source. It never
+falls back to another source, even one that lists a higher version. A source
+pin beats a sources.local folder and a cache import: their copies of the
+name are ignored, so to try a local build of a pinned package, remove the
+`index` key in `lvpm.toml`. Each such edit makes the lock out of date, so lock
+again before the next `sync`.
+
+- `lvpm add <name> --index <NAME>` writes the source pin
+  ([Adding and removing dependencies](#adding-and-removing-dependencies)).
+- A name has one source pin. The line pins the name wherever it is listed, so
+  the same name pinned to two sources in two tables is refused, and an
+  unpinned line for that name in another table follows the pin.
+- The source pin does not reach the package's dependencies. What `hexagon_lib_motion` requires
+  follows the first-source-wins rule above. To pin a dependency of a package
+  too, list it as a direct dependency with `version = "*"` and its own `index`.
+- `index` and `github` cannot be on one line. `<NAME>` must be a key of
+  `[sources]`, not `defaults` or `min-age-days`, or the manifest is refused
+  when it is read. The public indexes have no name in `[sources]`, so they
+  cannot be pinned to; list their URL as a source to do that.
+- `lvpm search` and `lvpm info` in the project show a pinned package's versions
+  from its source only. Adding, changing or removing a source pin makes the lock
+  out of date.
 
 Use `lvpm cache add` to import a `.vip`, `.ogp` or `.lvpkg`, or all such files directly
 inside a directory, into the shared content-addressed cache:

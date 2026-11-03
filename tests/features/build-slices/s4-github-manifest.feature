@@ -9,7 +9,7 @@ Feature: a dependency can name a GitHub repo
     Examples:
       | line                                                        | said                           |
       | pkg = { github = "o/r", index = "internal", version = "*" } | "github and index"             |
-      | pkg = { index = "internal", version = "*" }                 | "index is not supported yet"   |
+      | pkg = { index = "internal", version = "*" }                 | "is not a [sources] name"      |
       | pkg = { github = "o/r", version = "*", hooks = "run" }      | "unknown key \\"hooks\\""        |
       | pkg = { github = "o/r" }                                    | "a table needs version"        |
       | pkg = { github = "o", version = "*" }                       | "is not \\"owner/repo\\""        |
