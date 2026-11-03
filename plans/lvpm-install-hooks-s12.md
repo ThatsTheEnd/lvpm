@@ -22,18 +22,18 @@ Closes #76.
 From the spec; numbers match it.
 
 - [ ] AC1: a global, non-headless install of a package with a PostInstall (or PreInstall) hook does not run it, warns, and exits 0.
-- [ ] AC2: the warning names package and hook and shows `lvpm run-hooks <pkg>` and the allow line, in the spec's wording; following either runs the hook *(manual: needs LabVIEW)*.
-- [ ] AC3: with `hooks = "run"` on the line, `lvpm sync --global` runs the hooks and does not warn for that package.
+- [ ] AC2: for each case in the message table, the warning has that row's lines and no other allow text; following the run-it-now line runs the hook *(manual: needs LabVIEW)*.
+- [ ] AC3: with `hooks = "run"` on the line, `lvpm sync --global` starts the hooks and emits no hooks-skipped warning for that package.
 - [ ] AC4: with the name in `hooks.run`, a global install runs the hooks and does not warn; `config set/get hooks.run` write and read the list.
-- [ ] AC5: `--hooks` runs every hook of that command.
-- [ ] AC6: a package whose install hook was skipped runs no uninstall hook, and the uninstall says so; after a successful `run-hooks` it does.
+- [ ] AC5: `--hooks` runs every hook of that command, for `install` and for `sync --global`.
+- [ ] AC6: a package whose install hook was skipped runs no uninstall hook, and the uninstall says so; after `run-hooks` runs its PostInstall successfully it does. A PreInstall-only package stays off until reinstalled allowed.
 - [ ] AC7: `lvpm add pkg@<newer>` on a `hooks = "run"` line keeps `hooks = "run"`.
 - [ ] AC8: `hooks = "run"` in a dependency's own `lvpm.toml` allows nothing.
 - [ ] AC9: a transitive dependency listed as `name = { version = "*", hooks = "run" }` runs its hook.
-- [ ] AC10: `hooks = "<anything but run>"` fails at manifest read, naming the line.
+- [ ] AC10: `hooks = "<anything but run>"` fails at manifest read; the error names the table and package (`<table> <name>: hooks must be "run"`).
 - [ ] AC11: headless, an allowlisted package is skipped unless `--hooks`; the warning says `(LabVIEW runs headless)`.
-- [ ] AC12: venv installs run no hook and report as today; every other existing scenario passes.
-- [ ] AC13: the README hooks line states the new default; docs/usage.md, docs/manifest.md, docs/labview-integration.md and docs/cli.md show `hooks = "run"`, `hooks.run` and the warning.
+- [ ] AC12: venv installs run no hook and report as today; every other existing scenario passes, except the characterization rows that expected a default-on global hook run (they now pass `--hooks`) and the goldens' PhaseSkipped Hooks/Headless note; the PR lists both.
+- [ ] AC13: the README hooks line states the new default; docs/usage.md and docs/labview-integration.md contain `hooks = "run"`, `hooks.run` and `skipped install hook`; docs/manifest.md contains `hooks = "run"`; docs/cli.md contains `hooks.run`.
 
 ## Approach stances (decision-defaults)
 
@@ -242,6 +242,12 @@ Environment values are set on the spawned command, never on the test process, so
   Scenario: sync --global starts the hook of a package with hooks = "run"
     Given a project that depends on "hooked" with hooks set to "run" and a current lock
     When the project is synced into the LabVIEW installation
+    Then the PostInstall hook of "hooked" is started
+    And no hooks-skipped warning is given
+
+  Scenario: sync --global --hooks starts a hook nobody allowed
+    Given a project that depends on "hooked" without hooks = "run" and a current lock
+    When the project is synced into the LabVIEW installation with --hooks
     Then the PostInstall hook of "hooked" is started
 
   Scenario: only the package that is not allowed is skipped
@@ -537,8 +543,8 @@ Rendering (unit tests in `src/render/install.rs`, exact text, no colour):
     When they are read
     Then README.md mentions "hooks are off by default"
     And docs/manifest.md mentions "hooks = \"run\""
-    And docs/usage.md mentions "hooks.run" and "skipped install hook"
-    And docs/labview-integration.md mentions "lvpm run-hooks" and "hooks.run"
+    And docs/usage.md mentions "hooks = \"run\"", "hooks.run" and "skipped install hook"
+    And docs/labview-integration.md mentions "lvpm run-hooks", "hooks = \"run\"", "hooks.run" and "skipped install hook"
     And docs/cli.md mentions "hooks.run"
 ```
 
@@ -616,7 +622,7 @@ None.
 
 #### Wave 1
 - [ ] Slice 1: `hooks = "run"` in the manifest
-  - [ ] Step 1.1: parse `hooks` on a dependency line
+  - [x] Step 1.1: parse `hooks` on a dependency line
   - [ ] Step 1.2: `add` keeps `hooks`, and the scenarios
 
 #### Wave 2
