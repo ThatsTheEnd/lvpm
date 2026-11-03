@@ -537,9 +537,9 @@ Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults
   - [x] Step 2.3: source pins are lock inputs
 
 #### Wave 3
-- [ ] Slice 3: `lvpm add --index`
-  - [ ] Step 3.1: `manifest_edit::set` writes and keeps `index`
-  - [ ] Step 3.2: the `--index` flag
+- [x] Slice 3: `lvpm add --index`
+  - [x] Step 3.1: `manifest_edit::set` writes and keeps `index`
+  - [x] Step 3.2: the `--index` flag
 
 #### Wave 4
 - [ ] Slice 4: docs
