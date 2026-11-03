@@ -53,6 +53,20 @@ impl CliWorld {
         let path = self.sandbox.work_dir().join(MANIFEST_FILE);
         std::fs::write(&path, edit(self.manifest_text())).expect("write lvpm.toml");
     }
+
+    /// The package depends on `constraint`, from `[table]`, with the source pin
+    /// written as `{ version = ..., index = ... }` into the line `depend` made.
+    fn depend_pinned(&self, table: DependencyTable, name: &str, constraint: &str, source: &str) {
+        self.depend(table.clone(), name, constraint);
+        let header = format!("[{}]", table.key());
+        let line = format!("\n{name} = \"{constraint}\"");
+        let pinned = format!("\n{name} = {{ version = \"{constraint}\", index = \"{source}\" }}");
+        self.rewrite_manifest(|text| {
+            let from = text.find(&header).expect("the table is in lvpm.toml");
+            let at = from + text[from..].find(&line).expect("the line is in the table");
+            format!("{}{pinned}{}", &text[..at], &text[at + line.len()..])
+        });
+    }
 }
 
 #[given(
@@ -313,6 +327,33 @@ async fn dev_depends_on(world: &mut CliWorld, name: String, constraint: String) 
     world.depend(DependencyTable::DevDependencies, &name, &constraint);
 }
 
+#[given(regex = r#"^the project depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)"$"#)]
+async fn depends_on_pinned(world: &mut CliWorld, name: String, constraint: String, source: String) {
+    world.depend_pinned(DependencyTable::Dependencies, &name, &constraint, &source);
+}
+
+#[given(regex = r#"^the project dev-depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)"$"#)]
+async fn dev_depends_on_pinned(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    source: String,
+) {
+    world.depend_pinned(
+        DependencyTable::DevDependencies,
+        &name,
+        &constraint,
+        &source,
+    );
+}
+
+/// `lvpm check` finds the venv before it reads the manifest, so a scenario that
+/// wants it to read a bad one needs a venv to find.
+#[given("the project has a venv bound to a LabVIEW installation")]
+async fn project_has_a_bound_venv(world: &mut CliWorld) {
+    world.bind_venv();
+}
+
 #[given(regex = r#"^the project depends on "([^"]+)" "([^"]*)" and "([^"]+)" "([^"]*)"$"#)]
 async fn depends_on_two(
     world: &mut CliWorld,
@@ -548,8 +589,10 @@ async fn error_does_not_mention_version(world: &mut CliWorld, version: String) {
     );
 }
 
-#[then(regex = r#"^the error says "([^"]+)"$"#)]
+/// `text` may hold quotes, written `\"` as in a table cell.
+#[then(regex = r#"^the error says "(.+)"$"#)]
 async fn error_says(world: &mut CliWorld, text: String) {
+    let text = text.replace("\\\"", "\"");
     let printed = world.printed();
     assert!(printed.contains(&text), "{text:?} is not in:\n{printed}");
 }

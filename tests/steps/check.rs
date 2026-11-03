@@ -147,7 +147,7 @@ impl CliWorld {
 
     /// What `lvpm venv create` leaves, as the venv of the project is bound to
     /// the installation, which is made with an empty `vi.lib`.
-    fn bind_venv(&self) {
+    pub(super) fn bind_venv(&self) {
         let installation = self.installation();
         std::fs::create_dir_all(installation.join("vi.lib")).expect("make the installation");
         let venv = self.sandbox.venv_dir();
