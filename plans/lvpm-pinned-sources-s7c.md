@@ -80,7 +80,7 @@ New, in `tests/steps/sources.rs`, each in the step that first needs it:
 | `Given the project depends on "<n>" "<c>" pinned to "<source>"` (any name, so `nope` and `defaults` work) | 1.2 |
 | `Given the project dev-depends on "<n>" "<c>" pinned to "<source>"` | 1.2 |
 | `Given the project depends on "<n>" "<c>" pinned to "<source>" and lvpm.lock is current` (locks, then `note_the_project()`, sync.rs:203) | 2.3 |
-| `Given the project depends on "<n>" "<c>" and a lvpm.lock written before pinned sources` (writes the fixture template with `{FEED}` filled by `source_url`, then notes the lock as `lock.before`) | 2.3 |
+| `Given the project depends on "<n>" "<c>" and a lvpm.lock written before pinned sources` (writes the fixture template with `{FIRST}` and `{SECOND}` filled by `source_url` for each source, then notes the lock as `lock.before`) | 2.3 |
 | `Given the project depends on "<n>" via github "<owner/repo>"` (if no such step exists yet) | 3.2 |
 | `Given "<n>" <v> is in the cache` (`cache add` of the fixture archive; keeps the project and `[sources]`) | 2.1 |
 | `When I pin "<n>" to "<source>" in lvpm.toml` / `When I remove the source pin of "<n>"` (`[dependencies]` only) | 2.3 |
@@ -115,6 +115,8 @@ Feature: a dependency can be pinned to one source
       | lvpm lock       |
       | lvpm sync --prefix dest |
       | lvpm info alpha |
+      | lvpm check      |
+      | lvpm search alpha |
 
   Scenario Outline: a pin naming the <key> setting is not a source
     Given the project depends on "alpha" "*" pinned to "<key>"
@@ -326,7 +328,7 @@ Feature: a dependency can be pinned to one source
 #### Step 2.3: source pins are lock inputs
 
 **Complexity**: standard
-**IMPLEMENT**: `Inputs.index`, filled in `Inputs::of`, compared in `sources_changed` (existing reason); `Inputs` derives `Default` and the three literals use it. The pin/remove When steps, the pinned "lvpm.lock is current" step, and the pre-slice lock fixture: `tests/fixtures/s7c-pre-pin.lock` is a template, today's `lvpm lock` output for that manifest with the feed URL as `{FEED}`, so the loopback port fills in per run.
+**IMPLEMENT**: `Inputs.index`, filled in `Inputs::of`, compared in `sources_changed` (existing reason); `Inputs` derives `Default` and the three literals use it. The pin/remove When steps, the pinned "lvpm.lock is current" step, and the pre-slice lock fixture: `tests/fixtures/s7c-pre-pin.lock` is a template, today's `lvpm lock` output for that manifest with the two source URLs as `{FIRST}` and `{SECOND}` (`Inputs::of` records every `[sources]` URL), so the loopback ports fill in per run.
 **TEST**: unit tests: `[inputs.index]` round-trips; absent with no pins; a lock string written before this slice parses and is not stale; add, change and remove each give `SourcesChanged`. The five stale/fresh scenarios (AC7, AC11). Full suite green.
 **REFACTOR**: the module doc example in `lockfile.rs` shows `[inputs.index]`.
 **Files**: `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/ops/github_index.rs`, `crates/lvpm-core/src/ops/sync.rs`, `tests/acceptance.rs`, `tests/fixtures/s7c-pre-pin.lock`, `tests/features/sources/s7c-pinned-sources.feature`, `tests/steps/sources.rs`
@@ -516,7 +518,7 @@ Decisions that differ from a reviewer's ask:
 - **No clause on the unreachable message** (UX asked). The S13 text already names the source; the clause had no owner (design W4).
 - **No new stale reason** (UX suggested `sources changed (source pin of alpha)`). The spec says no new reason (design W5).
 
-Open warnings left to the build: `add`/`check`/`search` rows for the AC6 outline (the one choke point in `parse` covers them); a `[dependency-groups]` pair for AC9 as a unit test; a `--json` scenario for `add --index` (unit test instead).
+Build criteria gate (2026-11-03): added `check` and `search` rows to the AC6 outline (`add` is covered in slice 3); the pre-slice fixture takes two URLs; AC8 means a dependency of a listed package that is itself listed with a pin, which the beta/alpha scenario covers (beta 1.0 requires alpha 1.0); AC12's Pages site is the mdBook in docs/ (SUMMARY.md lists usage.md as its CLI reference). Open warnings left to the build: a `[dependency-groups]` pair for AC9 as a unit test; a `--json` scenario for `add --index` (unit test instead).
 
 ## Build Progress
 
