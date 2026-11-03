@@ -1555,12 +1555,16 @@ Package.Display Name=A Thing
         let pinned = BTreeMap::from([
             ("Alpha".to_string(), "first".to_string()),
             ("beta".to_string(), "second".to_string()),
+            // Names no entry of `sources`: it owns nothing.
+            ("gamma".to_string(), "nope".to_string()),
         ]);
+        // What `feeds` calls the same folder is what an entry's `source` holds.
+        let feed = |folder: &str| feeds(&[folder.to_string()], false)[0].0.clone();
         assert_eq!(
             owners(&sources, &pinned),
             HashMap::from([
-                ("alpha".to_string(), "http://h/one/index.vipr".to_string()),
-                ("beta".to_string(), "http://h/two/index.vipr".to_string()),
+                ("alpha".to_string(), feed("http://h/one")),
+                ("beta".to_string(), feed("http://h/two/")),
             ])
         );
         assert!(owners(&sources, &BTreeMap::new()).is_empty());

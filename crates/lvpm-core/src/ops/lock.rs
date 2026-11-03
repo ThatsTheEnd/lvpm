@@ -537,6 +537,8 @@ fn resolve(
     moving: &Moving,
     gate: f64,
 ) -> Result<Resolution, LockError> {
+    let source_pins = source_pins(project);
+    check_listed(&source_pins, index)?;
     let constraints: Vec<_> = project
         .tables()
         .flat_map(|(_, entries)| entries)
@@ -562,9 +564,77 @@ fn resolve(
         &env.cancel,
     )
     .map_err(|why| match why {
-        SolveError::Conflict(conflict) => LockError::Conflict(name_pins(conflict, project, pins)),
+        SolveError::Conflict(conflict) => LockError::Conflict(name_source_pins(
+            name_pins(conflict, project, pins),
+            &source_pins,
+        )),
         SolveError::Cancelled => Cancelled.into(),
     })
+}
+
+/// A dependency line that takes its package from one `[sources]` entry only.
+struct SourcePin<'a> {
+    /// The package, as the manifest writes it.
+    package: &'a str,
+    /// The `[sources]` name it is pinned to.
+    source: &'a str,
+    /// That source's feed URL, which is what its entries' `source` holds.
+    feed: String,
+}
+
+impl SourcePin<'_> {
+    /// The source as a failure names it.
+    fn label(&self) -> String {
+        format!("\"{}\" ({})", self.source, self.feed)
+    }
+}
+
+/// The source pins of `project`. A pin naming no `[sources]` entry is left
+/// out: the manifest reader already refuses one.
+fn source_pins(project: &Project) -> Vec<SourcePin<'_>> {
+    let named = |source: &str| project.sources.iter().find(|(name, _)| name == source);
+    (project.index.iter())
+        .filter_map(|(package, source)| {
+            let (_, folder) = named(source)?;
+            Some(SourcePin {
+                package,
+                source,
+                feed: index::feed_url(folder),
+            })
+        })
+        .collect()
+}
+
+/// A pinned package no entry of `index` is left for is one its source does not
+/// list: the load dropped the other sources' entries (see `first_source_wins`).
+fn check_listed(pins: &[SourcePin], index: &Index) -> Result<(), LockError> {
+    let Some(pin) = pins
+        .iter()
+        .find(|pin| index.versions_of(pin.package).is_empty())
+    else {
+        return Ok(());
+    };
+    Err(LockError::Other(anyhow::anyhow!(
+        "{package} is pinned to {label}, which does not list it; {IGNORED}. Fix or remove the index on {package}",
+        package = pin.package,
+        label = pin.label(),
+    )))
+}
+
+const IGNORED: &str = "other sources are ignored for a pinned package";
+
+/// `conflict` with the source of a pinned package named as its pinned one,
+/// since no other source was asked.
+fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
+    for fact in &mut conflict.facts {
+        let Fact::NoVersion { package, from, .. } = fact else {
+            continue;
+        };
+        if let Some(pin) = pins.iter().find(|pin| same_name(pin.package, package)) {
+            *from = format!("{}, its pinned source; {IGNORED}", pin.label());
+        }
+    }
+    conflict
 }
 
 /// `conflict` with each fact that only a pin asked for named as one. The
@@ -2768,5 +2838,110 @@ caraya = \"*\"
                 assert_eq!(again.asked.len(), asked, "{tag}: {:?}", again.asked);
             }
         }
+    }
+
+    // ---- source pins ----
+
+    const FIRST_FEED: &str = "http://first.example/index.vipr";
+    const SECOND_FEED: &str = "http://second.example/index.vipr";
+
+    /// A manifest with sources `first` and `second` and `deps` under
+    /// `[dependencies]`.
+    fn with_sources(deps: &str) -> String {
+        format!(
+            "[project]\nlabview = \">=2023\"\n\n[sources]\nfirst = \"http://first.example/\"\n\
+             second = \"http://second.example\"\ndefaults = false\n\n[dependencies]\n{deps}\n"
+        )
+    }
+
+    /// What the loader leaves of the feeds after a source pin: each of
+    /// `listed` is (name, version, feed URL).
+    fn resolve_listed(
+        tag: &str,
+        deps: &str,
+        listed: &[(&str, &str, &str)],
+    ) -> Result<Resolution, LockError> {
+        let text = with_sources(deps);
+        let dir = ProjectDir::new(tag, &text, &[]);
+        let entries = listed
+            .iter()
+            .map(|(name, version, feed)| Entry {
+                source: feed.to_string(),
+                ..entry(name, version, &[], "x.vip")
+            })
+            .collect();
+        let sink = Recorder::default();
+        let env = dir.env(&sink);
+        let (project, index) = (manifest(&text), Index { entries });
+        resolve(&env, &project, &index, &[], &[], &Moving::Nothing, 24.0)
+    }
+
+    #[test]
+    fn a_pinned_package_its_source_does_not_list_is_named_with_the_source_and_the_way_on() {
+        let why = resolve_listed(
+            "pin-unlisted",
+            "Alpha = { version = \"*\", index = \"second\" }",
+            &[("gamma", "1.0", SECOND_FEED)],
+        )
+        .unwrap_err();
+        assert_eq!(
+            why.to_string(),
+            format!(
+                "Alpha is pinned to \"second\" ({SECOND_FEED}), which does not list it; \
+                 other sources are ignored for a pinned package. Fix or remove the index on Alpha"
+            )
+        );
+    }
+
+    /// The `NoVersion` lines of the conflict `deps` run into.
+    fn no_version_lines(tag: &str, deps: &str, listed: &[(&str, &str, &str)]) -> Vec<String> {
+        let LockError::Conflict(conflict) = resolve_listed(tag, deps, listed).unwrap_err() else {
+            panic!("expected a conflict");
+        };
+        let no_version = |fact: &&Fact| matches!(fact, Fact::NoVersion { .. });
+        let facts = conflict.facts.iter().filter(no_version);
+        facts.map(Fact::to_string).collect()
+    }
+
+    #[test]
+    fn a_pinned_package_with_no_fitting_version_names_its_source_and_says_no_other_was_asked() {
+        let lines = no_version_lines(
+            "pin-no-fit",
+            "alpha = { version = \">=2.0\", index = \"second\" }",
+            &[("alpha", "1.0", SECOND_FEED)],
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "no version of alpha >= 2.0 is available from \"second\" ({SECOND_FEED}), its \
+                 pinned source; other sources are ignored for a pinned package"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_package_that_is_not_pinned_keeps_the_plain_no_version_text() {
+        let lines = no_version_lines(
+            "pin-other",
+            "alpha = { version = \"*\", index = \"second\" }\nbeta = \">=2.0\"",
+            &[("alpha", "1.0", SECOND_FEED), ("beta", "1.0", FIRST_FEED)],
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "no version of beta >= 2.0 is available from {FIRST_FEED}"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_pinned_package_its_source_lists_resolves() {
+        let resolution = resolve_listed(
+            "pin-listed",
+            "alpha = { version = \"*\", index = \"second\" }",
+            &[("alpha", "1.0", SECOND_FEED)],
+        )
+        .unwrap();
+        assert_eq!(resolution.packages["alpha"].version, Version::parse("1.0"));
     }
 }

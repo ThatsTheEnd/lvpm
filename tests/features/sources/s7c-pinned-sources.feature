@@ -99,3 +99,37 @@ Feature: a dependency can be pinned to one source
       | command |
       | info    |
       | search  |
+
+  Scenario: a pinned package its source does not list fails naming both
+    Given "first" lists "alpha" 1.0
+    And "second" lists "gamma" 1.0
+    And the project depends on "alpha" "*" pinned to "second"
+    When I run "lvpm lock"
+    Then the command fails naming "alpha" and "second"
+    And the error says "other sources are ignored for a pinned package"
+    And no lvpm.lock is written
+
+  Scenario: a pinned source with no fitting version fails naming it, not falling back
+    Given "first" lists "alpha" 2.0
+    And "second" lists "alpha" 1.0
+    And the project depends on "alpha" ">=2.0" pinned to "second"
+    When I run "lvpm lock"
+    Then the command fails naming "alpha" and "second"
+    And the error says "its pinned source"
+    And no lvpm.lock is written
+
+  Scenario: an unreachable pinned source fails naming it
+    Given "first" lists "alpha" 1.0
+    And "second" cannot be reached
+    And the project depends on "alpha" "*" pinned to "second"
+    When I run "lvpm lock"
+    Then the command fails naming "second"
+    And no lvpm.lock is written
+
+  Scenario: an unreachable pinned source fails lvpm info naming it
+    Given "first" lists "alpha" 1.0
+    And "second" cannot be reached
+    And the project depends on "alpha" "*" pinned to "second"
+    When I run "lvpm info alpha"
+    Then the command fails naming "second"
+    And the error says "could not read"
