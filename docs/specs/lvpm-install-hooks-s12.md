@@ -1,7 +1,7 @@
 <!-- spec-version: 14.0.1 -->
 # Spec: Install hooks off by default (slice S12)
 
-**Format:** dev-team specs 14.0.1 · **Status:** gate passed; the three stakeholder answers were given by the user on 2026-11-03 · **Date:** 2026-11-03 ·
+**Format:** dev-team specs 14.0.1 · **Status:** approved by the user on 2026-11-03; the three stakeholder answers were given the same day · **Date:** 2026-11-03 ·
 **Slice:** [#76](https://github.com/ThatsTheEnd/lvpm/issues/76), [S12 in build-slices.md](../vision/build-slices.md) ·
 **Rules:** [ADR 3](../adr/0003-install-hooks-off-by-default.md); [ADR 4](../adr/0004-sources-first-wins-and-pinning.md), decision 5
 
@@ -53,37 +53,51 @@ the manifest is read, naming the line. `Project` gains
 or the file, and written by `lvpm config set hooks.run <name>...`, which
 replaces the list, as `sources.local` does. `config get hooks.run` lists it.
 
-**The warning.** A new event, `HooksSkipped { package, hooks, reason, allow }`,
-emitted once per package after the install or sync's summary, in place of
-the current `HooksNotRun` line on a LabVIEW installation (the venv keeps
-`HooksNotRun`). `reason` is `NotAllowed` or `Headless`. `allow` is the text
-to paste: the package's own `lvpm.toml` line with `hooks = "run"` added
-(a transitive dependency gets `name = { version = "*", hooks = "run" }`), or
-`lvpm config set hooks.run <existing names> <name>` globally. Rendered:
+**The warning.** A new event, `HooksSkipped { package, hooks, reason, run_now, dry_run, allow }`,
+emitted once per package after the install or sync's summary (and before an
+error, so a later failure never hides it), in place of the current
+`HooksNotRun` line and the headless hooks note on a LabVIEW installation (the
+venv keeps `HooksNotRun`). `reason` is `NotAllowed`, `Headless` or
+`AlreadyInstalled`. `allow` is data the renderer turns into text: add
+`hooks = "run"` to the package's existing line (any `github`/`index` key
+stays), a new `name = { version = "*", hooks = "run" }` line for a transitive
+dependency, `lvpm config set hooks.run <existing names> <names>` globally, or
+`--hooks` headless. Rendered:
 
 ```
-warning: pilot_a: skipped install hook PostInstall (hooks are off by default)
+warning: pilot_a: skipped install hook PostInstall (hooks are off by default; see docs/labview-integration.md#hooks)
   run it now:     lvpm run-hooks pilot_a
-  always run it:  pilot_a = { version = ">=1.2", hooks = "run" }  in lvpm.toml
+  always run it:  add hooks = "run" to the pilot_a line in [dependencies] of lvpm.toml
 ```
 
-Globally the last line is `always run it:  lvpm config set hooks.run pilot_a`.
-Headless, the parenthesis reads `(LabVIEW runs headless)` and the last line is
-`always run it:  pass --hooks`. A package that declared only a PreInstall
-hook gets no `run it now:` line: `run-hooks` runs PostInstall only, and a
-PreInstall hook cannot run once the files are in place. Warnings go to
-stderr, as other warnings do; `--json` carries the event. Exit code stays 0.
+Globally, the per-package warnings have the first two lines, and one line
+after the last of them reads `always run them:  lvpm config set hooks.run
+<existing names> <every skipped name>`, so pasting it once drops nobody.
+Headless, the parenthesis reads `(LabVIEW runs headless; hooks = "run" and
+hooks.run do not apply)`, there is no run-it-now line, and the last line is
+`always run it:  add --hooks to this command`. A package that declared only a
+PreInstall hook gets no `run it now:` line (a PreInstall cannot run once the
+files are in place) but a line saying to uninstall, allow it, and install
+again. A dry run says `would skip` and has no run-it-now line. A package
+already installed at the same version with a skipped PostInstall, and now
+allowed, is not re-run: the warning says its hook was skipped when it was
+installed and gives `run it now:`. The allowlist applies from the next install
+or upgrade. Warnings go to stderr, as other warnings do; `--json` carries the
+event's fields. Exit code stays 0.
 
 **The record.** The install record already lists `skipped_hooks`. On a
 LabVIEW installation a skipped package now gets every declared hook in it,
-as a venv install does. `lvpm run-hooks <pkg>` that succeeds removes the
-PostInstall entry and the uninstall entries, so the package then counts as
-hooked. `lvpm list` already shows the list.
+as a venv install does. `lvpm run-hooks <pkg>` that succeeds removes every
+install and uninstall entry, PreInstall included, so the package then counts
+as hooked. A PreInstall-only package has nothing for `run-hooks` to run and
+stays unhooked until it is reinstalled allowed. `lvpm list` already shows the
+list.
 
 **Uninstall.** `uninstall_one` runs PreUninstall and PostUninstall only when
 the record's `skipped_hooks` holds neither PreInstall nor PostInstall. A
 record from before this slice has none listed for a global install, so its
-hooks run as before. A skipped uninstall hook is reported with a new
+hooks run as before. Headless records, and records whose PostInstall failed,
+already list their install hooks, so their uninstall hooks stop running (ADR 3 §4). A skipped uninstall hook is reported with a new
 `UnrunReason::InstallHookSkipped`.
 
 | Part | Where |
@@ -182,7 +196,7 @@ allow it. *(#76)*
 | Global allowlist command when the list has names | `inferable` | inference | `config set` replaces the list, so the hint lists the existing names plus the new one; pasting it never drops an allowed package. |
 | Values of `hooks` other than `run` | `inferable` | inference | Refused at read: the line format refuses unknown keys today, and a typo must not silently mean "skip". |
 | Is `hooks` a lock input | `inferable` | inference | No. It does not change what resolves or where from; `lock --check` compares resolution inputs only. |
-| What counts as "the install hook ran" for uninstall | `inferable` | inference | Neither PreInstall nor PostInstall is in `skipped_hooks`. A failed PostInstall is already recorded there, so its uninstall hooks do not run either; `run-hooks` success clears it. |
+| What counts as "the install hook ran" for uninstall | `inferable` | inference | Neither PreInstall nor PostInstall is in `skipped_hooks`. A failed PostInstall is already recorded there, so its uninstall hooks do not run either; `run-hooks` success clears every install and uninstall entry, PreInstall included (amended at plan review: clearing only PostInstall left two-hook packages blocked). |
 | Records written before S12 | `inferable` | inference | A global record lists no install hook as skipped, because those installs ran them; its uninstall hooks run as before. |
 | Venv reporting | `inferable` | inference | Unchanged `HooksNotRun` line: nothing can allow a hook there (ADR 3 §1), so the remedies would mislead. |
 | Dry run | `inferable` | inference | Prints the same warning for hooks it would skip: the reader learns before installing. |
