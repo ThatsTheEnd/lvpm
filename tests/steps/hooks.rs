@@ -125,14 +125,14 @@ async fn hooks_run_env_for_the_command(world: &mut CliWorld, value: String) {
 #[then(regex = r#"^the output lists "([^"]+)" and not "([^"]+)"$"#)]
 async fn output_lists_and_not(world: &mut CliWorld, listed: String, absent: String) {
     let stdout = &world.output().stdout;
-    let lines: Vec<&str> = stdout.lines().collect();
+    let lines: Vec<&str> = stdout.lines().map(str::trim).collect();
     assert!(
         lines.contains(&listed.as_str()),
         "{listed:?} is not in:
 {stdout}"
     );
     assert!(
-        !lines.contains(&absent.as_str()),
+        !stdout.contains(absent.as_str()),
         "{absent:?} is in:
 {stdout}"
     );

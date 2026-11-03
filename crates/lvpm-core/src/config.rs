@@ -19,7 +19,7 @@ const SUPPORTED_KEYS: &str = "cache, hooks.run, sources.local, venv.dir";
 pub struct Config {
     /// Where downloaded indexes (and later, packages) are cached.
     pub cache: PathBuf,
-    /// Names of the packages whose install hooks may run, in any project.
+    /// Names of the packages whose install hooks may run in a global install with no project.
     pub hooks_run: Vec<String>,
     /// Local directories scanned for package files.
     pub local_sources: Vec<PathBuf>,
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(hooks_run(&none, Some("a,,b")), ["a", "b"]);
         assert_eq!(hooks_run(&none, Some(" a ")), ["a"]);
         assert_eq!(hooks_run(&none, Some("a b,\tc\n")), ["a", "b", "c"]);
-        assert!(hooks_run(&none, Some(" , ")).is_empty());
+        assert!(hooks_run(&file_running(&["from_file"]), Some(" , ")).is_empty());
     }
 
     #[test]
