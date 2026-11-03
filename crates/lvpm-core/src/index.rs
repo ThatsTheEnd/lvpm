@@ -476,6 +476,8 @@ pub(crate) fn source_of(url: &str, feeds: &[(String, String)]) -> String {
         .iter()
         .map(|(index_url, base)| (index_url, parsed(base)))
         .filter(|(_, base)| target.starts_with(base.as_str()))
+        // `rev`: of equal matches, the first feed read wins, as it did before parsing.
+        .rev()
         .max_by_key(|(_, base)| base.len())
         .map_or_else(|| url.to_string(), |(index_url, _)| index_url.clone())
 }
@@ -748,8 +750,8 @@ fn feed_body(
 /// that leaves it would be credited to a feed it does not come from.
 fn stays_in_folder(base: &str, rel: &str) -> bool {
     let lower = rel.to_ascii_lowercase();
-    // Some servers decode these (twice, for `%25`), or read `..;` as `..`, and resolve what the client kept literal.
-    if ["%2f", "%5c", "%25", "..;"]
+    // Some servers decode these (twice, for `%25`), or drop `;` path parameters, and resolve what the client kept literal.
+    if ["%2f", "%5c", "%25", ";", "%3b"]
         .iter()
         .any(|bad| lower.contains(bad))
     {
@@ -1381,6 +1383,8 @@ Package.Display Name=A Thing
                     [Package cr-1.0]\nPackage.URL=.\r./x.vip\n\n\
                     [Package slash-1.0]\nPackage.URL=..%2Fx.vip\n\n\
                     [Package semicolon-1.0]\nPackage.URL=..;/x.vip\n\n\
+                    [Package encoded-semicolon-1.0]\nPackage.URL=team/.%2e;/x.vip\n\n\
+                    [Package escaped-semicolon-1.0]\nPackage.URL=team/..%3B/x.vip\n\n\
                     [Package twice-1.0]\nPackage.URL=%252e%252e/x.vip\n\n\
                     [Package inside-1.0]\nPackage.URL=team/../x.vip\n\n\
                     [Package dots-1.0]\nPackage.URL=team/x..y.vip\n";
@@ -1401,6 +1405,15 @@ Package.Display Name=A Thing
             "outer-index"
         );
         assert_eq!(source_of("http://h/vipm/team/y.vip", &feeds), "team-index");
+    }
+
+    #[test]
+    fn of_two_feeds_whose_folders_parse_alike_the_first_read_is_credited() {
+        let feeds = [
+            ("first".to_string(), "http://H/feed/".to_string()),
+            ("second".to_string(), "http://h/feed/".to_string()),
+        ];
+        assert_eq!(source_of("http://h/feed/y.vip", &feeds), "first");
     }
 
     #[test]
