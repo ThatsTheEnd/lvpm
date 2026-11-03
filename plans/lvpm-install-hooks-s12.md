@@ -74,10 +74,10 @@ From the spec; numbers match it.
   `AllowLine::{ AddKey { name, table }, AddLine { name }, ConfigSet { names }, PassHooks }`.
   Core carries data; `src/render/install.rs` writes the text, and `--json` carries the fields. `run_now` is false when no PostInstall was declared, when headless, and in a dry run. `install_one` collects the events during `apply`, and `apply` emits them after `InstallDone`, and also before it returns an error, so a later failure never hides an earlier skip. On a global install, only the last event carries `allow: Some(ConfigSet { names })`, with the existing names plus every package skipped in this command. Pasting it once allows all of them and drops none.
 - **Already installed, now allowed**: in `settle_installed`'s same-version branch, if the record lists a skipped PostInstall and the verdict is now `Run`, emit `HooksSkipped { reason: AlreadyInstalled, run_now: true, allow: None }`. It tells the user to run `run-hooks`. The hook is not run automatically. The allowlist takes effect from the next install or upgrade, and the docs say so.
-- **The record** (`install.rs`, next to `mark_hook_skipped`): `Manifest::install_hook_skipped()` (a `PreInstall=` or `PostInstall=` entry) and `Manifest::clear_skipped_hooks()`. A skipped package gets every declared hook in `skipped_hooks` when the record is built, as headless does today. The field's doc comment is updated. `uninstall.rs` and `hooks.rs` call these methods; no new string-prefix checks elsewhere.
+- **The record** (`install.rs`, next to `mark_hook_skipped`): `Manifest::hooks_skipped()` (any entry in `skipped_hooks`, so an uninstall-only package counts too) and `Manifest::clear_skipped_hooks()`. A skipped package gets every declared hook in `skipped_hooks` when the record is built, as headless does today. The field's doc comment is updated. `uninstall.rs` and `hooks.rs` call these methods; no new string-prefix checks elsewhere.
 - **`run-hooks`** success: `clear_skipped_hooks` drops every install and uninstall entry, **PreInstall included**. Running `run-hooks` is the user's explicit act, and a PreInstall cannot run later anyway. A failed run changes nothing. A PreInstall-only package has no `post_install_vi`, so `run-hooks` skips it ("nothing to do") and its uninstall hooks stay off until it is reinstalled with an allow.
-- **Uninstall-only packages**: the verdict applies to any package declaring a hook. A skipped package records its uninstall hooks too, and `uninstall_one`'s existing per-hook filter (`PreUninstall=` in `skipped_hooks`) already skips them, so no install hook is needed for the gate to hold.
-- **Uninstall**: `uninstall_one` sets `hooks = venv().is_none() && !before.install_hook_skipped()`. The unrun report uses the new `UnrunReason::InstallHookSkipped`, rendered with the remedy.
+- **Uninstall-only packages**: the verdict applies to any package declaring a hook. A skipped package records its uninstall hooks too. `uninstall_one`'s existing per-hook filter only builds the unrun report and does not stop a hook (review of Step 3.1), so the gate is `hooks_skipped()`, not an install-hook check.
+- **Uninstall**: `uninstall_one` sets `hooks = venv().is_none() && !before.hooks_skipped()`. The unrun report uses the new `UnrunReason::InstallHookSkipped`, rendered with the remedy.
 - **TUI**: no change. `progress.rs` ignores unknown events and `log.rs` has a `{other:?}` fallback.
 
 ## Message texts
@@ -491,8 +491,8 @@ Rendering (unit tests in `src/render/install.rs`, exact text, no colour):
 #### Step 4.1: uninstall checks the record
 
 **Complexity**: standard
-**IMPLEMENT**: `Manifest::install_hook_skipped`; `uninstall_one` skips both uninstall hooks when it is true; `UnrunReason::InstallHookSkipped` and its render text with the remedy.
-**TEST**: FakeInstallation tests for the skip, the failed PostInstall, the headless record and the global pre-S12 record; render unit test. Full suite green.
+**IMPLEMENT**: `Manifest::hooks_skipped`; `uninstall_one` skips both uninstall hooks when it is true; `UnrunReason::InstallHookSkipped` and its render text with the remedy.
+**TEST**: FakeInstallation tests for the skip, an uninstall-only package, the failed PostInstall, the headless record and the global pre-S12 record; render unit test. Full suite green.
 **REFACTOR**: the unrun filter reads the reason once; the existing `starts_with("PreUninstall=")` uses the new `Manifest` helper.
 **Files**: `crates/lvpm-core/src/ops/uninstall.rs`, `crates/lvpm-core/src/install.rs`, `crates/lvpm-core/src/events.rs`, `src/render/uninstall.rs`
 **Commit**: `feat(s12): uninstall hooks run only after their install hook`
@@ -621,17 +621,17 @@ None.
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: `hooks = "run"` in the manifest
+- [x] Slice 1: `hooks = "run"` in the manifest
   - [x] Step 1.1: parse `hooks` on a dependency line
-  - [ ] Step 1.2: `add` keeps `hooks`, and the scenarios
+  - [x] Step 1.2: `add` keeps `hooks`, and the scenarios
 
 #### Wave 2
-- [ ] Slice 2: `hooks.run` in the user config
-  - [ ] Step 2.1: the `hooks.run` key
+- [x] Slice 2: `hooks.run` in the user config
+  - [x] Step 2.1: the `hooks.run` key
 
 #### Wave 3
 - [ ] Slice 3: skip and warn unless allowed
-  - [ ] Step 3.1: the verdict and `HookAllow`
+  - [x] Step 3.1: the verdict and `HookAllow`
   - [ ] Step 3.2: the `HooksSkipped` warning
 
 #### Wave 4
@@ -658,7 +658,7 @@ Blockers fixed in round 1:
 - Policy code would grow the 930-line `ops/install.rs` (Design). Now in `ops/hook_policy.rs`.
 - Missing scenarios: crossed allowlists, headless with and without `--hooks`, already-installed and allowed, `s4-github-manifest.feature` row 13 (Acceptance).
 
-Warnings taken: structured `AllowLine` in core; private `HookAllow` fields and `HookContext`; one `for_command` constructor; `Manifest` helpers; the `Config` literal fan-out listed; emit before an error; headless and dry-run wording; the bad-value remedy; the env override; characterization edits land in Step 3.1; `settle_rerun` pins the run-hooks record update; uninstall-only packages are covered by the existing filter.
+Warnings taken: structured `AllowLine` in core; private `HookAllow` fields and `HookContext`; one `for_command` constructor; `Manifest` helpers; the `Config` literal fan-out listed; emit before an error; headless and dry-run wording; the bad-value remedy; the env override; characterization edits land in Step 3.1; `settle_rerun` pins the run-hooks record update; uninstall-only packages are gated by `hooks_skipped` (corrected in Step 3.1 review: the existing filter only reports).
 
 Warnings not taken: an injectable hook runner (no new abstraction; `settle_rerun` covers the record logic); grouping many warnings; `uninstall --hooks` (no such flag today).
 
