@@ -146,8 +146,9 @@ offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
   exactly in `lvpm.toml`.
 - It protects only as far as you trust the release date the feed lists; lvpm
   cannot check that date.
-- A held-back version never falls through to a later source: the first
-  source that lists a package still decides its versions.
+- A held-back version never falls through to a later source: the package's
+  source pin decides its versions if it has one, otherwise the first source that
+  lists it.
 - When the limit keeps out a newer version, lvpm says so on stderr, for
   example `held back alpha 1.1 by min-age-days = 14 (released 2026-10-28,
   eligible 2026-11-12); using 1.0`, and `--json` writes a `held_back` event
@@ -231,6 +232,8 @@ and `lvpm build` writes this name. Other assets are ignored.
 **What is refused.** These fail when the manifest is read, naming the package:
 
 - `github` together with `index`: a GitHub dependency comes only from its repo.
+  This holds across tables too: a name with `github` in one table and `index`
+  in another is refused, naming both tables.
 - Any key besides `version`, `github` and `index`: `unknown key "hooks"; expected version, github or index`.
 - A table without `version`.
 - A `github` value that is not `owner/repo`, such as `"https://github.com/o/r"`
@@ -279,7 +282,7 @@ Here is what the index key does:
 
 **What is refused.** These fail when the manifest is read, naming the line:
 
-- `index` together with `github`.
+- `index` together with `github`, on one line or on two lines of one name.
 - An `index` that is not a key of `[sources]`, with the keys it has. `defaults`
   and `min-age-days` are settings, not sources, so they are refused too.
 - A name pinned to two sources.

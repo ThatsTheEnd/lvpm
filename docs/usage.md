@@ -299,11 +299,14 @@ the group they edit, and never uninstall a package the new lock still lists, so
 what `lvpm sync --group ci` installed stays; plain `lvpm sync` is the exact one.
 `--dev` is `--group dev`. A misspelt `--group` on `add` makes a new group, and
 says `created [dependency-groups.<name>], a new group`. With `--json` the events
-keep `dev` and add `group`, and `created_table`, when they apply.
+keep `dev` and add `group`, and `created_table`, when they apply. An `added` or
+`updated` edit of a pinned line also carries `index`, the source's name.
 
 **A source pin.** `--index <NAME>` writes a source pin, as the table form
 `{ version = ">=<the newest version the source lists>", index = "<NAME>" }`, and
-takes that version from `<NAME>` alone. It works with `--dev` and `--group`.
+takes that version from `<NAME>` alone. The `>=<newest>` applies only when no
+constraint is given: `add <name>@<constraint> --index <NAME>` writes the
+constraint as given. It works with `--dev` and `--group`.
 `<NAME>` must be a key of `[sources]`. If it is not, or the source does not
 list the package, `add` fails and puts `lvpm.toml` and `lvpm.lock` back. On a
 line that is already a table, `--index` sets or replaces `index` and keeps the
@@ -829,7 +832,8 @@ directories reuse cached spec metadata when file size and modification time
 match; installation still reads their original archives unless imported.
 
 **The first source wins.** A package name comes from exactly one source: the
-first one, in this order, that lists it.
+first one, in this order, that lists it, unless the name has a source pin
+([below](#package-sources)).
 
 1. Packages imported with `lvpm cache add`.
 2. Each `sources.local` folder, in config order.
@@ -859,8 +863,9 @@ not at all. If `internal` does not list it, lists no version that fits, or
 cannot be reached, lvpm fails and names the package and the source. It never
 falls back to another source, even one that lists a higher version. A source
 pin beats a sources.local folder and a cache import: their copies of the
-name are ignored, so to try a local build of a pinned package, drop the source
-pin for that run.
+name are ignored, so to try a local build of a pinned package, remove the
+`index` key in `lvpm.toml`. Each such edit makes the lock out of date, so lock
+again before the next `sync`.
 
 - `lvpm add <name> --index <NAME>` writes the source pin
   ([Adding and removing dependencies](#adding-and-removing-dependencies)).

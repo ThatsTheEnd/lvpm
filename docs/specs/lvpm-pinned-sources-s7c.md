@@ -30,7 +30,7 @@ table-form line in `[dependencies]`, `[dev-dependencies]` and every
 `[dependency-groups.<group>]`. `<name>` is a key of `[sources]` whose value is
 an index URL. `defaults`, `min-age-days` and any name `[sources]` lacks are
 refused when the manifest is read, naming the line and the source.
-`Project` gains `index: BTreeMap<String, String>` (name as written → source
+`Project` gains `source_pins: BTreeMap<String, String>` (name as written → source
 name), filled like `github`: a name pinned in two tables must name the same
 source, or the read fails. `github` and `index` on one line stay an error.
 
@@ -43,9 +43,10 @@ every command that loads an index with a project agrees: `lock`, `add`,
 `info`, `search` and the TUI. Callers without a project (global `install`)
 pass no pins.
 
-A pin applies to its own line only. The pinned package's dependencies
-resolve by first-wins, unless they have a pinned line of their own (ADR 4:
-list a transitive dependency as a direct one with `version = "*"`).
+A pin governs its name in every dependency table. It does not reach the
+package's dependencies; they resolve first-source-wins (ADR 4: list a
+transitive dependency as a direct one with `version = "*"` and its own `index`
+to pin it).
 
 **Failures.** A pinned source that does not list the name, or lists it with
 no version that fits, makes `lock` fail naming the package and the source. An
@@ -69,7 +70,7 @@ newest version. A name that does not exist in `[sources]` fails, and
 
 | Part | Where |
 |---|---|
-| `index` key, `Project::index`, the unknown-source check | `crates/lvpm-core/src/project.rs` (`dependency_table`, `parse_dependencies`) |
+| `index` key, `Project::source_pins`, the unknown-source check | `crates/lvpm-core/src/project.rs` (`dependency_table`, `parse_dependencies`) |
 | Pins in the first-wins filter | `crates/lvpm-core/src/index.rs` (`load_each`, `first_source_wins`) |
 | Package and source in the failure message | `crates/lvpm-core/src/solve.rs` or `ops/lock.rs`, where S13 builds the source text |
 | `[inputs.index]`, staleness | `crates/lvpm-core/src/lockfile.rs` (`Inputs`, `sources_changed`) |
