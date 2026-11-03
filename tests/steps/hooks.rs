@@ -4,6 +4,7 @@
 
 use super::sources::FIRST;
 use crate::CliWorld;
+use crate::support::sandbox::LABVIEW_YEAR;
 use cucumber::{given, then};
 use lvpm_core::manifest_edit::DependencyTable;
 
@@ -135,5 +136,30 @@ async fn output_lists_and_not(world: &mut CliWorld, listed: String, absent: Stri
         !stdout.contains(absent.as_str()),
         "{absent:?} is in:
 {stdout}"
+    );
+}
+
+#[then(regex = r#"^stdout does not say "([^"]+)"$"#)]
+async fn stdout_does_not_say(world: &mut CliWorld, text: String) {
+    let stdout = &world.output().stdout;
+    assert!(!stdout.contains(&text), "{text:?} is in:\n{stdout}");
+}
+
+/// `lvpm list` on the LabVIEW installation names the hooks it lists as skipped
+/// after the package's line: `(hooks skipped: PostInstall)`.
+#[then(regex = r#"^"lvpm list" shows "([^"]+)" as skipped for "([^"]+)"$"#)]
+async fn list_shows_the_hook_as_skipped(world: &mut CliWorld, hook: String, package: String) {
+    let listing = world
+        .sandbox
+        .run_lvpm(&["list", "--labview-version", LABVIEW_YEAR], None);
+    let line = listing
+        .stdout
+        .lines()
+        .find(|line| line.split_whitespace().next() == Some(package.as_str()))
+        .unwrap_or_else(|| panic!("{package} is not listed in:\n{}", listing.stdout));
+    let skipped = line.split_once("(hooks skipped: ").map(|(_, rest)| rest);
+    assert!(
+        skipped.is_some_and(|hooks| hooks.trim_end_matches(')').split(", ").any(|h| h == hook)),
+        "{hook} is not listed as skipped in: {line}"
     );
 }

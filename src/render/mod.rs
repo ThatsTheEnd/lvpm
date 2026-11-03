@@ -100,6 +100,7 @@ impl Renderer {
             | Event::GroupSkipped { .. }
             | Event::MissingFromArchive { .. }
             | Event::HooksNotRun { .. }
+            | Event::HooksSkipped { .. }
             | Event::InstallDone { .. }
             | Event::PhaseSkipped { .. }
             | Event::LaunchHint

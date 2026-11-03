@@ -71,6 +71,14 @@ pub struct Manifest {
     pub archive_sha256: Option<String>,
 }
 
+impl Manifest {
+    /// Whether the record lists `hook` among the hooks that did not run.
+    pub fn hook_skipped(&self, hook: crate::events::HookKind) -> bool {
+        let prefix = format!("{}=", hook.name());
+        self.skipped_hooks.iter().any(|h| h.starts_with(&prefix))
+    }
+}
+
 /// What an install *would* do. Produced first so `--dry-run` and the real run
 /// share one code path.
 #[derive(Debug)]
@@ -644,6 +652,18 @@ mod tests {
             skipped_groups: Vec::new(),
             archive_sha256: None,
         }
+    }
+
+    #[test]
+    fn a_record_says_which_hook_it_lists_as_skipped_by_the_hooks_name_alone() {
+        use crate::events::HookKind::{PostInstall, PreInstall};
+        let mut m = record(&[], None);
+        assert!(!m.hook_skipped(PostInstall));
+        m.skipped_hooks = vec![r"PostInstall=<OS Boot Volume Root>\ci\PostInstall.vi".into()];
+        assert!(m.hook_skipped(PostInstall));
+        assert!(!m.hook_skipped(PreInstall), "another hook is not listed");
+        m.skipped_hooks = vec!["PostInstallX=a.vi".into(), "PostInstall".into()];
+        assert!(!m.hook_skipped(PostInstall), "a longer name is not it");
     }
 
     #[test]

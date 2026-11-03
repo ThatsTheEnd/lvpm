@@ -7,9 +7,9 @@
 //! Nothing else does, and no dependency's manifest is ever consulted.
 
 use crate::config::Config;
-use crate::events::SkipReason;
+use crate::events::{AllowLine, Event, HookKind, SkipReason};
 use crate::project::{Project, name_key};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The packages whose install hooks may run, for one command. The default
 /// allows none, so an install that was never given one fails safe.
@@ -18,6 +18,41 @@ pub struct HookAllow {
     /// [`name_key`]s: names compare as every other package name does, whole and
     /// in any ASCII case, never by prefix or pattern.
     names: BTreeSet<String>,
+    /// Who allowed them, which decides what a skipped package is told to edit.
+    source: AllowSource,
+}
+
+/// Where the allowlist of a command was written.
+#[derive(Debug, Clone)]
+enum AllowSource {
+    /// The root project's dependency lines. `listed` has every line, by
+    /// [`name_key`], allowed or not.
+    Project { listed: BTreeMap<String, Listed> },
+    /// The user's `hooks.run`, as written.
+    Config { names: Vec<String> },
+}
+
+impl Default for AllowSource {
+    fn default() -> Self {
+        AllowSource::Config { names: Vec::new() }
+    }
+}
+
+/// A dependency line: the name as it is written, and its table.
+#[derive(Debug, Clone)]
+struct Listed {
+    name: String,
+    table: String,
+}
+
+/// A package whose install hooks an install did not run on a LabVIEW
+/// installation: what [`HookAllow::warnings`] turns into events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skipped {
+    pub package: String,
+    pub hooks: Vec<HookKind>,
+    pub reason: SkipReason,
+    pub run_now: bool,
 }
 
 /// What the install is, as far as hooks are concerned.
@@ -50,11 +85,29 @@ impl HookAllow {
     /// so neither widens the other. Pass only the project the command was run
     /// in, never one a dependency carries.
     pub fn for_command(config: &Config, project: Option<&Project>) -> HookAllow {
-        let names = match project {
-            Some(p) => p.hooks_allowed.iter().map(|n| name_key(n)).collect(),
-            None => config.hooks_run.iter().map(|n| name_key(n)).collect(),
-        };
-        HookAllow { names }
+        match project {
+            Some(p) => {
+                let mut listed = BTreeMap::new();
+                for (table, lines) in p.tables() {
+                    for (name, _) in lines {
+                        listed.entry(name_key(name)).or_insert_with(|| Listed {
+                            name: name.clone(),
+                            table: table.key(),
+                        });
+                    }
+                }
+                HookAllow {
+                    names: p.hooks_allowed.iter().map(|n| name_key(n)).collect(),
+                    source: AllowSource::Project { listed },
+                }
+            }
+            None => HookAllow {
+                names: config.hooks_run.iter().map(|n| name_key(n)).collect(),
+                source: AllowSource::Config {
+                    names: config.hooks_run.clone(),
+                },
+            },
+        }
     }
 
     /// Whether the install hooks of `name` run, in the order that decides it: a
@@ -68,6 +121,73 @@ impl HookAllow {
             _ if self.names.contains(&name_key(name)) => Verdict::Run,
             _ => Verdict::Skip(SkipReason::NotAllowed),
         }
+    }
+
+    /// What to edit so a project allows `name`: the key on its own line, or a
+    /// line of its own when none lists it (a transitive dependency). Without a
+    /// project, the config line for that one name.
+    pub fn line_for(&self, name: &str) -> AllowLine {
+        match &self.source {
+            AllowSource::Project { listed } => match listed.get(&name_key(name)) {
+                Some(line) => AllowLine::AddKey {
+                    name: line.name.clone(),
+                    table: line.table.clone(),
+                },
+                None => AllowLine::AddLine {
+                    name: name.to_string(),
+                },
+            },
+            AllowSource::Config { .. } => self.config_line(&[name.to_string()]),
+        }
+    }
+
+    /// The `hooks.run` that allows every name in `skipped` and keeps the names
+    /// allowed now: `config set` replaces the list.
+    pub fn config_line(&self, skipped: &[String]) -> AllowLine {
+        let existing = match &self.source {
+            AllowSource::Config { names } => names.as_slice(),
+            AllowSource::Project { .. } => &[],
+        };
+        AllowLine::ConfigSet {
+            names: existing.iter().chain(skipped).cloned().collect(),
+            skipped: skipped.len(),
+        }
+    }
+
+    /// The warning events for what an install skipped, in the order it
+    /// skipped it. Without a project, one config line gathers every package
+    /// that was not allowed, and goes on the last of them, so the user pastes
+    /// it once.
+    pub fn warnings(&self, dry_run: bool, skipped: Vec<Skipped>) -> Vec<Event> {
+        let not_allowed = |s: &Skipped| s.reason == SkipReason::NotAllowed;
+        let names: Vec<String> = (skipped.iter().filter(|s| not_allowed(s)))
+            .map(|s| s.package.clone())
+            .collect();
+        let last = skipped.iter().rposition(not_allowed);
+        skipped
+            .into_iter()
+            .enumerate()
+            .map(|(at, s)| {
+                let allow = match (s.reason, &self.source) {
+                    (SkipReason::Headless, _) => Some(AllowLine::PassHooks),
+                    (SkipReason::NotAllowed, AllowSource::Project { .. }) => {
+                        Some(self.line_for(&s.package))
+                    }
+                    (SkipReason::NotAllowed, AllowSource::Config { .. }) => {
+                        (Some(at) == last).then(|| self.config_line(&names))
+                    }
+                    _ => None,
+                };
+                Event::HooksSkipped {
+                    package: s.package,
+                    hooks: s.hooks,
+                    reason: s.reason,
+                    run_now: s.run_now,
+                    dry_run,
+                    allow,
+                }
+            })
+            .collect()
     }
 }
 
@@ -218,6 +338,152 @@ mod tests {
             Verdict::Skip(SkipReason::NotAllowed)
         );
     }
+
+    fn add_key(name: &str, table: &str) -> AllowLine {
+        AllowLine::AddKey {
+            name: name.into(),
+            table: table.into(),
+        }
+    }
+
+    #[test]
+    fn a_listed_line_is_told_to_add_the_key_in_its_own_table_under_the_name_it_is_written() {
+        let root = crate::project::parse(
+            "[project]\nlabview = \">=2024\"\n\n[dependencies]\nPilot_A = \"*\"\n\n\
+             [dev-dependencies]\npilot_b = \"*\"\n\n[dependency-groups.ci]\npilot_c = \"*\"\n",
+        )
+        .unwrap();
+        let allow = HookAllow::for_command(&config(&[]), Some(&root));
+        assert_eq!(
+            allow.line_for("pilot_a"),
+            add_key("Pilot_A", "dependencies")
+        );
+        assert_eq!(
+            allow.line_for("pilot_b"),
+            add_key("pilot_b", "dev-dependencies")
+        );
+        assert_eq!(
+            allow.line_for("pilot_c"),
+            add_key("pilot_c", "dependency-groups.ci")
+        );
+    }
+
+    #[test]
+    fn a_dependency_no_line_lists_is_offered_a_line_of_its_own_under_its_package_name() {
+        let root = project("beta = \"*\"\n");
+        let allow = HookAllow::for_command(&config(&[]), Some(&root));
+        assert_eq!(
+            allow.line_for("hooked"),
+            AllowLine::AddLine {
+                name: "hooked".into()
+            }
+        );
+    }
+
+    #[test]
+    fn the_config_line_keeps_the_allowed_names_and_adds_the_skipped_ones_last() {
+        let allow = HookAllow::for_command(&config(&["Other", "pilot_z"]), None);
+        assert_eq!(
+            allow.config_line(&["a".into(), "b".into()]),
+            AllowLine::ConfigSet {
+                names: ["Other", "pilot_z", "a", "b"].map(String::from).to_vec(),
+                skipped: 2,
+            }
+        );
+        assert_eq!(
+            allow.line_for("a"),
+            AllowLine::ConfigSet {
+                names: ["Other", "pilot_z", "a"].map(String::from).to_vec(),
+                skipped: 1,
+            }
+        );
+    }
+
+    fn skipped(package: &str, reason: SkipReason) -> Skipped {
+        Skipped {
+            package: package.into(),
+            hooks: vec![HookKind::PostInstall],
+            reason,
+            run_now: reason != SkipReason::Headless,
+        }
+    }
+
+    /// The allow line of every warning, in order.
+    fn allows(events: &[Event]) -> Vec<Option<AllowLine>> {
+        events
+            .iter()
+            .map(|e| match e {
+                Event::HooksSkipped { allow, .. } => allow.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn without_a_project_one_config_line_goes_on_the_last_package_that_was_not_allowed() {
+        let allow = HookAllow::for_command(&config(&["other"]), None);
+        let events = allow.warnings(
+            false,
+            vec![
+                skipped("a_hooked", SkipReason::NotAllowed),
+                skipped("old", SkipReason::AlreadyInstalled),
+                skipped("b_hooked", SkipReason::NotAllowed),
+                skipped("later", SkipReason::AlreadyInstalled),
+            ],
+        );
+        assert_eq!(
+            allows(&events),
+            [
+                None,
+                None,
+                Some(AllowLine::ConfigSet {
+                    names: ["other", "a_hooked", "b_hooked"].map(String::from).to_vec(),
+                    skipped: 2,
+                }),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn in_a_project_each_package_has_its_own_line_and_headless_is_told_to_pass_hooks() {
+        let root = project("a_hooked = \"*\"\n");
+        let allow = HookAllow::for_command(&config(&[]), Some(&root));
+        let events = allow.warnings(
+            false,
+            vec![
+                skipped("a_hooked", SkipReason::NotAllowed),
+                skipped("b_hooked", SkipReason::NotAllowed),
+                skipped("c_hooked", SkipReason::Headless),
+            ],
+        );
+        assert_eq!(
+            allows(&events),
+            [
+                Some(add_key("a_hooked", "dependencies")),
+                Some(AllowLine::AddLine {
+                    name: "b_hooked".into()
+                }),
+                Some(AllowLine::PassHooks),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_warning_carries_what_the_install_skipped_and_whether_it_was_a_dry_run() {
+        let events = HookAllow::default().warnings(true, vec![skipped("a", SkipReason::Headless)]);
+        assert_eq!(
+            events,
+            [Event::HooksSkipped {
+                package: "a".into(),
+                hooks: vec![HookKind::PostInstall],
+                reason: SkipReason::Headless,
+                run_now: false,
+                dry_run: true,
+                allow: Some(AllowLine::PassHooks),
+            }]
+        );
+    }
 }
 
 /// The commands, run against a LabVIEW installation that is not there: it has
@@ -225,7 +491,7 @@ mod tests {
 /// it (`HookStarting`). The real run is the `@labview` scenarios'.
 #[cfg(test)]
 mod installation {
-    use crate::events::{Event, EventSink, HookKind, Phase, SkipReason};
+    use crate::events::{AllowLine, Event, EventSink, HookKind, Phase, SkipReason};
     use crate::install;
     use crate::manifest_edit::DependencyTable;
     use crate::ops::add_remove::add;
@@ -233,7 +499,7 @@ mod installation {
     use crate::ops::install::{InstallOptions, install as install_package};
     use crate::ops::sync::{SyncOptions, sync};
     use crate::ops::testing::{
-        FakeInstallation, Recorded, env_on, scratch_dir, venv_in, vip_declaring,
+        FakeInstallation, Recorded, env_on, scratch_dir, venv_in, vip_declaring, vip_in,
     };
     use std::path::PathBuf;
 
@@ -352,6 +618,17 @@ mod installation {
         (package.to_string(), HookKind::PostInstall)
     }
 
+    /// The packages the install warned about, in order.
+    fn skipped_packages(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::HooksSkipped { package, .. } => Some(package.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn lists_skipped(record: &install::Manifest, hook: &str) -> bool {
         let prefix = format!("{hook}=");
         (record.skipped_hooks.iter()).any(|h| h.starts_with(&prefix))
@@ -407,16 +684,14 @@ mod installation {
         let events = sync_into(&bed, &[], false);
         assert_eq!(started(&events), [post("hooked")]);
         assert!(lists_skipped(&bed.record("other_hooked"), "PostInstall"));
-        // What was started is not reported as not run.
-        let unrun: Vec<&String> = events
-            .iter()
-            .filter_map(|e| match e {
-                Event::HooksNotRun { hooks } => Some(hooks),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        assert_eq!(unrun.len(), 1, "only other_hooked's: {unrun:?}");
+        // What was started is not warned about; what was not, is.
+        assert_eq!(skipped_packages(&events), ["other_hooked"]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::HooksNotRun { .. })),
+            "a LabVIEW installation warns with HooksSkipped: {events:?}"
+        );
     }
 
     #[test]
@@ -545,19 +820,18 @@ mod installation {
     }
 
     #[test]
-    fn headless_without_hooks_skips_even_an_allowed_package_and_keeps_its_note() {
+    fn headless_without_hooks_skips_even_an_allowed_package_and_says_so_per_package() {
         let events = headless_install("headless-allowed", &["hooked"], false);
         assert_eq!(started(&events), []);
         assert!(
-            events.iter().any(|e| matches!(
+            !events.iter().any(|e| matches!(
                 e,
                 Event::PhaseSkipped {
                     phase: Phase::Hooks,
-                    reason: SkipReason::Headless,
-                    skipped: 1,
+                    ..
                 }
             )),
-            "the headless note is unchanged: {events:?}"
+            "the per-package warning replaces the hooks note: {events:?}"
         );
     }
 
@@ -658,5 +932,326 @@ mod installation {
         install_package(&env, Some("hooked"), &opts).unwrap();
         assert_eq!(started(&sink.events()), []);
         assert!(!install::is_installed(&bed.fake.roots(), "hooked"));
+    }
+
+    // ---- the warning ----
+
+    const PRE: &[&str] = &["PreInstall"];
+
+    /// A bed with an empty manifest that names no feed, so a named install
+    /// reads only the packages beside it.
+    fn offline_bed(tag: &str) -> Bed {
+        let bed = Bed::new(tag);
+        bed.manifest("");
+        bed
+    }
+
+    /// Every warning the install told, in order.
+    fn told(events: &[Event]) -> Vec<Event> {
+        let warnings = |e: &&Event| matches!(e, Event::HooksSkipped { .. });
+        events.iter().filter(warnings).cloned().collect()
+    }
+
+    fn warning(
+        package: &str,
+        hooks: &[HookKind],
+        reason: SkipReason,
+        run_now: bool,
+        allow: Option<AllowLine>,
+    ) -> Event {
+        Event::HooksSkipped {
+            package: package.into(),
+            hooks: hooks.to_vec(),
+            reason,
+            run_now,
+            dry_run: false,
+            allow,
+        }
+    }
+
+    fn config_set(names: &[&str], skipped: usize) -> Option<AllowLine> {
+        Some(AllowLine::ConfigSet {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            skipped,
+        })
+    }
+
+    #[test]
+    fn the_skip_warns_after_the_summary_with_the_config_line() {
+        let bed = offline_bed("warn-config");
+        bed.package("hooked", "1.0", "", POST);
+        let events = install_into(&bed, &["other_pkg"], "hooked", false);
+        assert_eq!(
+            told(&events),
+            [warning(
+                "hooked",
+                &[HookKind::PostInstall],
+                SkipReason::NotAllowed,
+                true,
+                config_set(&["other_pkg", "hooked"], 1),
+            )]
+        );
+        let at = |wanted: fn(&Event) -> bool| events.iter().position(wanted).unwrap();
+        assert!(
+            at(|e| matches!(e, Event::InstallDone { .. }))
+                < at(|e| matches!(e, Event::HooksSkipped { .. })),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::HooksNotRun { .. })),
+            "the warning replaces the hooks-not-run line: {events:?}"
+        );
+    }
+
+    #[test]
+    fn two_skipped_packages_share_one_config_line_that_keeps_both() {
+        let bed = offline_bed("warn-two");
+        bed.package("a_hooked", "1.0", "", POST);
+        bed.package("b_hooked", "1.0", "a_hooked>=1.0", POST);
+        let events = install_into(&bed, &["other_pkg"], "b_hooked", false);
+        let post = [HookKind::PostInstall];
+        assert_eq!(
+            told(&events),
+            [
+                warning("a_hooked", &post, SkipReason::NotAllowed, true, None),
+                warning(
+                    "b_hooked",
+                    &post,
+                    SkipReason::NotAllowed,
+                    true,
+                    config_set(&["other_pkg", "a_hooked", "b_hooked"], 2),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_listed_project_line_is_told_to_add_the_key() {
+        let bed = Bed::new("warn-listed");
+        bed.package("hooked", "1.0", "", POST);
+        bed.manifest("hooked = \"*\"\n");
+        let events = sync_into(&bed, &[], false);
+        assert_eq!(
+            told(&events),
+            [warning(
+                "hooked",
+                &[HookKind::PostInstall],
+                SkipReason::NotAllowed,
+                true,
+                Some(AllowLine::AddKey {
+                    name: "hooked".into(),
+                    table: "dependencies".into()
+                }),
+            )]
+        );
+    }
+
+    #[test]
+    fn an_unlisted_transitive_dependency_is_offered_a_version_star_line() {
+        let bed = Bed::new("warn-transitive");
+        bed.package("hooked", "1.0", "", POST);
+        bed.package("beta", "1.0", "hooked>=1.0", &[]);
+        bed.manifest("beta = \"*\"\n");
+        let events = sync_into(&bed, &[], false);
+        assert_eq!(
+            told(&events),
+            [warning(
+                "hooked",
+                &[HookKind::PostInstall],
+                SkipReason::NotAllowed,
+                true,
+                Some(AllowLine::AddLine {
+                    name: "hooked".into()
+                }),
+            )]
+        );
+    }
+
+    #[test]
+    fn headless_skips_an_allowed_package_and_says_the_allowlist_does_not_apply() {
+        let events = headless_install("warn-headless-allowed", &["hooked"], false);
+        assert_eq!(started(&events), []);
+        assert_eq!(
+            told(&events),
+            [warning(
+                "hooked",
+                &[HookKind::PostInstall],
+                SkipReason::Headless,
+                false,
+                Some(AllowLine::PassHooks),
+            )]
+        );
+    }
+
+    #[test]
+    fn headless_and_not_allowed_gets_the_headless_reason() {
+        let events = headless_install("warn-headless", &[], false);
+        assert!(
+            matches!(
+                told(&events).as_slice(),
+                [Event::HooksSkipped {
+                    reason: SkipReason::Headless,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_pre_install_only_package_is_warned_with_no_run_it_now() {
+        let bed = offline_bed("warn-pre-only");
+        bed.package("pre_only", "1.0", "", PRE);
+        let events = install_into(&bed, &[], "pre_only", false);
+        assert_eq!(started(&events), []);
+        assert_eq!(
+            told(&events),
+            [warning(
+                "pre_only",
+                &[HookKind::PreInstall],
+                SkipReason::NotAllowed,
+                false,
+                config_set(&["pre_only"], 1),
+            )]
+        );
+    }
+
+    #[test]
+    fn both_install_hooks_are_named_in_the_order_they_run() {
+        let bed = offline_bed("warn-both");
+        bed.package("hooked", "1.0", "", &["PostInstall", "PreInstall"]);
+        let events = install_into(&bed, &[], "hooked", false);
+        assert!(
+            matches!(
+                told(&events).as_slice(),
+                [Event::HooksSkipped { hooks, .. }]
+                    if hooks == &[HookKind::PreInstall, HookKind::PostInstall]
+            ),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_package_with_only_uninstall_hooks_is_skipped_and_recorded_without_a_warning() {
+        let bed = offline_bed("warn-uninstall-only");
+        bed.package("hooked", "1.0", "", &["PreUninstall"]);
+        let events = install_into(&bed, &[], "hooked", false);
+        assert_eq!(told(&events), []);
+        assert!(lists_skipped(&bed.record("hooked"), "PreUninstall"));
+    }
+
+    #[test]
+    fn a_dry_run_says_what_it_would_skip_without_a_run_it_now_and_writes_nothing() {
+        let bed = offline_bed("warn-dry-run");
+        bed.package("hooked", "1.0", "", POST);
+        let sink = Recorded::default();
+        let env = bed.on_installation(&sink, &[]);
+        let opts = InstallOptions {
+            dry_run: true,
+            ..options(false)
+        };
+        install_package(&env, Some("hooked"), &opts).unwrap();
+        let events = sink.events();
+        assert_eq!(
+            told(&events),
+            [Event::HooksSkipped {
+                package: "hooked".into(),
+                hooks: vec![HookKind::PostInstall],
+                reason: SkipReason::NotAllowed,
+                run_now: false,
+                dry_run: true,
+                allow: config_set(&["hooked"], 1),
+            }]
+        );
+        assert_eq!(started(&events), []);
+        assert!(!install::is_installed(&bed.fake.roots(), "hooked"));
+    }
+
+    #[test]
+    fn allowing_an_installed_package_with_a_skipped_hook_says_to_run_it_and_runs_nothing() {
+        let bed = offline_bed("warn-already");
+        bed.package("hooked", "1.0", "", POST);
+        install_into(&bed, &[], "hooked", false);
+        let again = install_into(&bed, &["hooked"], "hooked", false);
+        assert_eq!(started(&again), []);
+        assert_eq!(
+            told(&again),
+            [warning(
+                "hooked",
+                &[HookKind::PostInstall],
+                SkipReason::AlreadyInstalled,
+                true,
+                None,
+            )]
+        );
+    }
+
+    #[test]
+    fn an_installed_package_that_is_still_not_allowed_is_not_warned_about_again() {
+        let bed = offline_bed("warn-already-still-off");
+        bed.package("hooked", "1.0", "", POST);
+        install_into(&bed, &[], "hooked", false);
+        let again = install_into(&bed, &[], "hooked", false);
+        assert_eq!(told(&again), []);
+    }
+
+    #[test]
+    fn a_failure_after_a_skipped_package_still_warns_about_it() {
+        let bed = offline_bed("warn-then-fail");
+        bed.package("hooked", "1.0", "", POST);
+        vip_in(
+            &bed.root.join("packages"),
+            "broken",
+            "1.0",
+            "hooked>=1.0",
+            &["a.txt"],
+            true,
+        );
+        let sink = Recorded::default();
+        let env = bed.on_installation(&sink, &[]);
+        install_package(&env, Some("broken"), &options(false)).unwrap_err();
+        let events = sink.events();
+        assert_eq!(skipped_packages(&events), ["hooked"]);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::InstallDone { .. })),
+            "the install did not finish: {events:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_is_warned_about_where_the_hooks_started_or_cannot_run() {
+        // Allowed in hooks.run, or forced with --hooks: started, no warning.
+        let bed = offline_bed("quiet-allowed");
+        bed.package("hooked", "1.0", "", POST);
+        assert_eq!(told(&install_into(&bed, &["hooked"], "hooked", false)), []);
+        let bed = offline_bed("quiet-forced");
+        bed.package("hooked", "1.0", "", POST);
+        assert_eq!(told(&install_into(&bed, &[], "hooked", true)), []);
+
+        // A scratch tree, headless or not, has its own notes.
+        for headless in [false, true] {
+            let bed = Bed::new(&format!("quiet-scratch-{headless}"));
+            bed.package("hooked", "1.0", "", POST);
+            let sink = Recorded::default();
+            let mut env = bed.env(&sink, &[]);
+            env.flags.prefix = Some(bed.root.join("dest"));
+            env.headless = headless;
+            install_package(&env, Some("hooked"), &options(false)).unwrap();
+            assert_eq!(told(&sink.events()), [], "headless: {headless}");
+        }
+
+        // A venv keeps its hooks-not-run line.
+        let bed = Bed::new("quiet-venv");
+        bed.package("hooked", "1.0", "", POST);
+        bed.manifest(&format!("hooked = {RUN}\n"));
+        let _venv = venv_in(&bed.root);
+        let sink = Recorded::default();
+        let env = bed.env(&sink, &["hooked"]);
+        sync(&env, &SyncOptions::default()).unwrap();
+        assert_eq!(told(&sink.events()), []);
     }
 }

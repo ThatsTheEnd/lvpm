@@ -60,3 +60,20 @@ Feature: install hooks run only for allowed packages
     When I run "lvpm config get hooks.allow"
     Then the exit code is non-zero
     And the error says "hooks.run"
+
+  # The one scenario that skips a hook on the LabVIEW installation itself. A
+  # fake installation cannot stand in: lvpm refuses to install into a real
+  # one from any other scenario, and detects only real ones. It never starts a
+  # hook, so it needs no VI Server, but it installs the fixture and restores
+  # the installation as the other global scenarios do.
+  @labview @global-labview
+  Scenario: lvpm install of a hooked package exits 0 and warns on stderr
+    Given no project
+    And a LabVIEW 2026 installation
+    And the lvpm test fixture in the local package folder
+    And the LabVIEW installation is free of the lvpm test fixture
+    When I run "lvpm install lvpm_test_fixture --labview-version 2026"
+    Then the exit code is 0
+    And stderr says "lvpm_test_fixture: skipped install hook PostInstall (hooks are off by default"
+    And stdout does not say "skipped install hook"
+    And "lvpm list" shows "PostInstall" as skipped for "lvpm_test_fixture"

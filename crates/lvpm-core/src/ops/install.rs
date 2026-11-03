@@ -7,7 +7,7 @@
 //! [`InstallSession`], and [`install`] runs them in that order.
 
 use super::env::{Destination, OpEnv};
-use super::hook_policy::{HookAllow, HookContext, Verdict};
+use super::hook_policy::{HookAllow, HookContext, Skipped, Verdict};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
@@ -370,19 +370,20 @@ pub fn apply(
         staging::clear_leftover(env, v)?;
     }
     let mut files = 0usize;
-    // How many packages declared a hook that headless kept from running —
-    // decides whether the headless note below is owed. Each package already
-    // said which.
+    // How many packages of a scratch tree declared a hook that headless kept
+    // from running — decides whether the headless note below is owed. Each
+    // package already said which. A LabVIEW installation says it per package,
+    // in `skipped`.
     let mut hooks_headless = 0usize;
+    // The packages whose install hooks did not run, told after the summary.
+    let mut skipped: Vec<Skipped> = Vec::new();
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
-            if let Some(done) = install_one(env, session, planned, opts)? {
+            if let Some(done) = install_one(env, session, planned, opts, &mut skipped)? {
                 files += done.files;
-                hooks_headless += usize::from(
-                    done.hooks_unrun && done.verdict == Verdict::Skip(SkipReason::Headless),
-                );
+                hooks_headless += usize::from(done.headless_hooks);
             }
         }
         Ok(())
@@ -390,7 +391,16 @@ pub fn apply(
     let outcome = each();
     // On the error path too: the LabVIEW closes and the failures are told.
     let resave_failed = session.resaver.finish(env.sink);
-    outcome?;
+    // A later failure must not hide an earlier skip.
+    let warn = |skipped| {
+        for event in opts.hook_allow.warnings(opts.dry_run, skipped) {
+            env.sink.emit(event);
+        }
+    };
+    if let Err(why) = outcome {
+        warn(skipped);
+        return Err(why);
+    }
     if hooks_headless > 0 {
         env.sink.emit(Event::PhaseSkipped {
             phase: Phase::Hooks,
@@ -403,6 +413,7 @@ pub fn apply(
         dry_run: opts.dry_run,
         resave_failed,
     });
+    warn(skipped);
     Ok(Applied {
         files,
         removed: 0,
@@ -414,10 +425,9 @@ pub fn apply(
 struct Installed {
     /// Files it would write; the total [`Applied`] reports.
     files: usize,
-    /// It declared a hook this install did not run.
-    hooks_unrun: bool,
-    /// What the install decided about its install hooks.
-    verdict: Verdict,
+    /// It went to a scratch tree and declared a hook that headless kept from
+    /// running.
+    headless_hooks: bool,
 }
 
 /// One package's archive, open for planning and unpacking.
@@ -435,10 +445,11 @@ fn install_one(
     session: &mut InstallSession,
     planned: &PlannedPackage,
     opts: &InstallOptions,
+    skipped: &mut Vec<Skipped>,
 ) -> Result<Option<Installed>> {
     let entry = &planned.entry;
     let roots = session.roots_for(&entry.name)?;
-    if !settle_installed(env, &roots, entry, opts)? {
+    if !settle_installed(env, session, &roots, entry, opts, skipped)? {
         return Ok(None);
     }
     env.sink.emit(Event::PackageStart {
@@ -495,10 +506,41 @@ fn install_one(
         archive_sha256,
     };
 
-    // A scratch tree has no LabVIEW, so no hook can run there whoever is
-    // allowed (`post_install_hooks` says so): the allowlist is bypassed. Headless
-    // still skips, as it did before the allowlist existed.
-    let verdict = match session.target() {
+    let verdict = hook_verdict(env, session, opts, &entry.name);
+    let files = pkg.plan.writes.len();
+    match opts.dry_run {
+        true => preview(env, session, &pkg)?,
+        false => unpack(env, session, &mut pkg, opts, verdict)?,
+    }
+    report_leftovers(env, &pkg.plan);
+    let headless_hooks = match verdict {
+        // A LabVIEW installation warns per package, once the install is done.
+        Verdict::Skip(reason) if session.target().is_some() => {
+            skipped.extend(skipped_install_hooks(&pkg, reason, opts));
+            false
+        }
+        _ => {
+            report_unrun_hooks(env, session, &pkg, verdict)
+                && verdict == Verdict::Skip(SkipReason::Headless)
+        }
+    };
+    Ok(Some(Installed {
+        files,
+        headless_hooks,
+    }))
+}
+
+/// What the install does about the install hooks of `name`. A scratch tree has
+/// no LabVIEW, so no hook can run there whoever is allowed (`post_install_hooks`
+/// says so): the allowlist is bypassed. Headless still skips, as it did before
+/// the allowlist existed.
+fn hook_verdict(
+    env: &OpEnv,
+    session: &InstallSession,
+    opts: &InstallOptions,
+    name: &str,
+) -> Verdict {
+    match session.target() {
         None if !env.headless || opts.run_hooks => Verdict::Run,
         _ => opts.hook_allow.verdict(
             HookContext {
@@ -506,30 +548,42 @@ fn install_one(
                 headless: env.headless,
                 forced: opts.run_hooks,
             },
-            &entry.name,
+            name,
         ),
-    };
-    let files = pkg.plan.writes.len();
-    match opts.dry_run {
-        true => preview(env, session, &pkg)?,
-        false => unpack(env, session, &mut pkg, opts, verdict)?,
     }
-    report_leftovers(env, &pkg.plan);
-    let hooks_unrun = report_unrun_hooks(env, session, &pkg, verdict);
-    Ok(Some(Installed {
-        files,
-        hooks_unrun,
-        verdict,
-    }))
+}
+
+/// The install hooks `pkg` declares, which a skipped package is warned about.
+/// None when it declares none: an uninstall hook is told at its uninstall.
+fn skipped_install_hooks(
+    pkg: &Unpacking,
+    reason: SkipReason,
+    opts: &InstallOptions,
+) -> Option<Skipped> {
+    let declared = |hook: HookKind| pkg.spec.script_vis.iter().any(|(h, _)| h == hook.name());
+    let hooks: Vec<HookKind> = [HookKind::PreInstall, HookKind::PostInstall]
+        .into_iter()
+        .filter(|h| declared(*h))
+        .collect();
+    (!hooks.is_empty()).then(|| Skipped {
+        package: pkg.entry.name.clone(),
+        run_now: !opts.dry_run
+            && reason == SkipReason::NotAllowed
+            && hooks.contains(&HookKind::PostInstall),
+        hooks,
+        reason,
+    })
 }
 
 /// Decide what an installed version of `entry` means. False: leave the package
 /// alone. True: install it, replacing any installed version ([`remove_old`]).
 fn settle_installed(
     env: &OpEnv,
+    session: &InstallSession,
     roots: &Roots,
     entry: &Entry,
     opts: &InstallOptions,
+    skipped: &mut Vec<Skipped>,
 ) -> Result<bool> {
     if !install::is_installed(roots, &entry.name) {
         return Ok(true);
@@ -539,6 +593,19 @@ fn settle_installed(
     let order = Version::parse(&old.version).cmp(&entry.version);
     match order {
         Equal => {
+            // The allowlist applies from the next install or upgrade: say that
+            // the hook this version skipped can be run now.
+            if session.target().is_some()
+                && old.hook_skipped(HookKind::PostInstall)
+                && hook_verdict(env, session, opts, &entry.name) == Verdict::Run
+            {
+                skipped.push(Skipped {
+                    package: entry.name.clone(),
+                    hooks: vec![HookKind::PostInstall],
+                    reason: SkipReason::AlreadyInstalled,
+                    run_now: true,
+                });
+            }
             env.sink.emit(Event::PackageAlreadyInstalled {
                 name: entry.name.clone(),
                 version: old.version,
@@ -747,7 +814,9 @@ fn report_leftovers(env: &OpEnv, plan: &install::Plan) {
 /// PreInstall has run, PostInstall runs after the relink pass, and the
 /// uninstall hooks are extracted for `lvpm uninstall` to run — nothing to say.
 /// Where the verdict is anything else, no hook runs at all, so every declared
-/// one is reported. Whether there was any.
+/// one is reported, except on a LabVIEW installation, whose skipped install
+/// hooks are warned about by [`Event::HooksSkipped`] once the install is done.
+/// Whether there was any.
 fn report_unrun_hooks(
     env: &OpEnv,
     session: &InstallSession,

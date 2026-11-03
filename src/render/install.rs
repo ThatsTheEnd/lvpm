@@ -4,7 +4,7 @@
 use super::headless;
 use super::hooks::hook_names;
 use super::{Renderer, Stream};
-use lvpm_core::events::{Event, Phase, PlannedFile, SkipReason};
+use lvpm_core::events::{AllowLine, Event, HookKind, Phase, PlannedFile, SkipReason};
 
 /// How many of a package's planned writes a dry run lists before "and N more".
 const PREVIEW_LIMIT: usize = 6;
@@ -185,6 +185,17 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             Stream::Out,
             &format!("      hooks not run: {}", hook_names(hooks)),
         ),
+        Event::HooksSkipped {
+            package,
+            hooks,
+            reason,
+            run_now,
+            dry_run,
+            allow,
+        } => {
+            let text = hooks_skipped(package, hooks, *reason, *run_now, *dry_run, allow.as_ref());
+            r.line(Stream::Err, &super::printable(text))
+        }
         Event::InstallDone {
             files,
             dry_run: true,
@@ -311,6 +322,62 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         ),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
+}
+
+/// The warning for a package whose install hooks were not run: what was
+/// skipped and why, then what to do now, then what to do for good. The lines
+/// the data does not call for are left out.
+fn hooks_skipped(
+    package: &str,
+    hooks: &[HookKind],
+    reason: SkipReason,
+    run_now: bool,
+    dry_run: bool,
+    allow: Option<&AllowLine>,
+) -> String {
+    let kinds = hook_names(hooks.iter().map(|hook| hook.name()));
+    let s = plural(hooks.len(), "", "s");
+    let mut lines = Vec::new();
+    lines.push(match (reason, dry_run) {
+        (SkipReason::AlreadyInstalled, _) => format!(
+            "warning: {package}: install hook{s} {kinds} {} skipped when it was installed",
+            plural(hooks.len(), "was", "were")
+        ),
+        (SkipReason::Headless, _) => format!(
+            "warning: {package}: skipped install hook{s} {kinds} \
+             (LabVIEW runs headless; hooks = \"run\" and hooks.run do not apply)"
+        ),
+        (_, dry_run) => format!(
+            "warning: {package}: {} install hook{s} {kinds} \
+             (hooks are off by default; see docs/labview-integration.md#hooks)",
+            if dry_run { "would skip" } else { "skipped" }
+        ),
+    });
+    if run_now {
+        lines.push(format!("  run it now:     lvpm run-hooks {package}"));
+    } else if reason == SkipReason::NotAllowed && !dry_run {
+        lines.push(
+            "  run it:         uninstall, allow it, then install again \
+             (PreInstall runs only at install)"
+                .to_string(),
+        );
+    }
+    lines.extend(allow.map(|allow| match allow {
+        AllowLine::AddKey { name, table } => format!(
+            "  always run it:  add hooks = \"run\" to the {name} line in [{table}] of lvpm.toml"
+        ),
+        AllowLine::AddLine { name } => format!(
+            "  always run it:  add to [dependencies] in lvpm.toml:  \
+             {name} = {{ version = \"*\", hooks = \"run\" }}"
+        ),
+        AllowLine::ConfigSet { names, skipped } => format!(
+            "  always run {}:  lvpm config set hooks.run {}",
+            plural(*skipped, "it", "them"),
+            names.join(" ")
+        ),
+        AllowLine::PassHooks => "  always run it:  add --hooks to this command".to_string(),
+    }));
+    lines.join("\n")
 }
 
 /// A cause's text on one line, for a warning that must stay one.
@@ -736,6 +803,186 @@ mod tests {
 resave (1/1) alpha ... 1 saved (9s)
 + alpha 1.0 ... 2 files
 "
+        );
+    }
+
+    /// A hooks-skipped event as the install tells it.
+    fn skipped_hooks(
+        package: &str,
+        hooks: &[HookKind],
+        reason: SkipReason,
+        run_now: bool,
+        dry_run: bool,
+        allow: Option<AllowLine>,
+    ) -> Event {
+        Event::HooksSkipped {
+            package: package.into(),
+            hooks: hooks.to_vec(),
+            reason,
+            run_now,
+            dry_run,
+            allow,
+        }
+    }
+
+    const OFF_BY_DEFAULT: &str =
+        "(hooks are off by default; see docs/labview-integration.md#hooks)";
+
+    fn config_set(names: &[&str], skipped: usize) -> Option<AllowLine> {
+        Some(AllowLine::ConfigSet {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            skipped,
+        })
+    }
+
+    /// The rows of the message table in the plan and the spec, word for word.
+    #[test]
+    fn the_hooks_skipped_warning_reads_as_the_message_table_says() {
+        use HookKind::{PostInstall, PreInstall};
+        use SkipReason::{AlreadyInstalled, Headless, NotAllowed};
+        let key = Some(AllowLine::AddKey {
+            name: "pilot_a".into(),
+            table: "dependencies".into(),
+        });
+        let rows: Vec<(&str, Vec<Event>, String)> = vec![
+            (
+                "not allowed, project, listed",
+                vec![skipped_hooks("pilot_a", &[PostInstall], NotAllowed, true, false, key.clone())],
+                format!(
+                    "warning: pilot_a: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_a\n\
+                     \x20 always run it:  add hooks = \"run\" to the pilot_a line in [dependencies] of lvpm.toml\n"
+                ),
+            ),
+            (
+                "not allowed, project, transitive",
+                vec![skipped_hooks(
+                    "pilot_a",
+                    &[PostInstall],
+                    NotAllowed,
+                    true,
+                    false,
+                    Some(AllowLine::AddLine { name: "pilot_a".into() }),
+                )],
+                format!(
+                    "warning: pilot_a: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_a\n\
+                     \x20 always run it:  add to [dependencies] in lvpm.toml:  pilot_a = {{ version = \"*\", hooks = \"run\" }}\n"
+                ),
+            ),
+            (
+                "not allowed, global, one",
+                vec![skipped_hooks(
+                    "pilot_a",
+                    &[PostInstall],
+                    NotAllowed,
+                    true,
+                    false,
+                    config_set(&["pilot_a"], 1),
+                )],
+                format!(
+                    "warning: pilot_a: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_a\n\
+                     \x20 always run it:  lvpm config set hooks.run pilot_a\n"
+                ),
+            ),
+            (
+                "not allowed, global, two",
+                vec![
+                    skipped_hooks("pilot_a", &[PostInstall], NotAllowed, true, false, None),
+                    skipped_hooks(
+                        "pilot_b",
+                        &[PostInstall],
+                        NotAllowed,
+                        true,
+                        false,
+                        config_set(&["other_pkg", "pilot_a", "pilot_b"], 2),
+                    ),
+                ],
+                format!(
+                    "warning: pilot_a: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_a\n\
+                     warning: pilot_b: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_b\n\
+                     \x20 always run them:  lvpm config set hooks.run other_pkg pilot_a pilot_b\n"
+                ),
+            ),
+            (
+                "headless",
+                vec![skipped_hooks(
+                    "pilot_a",
+                    &[PostInstall],
+                    Headless,
+                    false,
+                    false,
+                    Some(AllowLine::PassHooks),
+                )],
+                "warning: pilot_a: skipped install hook PostInstall (LabVIEW runs headless; hooks = \"run\" and hooks.run do not apply)\n\
+                 \x20 always run it:  add --hooks to this command\n"
+                    .to_string(),
+            ),
+            (
+                "two hooks",
+                vec![skipped_hooks(
+                    "pilot_a",
+                    &[PreInstall, PostInstall],
+                    NotAllowed,
+                    true,
+                    false,
+                    key.clone(),
+                )],
+                format!(
+                    "warning: pilot_a: skipped install hooks PreInstall, PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it now:     lvpm run-hooks pilot_a\n\
+                     \x20 always run it:  add hooks = \"run\" to the pilot_a line in [dependencies] of lvpm.toml\n"
+                ),
+            ),
+            (
+                "PreInstall only",
+                vec![skipped_hooks("pilot_a", &[PreInstall], NotAllowed, false, false, key.clone())],
+                format!(
+                    "warning: pilot_a: skipped install hook PreInstall {OFF_BY_DEFAULT}\n\
+                     \x20 run it:         uninstall, allow it, then install again (PreInstall runs only at install)\n\
+                     \x20 always run it:  add hooks = \"run\" to the pilot_a line in [dependencies] of lvpm.toml\n"
+                ),
+            ),
+            (
+                "dry run",
+                vec![skipped_hooks("pilot_a", &[PostInstall], NotAllowed, false, true, key)],
+                format!(
+                    "warning: pilot_a: would skip install hook PostInstall {OFF_BY_DEFAULT}\n\
+                     \x20 always run it:  add hooks = \"run\" to the pilot_a line in [dependencies] of lvpm.toml\n"
+                ),
+            ),
+            (
+                "already installed, now allowed",
+                vec![skipped_hooks("pilot_a", &[PostInstall], AlreadyInstalled, true, false, None)],
+                "warning: pilot_a: install hook PostInstall was skipped when it was installed\n\
+                 \x20 run it now:     lvpm run-hooks pilot_a\n"
+                    .to_string(),
+            ),
+        ];
+        for (case, events, expected) in rows {
+            let (out, err) = text_of(&events);
+            assert_eq!(err, expected, "{case}");
+            assert_eq!(out, "", "{case}: stdout stays clean");
+        }
+    }
+
+    #[test]
+    fn a_control_character_in_a_package_name_cannot_reach_the_terminal_in_the_warning() {
+        let (_, err) = text_of(&[skipped_hooks(
+            "pilot\u{1b}[2J",
+            &[HookKind::PostInstall],
+            SkipReason::NotAllowed,
+            true,
+            false,
+            None,
+        )]);
+        assert!(!err.contains('\u{1b}'), "{err:?}");
+        assert!(
+            err.starts_with("warning: pilot?[2J: skipped install hook"),
+            "{err:?}"
         );
     }
 }

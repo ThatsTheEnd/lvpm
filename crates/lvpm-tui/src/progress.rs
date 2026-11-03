@@ -32,6 +32,7 @@ pub fn reason(reason: SkipReason) -> &'static str {
         SkipReason::Headless => "LabVIEW runs headless",
         SkipReason::Declined => "left out",
         SkipReason::NotAllowed => "not allowed",
+        SkipReason::AlreadyInstalled => "already installed",
     }
 }
 
