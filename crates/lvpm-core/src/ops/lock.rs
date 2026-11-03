@@ -701,9 +701,9 @@ fn wanted_by(constraint: &Constraint) -> String {
 /// A version `previous` already locks keeps the SHA-256 it was locked with, and
 /// only bytes that hash to it count: other bytes under that version are an
 /// error, never a new pin. A source-pinned package keeps it only if `previous`
-/// recorded the source and MD5 this run records for the pinned feed's entry:
-/// the same version listed by another source may be other bytes, which are
-/// then fetched fresh. The source is compared as [`build`] writes it, so
+/// recorded the source this run records for the pinned feed's entry: the
+/// same version listed by another source may be other bytes, which are then
+/// fetched fresh. The source is compared as [`build`] writes it, so
 /// nested `[sources]` folders compare the same way on both sides.
 fn hash_archives(
     env: &OpEnv,
@@ -733,12 +733,8 @@ fn hash_archives(
             total,
         });
         let from_pinned_feed = |locked: &LockedPackage| {
-            let same_md5 = match (&locked.md5, &entry.md5) {
-                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                (a, b) => a == b,
-            };
             !pins.iter().any(|pin| same_name(pin.package, &locked.name))
-                || (locked.source == index::source_of(&entry.url, feeds) && same_md5)
+                || locked.source == index::source_of(&entry.url, feeds)
         };
         if let Some(locked) = kept_of(previous, key, entry).filter(|l| from_pinned_feed(l)) {
             let mut search = Search::in_cache(&downloads, locked);
@@ -3180,10 +3176,14 @@ gamma = \"1.0\""
     }
 
     #[test]
-    fn a_pinned_package_whose_locked_md5_is_not_the_feeds_is_fetched_again() {
-        let (kept, listed, _) =
+    fn a_pinned_package_its_feed_relisted_with_another_md5_keeps_its_sha256() {
+        let (kept, listed, decoy) =
             hash_alpha_pinned_to_second("pin-md5", LOCAL_SOURCE, Some("0123abcd"));
-        assert_eq!(kept, listed, "same source, other MD5: the feed's bytes");
+        assert_ne!(
+            kept, listed,
+            "other bytes under a locked version are never a new pin"
+        );
+        assert_eq!(kept, decoy);
     }
 
     #[test]

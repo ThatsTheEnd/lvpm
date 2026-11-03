@@ -750,6 +750,15 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
         let Some(rel) = kv.get("Package.URL") else {
             return;
         };
+        // A `..` would leave the feed's folder while `source_of` still names this feed.
+        if rel
+            .to_ascii_lowercase()
+            .replace("%2e", ".")
+            .split(['/', '\\'])
+            .any(|segment| segment == "..")
+        {
+            return;
+        }
         out.push(Entry {
             name,
             version,
@@ -1342,6 +1351,18 @@ Package.Display Name=A Thing
         assert_eq!(e.requires.len(), 2);
         assert_eq!(e.requires[0].name, "oglib_error");
         assert_eq!(e.requires[0].min.as_ref().unwrap().raw, "4.2.0.23");
+    }
+
+    #[test]
+    fn a_feed_entry_whose_url_leaves_the_feeds_folder_is_dropped() {
+        let feed = "[Package up-1.0]\nPackage.URL=team/../x.vip\n\n\
+                    [Package encoded-1.0]\nPackage.URL=team/%2E%2e/x.vip\n\n\
+                    [Package slash-1.0]\nPackage.URL=team\\..\\x.vip\n\n\
+                    [Package kept-1.0]\nPackage.URL=team/x..y.vip\n";
+        let mut out = Vec::new();
+        parse_into(feed, "http://example.test/", &mut out);
+        let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["kept"]);
     }
 
     #[test]
