@@ -21,7 +21,7 @@ use crate::manifest_edit::{self, DependencyTable};
 use crate::paths;
 use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
 use crate::released;
-use crate::solve::{self, AllHeldBack, Conflict, Fact, IGNORED, Resolution, SolveError};
+use crate::solve::{self, AllHeldBack, Conflict, Fact, Resolution, SolveError};
 use crate::verify::Attestation;
 use crate::version::Version;
 use anyhow::Context;
@@ -420,7 +420,7 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let hashes = hash_archives(env, index, &resolution, previous)?;
+    let hashes = hash_archives(env, index, &resolution, previous, &source_pins(project)?)?;
     let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let feeds = index::feeds(&project.resolved_sources()?, project.default_sources);
     let lock = build(
@@ -537,7 +537,7 @@ fn resolve(
     moving: &Moving,
     gate: f64,
 ) -> Result<Resolution, LockError> {
-    let source_pins = source_pins(project);
+    let source_pins = source_pins(project)?;
     check_listed(&source_pins, index)?;
     let constraints: Vec<_> = project
         .tables()
@@ -583,21 +583,18 @@ struct SourcePin<'a> {
     feed: String,
 }
 
-impl SourcePin<'_> {
-    /// The source as a failure names it.
-    fn label(&self) -> String {
-        format!("\"{}\" ({})", self.source, self.feed)
-    }
-}
-
-/// The source pins of `project`. A pin naming no `[sources]` entry is left
-/// out: the manifest reader already refuses one.
-fn source_pins(project: &Project) -> Vec<SourcePin<'_>> {
-    let named = |source: &str| project.sources.iter().find(|(name, _)| name == source);
-    (project.index.iter())
-        .filter_map(|(package, source)| {
-            let (_, folder) = named(source)?;
-            Some(SourcePin {
+/// The source pins of `project`. A pin naming no `[sources]` entry is an
+/// error, not a pin left out: the manifest reader already refuses one, and
+/// ignoring it would let the package come from any source.
+fn source_pins(project: &Project) -> Result<Vec<SourcePin<'_>>, LockError> {
+    (project.source_pins.iter())
+        .map(|(package, source)| {
+            let (_, folder) = (project.sources.iter())
+                .find(|(name, _)| name == source)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{package}: index = {source:?} is not a [sources] name")
+                })?;
+            Ok(SourcePin {
                 package,
                 source,
                 feed: index::feed_url(folder),
@@ -615,24 +612,27 @@ fn check_listed(pins: &[SourcePin], index: &Index) -> Result<(), LockError> {
     else {
         return Ok(());
     };
-    Err(LockError::Other(anyhow::anyhow!(
-        "{package} is pinned to {label}, which does not list it; {IGNORED}. Fix or remove the index on {package}",
-        package = pin.package,
-        label = pin.label(),
-    )))
+    Err(LockError::PinnedNotListed {
+        package: pin.package.to_string(),
+        source_name: pin.source.to_string(),
+        feed: pin.feed.clone(),
+    })
 }
 
-/// `conflict` with the source of a pinned package named as its pinned one,
-/// since no other source was asked. A fact that has no source of its own to
-/// name it in (a held-back version, a LabVIEW gate) gets a `SourcePinned` fact.
+/// `conflict` with the pinned source of a pinned package named on the fact
+/// that says no version of it fits. A fact that does not say which source its
+/// versions are from (a held-back version, a LabVIEW gate) gets a
+/// `SourcePinned` fact, once per pin.
 fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
     let pin_of = |package: &str| pins.iter().find(|pin| same_name(pin.package, package));
     let mut noted: Vec<&SourcePin> = Vec::new();
     for fact in &mut conflict.facts {
         match fact {
-            Fact::NoVersion { package, from, .. } => {
+            Fact::NoVersion {
+                package, pinned, ..
+            } => {
                 if let Some(pin) = pin_of(package) {
-                    *from = format!("{}, its pinned source; {IGNORED}", pin.label());
+                    *pinned = Some(pin.source.to_string());
                 }
             }
             Fact::NeedsLabview { package, .. }
@@ -651,7 +651,8 @@ fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
         .facts
         .extend(noted.into_iter().map(|pin| Fact::SourcePinned {
             package: pin.package.to_string(),
-            from: pin.label(),
+            source: pin.source.to_string(),
+            feed: pin.feed.clone(),
         }));
     conflict
 }
@@ -698,12 +699,15 @@ fn wanted_by(constraint: &Constraint) -> String {
 ///
 /// A version `previous` already locks keeps the SHA-256 it was locked with, and
 /// only bytes that hash to it count: other bytes under that version are an
-/// error, never a new pin.
+/// error, never a new pin. A source-pinned package keeps it only if `previous`
+/// took it from the feed it is pinned to now: the same version listed by
+/// another source may be other bytes, which are then fetched fresh.
 fn hash_archives(
     env: &OpEnv,
     index: &Index,
     resolution: &Resolution,
     previous: Option<&Lockfile>,
+    pins: &[SourcePin],
 ) -> Result<HashMap<String, String>, LockError> {
     let total = resolution.packages.len();
     // Nothing to fetch opens nothing: a manifest with no dependencies needs
@@ -724,7 +728,12 @@ fn hash_archives(
             position: position + 1,
             total,
         });
-        if let Some(locked) = kept_of(previous, key, entry) {
+        let from_pinned_feed = |locked: &LockedPackage| {
+            (pins.iter())
+                .find(|pin| same_name(pin.package, &locked.name))
+                .is_none_or(|pin| pin.feed == locked.source)
+        };
+        if let Some(locked) = kept_of(previous, key, entry).filter(|l| from_pinned_feed(l)) {
             let mut search = Search::in_cache(&downloads, locked);
             if !search.found {
                 search.look_in(&downloads, index)?;
@@ -2904,18 +2913,31 @@ caraya = \"*\"
     }
 
     #[test]
-    fn a_pinned_package_its_source_does_not_list_is_named_with_the_source_and_the_way_on() {
+    fn a_pinned_package_its_source_does_not_list_is_named_with_the_source_and_the_feed() {
         let why = resolve_listed(
             "pin-unlisted",
             "Alpha = { version = \"*\", index = \"second\" }",
             &[("gamma", "1.0", SECOND_FEED)],
         )
         .unwrap_err();
+        let LockError::PinnedNotListed {
+            package,
+            source_name,
+            feed,
+        } = &why
+        else {
+            panic!("expected PinnedNotListed, got {why:?}");
+        };
+        assert_eq!(
+            (package.as_str(), source_name.as_str()),
+            ("Alpha", "second")
+        );
+        assert_eq!(feed, SECOND_FEED);
         assert_eq!(
             why.to_string(),
             format!(
                 "Alpha is pinned to \"second\" ({SECOND_FEED}), which does not list it; \
-                 other sources are ignored for a pinned package. Fix or remove the index on Alpha"
+                 other sources are ignored for a pinned package"
             )
         );
     }
@@ -3063,5 +3085,122 @@ gamma = \"1.0\""
         )
         .unwrap();
         assert_eq!(resolution.packages["alpha"].version, Version::parse("1.0"));
+    }
+
+    #[test]
+    fn a_source_pin_naming_no_source_is_an_error_not_a_pin_left_out() {
+        let text = with_sources("alpha = \"*\"");
+        let mut project = manifest(&text);
+        project
+            .source_pins
+            .insert("alpha".to_string(), "nope".to_string());
+        let why = source_pins(&project).err().unwrap();
+        assert_eq!(
+            why.to_string(),
+            "alpha: index = \"nope\" is not a [sources] name"
+        );
+    }
+
+    /// `alpha` 1.0 as the pinned feed `second` lists it, in a file of its own,
+    /// and `previous` locking another copy of it, from `locked_from`, whose
+    /// bytes the cache holds. The SHA-256 the lock keeps for it, and the
+    /// SHA-256 of each copy: (kept, the pinned feed's, the other one's).
+    fn hash_alpha_pinned_to_second(tag: &str, locked_from: &str) -> (String, String, String) {
+        let text = with_sources(ALPHA_PINNED);
+        let dir = ProjectDir::new(tag, &text, &[]);
+        let (decoy, listed) = (dir.root.join("decoy.vip"), dir.root.join("listed.vip"));
+        write_vip(&decoy, ("alpha", "1.0", "20.0", ""));
+        write_vip(&listed, ("alpha", "1.0", "21.0", ""));
+        let (decoy_bytes, listed_bytes) = (
+            std::fs::read(&decoy).unwrap(),
+            std::fs::read(&listed).unwrap(),
+        );
+        let sink = Recorder::default();
+        let env = dir.env(&sink);
+        let decoy_sha = Downloads::open(&env).unwrap().keep(&decoy_bytes).unwrap();
+        let previous = Lockfile {
+            packages: vec![LockedPackage {
+                sha256: decoy_sha.clone(),
+                source: locked_from.to_string(),
+                ..lock_of(&[("alpha", "1.0")]).packages.remove(0)
+            }],
+            ..lock_of(&[])
+        };
+        let pinned = Entry {
+            source: SECOND_FEED.to_string(),
+            ..entry("alpha", "1.0", &[], listed.to_str().unwrap())
+        };
+        let resolution = resolution(vec![pinned], Vec::new());
+        let project = manifest(&text);
+        let kept = hash_archives(
+            &env,
+            &Index {
+                entries: Vec::new(),
+            },
+            &resolution,
+            Some(&previous),
+            &source_pins(&project).unwrap(),
+        )
+        .unwrap()
+        .remove("alpha")
+        .unwrap();
+        (kept, sha256_hex(&listed_bytes), decoy_sha)
+    }
+
+    #[test]
+    fn a_package_locked_from_another_feed_is_fetched_again_once_pinned_to_this_one() {
+        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-decoy", FIRST_FEED);
+        assert_ne!(listed, decoy);
+        assert_eq!(
+            kept, listed,
+            "the pinned feed's bytes, not the cached decoy"
+        );
+    }
+
+    #[test]
+    fn a_package_locked_from_the_feed_it_is_pinned_to_keeps_its_sha256() {
+        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-kept", SECOND_FEED);
+        assert_ne!(kept, listed);
+        assert_eq!(kept, decoy);
+    }
+
+    #[test]
+    fn a_pinned_failure_carries_the_feed_and_the_source_name_as_data() {
+        let conflict = |entries: Vec<Entry>| {
+            let why = resolve_entries("pin-typed", &with_sources(ALPHA_PINNED), entries);
+            let Err(LockError::Conflict(conflict)) = why else {
+                panic!("expected a conflict");
+            };
+            conflict
+        };
+        let no_fit = conflict(vec![Entry {
+            lv_min: Some(26.0),
+            ..alpha("2.0")
+        }]);
+        assert!(
+            no_fit.facts.contains(&Fact::SourcePinned {
+                package: "alpha".into(),
+                source: "second".into(),
+                feed: SECOND_FEED.into(),
+            }),
+            "{:?}",
+            no_fit.facts
+        );
+        let text = with_sources("alpha = { version = \">=2.0\", index = \"second\" }");
+        let Err(LockError::Conflict(no_version)) =
+            resolve_entries("pin-typed-2", &text, vec![alpha("1.0")])
+        else {
+            panic!("expected a conflict");
+        };
+        assert!(
+            no_version.facts.contains(&Fact::NoVersion {
+                package: "alpha".into(),
+                wanted: ">= 2.0".into(),
+                from: SECOND_FEED.into(),
+                pinned: Some("second".into()),
+            }),
+            "{:?}",
+            no_version.facts
+        );
     }
 }

@@ -130,13 +130,13 @@ pub fn create_file(path: &Path, text: &str) -> std::io::Result<()> {
 /// entry that is a table, `{ github = "o/r", version = "1.0" }`, changes only
 /// its `version`, and keeps an `index` it has.
 pub fn set(text: &str, table: &DependencyTable, name: &str, constraint: &str) -> Result<String> {
-    set_pinned(text, table, name, constraint, None)
+    set_source_pinned(text, table, name, constraint, None)
 }
 
 /// [`set`], and with a `source_pin` the entry is also `index = "<source_pin>"`:
 /// a short line becomes `{ version = "..", index = ".." }`, a table line gets
 /// the key or has its own replaced. `None` leaves any `index` as it is.
-pub fn set_pinned(
+pub fn set_source_pinned(
     text: &str,
     table: &DependencyTable,
     name: &str,
@@ -197,18 +197,18 @@ fn set_entry(entry: &mut Item, constraint: &str, source_pin: Option<&str>) -> bo
         *entry = Item::Value(new);
         return true;
     };
-    let keys = fields.len();
+    let key_count_before = fields.len();
     // Both keys are set, so no `||`: the first change must not skip the second.
-    let version = set_key(fields, "version", constraint);
-    let pinned = source_pin.is_some_and(|source| set_key(fields, "index", source));
-    if fields.len() > keys {
+    let version_changed = set_key(fields, "version", constraint);
+    let index_changed = source_pin.is_some_and(|source| set_key(fields, "index", source));
+    if fields.len() > key_count_before {
         // The space before `}` was the old last value's; the new last value has its own.
         let old_last = entry.as_inline_table_mut().zip(last_key);
         if let Some(value) = old_last.and_then(|(fields, key)| fields.get_mut(&key)) {
             value.decor_mut().set_suffix("");
         }
     }
-    version | pinned
+    version_changed | index_changed
 }
 
 /// Gives `fields` the string `value` under `key`; false when it already had it.
@@ -709,7 +709,8 @@ version = \"*\"
 
     #[test]
     fn a_short_line_becomes_a_table_that_holds_the_version_and_the_source_pin() {
-        let after = set_pinned(MANIFEST, &Dependencies, "alpha", ">=2.0", Some("mirror")).unwrap();
+        let after =
+            set_source_pinned(MANIFEST, &Dependencies, "alpha", ">=2.0", Some("mirror")).unwrap();
         assert_eq!(entry_of(&after, "alpha"), pinned(">=2.0", "mirror"));
         assert_eq!(entry_of(&after, "beta"), toml::Value::from(">=1.0"));
     }
@@ -718,7 +719,7 @@ version = \"*\"
     fn a_short_line_keeps_its_comment_when_it_becomes_a_table() {
         let text = "[dependencies]\nalpha = \"1.0\"  # for DQMH\n";
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
             "[dependencies]\nalpha = { version = \"1.0\", index = \"mirror\" }  # for DQMH\n"
         );
     }
@@ -726,7 +727,7 @@ version = \"*\"
     #[test]
     fn a_new_entry_with_a_source_pin_is_a_table_in_each_kind_of_table() {
         let new = |text: &str, table: &DependencyTable| {
-            let after = set_pinned(text, table, "gamma", "*", Some("mirror")).unwrap();
+            let after = set_source_pinned(text, table, "gamma", "*", Some("mirror")).unwrap();
             let parsed: toml::Table = after.parse().unwrap_or_else(|why| panic!("{after}: {why}"));
             let mut value = &parsed[table.path()[0]];
             for step in &table.path()[1..] {
@@ -749,7 +750,7 @@ version = \"*\"
     fn a_table_line_without_an_index_gets_one_and_keeps_its_comment_and_its_other_keys() {
         let text = "[dependencies]\nalpha = { version = \"1.0\" }  # pinned\nbeta = \"*\"\n";
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
             "[dependencies]\nalpha = { version = \"1.0\", index = \"mirror\" }  # pinned\nbeta = \"*\"\n"
         );
     }
@@ -758,11 +759,11 @@ version = \"*\"
     fn a_different_index_is_replaced_and_the_same_one_is_left_alone() {
         let text = "[dependencies]\nalpha = { index = 'first',   version = \"1.0\" }  # x\n";
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", "1.0", Some("second")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("second")).unwrap(),
             "[dependencies]\nalpha = { index = \"second\",   version = \"1.0\" }  # x\n"
         );
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", "1.0", Some("first")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("first")).unwrap(),
             text
         );
     }
@@ -771,7 +772,7 @@ version = \"*\"
     fn a_new_version_and_a_new_index_are_both_written() {
         let text = "[dependencies]\nalpha = { version = \"1.0\", index = \"first\" }\n";
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", ">=2.0", Some("second")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", ">=2.0", Some("second")).unwrap(),
             "[dependencies]\nalpha = { version = \">=2.0\", index = \"second\" }\n"
         );
     }
@@ -790,18 +791,22 @@ version = \"*\"
     fn a_table_written_as_its_own_section_gets_an_index_key() {
         let text = "[dependencies.alpha]\nversion = \"1.0\"  # the version\n";
         assert_eq!(
-            set_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
+            set_source_pinned(text, &Dependencies, "alpha", "1.0", Some("mirror")).unwrap(),
             "[dependencies.alpha]\nversion = \"1.0\"  # the version\nindex = \"mirror\"\n"
         );
     }
 
     #[test]
     fn the_same_pinned_edit_twice_is_byte_identical() {
-        let once = set_pinned(MANIFEST, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
-        let twice = set_pinned(&once, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
+        let once =
+            set_source_pinned(MANIFEST, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
+        let twice =
+            set_source_pinned(&once, &Dependencies, "alpha", "2.0", Some("mirror")).unwrap();
         assert_eq!(twice, once);
-        let new_once = set_pinned(MANIFEST, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
-        let new_twice = set_pinned(&new_once, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
+        let new_once =
+            set_source_pinned(MANIFEST, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
+        let new_twice =
+            set_source_pinned(&new_once, &Dependencies, "gamma", "*", Some("mirror")).unwrap();
         assert_eq!(new_twice, new_once);
     }
 

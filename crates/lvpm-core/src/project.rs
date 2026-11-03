@@ -199,7 +199,7 @@ pub struct Project {
     /// The `index = "<source>"` of every dependency that has one, in any table,
     /// by the name the line is written under: the `[sources]` name that
     /// package comes from and from no other.
-    pub index: BTreeMap<String, String>,
+    pub source_pins: BTreeMap<String, String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
     /// `[distribution]`, as written: `lvpm build` reads it through
@@ -223,7 +223,7 @@ impl Default for Project {
             dev_dependencies: Vec::new(),
             groups: Vec::new(),
             github: BTreeMap::new(),
-            index: BTreeMap::new(),
+            source_pins: BTreeMap::new(),
             nipm: Vec::new(),
             distribution: None,
             policy: Policy::default(),
@@ -241,6 +241,12 @@ impl Project {
             }
         }
         Ok(self.sources.iter().map(|(_, s)| s.clone()).collect())
+    }
+
+    /// The `[sources]` name `name` is pinned to, in any table, whatever the
+    /// case either is written in.
+    pub fn source_pin_of(&self, name: &str) -> Option<&str> {
+        stated_for(&self.source_pins, name).map(String::as_str)
     }
 
     /// Every dependency table, with its lines: `[dependencies]`,
@@ -310,6 +316,11 @@ pub fn read(path: &Path) -> Result<Project> {
     parse(&text).with_context(|| format!("parsing manifest {}", path.display()))
 }
 
+const DEFAULTS: &str = "defaults";
+const MIN_AGE_DAYS: &str = "min-age-days";
+/// The keys of `[sources]` that are settings and never source names.
+const SOURCE_SETTINGS: [&str; 2] = [DEFAULTS, MIN_AGE_DAYS];
+
 pub(crate) fn parse(text: &str) -> Result<Project> {
     let f: File = toml::from_str(text)?;
     let mut p = Project {
@@ -326,17 +337,15 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     };
     for (key, value) in f.sources {
         match (key.as_str(), value) {
-            ("defaults", toml::Value::Boolean(b)) => p.default_sources = b,
+            (DEFAULTS, toml::Value::Boolean(b)) => p.default_sources = b,
             // Before the string arm: `min-age-days = "14"` is not a source.
-            ("min-age-days", value) => {
-                match value.as_integer().and_then(|n| u32::try_from(n).ok()) {
-                    Some(days) => p.min_age_days = days,
-                    None => bail!(
-                        "[sources] min-age-days must be a whole number of days, 0 or more \
+            (MIN_AGE_DAYS, value) => match value.as_integer().and_then(|n| u32::try_from(n).ok()) {
+                Some(days) => p.min_age_days = days,
+                None => bail!(
+                    "[sources] min-age-days must be a whole number of days, 0 or more \
                          (got {value}), for example min-age-days = 14"
-                    ),
-                }
-            }
+                ),
+            },
             (_, toml::Value::String(s)) => p.sources.push((key, s)),
             (k, other) => {
                 bail!(
@@ -351,8 +360,10 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     p.dev_dependencies = parse_dependencies("dev-dependencies", f.dev_dependencies, &mut stated)?;
     p.groups = parse_groups(f.dependency_groups, &mut stated)?;
     check_source_pins(&p.sources, &stated.index)?;
-    p.github = stated.github;
-    p.index = (stated.index.into_iter())
+    p.github = (stated.github.into_iter())
+        .map(|(name, (repo, _))| (name, repo))
+        .collect();
+    p.source_pins = (stated.index.into_iter())
         .map(|(name, (source, _))| (name, source))
         .collect();
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
@@ -474,7 +485,8 @@ fn parse_groups(groups: toml::Table, stated: &mut Stated) -> Result<Vec<(String,
 /// it but not change it.
 #[derive(Default)]
 struct Stated {
-    github: BTreeMap<String, String>,
+    /// Name to its repo and the table that line is in.
+    github: BTreeMap<String, (String, String)>,
     /// Name to the source it is pinned to and the table that line is in.
     index: BTreeMap<String, (String, String)>,
 }
@@ -487,13 +499,19 @@ fn stated_for<'a, V>(stated: &'a BTreeMap<String, V>, name: &str) -> Option<&'a 
 impl Stated {
     /// `name = { github = repo }` in `table`.
     fn state_github(&mut self, table: &str, name: &str, repo: String) -> Result<()> {
+        if let Some((_, pinned_in)) = stated_for(&self.index, name) {
+            bail!(
+                "[{table}] {name}: github and index cannot be used together; {name} has an index in [{pinned_in}], and a github dependency comes only from its repo"
+            );
+        }
         match stated_for(&self.github, name) {
-            Some(other) if !other.eq_ignore_ascii_case(&repo) => bail!(
+            Some((other, _)) if !other.eq_ignore_ascii_case(&repo) => bail!(
                 "[{table}] {name}: github = {repo:?} differs from {other:?} in the other dependency table"
             ),
             Some(_) => {}
             None => {
-                self.github.insert(name.to_string(), repo);
+                self.github
+                    .insert(name.to_string(), (repo, table.to_string()));
             }
         }
         Ok(())
@@ -501,6 +519,11 @@ impl Stated {
 
     /// `name = { index = source }` in `table`.
     fn state_index(&mut self, table: &str, name: &str, source: String) -> Result<()> {
+        if let Some((_, github_in)) = stated_for(&self.github, name) {
+            bail!(
+                "[{table}] {name}: github and index cannot be used together; {name} has github in [{github_in}], and a github dependency comes only from its repo"
+            );
+        }
         match stated_for(&self.index, name) {
             Some((other, other_table)) if *other != source => bail!(
                 "[{table}] {name}: index = {source:?} differs from {other:?} in [{other_table}]"
@@ -547,24 +570,24 @@ fn check_source_pins(
 ) -> Result<()> {
     for (name, (source, table)) in pins {
         // A string `defaults = "<url>"` lands in `sources`; it is still a setting.
-        let is_setting = matches!(source.as_str(), "defaults" | "min-age-days");
+        let is_setting = SOURCE_SETTINGS.contains(&source.as_str());
         if !is_setting && sources.iter().any(|(known, _)| known == source) {
             continue;
         }
-        let known = match sources {
-            [] => "lists no index".to_string(),
-            _ => format!(
-                "has {}",
-                sources
-                    .iter()
-                    .map(|(n, _)| n.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+        let listed: Vec<&str> = (sources.iter())
+            .map(|(known, _)| known.as_str())
+            .filter(|known| !SOURCE_SETTINGS.contains(known))
+            .collect();
+        let known = match listed.is_empty() {
+            true => "lists no index".to_string(),
+            false => format!("has {}", listed.join(", ")),
         };
-        let setting = match source.as_str() {
-            "defaults" | "min-age-days" => "; defaults and min-age-days are settings, not sources",
-            _ => "",
+        let setting = match is_setting {
+            true => format!(
+                "; {} are settings, not sources",
+                SOURCE_SETTINGS.join(" and ")
+            ),
+            false => String::new(),
         };
         bail!(
             "[{table}] {name}: index = {source:?} is not a [sources] name; [sources] {known}{setting}"
@@ -1360,7 +1383,7 @@ e = \"*\"
         )
         .unwrap();
         assert_eq!(
-            p.index.into_iter().collect::<Vec<_>>(),
+            p.source_pins.into_iter().collect::<Vec<_>>(),
             [
                 ("Caraya".to_string(), "second".to_string()),
                 ("alpha".to_string(), "first".to_string()),
@@ -1379,7 +1402,7 @@ e = \"*\"
         let plain = with_two_sources("[dependencies]\na = \">=1.2\"\nb = \"1.0\"\n").unwrap();
         assert_eq!(
             Project {
-                index: BTreeMap::new(),
+                source_pins: BTreeMap::new(),
                 ..pinned
             },
             plain
@@ -1392,7 +1415,7 @@ e = \"*\"
             "[dependencies]\na = \"1.0\"\nb = { version = \"*\" }\nc = { github = \"o/r\", version = \"*\" }\n",
         )
         .unwrap();
-        assert!(p.index.is_empty());
+        assert!(p.source_pins.is_empty());
     }
 
     #[test]
@@ -1473,7 +1496,31 @@ alpha = { index = \"defaults\", version = \"*\" }
         )
         .unwrap_err()
         .to_string();
-        assert!(why.ends_with("settings, not sources"), "{why}");
+        assert_eq!(
+            why,
+            "[dependencies] alpha: index = \"defaults\" is not a [sources] name; [sources] lists no index; defaults and min-age-days are settings, not sources"
+        );
+    }
+
+    #[test]
+    fn a_name_with_github_in_one_table_and_an_index_in_another_is_refused_naming_both() {
+        let both = |first: &str, second: &str| {
+            with_two_sources(&format!(
+                "[dependencies]\nalpha = {first}\n\n[dev-dependencies]\nAlpha = {second}\n"
+            ))
+            .unwrap_err()
+            .to_string()
+        };
+        let github = "{ github = \"o/r\", version = \"*\" }";
+        let index = "{ index = \"first\", version = \"*\" }";
+        assert_eq!(
+            both(github, index),
+            "[dev-dependencies] Alpha: github and index cannot be used together; Alpha has github in [dependencies], and a github dependency comes only from its repo"
+        );
+        assert_eq!(
+            both(index, github),
+            "[dev-dependencies] Alpha: github and index cannot be used together; Alpha has an index in [dependencies], and a github dependency comes only from its repo"
+        );
     }
 
     #[test]
@@ -1512,7 +1559,7 @@ alpha = { index = \"defaults\", version = \"*\" }
         );
         let same = both("{ index = \"first\", version = \"1.0\" }").unwrap();
         assert_eq!(
-            same.index.len(),
+            same.source_pins.len(),
             1,
             "one pin, whatever the case of the name"
         );

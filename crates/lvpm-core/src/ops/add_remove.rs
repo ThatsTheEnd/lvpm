@@ -167,13 +167,6 @@ impl Prepared {
             .find(|(entry, _)| project::same_name(entry, name))
     }
 
-    /// The source `name` is pinned to in the manifest, in any table.
-    fn source_of(&self, name: &str) -> Option<&str> {
-        let (_, source) =
-            (self.found.1.index.iter()).find(|(pinned, _)| project::same_name(pinned, name))?;
-        Some(source)
-    }
-
     /// The manifest with `name` in `table` asking for `constraint`, and with a
     /// `source_pin` coming only from that source. An entry that is not given
     /// one keeps the one it has.
@@ -184,11 +177,12 @@ impl Prepared {
         constraint: &str,
         source_pin: Option<&str>,
     ) -> Result<Edit, EditError> {
-        let index = source_pin.or(self.source_of(name)).map(str::to_string);
+        let pinned_to = (source_pin.or(self.found.1.source_pin_of(name))).map(str::to_string);
         let key = self
             .entry(table, name)
             .map_or(name, |(entry, _)| entry.as_str());
-        let text = manifest_edit::set_pinned(&self.text, table, key, constraint, source_pin)?;
+        let text =
+            manifest_edit::set_source_pinned(&self.text, table, key, constraint, source_pin)?;
         let change = match self.entry(table, name) {
             Some((entry, old)) => {
                 let from = constraint_text(old);
@@ -199,13 +193,13 @@ impl Prepared {
                     name: entry.clone(),
                     from,
                     to: constraint.to_string(),
-                    index,
+                    index: pinned_to,
                 })
             }
             None => Some(ManifestEdit::Added {
                 name: name.to_string(),
                 constraint: constraint.to_string(),
-                index,
+                index: pinned_to,
             }),
         };
         Edit::of(text, change, table, self.is_new_group(table))
@@ -599,10 +593,7 @@ mod tests {
                 index: Some("second".into())
             })
         );
-        assert_eq!(
-            edit.project.index.get("gamma").map(String::as_str),
-            Some("second")
-        );
+        assert_eq!(edit.project.source_pin_of("gamma"), Some("second"));
     }
 
     #[test]
@@ -621,7 +612,16 @@ mod tests {
         );
         assert!(moved.text.contains("index = \"second\""), "{}", moved.text);
         let pinned = project.set(&table, "beta", "*", Some("first")).unwrap();
-        assert!(pinned.change.is_some(), "a short line gaining a pin");
+        assert_eq!(
+            pinned.change,
+            Some(ManifestEdit::Updated {
+                name: "beta".into(),
+                from: "*".into(),
+                to: "*".into(),
+                index: Some("first".into())
+            }),
+            "a short line gaining a pin"
+        );
         let same = project.set(&table, "alpha", "1.0", Some("first")).unwrap();
         assert_eq!((same.change, same.text.as_str()), (None, PINNED));
     }
@@ -647,7 +647,17 @@ alpha = \"1.0\"
                 Some("second"),
             )
             .unwrap();
-        assert!(edit.change.is_some(), "{}", edit.text);
+        assert_eq!(
+            edit.change,
+            Some(ManifestEdit::Updated {
+                name: "alpha".into(),
+                from: "1.0".into(),
+                to: "1.0".into(),
+                index: Some("second".into())
+            }),
+            "{}",
+            edit.text
+        );
     }
 
     #[test]

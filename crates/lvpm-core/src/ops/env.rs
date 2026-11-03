@@ -317,7 +317,7 @@ impl<'a> OpEnv<'a> {
         if let Some((_, proj)) = manifest {
             repos.extend(proj.resolved_sources()?);
             defaults = proj.default_sources;
-            owners = index::owners(&proj.sources, &proj.index);
+            owners = index::owners(&proj.sources, &proj.source_pins);
         }
         let sources = index::SourceSet {
             extra: &repos,

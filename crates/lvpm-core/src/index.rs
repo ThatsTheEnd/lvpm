@@ -442,19 +442,22 @@ pub(crate) fn feeds(extra: &[String], defaults: bool) -> Vec<(String, String)> {
     feeds
 }
 
-/// Which feed owns each source-pinned package: `name_key` to the owner's
-/// index URL. `sources` is `[sources]` as (name, folder URL) and `pinned` is
-/// package name to source name. A pin naming no source in `sources` owns
-/// nothing; the manifest reader already refuses one.
-pub(crate) fn owners(
-    sources: &[(String, String)],
-    pinned: &BTreeMap<String, String>,
-) -> HashMap<String, String> {
+/// The feed that owns each source-pinned package: `name_key` to the owner's
+/// index URL, or `None` when the pin names no source (see [`owners`]).
+pub(crate) type Owners = HashMap<String, Option<String>>;
+
+/// The [`Owners`] of `pinned`, which is package name to source name, with
+/// `sources` as (name, folder URL) pairs. A pin naming no source in `sources`
+/// has no owner, so no entry matches it and its name is listed nowhere: it
+/// fails closed. The manifest reader already refuses such a pin.
+pub(crate) fn owners(sources: &[(String, String)], pinned: &BTreeMap<String, String>) -> Owners {
     pinned
         .iter()
-        .filter_map(|(package, source)| {
-            let (_, folder) = sources.iter().find(|(name, _)| name == source)?;
-            Some((crate::project::name_key(package), feed_url(folder)))
+        .map(|(package, source)| {
+            let owner = (sources.iter())
+                .find(|(name, _)| name == source)
+                .map(|(_, folder)| feed_url(folder));
+            (crate::project::name_key(package), owner)
         })
         .collect()
 }
@@ -518,16 +521,19 @@ pub fn load_each(
     cache_dir: &Path,
     refresh: bool,
     sources: &SourceSet,
-    owners: &HashMap<String, String>,
+    owners: &Owners,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
-    let Loaded { index, sources } = read_each(cache_dir, refresh, sources, sink, cancel, on_fail)?;
+    let read = read_each(cache_dir, refresh, sources, sink, cancel, on_fail)?;
     let index = Index {
-        entries: first_source_wins(index.entries, owners),
+        entries: first_source_wins(read.index.entries, owners),
     };
-    Ok(Loaded { index, sources })
+    Ok(Loaded {
+        index,
+        sources: read.sources,
+    })
 }
 
 /// [`load_each`] with every source's entries.
@@ -610,16 +616,18 @@ fn read_each(
 /// owner, so the cache, a local folder and every other feed lose it even when
 /// they list it first. Any other name keeps the entries of the first source
 /// that lists it, and a later source never adds versions (ADR 4).
-fn first_source_wins(entries: Vec<Entry>, owners: &HashMap<String, String>) -> Vec<Entry> {
-    let mut first: HashMap<String, String> = HashMap::new();
+fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
+    let mut first_listed: HashMap<String, String> = HashMap::new();
     entries
         .into_iter()
         .filter(|entry| {
             let key = crate::project::name_key(&entry.name);
             if let Some(owner) = owners.get(&key) {
-                return *owner == entry.source;
+                return owner.as_deref() == Some(entry.source.as_str());
             }
-            let first = first.entry(key).or_insert_with(|| entry.source.clone());
+            let first = first_listed
+                .entry(key)
+                .or_insert_with(|| entry.source.clone());
             *first == entry.source
         })
         .collect()
@@ -1555,16 +1563,21 @@ Package.Display Name=A Thing
         let pinned = BTreeMap::from([
             ("Alpha".to_string(), "first".to_string()),
             ("beta".to_string(), "second".to_string()),
-            // Names no entry of `sources`: it owns nothing.
+            // Names no entry of `sources`: nothing owns it.
             ("gamma".to_string(), "nope".to_string()),
         ]);
-        // What `feeds` calls the same folder is what an entry's `source` holds.
-        let feed = |folder: &str| feeds(&[folder.to_string()], false)[0].0.clone();
         assert_eq!(
             owners(&sources, &pinned),
             HashMap::from([
-                ("alpha".to_string(), feed("http://h/one")),
-                ("beta".to_string(), feed("http://h/two/")),
+                (
+                    "alpha".to_string(),
+                    Some("http://h/one/index.vipr".to_string())
+                ),
+                (
+                    "beta".to_string(),
+                    Some("http://h/two/index.vipr".to_string())
+                ),
+                ("gamma".to_string(), None),
             ])
         );
         assert!(owners(&sources, &BTreeMap::new()).is_empty());
@@ -1586,7 +1599,7 @@ Package.Display Name=A Thing
                 None,
             )
         };
-        let owners = HashMap::from([("alpha".to_string(), "second".to_string())]);
+        let owners = HashMap::from([("alpha".to_string(), Some("second".to_string()))]);
         let kept = |entries: Vec<Entry>| -> Vec<(String, String)> {
             first_source_wins(entries, &owners)
                 .iter()
@@ -1616,6 +1629,37 @@ Package.Display Name=A Thing
             listed("gamma", "1.0", "second"),
         ];
         assert_eq!(kept(entries), [pair("gamma", "second")]);
+    }
+
+    #[test]
+    fn a_source_pin_naming_an_unknown_source_matches_no_entry_and_does_not_fall_back() {
+        let owners = owners(
+            &[("second".to_string(), "http://h/two".to_string())],
+            &BTreeMap::from([("alpha".to_string(), "nope".to_string())]),
+        );
+        let listed = |name: &str, source: &str| Entry {
+            source: source.to_string(),
+            ..local_entry(
+                LocalEntry {
+                    name: name.to_string(),
+                    version: "1.0".to_string(),
+                    display_name: None,
+                    requires: Vec::new(),
+                    lv_min: None,
+                },
+                String::new(),
+                None,
+            )
+        };
+        let kept = first_source_wins(
+            vec![
+                listed("alpha", "http://h/two/index.vipr"),
+                listed("beta", "http://h/two/index.vipr"),
+            ],
+            &owners,
+        );
+        let names: Vec<&str> = kept.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, ["beta"]);
     }
 
     #[test]

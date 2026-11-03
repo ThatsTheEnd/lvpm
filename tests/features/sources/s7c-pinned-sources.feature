@@ -38,6 +38,15 @@ Feature: a dependency can be pinned to one source
     Then the exit code is non-zero
     And the error says "differs from \"first\" in [dependencies]"
 
+  Scenario: one name with github in one table and an index in another fails
+    Given the project depends on "alpha" via github "owner/repo"
+    And the project dev-depends on "alpha" "*" pinned to "first"
+    When I run "lvpm lock"
+    Then the exit code is non-zero
+    And the error says "github and index cannot be used together"
+    And the error says "[dev-dependencies] alpha"
+    And no lvpm.lock is written
+
   Scenario: one name pinned to the same source in two tables is fine
     Given "first" lists "alpha" 1.0
     And the project depends on "alpha" "*" pinned to "first"
@@ -70,13 +79,22 @@ Feature: a dependency can be pinned to one source
     And lvpm.lock takes "alpha" 1.0 from "second"
 
   Scenario: a transitive dependency listed with a pin resolves from that source
-    Given "first" lists "beta" 1.0, "alpha" 2.0
+    Given "first" lists "beta" 1.0 requiring "alpha>=1.0", "alpha" 2.0
     And "second" lists "alpha" 1.0
     And the project depends on "beta" "*"
     And the project depends on "alpha" "*" pinned to "second"
     When I run "lvpm lock"
     Then lvpm.lock takes "beta" 1.0 from "first"
     And lvpm.lock takes "alpha" 1.0 from "second"
+
+  Scenario: a pin does not reach the pinned package's own dependencies
+    Given "first" lists "alpha" 2.0
+    And "second" lists "beta" 1.0 requiring "alpha>=1.0", "alpha" 1.0
+    And the project depends on "beta" "*" pinned to "second"
+    When I run "lvpm lock"
+    Then the command succeeds
+    And lvpm.lock takes "beta" 1.0 from "second"
+    And lvpm.lock takes "alpha" 2.0 from "first"
 
   Scenario: pinned and unpinned lines in one manifest each follow their own rule
     Given "first" lists "alpha" 2.0, "gamma" 1.0

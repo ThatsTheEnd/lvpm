@@ -59,13 +59,18 @@ impl CliWorld {
     fn set_source_pin(&self, name: &str, source: Option<&str>) {
         self.rewrite_manifest(|text| {
             let table = text.find("[dependencies]").expect("a [dependencies] table");
+            // The line must be in `[dependencies]`, not in a table after it.
+            let table_end = text[table + 1..]
+                .find("\n[")
+                .map_or(text.len(), |at| table + 1 + at);
             let start = table
-                + text[table..]
+                + text[table..table_end]
                     .find(&format!("\n{name} = "))
-                    .expect("the dependency line")
+                    .expect("the dependency line in [dependencies]")
                 + 1;
             let end = start + text[start..].find('\n').unwrap_or(text.len() - start);
-            // The constraint is the first quoted text of the line, whichever form it has.
+            // The line's first quoted text is its constraint, in the short form
+            // (`name = "1.0"`) and in the table form with `version` first.
             let constraint = text[start..end].split('"').nth(1).expect("a constraint");
             let line = match source {
                 Some(source) => {

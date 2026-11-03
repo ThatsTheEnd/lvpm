@@ -128,6 +128,18 @@ pub enum LockError {
         needs_year: u32,
         project_year: u32,
     },
+    /// A source-pinned package that its source does not list. No other source
+    /// is asked for it, so there is nothing to lock. `source_name` is the
+    /// `[sources]` name and `feed` its index URL.
+    #[error(
+        "{package} is pinned to \"{source_name}\" ({feed}), which does not list it; {}",
+        crate::solve::OTHER_SOURCES_IGNORED
+    )]
+    PinnedNotListed {
+        package: String,
+        source_name: String,
+        feed: String,
+    },
     /// The `[policy]` refuses these GitHub packages, all of them: one run
     /// reports every one. Nothing was written. `trusted_publishers` is the
     /// policy's list, which an untrusted signer is told it is not on.

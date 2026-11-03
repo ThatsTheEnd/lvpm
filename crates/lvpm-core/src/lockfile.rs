@@ -123,8 +123,8 @@ pub struct Inputs {
     pub github: BTreeMap<String, String>,
     /// The source pin (`index = "<source>"`) of each dependency that has one,
     /// by the name its line is written under.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub index: BTreeMap<String, String>,
+    #[serde(default, rename = "index", skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_pins: BTreeMap<String, String>,
     /// `[policy]`; the default, which is also the absent table, is not written.
     #[serde(default, skip_serializing_if = "Policy::is_default")]
     pub policy: Policy,
@@ -149,7 +149,7 @@ impl Inputs {
                 .map(|(group, entries)| (group.clone(), constraints(entries)))
                 .collect(),
             github: project.github.clone(),
-            index: project.index.clone(),
+            source_pins: project.source_pins.clone(),
             policy: project.policy.clone(),
         }
     }
@@ -280,7 +280,7 @@ impl Lockfile {
         let changed = now.defaults != self.inputs.defaults
             || now.sources != self.inputs.sources
             || now.github != self.inputs.github
-            || now.index != self.inputs.index;
+            || now.source_pins != self.inputs.source_pins;
         changed.then_some(StaleReason::SourcesChanged)
     }
 
@@ -756,7 +756,7 @@ beta = \"o/beta\"
     /// `lock()` as resolved from `MANIFEST` with beta's line pinned to `source`.
     fn lock_with_source_pin(source: &str) -> Lockfile {
         let mut lock = lock();
-        lock.inputs.index = BTreeMap::from([("beta".to_string(), source.to_string())]);
+        lock.inputs.source_pins = BTreeMap::from([("beta".to_string(), source.to_string())]);
         lock
     }
 
@@ -772,10 +772,14 @@ beta = \"o/beta\"
     fn inputs_hold_the_source_pin_of_each_dependency_in_any_table() {
         let project = manifest_with_source_pin(Some("mirror"));
         assert_eq!(
-            Inputs::of(&project).index,
+            Inputs::of(&project).source_pins,
             BTreeMap::from([("beta".to_string(), "mirror".to_string())])
         );
-        assert!(Inputs::of(&manifest_with_source_pin(None)).index.is_empty());
+        assert!(
+            Inputs::of(&manifest_with_source_pin(None))
+                .source_pins
+                .is_empty()
+        );
     }
 
     #[test]
@@ -795,7 +799,7 @@ beta = \"o/beta\"
         let text = lock().to_toml().unwrap();
         assert!(!text.contains("[inputs.index]"), "{text}");
         let before = Lockfile::parse(&text).unwrap();
-        assert!(before.inputs.index.is_empty());
+        assert!(before.inputs.source_pins.is_empty());
         assert_eq!(before.staleness(&manifest_with_source_pin(None)), None);
         assert_eq!(before.to_toml().unwrap(), text, "the bytes are kept");
     }

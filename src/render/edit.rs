@@ -82,12 +82,7 @@ fn edit_line(edit: &ManifestEdit, table: &DependencyTable, dry_run: bool) -> Str
         _ => format!(" {header}"),
     };
     // A package pinned to a source says where it comes from, last.
-    let source = match edit {
-        ManifestEdit::Added { index, .. } | ManifestEdit::Updated { index, .. } => index
-            .as_ref()
-            .map_or_else(String::new, |name| format!(" (from {name})")),
-        ManifestEdit::Removed { .. } => String::new(),
-    };
+    let source_pin = (edit.source_pin()).map_or_else(String::new, |name| format!(" (from {name})"));
     match (edit, dry_run) {
         (
             ManifestEdit::Added {
@@ -95,7 +90,7 @@ fn edit_line(edit: &ManifestEdit, table: &DependencyTable, dry_run: bool) -> Str
             },
             false,
         ) => {
-            format!("lvpm.toml: added {name} = \"{constraint}\" to {header}{source}")
+            format!("lvpm.toml: added {name} = \"{constraint}\" to {header}{source_pin}")
         }
         (
             ManifestEdit::Added {
@@ -103,13 +98,13 @@ fn edit_line(edit: &ManifestEdit, table: &DependencyTable, dry_run: bool) -> Str
             },
             true,
         ) => {
-            format!("lvpm.toml would get: {name} = \"{constraint}\"{table}{source}")
+            format!("lvpm.toml would get: {name} = \"{constraint}\"{table}{source_pin}")
         }
         (ManifestEdit::Updated { name, from, to, .. }, false) => {
-            format!("lvpm.toml was updated: {name} \"{from}\" -> \"{to}\"{table}{source}")
+            format!("lvpm.toml was updated: {name} \"{from}\" -> \"{to}\"{table}{source_pin}")
         }
         (ManifestEdit::Updated { name, from, to, .. }, true) => {
-            format!("lvpm.toml would be updated: {name} \"{from}\" -> \"{to}\"{table}{source}")
+            format!("lvpm.toml would be updated: {name} \"{from}\" -> \"{to}\"{table}{source_pin}")
         }
         (ManifestEdit::Removed { name, constraint }, false) => {
             format!("lvpm.toml: removed {name} = \"{constraint}\"{table}")

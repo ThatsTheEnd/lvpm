@@ -561,6 +561,18 @@ pub enum ManifestEdit {
     },
 }
 
+impl ManifestEdit {
+    /// The `[sources]` name the edited entry is pinned to; a removal has none.
+    pub fn source_pin(&self) -> Option<&str> {
+        match self {
+            ManifestEdit::Added { index, .. } | ManifestEdit::Updated { index, .. } => {
+                index.as_deref()
+            }
+            ManifestEdit::Removed { .. } => None,
+        }
+    }
+}
+
 /// One difference between two locks.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "change", rename_all = "snake_case")]
