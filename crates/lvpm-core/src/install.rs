@@ -74,8 +74,19 @@ pub struct Manifest {
 impl Manifest {
     /// Whether the record lists `hook` among the hooks that did not run.
     pub fn hook_skipped(&self, hook: crate::events::HookKind) -> bool {
+        self.skipped_entry(hook).is_some()
+    }
+
+    /// The `Name=path` entry that lists `hook` as not run, if any.
+    pub fn skipped_entry(&self, hook: crate::events::HookKind) -> Option<&String> {
         let prefix = format!("{}=", hook.name());
-        self.skipped_hooks.iter().any(|h| h.starts_with(&prefix))
+        self.skipped_hooks.iter().find(|h| h.starts_with(&prefix))
+    }
+
+    /// Whether the record lists any hook as not run: the package's install
+    /// hooks did not all run, so its uninstall hooks stay off too.
+    pub fn hooks_skipped(&self) -> bool {
+        !self.skipped_hooks.is_empty()
     }
 }
 

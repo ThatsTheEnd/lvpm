@@ -334,6 +334,7 @@ pub enum Event {
     PostUninstallNotStaged { error: String },
     /// Uninstall hooks the package declares that did not run, as `Name=path`.
     UninstallHooksNotRun {
+        package: String,
         hooks: Vec<String>,
         reason: UnrunReason,
     },
@@ -753,6 +754,10 @@ pub enum UnrunReason {
     InstalledBeforeUninstallHooks,
     /// Hooks act on a LabVIEW installation, and a venv is not one.
     VenvRunsNoHooks,
+    /// The record lists a hook as skipped: an install hook that did not run
+    /// (nothing allowed it, headless, or it failed) leaves the uninstall hooks
+    /// off, until `lvpm run-hooks` runs it.
+    InstallHookSkipped,
 }
 
 /// How a feed answered.

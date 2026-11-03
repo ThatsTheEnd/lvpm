@@ -395,7 +395,7 @@ fn allow_line(allow: &AllowLine) -> Option<String> {
 
 /// Package names come from feeds unvalidated, and the user pastes these lines
 /// into a shell: only a plain name, one that cannot read as a flag, goes in.
-fn pasteable(name: &str) -> bool {
+pub(super) fn pasteable(name: &str) -> bool {
     !name.starts_with('-')
         && !name.is_empty()
         && name

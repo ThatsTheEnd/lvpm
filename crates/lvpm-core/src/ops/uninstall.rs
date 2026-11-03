@@ -130,8 +130,11 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
     let before = install::read_manifest(&roots, package)?;
     // Before the PreUninstall VI runs, not only before the files go.
     install::check_record(&roots, &before)?;
-    // Hooks act on the LabVIEW installation; a venv is not one, so none run there.
-    let hooks = roots.venv().is_none();
+    // Hooks act on the LabVIEW installation; a venv is not one, so none run
+    // there. And a package whose record lists a skipped hook did not run its
+    // install hook, so its uninstall hooks stay off until `run-hooks` runs it.
+    let in_venv = roots.venv().is_some();
+    let hooks = !in_venv && !before.hooks_skipped();
 
     // PreUninstall runs while the package's files are still on disk. Both
     // uninstall hooks are best-effort: a hook needs a running LabVIEW, and a
@@ -205,24 +208,32 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
 
     // Hooks we still do not run, and hooks we could not run here: an install
     // made before uninstall hooks were extracted has nothing on disk to run.
-    let unrun: Vec<String> = m
-        .skipped_hooks
-        .iter()
-        .filter(|h| {
-            let ran_pre = hooks && m.pre_uninstall_vi.is_some() && h.starts_with("PreUninstall=");
-            let ran_post = post.is_some() && h.starts_with("PostUninstall=");
-            !(ran_pre || ran_post)
-                && (h.starts_with("PreUninstall=") || h.starts_with("PostUninstall="))
-        })
-        .cloned()
-        .collect();
+    // A hook the gate held back is named even when the record does not list it
+    // (a failed PostInstall leaves the uninstall hooks pending, not skipped).
+    let reason = match (in_venv, hooks) {
+        (true, _) => UnrunReason::VenvRunsNoHooks,
+        (false, false) => UnrunReason::InstallHookSkipped,
+        (false, true) => UnrunReason::InstalledBeforeUninstallHooks,
+    };
+    let ran = [hooks && m.pre_uninstall_vi.is_some(), post.is_some()];
+    let unrun: Vec<String> = [
+        (HookKind::PreUninstall, &m.pre_uninstall_vi),
+        (HookKind::PostUninstall, &m.post_uninstall_vi),
+    ]
+    .into_iter()
+    .zip(ran)
+    .filter(|(_, ran)| !ran)
+    .filter_map(|((kind, vi), _)| match (m.skipped_entry(kind), vi) {
+        (Some(listed), _) => Some(listed.clone()),
+        (None, Some(vi)) if !hooks => Some(format!("{}={vi}", kind.name())),
+        _ => None,
+    })
+    .collect();
     if !unrun.is_empty() {
         env.sink.emit(Event::UninstallHooksNotRun {
+            package: m.name.clone(),
             hooks: unrun,
-            reason: match hooks {
-                true => UnrunReason::InstalledBeforeUninstallHooks,
-                false => UnrunReason::VenvRunsNoHooks,
-            },
+            reason,
         });
     }
     Ok(removed)
@@ -484,6 +495,134 @@ mod tests {
         );
         assert!(record.exists(), "the record is kept");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Uninstall `hooked` from the installation that is not there, its record
+    /// listing `skipped` as not run and shipping the uninstall hooks named in
+    /// `declares`. Returns the events: a hook "started" is a `HookStarting`.
+    fn uninstall_hooked(tag: &str, skipped: &[&str], declares: &[&str]) -> Vec<Event> {
+        use crate::ops::testing::{FakeInstallation, Recorded, env_on, scratch_dir};
+        let dir = scratch_dir(tag);
+        let fake = FakeInstallation::new(&dir);
+        let hooks = fake.roots().hooks_dir().join("hooked");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let mut manifest = serde_json::json!({
+            "name": "hooked", "version": "1.0", "display_name": null, "installed_at": 0,
+            "target": "fake", "files": [],
+            "skipped_hooks": skipped.iter().map(|h| format!("{h}.vi")).collect::<Vec<_>>(),
+        });
+        for hook in declares {
+            let vi = hooks.join(format!("{hook}.vi"));
+            std::fs::write(&vi, "vi").unwrap();
+            let key = if *hook == "PreUninstall" {
+                "pre_uninstall_vi"
+            } else {
+                "post_uninstall_vi"
+            };
+            manifest[key] = vi.to_string_lossy().replace('\\', "/").into();
+        }
+        let store = fake.roots().store_dir();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("hooked.json"), manifest.to_string()).unwrap();
+
+        let sink = Recorded::default();
+        let mut env = env_on(&sink, &dir);
+        fake.place(&mut env);
+        env.headless = true;
+        env.flags.global = true;
+        env.flags.labview_version = Some("2099".into());
+        uninstall(&env, Some("hooked"), false).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        sink.events()
+    }
+
+    fn started(events: &[Event]) -> Vec<HookKind> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::HookStarting { hook, .. } => Some(*hook),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The hooks the uninstall said it did not run, and why.
+    fn not_run(events: &[Event]) -> Vec<(String, Vec<String>, UnrunReason)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::UninstallHooksNotRun {
+                    package,
+                    hooks,
+                    reason,
+                } => Some((package.clone(), hooks.clone(), *reason)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const BOTH_UNINSTALL: &[&str] = &["PreUninstall", "PostUninstall"];
+
+    fn held_back(events: &[Event]) {
+        assert_eq!(started(events), [], "{events:?}");
+        let said = not_run(events);
+        assert_eq!(said.len(), 1, "{events:?}");
+        let (package, hooks, reason) = &said[0];
+        assert_eq!(package, "hooked");
+        assert_eq!(*reason, UnrunReason::InstallHookSkipped);
+        let names: Vec<&str> = hooks.iter().map(|h| h.split('=').next().unwrap()).collect();
+        assert_eq!(names, BOTH_UNINSTALL, "{hooks:?}");
+    }
+
+    #[test]
+    fn a_package_whose_install_hooks_were_skipped_runs_no_uninstall_hook_and_says_why() {
+        // As a skip records it: every declared hook, uninstall ones included.
+        let skipped = [
+            "PreInstall=a",
+            "PostInstall=b",
+            "PreUninstall=c",
+            "PostUninstall=d",
+        ];
+        held_back(&uninstall_hooked("skip-all", &skipped, BOTH_UNINSTALL));
+    }
+
+    #[test]
+    fn a_failed_post_install_keeps_the_pending_uninstall_hooks_off_and_reports_them() {
+        // A failed PostInstall lists only itself: the uninstall hooks are
+        // pending, not skipped, and are still named in the report.
+        let events = uninstall_hooked("failed-post", &["PostInstall=b"], BOTH_UNINSTALL);
+        held_back(&events);
+    }
+
+    #[test]
+    fn a_headless_record_from_before_s12_listing_every_hook_runs_no_hook() {
+        let skipped = [
+            "PreInstall=a",
+            "PostInstall=b",
+            "PreUninstall=c",
+            "PostUninstall=d",
+        ];
+        let events = uninstall_hooked("headless-old", &skipped, BOTH_UNINSTALL);
+        assert_eq!(started(&events), []);
+    }
+
+    #[test]
+    fn a_package_with_only_uninstall_hooks_that_was_not_allowed_runs_none() {
+        let events = uninstall_hooked("only-uninstall", &["PreUninstall=c"], &["PreUninstall"]);
+        assert_eq!(started(&events), []);
+        let said = not_run(&events);
+        assert_eq!(said.len(), 1, "{events:?}");
+        assert_eq!(said[0].2, UnrunReason::InstallHookSkipped);
+    }
+
+    #[test]
+    fn a_package_that_ran_its_install_hooks_runs_its_uninstall_hooks() {
+        let events = uninstall_hooked("allowed", &[], BOTH_UNINSTALL);
+        assert_eq!(
+            started(&events),
+            [HookKind::PreUninstall, HookKind::PostUninstall]
+        );
+        assert_eq!(not_run(&events), []);
     }
 
     #[test]
