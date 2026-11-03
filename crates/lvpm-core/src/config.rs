@@ -12,10 +12,15 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_VENV_DIR: &str = ".lv-venv";
 
+/// The keys `config set` and `config get` accept, as the errors list them.
+const SUPPORTED_KEYS: &str = "cache, hooks.run, sources.local, venv.dir";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// Where downloaded indexes (and later, packages) are cached.
     pub cache: PathBuf,
+    /// Names of the packages whose install hooks may run, in any project.
+    pub hooks_run: Vec<String>,
     /// Local directories scanned for package files.
     pub local_sources: Vec<PathBuf>,
     /// Project-relative venv directory, unless configured as an absolute path.
@@ -31,8 +36,15 @@ pub fn load() -> Result<Config> {
 #[serde(default)]
 struct FileConfig {
     cache: Option<String>,
+    hooks: HooksConfig,
     sources: SourcesConfig,
     venv: VenvConfig,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct HooksConfig {
+    run: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -55,6 +67,11 @@ fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Co
             None => default_cache(),
         },
     };
+    // An empty value is an empty list, not "unset": it switches the file's list off.
+    let hooks_run = match env_raw(&env, "hooks.run") {
+        Some(v) => split_names(&v),
+        None => file.hooks.run.clone(),
+    };
     let local_sources = match env_value(&env, "sources.local") {
         Some(v) => std::env::split_paths(&v).collect(),
         None => file.sources.local.iter().map(PathBuf::from).collect(),
@@ -64,6 +81,7 @@ fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Co
         .unwrap_or_else(|| DEFAULT_VENV_DIR.to_string());
     Ok(Config {
         cache,
+        hooks_run,
         local_sources,
         venv_dir: PathBuf::from(venv_dir),
     })
@@ -86,6 +104,7 @@ pub fn set(key: &str, values: &[String], cwd: &Path) -> Result<()> {
 fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Result<()> {
     match key {
         "cache" if values.len() == 1 => file.cache = Some(values[0].clone()),
+        "hooks.run" => file.hooks.run = values.iter().flat_map(|v| split_names(v)).collect(),
         "sources.local" => {
             file.sources.local = values
                 .iter()
@@ -99,7 +118,7 @@ fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Res
         "venv.dir" if values.len() == 1 => file.venv.dir = Some(values[0].clone()),
         "cache" => bail!("`config set cache` expects one value"),
         "venv.dir" => bail!("`config set venv.dir` expects one value"),
-        _ => bail!("unknown config key {key:?}; supported keys: cache, sources.local, venv.dir"),
+        _ => bail!("unknown config key {key:?}; supported keys: {SUPPORTED_KEYS}"),
     }
     Ok(())
 }
@@ -107,13 +126,14 @@ fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Res
 pub fn get(cfg: &Config, key: &str) -> Result<Vec<String>> {
     match key {
         "cache" => Ok(vec![cfg.cache.to_string_lossy().into_owned()]),
+        "hooks.run" => Ok(cfg.hooks_run.clone()),
         "sources.local" => Ok(cfg
             .local_sources
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect()),
         "venv.dir" => Ok(vec![cfg.venv_dir.to_string_lossy().into_owned()]),
-        _ => bail!("unknown config key {key:?}; supported keys: cache, sources.local, venv.dir"),
+        _ => bail!("unknown config key {key:?}; supported keys: {SUPPORTED_KEYS}"),
     }
 }
 
@@ -146,11 +166,22 @@ fn config_file() -> PathBuf {
 
 /// `LVPM_CONFIG_<KEY>`, else `lvpm_config_<key>`; empty counts as unset.
 fn env_value(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    env_raw(env, key).filter(|v| !v.is_empty())
+}
+
+/// [`env_value`], but an empty value is kept.
+fn env_raw(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
     let upper = format!("LVPM_CONFIG_{}", key.replace('.', "_").to_uppercase());
     let lower = format!("lvpm_config_{}", key.replace('.', "_").to_lowercase());
-    env(&upper)
-        .or_else(|| env(&lower))
-        .filter(|v| !v.is_empty())
+    env(&upper).or_else(|| env(&lower))
+}
+
+/// Package names separated by commas, whitespace, or both; empty names dropped.
+fn split_names(text: &str) -> Vec<String> {
+    text.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Per-user, not per-target — the feeds are the same for every LabVIEW.
@@ -182,6 +213,7 @@ mod tests {
         let cfg = resolve(&FileConfig::default(), |_| None).unwrap();
         assert_eq!(cfg.cache, default_cache());
         assert!(cfg.local_sources.is_empty());
+        assert!(cfg.hooks_run.is_empty());
         assert_eq!(cfg.venv_dir, PathBuf::from(DEFAULT_VENV_DIR));
     }
 
@@ -210,6 +242,7 @@ mod tests {
     fn file_settings_are_overridden_by_environment_values() {
         let file = FileConfig {
             cache: Some("from-file".into()),
+            hooks: HooksConfig::default(),
             sources: SourcesConfig {
                 local: vec!["packages-a".into()],
             },
@@ -258,6 +291,7 @@ mod tests {
     fn config_serializes_local_sources_as_a_list() {
         let file = FileConfig {
             cache: None,
+            hooks: HooksConfig::default(),
             sources: SourcesConfig {
                 local: vec!["one".into(), "two".into()],
             },
@@ -266,5 +300,76 @@ mod tests {
         let encoded = toml::to_string_pretty(&file).unwrap();
         let decoded: FileConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.sources.local, ["one", "two"]);
+    }
+
+    fn hooks_run(file: &FileConfig, env_value: Option<&str>) -> Vec<String> {
+        let env = |k: &str| {
+            (k == "LVPM_CONFIG_HOOKS_RUN")
+                .then(|| env_value.map(str::to_string))
+                .flatten()
+        };
+        resolve(file, env).unwrap().hooks_run
+    }
+
+    fn file_running(names: &[&str]) -> FileConfig {
+        FileConfig {
+            hooks: HooksConfig {
+                run: names.iter().map(|n| n.to_string()).collect(),
+            },
+            ..FileConfig::default()
+        }
+    }
+
+    #[test]
+    fn hooks_run_is_read_from_the_file() {
+        assert_eq!(hooks_run(&file_running(&["a", "b"]), None), ["a", "b"]);
+        let decoded: FileConfig = toml::from_str("[hooks]\nrun = [\"pilot_a\"]").unwrap();
+        assert_eq!(hooks_run(&decoded, None), ["pilot_a"]);
+    }
+
+    #[test]
+    fn hooks_run_from_the_environment_overrides_the_file() {
+        let file = file_running(&["from_file"]);
+        assert_eq!(hooks_run(&file, Some("from_env")), ["from_env"]);
+        let lower = |k: &str| (k == "lvpm_config_hooks_run").then(|| "lower".to_string());
+        assert_eq!(resolve(&file, lower).unwrap().hooks_run, ["lower"]);
+    }
+
+    #[test]
+    fn hooks_run_names_split_on_commas_and_whitespace_and_drop_empty_ones() {
+        let none = FileConfig::default();
+        assert_eq!(hooks_run(&none, Some("a,,b")), ["a", "b"]);
+        assert_eq!(hooks_run(&none, Some(" a ")), ["a"]);
+        assert_eq!(hooks_run(&none, Some("a b,\tc\n")), ["a", "b", "c"]);
+        assert!(hooks_run(&none, Some(" , ")).is_empty());
+    }
+
+    #[test]
+    fn an_empty_hooks_run_environment_value_is_an_empty_list_that_overrides_the_file() {
+        assert!(hooks_run(&file_running(&["from_file"]), Some("")).is_empty());
+    }
+
+    #[test]
+    fn config_set_hooks_run_replaces_the_list_and_splits_each_value() {
+        let cwd = std::env::temp_dir();
+        let mut file = file_running(&["old"]);
+        let values = ["a,b".to_string(), " c ".to_string()];
+        apply(&mut file, "hooks.run", &values, &cwd).unwrap();
+        assert_eq!(file.hooks.run, ["a", "b", "c"]);
+        apply(&mut file, "hooks.run", &[], &cwd).unwrap();
+        assert!(file.hooks.run.is_empty());
+    }
+
+    #[test]
+    fn config_get_hooks_run_lists_the_names_and_unknown_keys_list_the_supported_ones() {
+        let keys = "supported keys: cache, hooks.run, sources.local, venv.dir";
+        let cfg = resolve(&file_running(&["a", "b"]), |_| None).unwrap();
+        assert_eq!(get(&cfg, "hooks.run").unwrap(), ["a", "b"]);
+        let why = get(&cfg, "hooks.allow").unwrap_err().to_string();
+        assert!(why.ends_with(keys), "{why}");
+        let cwd = std::env::temp_dir();
+        let mut file = FileConfig::default();
+        let why = apply(&mut file, "hooks.allow", &[], &cwd).unwrap_err();
+        assert!(why.to_string().ends_with(keys), "{why}");
     }
 }

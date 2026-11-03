@@ -267,6 +267,7 @@ mod tests {
     fn env_for<'s>(sink: &'s Recorder, dir: &std::path::Path) -> OpEnv<'s> {
         let config = Config {
             cache: dir.join("cache"),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
         };

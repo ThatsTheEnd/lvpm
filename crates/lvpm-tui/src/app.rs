@@ -642,6 +642,7 @@ mod tests {
         let builder = EnvBuilder::new(
             lvpm_core::config::Config {
                 cache: "cache".into(),
+                hooks_run: Vec::new(),
                 local_sources: Vec::new(),
                 venv_dir: ".venv".into(),
             },

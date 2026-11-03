@@ -354,6 +354,7 @@ mod tests {
     fn config() -> Config {
         Config {
             cache: PathBuf::from("cache"),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
         }

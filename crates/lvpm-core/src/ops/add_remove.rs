@@ -926,6 +926,7 @@ alpha = \"1.0\"
         fn env<'a>(&self, sink: &'a dyn EventSink) -> OpEnv<'a> {
             let config = Config {
                 cache: self.root.join("cache"),
+                hooks_run: Vec::new(),
                 local_sources: vec![self.root.join("packages")],
                 venv_dir: PathBuf::from(".lv-venv"),
             };

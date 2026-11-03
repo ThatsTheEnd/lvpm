@@ -105,3 +105,35 @@ async fn accepted_with_github_and_hooks(world: &mut CliWorld, name: String) {
         project.hooks_allowed
     );
 }
+
+#[given(regex = r#"^the user config has hooks\.run "([^"]+)"$"#)]
+async fn user_config_has_hooks_run(world: &mut CliWorld, names: String) {
+    let file = world.sandbox.config_file();
+    std::fs::create_dir_all(file.parent().expect("a folder")).expect("create the config folder");
+    let list: Vec<String> = names.split(',').map(|name| format!("{name:?}")).collect();
+    std::fs::write(&file, format!("[hooks]\nrun = [{}]\n", list.join(", ")))
+        .expect("write the user config");
+}
+
+/// On the spawned command only: the sandbox never touches this process's environment.
+#[given(regex = r#"^LVPM_CONFIG_HOOKS_RUN is "([^"]*)" for the command$"#)]
+async fn hooks_run_env_for_the_command(world: &mut CliWorld, value: String) {
+    world.sandbox.set_child_env("LVPM_CONFIG_HOOKS_RUN", &value);
+}
+
+/// The positive form, `lists "a" and "b"`, is the S8 step in lock.rs.
+#[then(regex = r#"^the output lists "([^"]+)" and not "([^"]+)"$"#)]
+async fn output_lists_and_not(world: &mut CliWorld, listed: String, absent: String) {
+    let stdout = &world.output().stdout;
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(
+        lines.contains(&listed.as_str()),
+        "{listed:?} is not in:
+{stdout}"
+    );
+    assert!(
+        !lines.contains(&absent.as_str()),
+        "{absent:?} is in:
+{stdout}"
+    );
+}

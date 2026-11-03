@@ -1014,6 +1014,7 @@ mod tests {
         fn env<'a>(&self, sink: &'a NullSink) -> OpEnv<'a> {
             let config = Config {
                 cache: self.root.join("cache"),
+                hooks_run: Vec::new(),
                 local_sources: Vec::new(),
                 venv_dir: PathBuf::from(".lv-venv"),
             };

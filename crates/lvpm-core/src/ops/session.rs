@@ -244,6 +244,7 @@ mod tests {
             &NullSink,
             crate::config::Config {
                 cache: cache.clone(),
+                hooks_run: Vec::new(),
                 local_sources: Vec::new(),
                 venv_dir: "venv".into(),
             },
@@ -288,6 +289,7 @@ mod tests {
             &NullSink,
             crate::config::Config {
                 cache: cache.clone(),
+                hooks_run: Vec::new(),
                 local_sources: Vec::new(),
                 venv_dir: "venv".into(),
             },
@@ -334,6 +336,7 @@ mod tests {
         let cache = std::env::temp_dir().join(format!("lvpm-session-fail-{}", std::process::id()));
         let config = crate::config::Config {
             cache: cache.clone(),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: "venv".into(),
         };

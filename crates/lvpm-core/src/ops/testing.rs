@@ -81,6 +81,7 @@ pub(crate) fn scratch_dir(tag: &str) -> PathBuf {
 pub(crate) fn env_on<'a>(sink: &'a dyn EventSink, cwd: &Path) -> OpEnv<'a> {
     let config = Config {
         cache: PathBuf::from("cache"),
+        hooks_run: Vec::new(),
         local_sources: Vec::new(),
         venv_dir: PathBuf::from(".lv-venv"),
     };

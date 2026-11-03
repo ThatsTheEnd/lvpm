@@ -525,16 +525,16 @@ enum CacheCmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
-    /// Set a user-level setting. `sources.local` accepts directories; omit them to clear the list.
+    /// Set a user-level setting. `sources.local` accepts directories and `hooks.run` package names; omit them to clear the list.
     Set {
-        /// The setting: `cache`, `sources.local` or `venv.dir`.
+        /// The setting: `cache`, `hooks.run`, `sources.local` or `venv.dir`.
         key: String,
-        /// Its value; `sources.local` takes any number of directories.
+        /// Its value; `sources.local` takes directories and `hooks.run` package names, any number.
         values: Vec<String>,
     },
     /// Show the effective value of a setting.
     Get {
-        /// The setting: `cache`, `sources.local` or `venv.dir`.
+        /// The setting: `cache`, `hooks.run`, `sources.local` or `venv.dir`.
         key: String,
     },
 }

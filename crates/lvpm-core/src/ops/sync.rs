@@ -1217,6 +1217,7 @@ mod tests {
         fn env<'a>(&self, sink: &'a dyn EventSink, folders: Vec<PathBuf>) -> OpEnv<'a> {
             let config = Config {
                 cache: self.root.join("cache"),
+                hooks_run: Vec::new(),
                 local_sources: folders,
                 venv_dir: PathBuf::from(".lv-venv"),
             };

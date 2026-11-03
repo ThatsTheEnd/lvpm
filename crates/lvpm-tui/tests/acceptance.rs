@@ -100,6 +100,7 @@ impl TuiWorld {
     pub fn builder(&self) -> EnvBuilder {
         let config = Config {
             cache: self.scratch.path().join("cache"),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: ".venv".into(),
         };

@@ -211,6 +211,7 @@ mod tests {
     fn env_with(cache: &str, venv_dir: &str, targets: Vec<LvTarget>) -> OpEnv<'static> {
         let config = Config {
             cache: PathBuf::from(cache),
+            hooks_run: Vec::new(),
             local_sources: vec![PathBuf::from("packages-a"), PathBuf::from("packages-b")],
             venv_dir: PathBuf::from(venv_dir),
         };
@@ -311,6 +312,7 @@ mod tests {
 
         let config = Config {
             cache: cwd.join("cache"),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
         };
@@ -349,6 +351,7 @@ mod tests {
         }
         let config = Config {
             cache: cwd.join("cache"),
+            hooks_run: Vec::new(),
             local_sources,
             venv_dir: PathBuf::from(".lv-venv"),
         };

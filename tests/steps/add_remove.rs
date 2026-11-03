@@ -137,6 +137,7 @@ impl CliWorld {
     fn plain_env<'s>(&self, sink: &'s RecordingSink) -> OpEnv<'s> {
         let config = Config {
             cache: self.sandbox.cache_dir(),
+            hooks_run: Vec::new(),
             local_sources: vec![self.sandbox.root().join(LOCAL_PACKAGES_DIR)],
             venv_dir: PathBuf::from(CONFIG_VENV_DIR),
         };

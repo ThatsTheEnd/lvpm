@@ -60,6 +60,7 @@ pub(super) fn scratch_env_at<'s>(
 ) -> OpEnv<'s> {
     let config = Config {
         cache,
+        hooks_run: Vec::new(),
         local_sources: Vec::new(),
         venv_dir: PathBuf::from(VENV_DIR),
     };

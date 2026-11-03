@@ -114,6 +114,7 @@ async fn core_resolves(world: &mut CliWorld) {
     let state = &mut world.destination;
     let config = Config {
         cache: world.sandbox.cache_dir(),
+        hooks_run: Vec::new(),
         local_sources: Vec::new(),
         venv_dir: PathBuf::from(VENV_DIR),
     };
