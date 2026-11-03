@@ -495,14 +495,19 @@ fn install_one(
         archive_sha256,
     };
 
-    let verdict = opts.hook_allow.verdict(
-        HookContext {
-            venv: session.venv().is_some(),
-            headless: env.headless,
-            forced: opts.run_hooks,
-        },
-        &entry.name,
-    );
+    // A scratch tree has no LabVIEW, so no hook runs there whoever is allowed;
+    // `post_install_hooks` says so. The allowlist has nothing to decide.
+    let verdict = match session.target() {
+        None => Verdict::Run,
+        Some(_) => opts.hook_allow.verdict(
+            HookContext {
+                venv: session.venv().is_some(),
+                headless: env.headless,
+                forced: opts.run_hooks,
+            },
+            &entry.name,
+        ),
+    };
     let files = pkg.plan.writes.len();
     match opts.dry_run {
         true => preview(env, session, &pkg)?,

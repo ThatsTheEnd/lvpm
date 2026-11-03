@@ -27,8 +27,7 @@ Feature: The current CLI's output is recorded so later changes can be compared a
       | a project using only the loopback feed                  | lvpm search zzz                                  | -     | search-none              |
       | a project using only the loopback feed                  | lvpm install beta --dry-run --prefix dest        | dest  | install-dry-run          |
       | a project using only the loopback feed                  | lvpm install beta --prefix dest                  | dest  | install-beta             |
-      # S12: hooks are off by default (#76)
-      | a project using only the loopback feed                  | lvpm install hooked --prefix dest --hooks        | dest  | install-hooked           |
+      | a project using only the loopback feed                  | lvpm install hooked --prefix dest                | dest  | install-hooked           |
       | beta installed in dest                                  | lvpm list --prefix dest                          | -     | list-beta                |
       | an empty dest                                           | lvpm list --prefix dest                          | -     | list-empty               |
       | beta installed in dest                                  | lvpm uninstall beta --prefix dest                | dest  | uninstall-beta           |

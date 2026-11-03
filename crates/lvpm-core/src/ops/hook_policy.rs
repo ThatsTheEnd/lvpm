@@ -573,6 +573,36 @@ mod installation {
     }
 
     #[test]
+    fn a_scratch_install_keeps_its_scratch_note_and_records_no_skipped_hook() {
+        let bed = Bed::new("scratch");
+        bed.package("hooked", "1.0", "", POST);
+        let sink = Recorded::default();
+        let mut env = bed.env(&sink, &[]);
+        env.flags.prefix = Some(bed.root.join("dest"));
+        install_package(&env, Some("hooked"), &options(false)).unwrap();
+        let events = sink.events();
+        let record = install::read_manifest(&env.roots().unwrap(), "hooked").unwrap();
+        assert!(record.skipped_hooks.is_empty(), "{record:?}");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::PhaseSkipped {
+                    phase: Phase::Hooks,
+                    reason: SkipReason::ScratchDestination,
+                    skipped: 1,
+                }
+            )),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::HooksNotRun { .. })),
+            "{events:?}"
+        );
+    }
+
+    #[test]
     fn a_dry_run_starts_nothing_and_writes_no_record() {
         let bed = Bed::new("dry-run");
         bed.package("hooked", "1.0", "", POST);
