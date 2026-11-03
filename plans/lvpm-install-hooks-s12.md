@@ -630,9 +630,9 @@ None.
   - [x] Step 2.1: the `hooks.run` key
 
 #### Wave 3
-- [ ] Slice 3: skip and warn unless allowed
+- [x] Slice 3: skip and warn unless allowed
   - [x] Step 3.1: the verdict and `HookAllow`
-  - [ ] Step 3.2: the `HooksSkipped` warning
+  - [x] Step 3.2: the `HooksSkipped` warning
 
 #### Wave 4
 - [ ] Slice 4: uninstall follows the install hook
