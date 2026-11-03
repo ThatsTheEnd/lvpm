@@ -17,6 +17,7 @@ use crate::project::{self, Project};
 use crate::target::{self, LvTarget, Roots};
 use crate::venv::{self, Venv};
 use anyhow::{Result, bail, ensure};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// The flags that say where a command's packages live.
@@ -312,16 +313,22 @@ impl<'a> OpEnv<'a> {
     ) -> Result<index::Loaded> {
         let mut repos: Vec<String> = Vec::new();
         let mut defaults = true;
+        let mut owners = HashMap::new();
         if let Some((_, proj)) = manifest {
             repos.extend(proj.resolved_sources()?);
             defaults = proj.default_sources;
+            owners = index::owners(&proj.sources, &proj.index);
         }
+        let sources = index::SourceSet {
+            extra: &repos,
+            local: &self.local_sources(),
+            defaults,
+        };
         index::load_each(
             &self.config.cache,
             self.refresh,
-            &repos,
-            &self.local_sources(),
-            defaults,
+            &sources,
+            &owners,
             self.sink,
             &self.cancel,
             on_fail,

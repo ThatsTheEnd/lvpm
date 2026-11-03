@@ -19,7 +19,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// (index url, base url that `Package.URL` is relative to)
@@ -413,24 +413,50 @@ fn import_bytes(
     })
 }
 
+/// A source folder's URL with the trailing slash that `Package.URL` is
+/// relative to.
+fn folder_base(folder: &str) -> String {
+    match folder.ends_with('/') {
+        true => folder.to_string(),
+        false => format!("{folder}/"),
+    }
+}
+
+/// The index URL of the hosted source at `folder`, which is what `Entry.source`
+/// holds for its entries.
+pub(crate) fn feed_url(folder: &str) -> String {
+    format!("{}index.vipr", folder_base(folder))
+}
+
 /// The feeds `load` reads, in the order a name is looked for: each hosted
 /// index folder in `extra`, then the public ones unless `defaults` is off, as
 /// (index URL, base URL that `Package.URL` is relative to).
 pub(crate) fn feeds(extra: &[String], defaults: bool) -> Vec<(String, String)> {
     let mut feeds: Vec<(String, String)> = extra
         .iter()
-        .map(|repo| {
-            let base = match repo.ends_with('/') {
-                true => repo.clone(),
-                false => format!("{repo}/"),
-            };
-            (format!("{base}index.vipr"), base)
-        })
+        .map(|repo| (feed_url(repo), folder_base(repo)))
         .collect();
     if defaults {
         feeds.extend(SOURCES.iter().map(|(a, b)| (a.to_string(), b.to_string())));
     }
     feeds
+}
+
+/// Which feed owns each source-pinned package: `name_key` to the owner's
+/// index URL. `sources` is `[sources]` as (name, folder URL) and `pinned` is
+/// package name to source name. A pin naming no source in `sources` owns
+/// nothing; the manifest reader already refuses one.
+pub(crate) fn owners(
+    sources: &[(String, String)],
+    pinned: &BTreeMap<String, String>,
+) -> HashMap<String, String> {
+    pinned
+        .iter()
+        .filter_map(|(package, source)| {
+            let (_, folder) = sources.iter().find(|(name, _)| name == source)?;
+            Some((crate::project::name_key(package), feed_url(folder)))
+        })
+        .collect()
 }
 
 /// Where an entry with this `url` came from: the index URL of the feed whose
@@ -457,23 +483,24 @@ pub(crate) fn source_of(url: &str, feeds: &[(String, String)]) -> String {
 pub fn load(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    sources: &SourceSet,
     sink: &dyn EventSink,
     cancel: &CancelToken,
 ) -> Result<Index> {
-    let loaded = read_each(
-        cache_dir,
-        refresh,
-        extra,
-        local_sources,
-        defaults,
-        sink,
-        cancel,
-        |_, error| Err(error),
-    )?;
+    let loaded = read_each(cache_dir, refresh, sources, sink, cancel, |_, error| {
+        Err(error)
+    })?;
     Ok(loaded.index)
+}
+
+/// Where [`load`] looks, besides the cache's imported archives.
+pub struct SourceSet<'a> {
+    /// Hosted index folders, read before the public ones.
+    pub extra: &'a [String],
+    /// Local package folders.
+    pub local: &'a [PathBuf],
+    /// Whether the public indexes are read too.
+    pub defaults: bool,
 }
 
 /// What [`load_each`] read, and the name of every source it was asked to.
@@ -485,47 +512,38 @@ pub struct Loaded {
 
 /// [`load`], handing a source that cannot be read to `on_fail` with its name:
 /// an `Err` back ends the load, an `Ok` skips that source. A cache error while
-/// reading a source counts as that source failing. Each name keeps only the
-/// entries of the first source that lists it.
-#[allow(clippy::too_many_arguments)]
+/// reading a source counts as that source failing. `owners` is what [`owners`]
+/// builds; [`first_source_wins`] says what it does to the entries.
 pub fn load_each(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    sources: &SourceSet,
+    owners: &HashMap<String, String>,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
-    let Loaded { index, sources } = read_each(
-        cache_dir,
-        refresh,
-        extra,
-        local_sources,
-        defaults,
-        sink,
-        cancel,
-        on_fail,
-    )?;
+    let Loaded { index, sources } = read_each(cache_dir, refresh, sources, sink, cancel, on_fail)?;
     let index = Index {
-        entries: first_source_wins(index.entries),
+        entries: first_source_wins(index.entries, owners),
     };
     Ok(Loaded { index, sources })
 }
 
 /// [`load_each`] with every source's entries.
-#[allow(clippy::too_many_arguments)]
 fn read_each(
     cache_dir: &Path,
     refresh: bool,
-    extra: &[String],
-    local_sources: &[PathBuf],
-    defaults: bool,
+    source_set: &SourceSet,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     mut on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
+    let SourceSet {
+        extra,
+        local,
+        defaults,
+    } = source_set;
     let mut entries = Vec::new();
     let mut sources = Vec::new();
     let cache = Cache::open(cache_dir)?;
@@ -540,7 +558,7 @@ fn read_each(
         });
     }
 
-    for dir in local_sources {
+    for dir in *local {
         let name = dir.to_string_lossy().into_owned();
         let start = entries.len();
         let scanned = match dir.is_dir() {
@@ -560,7 +578,7 @@ fn read_each(
         sources.push(name);
     }
 
-    let feeds = feeds(extra, defaults);
+    let feeds = feeds(extra, *defaults);
     if feeds.is_empty() {
         let index = Index { entries };
         return Ok(Loaded { index, sources });
@@ -587,16 +605,21 @@ fn read_each(
     Ok(Loaded { index, sources })
 }
 
-/// `entries` in source order, without every entry whose name an earlier
-/// source already lists: a later source never adds versions to a name (ADR 4).
-fn first_source_wins(entries: Vec<Entry>) -> Vec<Entry> {
-    let mut owner: HashMap<String, String> = HashMap::new();
+/// `entries` in source order, cut down to one source per name. A name in
+/// `owners` is source-pinned: it keeps only the entries whose `source` is its
+/// owner, so the cache, a local folder and every other feed lose it even when
+/// they list it first. Any other name keeps the entries of the first source
+/// that lists it, and a later source never adds versions (ADR 4).
+fn first_source_wins(entries: Vec<Entry>, owners: &HashMap<String, String>) -> Vec<Entry> {
+    let mut first: HashMap<String, String> = HashMap::new();
     entries
         .into_iter()
         .filter(|entry| {
-            let first = owner
-                .entry(crate::project::name_key(&entry.name))
-                .or_insert_with(|| entry.source.clone());
+            let key = crate::project::name_key(&entry.name);
+            if let Some(owner) = owners.get(&key) {
+                return *owner == entry.source;
+            }
+            let first = first.entry(key).or_insert_with(|| entry.source.clone());
             *first == entry.source
         })
         .collect()
@@ -880,9 +903,11 @@ mod tests {
         super::load(
             cache_dir,
             refresh,
-            extra,
-            local_sources,
-            defaults,
+            &SourceSet {
+                extra,
+                local: local_sources,
+                defaults,
+            },
             sink,
             &CancelToken::new(),
         )
@@ -1253,7 +1278,12 @@ mod tests {
         let feeds = [first.url.clone(), second.url.clone()];
         let (root, _cache) = test_cache("cancel-between-feeds");
         let load_with = |token: &CancelToken, sink: &dyn EventSink| {
-            super::load(&root, false, &feeds, &[], false, sink, token)
+            let sources = SourceSet {
+                extra: &feeds,
+                local: &[],
+                defaults: false,
+            };
+            super::load(&root, false, &sources, sink, token)
         };
 
         // Cancelled before the first request: no feed is asked.
@@ -1493,12 +1523,15 @@ Package.Display Name=A Thing
                 None,
             )
         };
-        let kept = first_source_wins(vec![
-            listed("Alpha", "1.0", "hosted"),
-            listed("alpha", "1.1", "hosted"),
-            listed("ALPHA", "9.0", "ni"),
-            listed("beta", "2.0", "ni"),
-        ]);
+        let kept = first_source_wins(
+            vec![
+                listed("Alpha", "1.0", "hosted"),
+                listed("alpha", "1.1", "hosted"),
+                listed("ALPHA", "9.0", "ni"),
+                listed("beta", "2.0", "ni"),
+            ],
+            &HashMap::new(),
+        );
         let kept: Vec<(&str, String, &str)> = kept
             .iter()
             .map(|e| (e.name.as_str(), e.version.to_string(), e.source.as_str()))
@@ -1514,6 +1547,74 @@ Package.Display Name=A Thing
     }
 
     #[test]
+    fn a_source_pin_is_owned_by_the_feed_url_of_its_folder_with_or_without_a_slash() {
+        let sources = [
+            ("first".to_string(), "http://h/one".to_string()),
+            ("second".to_string(), "http://h/two/".to_string()),
+        ];
+        let pinned = BTreeMap::from([
+            ("Alpha".to_string(), "first".to_string()),
+            ("beta".to_string(), "second".to_string()),
+        ]);
+        assert_eq!(
+            owners(&sources, &pinned),
+            HashMap::from([
+                ("alpha".to_string(), "http://h/one/index.vipr".to_string()),
+                ("beta".to_string(), "http://h/two/index.vipr".to_string()),
+            ])
+        );
+        assert!(owners(&sources, &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn a_source_pin_owns_its_name_over_the_cache_a_local_folder_and_earlier_feeds() {
+        let listed = |name: &str, version: &str, source: &str| Entry {
+            source: source.to_string(),
+            ..local_entry(
+                LocalEntry {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    display_name: None,
+                    requires: Vec::new(),
+                    lv_min: None,
+                },
+                String::new(),
+                None,
+            )
+        };
+        let owners = HashMap::from([("alpha".to_string(), "second".to_string())]);
+        let kept = |entries: Vec<Entry>| -> Vec<(String, String)> {
+            first_source_wins(entries, &owners)
+                .iter()
+                .map(|e| (e.name.clone(), e.source.clone()))
+                .collect()
+        };
+        let pair = |name: &str, source: &str| (name.to_string(), source.to_string());
+
+        // The pinned name comes from "second" alone; "gamma" stays first-wins.
+        let entries = vec![
+            listed("alpha", "9.0", CACHE_SOURCE),
+            listed("alpha", "8.0", "/local/folder"),
+            listed("Alpha", "2.0", "first"),
+            listed("gamma", "1.0", "first"),
+            listed("Alpha", "1.0", "second"),
+            listed("gamma", "5.0", "second"),
+        ];
+        assert_eq!(
+            kept(entries),
+            [pair("gamma", "first"), pair("Alpha", "second"),]
+        );
+
+        // The pinned source does not list the name: nothing is left, and no
+        // other source takes its place.
+        let entries = vec![
+            listed("alpha", "2.0", "first"),
+            listed("gamma", "1.0", "second"),
+        ];
+        assert_eq!(kept(entries), [pair("gamma", "second")]);
+    }
+
+    #[test]
     fn an_imported_archive_wins_over_a_local_folder() {
         let (root, _cache) = test_cache("import-over-folder");
         let imports = root.join("imports");
@@ -1525,12 +1626,16 @@ Package.Display Name=A Thing
         cache_add(&root, &imports, false).unwrap();
 
         let folders = [folder];
+        let sources = SourceSet {
+            extra: &[],
+            local: &folders,
+            defaults: false,
+        };
         let resolved = load_each(
             &root,
             false,
-            &[],
-            &folders,
-            false,
+            &sources,
+            &HashMap::new(),
             &NullSink,
             &CancelToken::new(),
             |_, error| Err(error),

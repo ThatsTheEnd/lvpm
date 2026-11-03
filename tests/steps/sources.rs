@@ -387,6 +387,22 @@ async fn local_folder_holds(world: &mut CliWorld, name: String, version: String)
     world.sandbox.put_local_package(fixture(&name, &version));
 }
 
+/// The fixture archive is written outside the local package folder, so the
+/// cache is the only place that holds it.
+#[given(regex = r#"^"([^"]+)" (\S+) is in the cache$"#)]
+async fn package_is_in_the_cache(world: &mut CliWorld, name: String, version: String) {
+    let package = fixture(&name, &version);
+    let archive = world
+        .sandbox
+        .root()
+        .join("imports")
+        .join(package.file_name());
+    std::fs::create_dir_all(archive.parent().expect("a folder")).expect("create the folder");
+    std::fs::write(&archive, package.build_vip()).expect("write the archive");
+    let archive = archive.to_str().expect("a path");
+    world.sandbox.setup_lvpm(&["cache", "add", archive]);
+}
+
 #[when(r#"I swap "first" and "second" in [sources]"#)]
 async fn swap_sources(world: &mut CliWorld) {
     let (first, second) = (world.source_url("first"), world.source_url("second"));

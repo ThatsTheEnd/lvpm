@@ -762,9 +762,11 @@ impl Source {
         index::load(
             &env.config.cache,
             env.refresh,
-            &feeds,
-            &folders,
-            defaults,
+            &index::SourceSet {
+                extra: &feeds,
+                local: &folders,
+                defaults,
+            },
             env.sink,
             &env.cancel,
         )
