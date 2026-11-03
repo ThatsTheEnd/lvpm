@@ -21,7 +21,7 @@ use crate::manifest_edit::{self, DependencyTable};
 use crate::paths;
 use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
 use crate::released;
-use crate::solve::{self, Conflict, Fact, Resolution, SolveError};
+use crate::solve::{self, AllHeldBack, Conflict, Fact, IGNORED, Resolution, SolveError};
 use crate::verify::Attestation;
 use crate::version::Version;
 use anyhow::Context;
@@ -573,6 +573,7 @@ fn resolve(
 }
 
 /// A dependency line that takes its package from one `[sources]` entry only.
+#[derive(PartialEq)]
 struct SourcePin<'a> {
     /// The package, as the manifest writes it.
     package: &'a str,
@@ -621,19 +622,37 @@ fn check_listed(pins: &[SourcePin], index: &Index) -> Result<(), LockError> {
     )))
 }
 
-const IGNORED: &str = "other sources are ignored for a pinned package";
-
 /// `conflict` with the source of a pinned package named as its pinned one,
-/// since no other source was asked.
+/// since no other source was asked. A fact that has no source of its own to
+/// name it in (a held-back version, a LabVIEW gate) gets a `SourcePinned` fact.
 fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
+    let pin_of = |package: &str| pins.iter().find(|pin| same_name(pin.package, package));
+    let mut noted: Vec<&SourcePin> = Vec::new();
     for fact in &mut conflict.facts {
-        let Fact::NoVersion { package, from, .. } = fact else {
-            continue;
-        };
-        if let Some(pin) = pins.iter().find(|pin| same_name(pin.package, package)) {
-            *from = format!("{}, its pinned source; {IGNORED}", pin.label());
+        match fact {
+            Fact::NoVersion { package, from, .. } => {
+                if let Some(pin) = pin_of(package) {
+                    *from = format!("{}, its pinned source; {IGNORED}", pin.label());
+                }
+            }
+            Fact::NeedsLabview { package, .. }
+            | Fact::AllHeldBack(AllHeldBack { package, .. })
+            | Fact::VersionHeldBack { package, .. } => {
+                if let Some(pin) = pin_of(package)
+                    && !noted.contains(&pin)
+                {
+                    noted.push(pin);
+                }
+            }
+            _ => {}
         }
     }
+    conflict
+        .facts
+        .extend(noted.into_iter().map(|pin| Fact::SourcePinned {
+            package: pin.package.to_string(),
+            from: pin.label(),
+        }));
     conflict
 }
 
@@ -2861,8 +2880,6 @@ caraya = \"*\"
         deps: &str,
         listed: &[(&str, &str, &str)],
     ) -> Result<Resolution, LockError> {
-        let text = with_sources(deps);
-        let dir = ProjectDir::new(tag, &text, &[]);
         let entries = listed
             .iter()
             .map(|(name, version, feed)| Entry {
@@ -2870,9 +2887,19 @@ caraya = \"*\"
                 ..entry(name, version, &[], "x.vip")
             })
             .collect();
+        resolve_entries(tag, &with_sources(deps), entries)
+    }
+
+    /// `entries` as the index of the project `text` is.
+    fn resolve_entries(
+        tag: &str,
+        text: &str,
+        entries: Vec<Entry>,
+    ) -> Result<Resolution, LockError> {
+        let dir = ProjectDir::new(tag, text, &[]);
         let sink = Recorder::default();
         let env = dir.env(&sink);
-        let (project, index) = (manifest(&text), Index { entries });
+        let (project, index) = (manifest(text), Index { entries });
         resolve(&env, &project, &index, &[], &[], &Moving::Nothing, 24.0)
     }
 
@@ -2917,6 +2944,99 @@ caraya = \"*\"
                  pinned source; other sources are ignored for a pinned package"
             )]
         );
+    }
+
+    /// The lines of the conflict `entries` run into under the project `text`.
+    fn pinned_failure(tag: &str, text: &str, entries: Vec<Entry>) -> Vec<String> {
+        let LockError::Conflict(conflict) = resolve_entries(tag, text, entries).unwrap_err() else {
+            panic!("expected a conflict");
+        };
+        conflict.facts.iter().map(Fact::to_string).collect()
+    }
+
+    /// An entry of `alpha`, listed by the `second` source.
+    fn alpha(version: &str) -> Entry {
+        Entry {
+            source: SECOND_FEED.to_string(),
+            ..entry("alpha", version, &[], "x.vip")
+        }
+    }
+
+    /// `entry` released `days` days ago.
+    fn released_days_ago(entry: Entry, days: i64) -> Entry {
+        Entry {
+            released: Some(now() - days * released::SECS_PER_DAY),
+            ..entry
+        }
+    }
+
+    const ALPHA_PINNED: &str = "alpha = { version = \"*\", index = \"second\" }";
+    const ALPHA_IS_PINNED: &str = concat!(
+        "alpha is pinned to \"second\" (http://second.example/index.vipr); ",
+        "other sources are ignored for a pinned package"
+    );
+
+    fn with_min_age(deps: &str) -> String {
+        with_sources(deps).replace(
+            "false
+",
+            "false
+min-age-days = 14
+",
+        )
+    }
+
+    #[test]
+    fn a_pinned_package_a_newer_labview_gates_names_its_source_and_says_no_other_was_asked() {
+        let gated = Entry {
+            lv_min: Some(26.0),
+            ..alpha("2.0")
+        };
+        let lines = pinned_failure("pin-gate", &with_sources(ALPHA_PINNED), vec![gated]);
+        assert!(lines.iter().any(|line| line.contains("needs LabVIEW 2026")));
+        assert_eq!(lines.last().unwrap(), ALPHA_IS_PINNED, "{lines:#?}");
+    }
+
+    #[test]
+    fn a_pinned_package_the_age_limit_holds_back_names_its_source_and_says_no_other_was_asked() {
+        let young = released_days_ago(alpha("1.0"), 3);
+        let lines = pinned_failure("pin-all-held", &with_min_age(ALPHA_PINNED), vec![young]);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(
+            lines[0].contains("held back by min-age-days = 14"),
+            "{lines:#?}"
+        );
+        assert_eq!(lines[1], ALPHA_IS_PINNED);
+    }
+
+    #[test]
+    fn a_pinned_package_one_version_of_which_is_held_back_names_its_source_once() {
+        // alpha 1.1 is too new; alpha 1.0 needs gamma >= 2.0, which the manifest rules out.
+        let text = with_min_age(&format!(
+            "{ALPHA_PINNED}
+gamma = \"1.0\""
+        ));
+        let mut old = alpha("1.0");
+        old.requires.push(Requirement {
+            name: "gamma".into(),
+            min: Some(Version::parse("2.0")),
+            min_exclusive: false,
+        });
+        let gamma = entry("gamma", "1.0", &[], "x.vip");
+        let entries = vec![
+            released_days_ago(alpha("1.1"), 3),
+            released_days_ago(old, 30),
+            released_days_ago(gamma, 30),
+        ];
+        let lines = pinned_failure("pin-one-held", &text, entries);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("alpha 1.1 is held back")),
+            "{lines:#?}"
+        );
+        assert_eq!(lines.iter().filter(|l| *l == ALPHA_IS_PINNED).count(), 1);
+        assert_eq!(lines.last().unwrap(), ALPHA_IS_PINNED);
     }
 
     #[test]

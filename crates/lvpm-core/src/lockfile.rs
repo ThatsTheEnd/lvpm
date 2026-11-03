@@ -801,6 +801,28 @@ beta = \"o/beta\"
     }
 
     #[test]
+    fn the_lock_written_before_source_pins_reads_is_current_and_is_written_back_as_it_was() {
+        // Git may check the fixture out with CRLF; lvpm writes LF.
+        let fixture =
+            include_str!("../../../tests/fixtures/s7c-pre-pin.lock").replace("\r\n", "\n");
+        let text = fixture
+            .replace("{FIRST}", "http://first.example")
+            .replace("{SECOND}", "http://second.example");
+        let project = crate::project::parse(concat!(
+            "[project]\nlabview = \">=2024\"\n\n",
+            "[sources]\nfirst = \"http://first.example\"\n",
+            "second = \"http://second.example\"\ndefaults = false\n\n",
+            "[dependencies]\nalpha = \"*\"\n",
+        ))
+        .unwrap();
+        let before = Lockfile::parse(&text).unwrap();
+        assert_eq!(before.staleness(&project), None);
+        let written = before.to_toml().unwrap();
+        assert!(!written.contains("[inputs.index]"), "{written}");
+        assert_eq!(written, text);
+    }
+
+    #[test]
     fn a_source_pin_the_lock_was_made_from_does_not_make_it_stale() {
         let project = manifest_with_source_pin(Some("mirror"));
         assert_eq!(lock_with_source_pin("mirror").staleness(&project), None);

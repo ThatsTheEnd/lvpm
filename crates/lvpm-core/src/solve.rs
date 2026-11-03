@@ -590,7 +590,15 @@ pub enum Fact {
     },
     /// No source lists `package` at all.
     NotListed { package: String },
+    /// `package` is pinned to the source `from`, so no other was asked. The
+    /// solver never produces it: `ops::lock` adds it to a failure that names a
+    /// pinned package without saying where its versions come from.
+    SourcePinned { package: String, from: String },
 }
+
+/// What a failure says of a package pinned to one source: no other source is
+/// asked for it.
+pub const IGNORED: &str = "other sources are ignored for a pinned package";
 
 /// Every version of `package` that `wanted` admits and the project's LabVIEW
 /// runs was released less than `days` days ago: `versions` are those, newest
@@ -614,6 +622,7 @@ impl Fact {
             Fact::NeedsLabview { .. } | Fact::AllHeldBack(_) | Fact::VersionHeldBack { .. } => 2,
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
+            Fact::SourcePinned { .. } => 5,
         }
     }
 }
@@ -680,6 +689,9 @@ impl fmt::Display for Fact {
                 github_note(from)
             ),
             Fact::NotListed { package } => write!(f, "{package} is in no configured source"),
+            Fact::SourcePinned { package, from } => {
+                write!(f, "{package} is pinned to {from}; {IGNORED}")
+            }
         }
     }
 }
@@ -858,7 +870,8 @@ fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&
         Fact::Pinned { .. }
         | Fact::NotListed { .. }
         | Fact::AllHeldBack(_)
-        | Fact::VersionHeldBack { .. } => false,
+        | Fact::VersionHeldBack { .. }
+        | Fact::SourcePinned { .. } => false,
     }
 }
 

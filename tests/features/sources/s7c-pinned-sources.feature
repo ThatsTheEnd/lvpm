@@ -174,7 +174,8 @@ Feature: a dependency can be pinned to one source
     When I run "lvpm lock --check"
     Then the command succeeds
     When I run "lvpm lock"
-    Then lvpm.lock is byte-identical to before
+    Then the command succeeds
+    And lvpm.lock is byte-identical to before
 
   Scenario: lvpm add --index writes the table form with the pinned source's version
     Given "first" lists "alpha" 2.0
