@@ -27,14 +27,18 @@ pub struct HookContext {
     pub venv: bool,
     /// LabVIEW runs headless here.
     pub headless: bool,
-    /// The command says `--hooks`.
+    /// The command says `--hooks`: every package is allowed, headless or not.
     pub forced: bool,
 }
 
 /// What an install does about one package's install hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
+    /// Its hooks run: PreInstall just before its files are written, PostInstall
+    /// after the relink pass.
     Run,
+    /// Its hooks do not run, for this reason; the install records and reports
+    /// each one it declares.
     Skip(SkipReason),
     /// A venv runs no hook, and nothing can allow one there.
     Venv,
@@ -186,13 +190,12 @@ mod tests {
     }
 
     #[test]
-    fn with_no_project_the_config_allows_and_a_project_it_is_not_given_does_not() {
+    fn with_no_project_the_config_allows_its_names_and_no_other() {
         let plain = HookContext {
             venv: false,
             headless: false,
             forced: false,
         };
-        let _elsewhere = project("pilot_b = { version = \"*\", hooks = \"run\" }\n");
         let allow = HookAllow::for_command(&config(&["pilot_a"]), None);
         assert_eq!(allow.verdict(plain, "pilot_a"), Verdict::Run);
         assert_eq!(
@@ -202,18 +205,13 @@ mod tests {
     }
 
     #[test]
-    fn only_the_root_projects_lines_count_never_a_dependencys_own_manifest() {
+    fn only_the_root_projects_own_lines_count() {
         let plain = HookContext {
             venv: false,
             headless: false,
             forced: false,
         };
         let root = project("beta = \"*\"\n");
-        let betas_own = project("hooked = { version = \"*\", hooks = \"run\" }\n");
-        assert!(
-            betas_own.hooks_allowed_for("hooked"),
-            "the fixture allows it"
-        );
         let allow = HookAllow::for_command(&config(&[]), Some(&root));
         assert_eq!(
             allow.verdict(plain, "hooked"),
@@ -389,6 +387,18 @@ mod installation {
     }
 
     #[test]
+    fn an_allowed_package_has_both_its_pre_and_post_install_hooks_started() {
+        let bed = Bed::new("allowed-both");
+        bed.package("hooked", "1.0", "", BOTH);
+        let events = install_into(&bed, &["hooked"], "hooked", false);
+        let pair = |hook| ("hooked".to_string(), hook);
+        assert_eq!(
+            started(&events),
+            [pair(HookKind::PreInstall), pair(HookKind::PostInstall)]
+        );
+    }
+
+    #[test]
     fn sync_global_starts_the_hook_of_a_package_with_hooks_run_and_no_other() {
         let bed = Bed::new("sync-run");
         bed.package("hooked", "1.0", "", POST);
@@ -480,15 +490,17 @@ mod installation {
     fn hooks_run_in_a_dependencys_own_manifest_allows_nothing() {
         let bed = Bed::new("dependency-manifest");
         bed.package("hooked", "1.0", "", POST);
-        bed.package("beta", "1.0", "hooked>=1.0", &[]);
-        // beta's source tree, with the manifest its author wrote.
-        let tree = bed.root.join("beta-source");
-        std::fs::create_dir_all(&tree).unwrap();
-        std::fs::write(
-            tree.join(crate::project::FILE_NAME),
-            format!("[project]\nlabview = \">=2024\"\n\n[dependencies]\nhooked = {RUN}\n"),
-        )
-        .unwrap();
+        // beta ships the manifest its author wrote, which allows `hooked`.
+        let authors =
+            format!("[project]\nlabview = \">=2024\"\n\n[dependencies]\nhooked = {RUN}\n");
+        vip_declaring(
+            &bed.root.join("packages"),
+            "beta",
+            "1.0",
+            "hooked>=1.0",
+            &[(crate::project::FILE_NAME, authors.into_bytes())],
+            &[],
+        );
         bed.manifest("beta = \"*\"\n");
         let events = sync_into(&bed, &[], false);
         assert_eq!(started(&events), []);
@@ -598,6 +610,37 @@ mod installation {
             !events
                 .iter()
                 .any(|e| matches!(e, Event::HooksNotRun { .. })),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_headless_scratch_install_skips_its_hook_as_headless_and_records_it() {
+        let bed = Bed::new("scratch-headless");
+        bed.package("hooked", "1.0", "", POST);
+        let sink = Recorded::default();
+        let mut env = bed.env(&sink, &[]);
+        env.flags.prefix = Some(bed.root.join("dest"));
+        env.headless = true;
+        install_package(&env, Some("hooked"), &options(false)).unwrap();
+        let events = sink.events();
+        let record = install::read_manifest(&env.roots().unwrap(), "hooked").unwrap();
+        assert!(lists_skipped(&record, "PostInstall"), "{record:?}");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::PhaseSkipped {
+                    phase: Phase::Hooks,
+                    reason: SkipReason::Headless,
+                    skipped: 1,
+                }
+            )),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::HooksNotRun { hooks } if hooks.len() == 1)),
             "{events:?}"
         );
     }

@@ -373,14 +373,14 @@ pub fn apply(
     // How many packages declared a hook that headless kept from running —
     // decides whether the headless note below is owed. Each package already
     // said which.
-    let mut hooks_unrun = 0usize;
+    let mut hooks_headless = 0usize;
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
             if let Some(done) = install_one(env, session, planned, opts)? {
                 files += done.files;
-                hooks_unrun += usize::from(
+                hooks_headless += usize::from(
                     done.hooks_unrun && done.verdict == Verdict::Skip(SkipReason::Headless),
                 );
             }
@@ -391,11 +391,11 @@ pub fn apply(
     // On the error path too: the LabVIEW closes and the failures are told.
     let resave_failed = session.resaver.finish(env.sink);
     outcome?;
-    if hooks_unrun > 0 {
+    if hooks_headless > 0 {
         env.sink.emit(Event::PhaseSkipped {
             phase: Phase::Hooks,
             reason: SkipReason::Headless,
-            skipped: hooks_unrun,
+            skipped: hooks_headless,
         });
     }
     env.sink.emit(Event::InstallDone {
@@ -495,11 +495,12 @@ fn install_one(
         archive_sha256,
     };
 
-    // A scratch tree has no LabVIEW, so no hook runs there whoever is allowed;
-    // `post_install_hooks` says so. The allowlist has nothing to decide.
+    // A scratch tree has no LabVIEW, so no hook can run there whoever is
+    // allowed (`post_install_hooks` says so): the allowlist is bypassed. Headless
+    // still skips, as it did before the allowlist existed.
     let verdict = match session.target() {
-        None => Verdict::Run,
-        Some(_) => opts.hook_allow.verdict(
+        None if !env.headless || opts.run_hooks => Verdict::Run,
+        _ => opts.hook_allow.verdict(
             HookContext {
                 venv: session.venv().is_some(),
                 headless: env.headless,
