@@ -271,7 +271,7 @@ Here is what the index key does:
 - A name has one source pin. The same name pinned to two different sources in
   two tables is refused. A line for the same name without `index` in another
   table follows the pin.
-- It covers its own line only. The package's requirements resolve through
+- It does not reach the package's dependencies. They resolve through
   `[sources]` as usual. To pin one of them too, list it as a direct
   dependency with `version = "*"` and its own `index`.
 - Changing, adding or removing it makes `lvpm.lock` out of date.

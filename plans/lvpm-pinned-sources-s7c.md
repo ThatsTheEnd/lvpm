@@ -478,11 +478,11 @@ As in the template: `trivial` skips inline review, `standard` gets spec-complian
 
 ## Pre-PR Quality Gate
 
-- [ ] `cargo test --workspace` and the acceptance suite pass
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings`
-- [ ] `cargo fmt --check`
+- [x] `cargo test --workspace` and the acceptance suite pass
+- [x] `cargo clippy --workspace --all-targets -- -D warnings`
+- [x] `cargo fmt --check`
 - [ ] `/code-review` passes
-- [ ] Docs updated (slice 4)
+- [x] Docs updated (slice 4)
 
 ## Skipped (low value)
 
@@ -542,5 +542,5 @@ Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults
   - [x] Step 3.2: the `--index` flag
 
 #### Wave 4
-- [ ] Slice 4: docs
-  - [ ] Step 4.1: usage.md and manifest.md
+- [x] Slice 4: docs
+  - [x] Step 4.1: usage.md and manifest.md

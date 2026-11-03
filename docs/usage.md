@@ -867,7 +867,7 @@ pin for that run.
 - A name has one source pin. The line pins the name wherever it is listed, so
   the same name pinned to two sources in two tables is refused, and an
   unpinned line for that name in another table follows the pin.
-- The source pin covers its own line only. What `hexagon_lib_motion` requires
+- The source pin does not reach the package's dependencies. What `hexagon_lib_motion` requires
   follows the first-source-wins rule above. To pin a dependency of a package
   too, list it as a direct dependency with `version = "*"` and its own `index`.
 - `index` and `github` cannot be on one line. `<NAME>` must be a key of
