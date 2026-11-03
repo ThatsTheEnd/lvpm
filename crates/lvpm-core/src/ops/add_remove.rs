@@ -184,30 +184,30 @@ impl Prepared {
         constraint: &str,
         source_pin: Option<&str>,
     ) -> Result<Edit, EditError> {
-        let pinned = self.source_of(name);
-        let index = source_pin.or(pinned).map(str::to_string);
-        let (key, change) = match self.entry(table, name) {
+        let index = source_pin.or(self.source_of(name)).map(str::to_string);
+        let key = self
+            .entry(table, name)
+            .map_or(name, |(entry, _)| entry.as_str());
+        let text = manifest_edit::set_pinned(&self.text, table, key, constraint, source_pin)?;
+        let change = match self.entry(table, name) {
             Some((entry, old)) => {
                 let from = constraint_text(old);
-                let moved = source_pin.is_some_and(|source| pinned != Some(source));
-                let change = (from != constraint || moved).then(|| ManifestEdit::Updated {
+                // The text, not the project-wide pin: a pin in another table
+                // does not make this line's rewrite a no-op.
+                let rewritten = text != self.text;
+                (from != constraint || rewritten).then(|| ManifestEdit::Updated {
                     name: entry.clone(),
                     from,
                     to: constraint.to_string(),
                     index,
-                });
-                (entry.as_str(), change)
+                })
             }
-            None => (
-                name,
-                Some(ManifestEdit::Added {
-                    name: name.to_string(),
-                    constraint: constraint.to_string(),
-                    index,
-                }),
-            ),
+            None => Some(ManifestEdit::Added {
+                name: name.to_string(),
+                constraint: constraint.to_string(),
+                index,
+            }),
         };
-        let text = manifest_edit::set_pinned(&self.text, table, key, constraint, source_pin)?;
         Edit::of(text, change, table, self.is_new_group(table))
     }
 
@@ -624,6 +624,30 @@ mod tests {
         assert!(pinned.change.is_some(), "a short line gaining a pin");
         let same = project.set(&table, "alpha", "1.0", Some("first")).unwrap();
         assert_eq!((same.change, same.text.as_str()), (None, PINNED));
+    }
+
+    #[test]
+    fn a_short_line_gaining_the_pin_another_table_has_is_a_change() {
+        let project = prepared(
+            "[sources]
+second = \"https://example.com/\"
+
+[dependencies]
+alpha = { version = \"1.0\", index = \"second\" }
+
+[dev-dependencies]
+alpha = \"1.0\"
+",
+        );
+        let edit = project
+            .set(
+                &DependencyTable::DevDependencies,
+                "alpha",
+                "1.0",
+                Some("second"),
+            )
+            .unwrap();
+        assert!(edit.change.is_some(), "{}", edit.text);
     }
 
     #[test]
