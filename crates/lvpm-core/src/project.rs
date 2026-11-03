@@ -493,7 +493,8 @@ fn parse_groups(groups: toml::Table, stated: &mut Stated) -> Result<Vec<(String,
 
 /// What the dependency lines read so far say about where a package comes
 /// from. One name says it once across the tables: a second table may repeat
-/// it but not change it.
+/// it but not change it. `hooks` is no such statement: a line in any table
+/// that says `hooks = "run"` allows them.
 #[derive(Default)]
 struct Stated {
     /// Name to its repo and the table that line is in.
@@ -552,8 +553,8 @@ impl Stated {
 }
 
 /// One dependency table, in file order. `table` names it in error messages;
-/// the `github` repo and the `index` source of a line that has them go to
-/// `stated`.
+/// the `github` repo and the `index` source of a line that has them, and the
+/// name of a line that says `hooks = "run"`, go to `stated`.
 fn parse_dependencies(
     table: &str,
     entries: toml::Table,
@@ -612,7 +613,7 @@ fn check_source_pins(
     Ok(())
 }
 
-/// The keys of a table-form dependency line that name where it comes from.
+/// The optional keys of a table-form dependency line besides `version`.
 #[derive(Default)]
 struct LineKeys {
     github: Option<String>,
@@ -622,7 +623,7 @@ struct LineKeys {
 }
 
 /// One dependency line: a version string, or a table with `version` and,
-/// optionally, `github` or `index`.
+/// optionally, `github`, `index` or `hooks`.
 fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, LineKeys)> {
     let (version, keys) = match value {
         toml::Value::String(version) => (version, LineKeys::default()),
@@ -638,6 +639,9 @@ fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint
 
 /// The keys a table-form dependency line may have.
 const LINE_KEYS: [&str; 4] = ["version", "github", "index", "hooks"];
+
+/// The one value `hooks` may have.
+const HOOKS_RUN: &str = "run";
 
 /// The `version`, `github`, `index` and `hooks` of a table-form dependency
 /// line. Any key not known yet is refused, never ignored.
@@ -684,18 +688,8 @@ fn dependency_table(
             ),
         })
         .transpose()?;
-    let hooks = fields
-        .remove("hooks")
-        .map(|value| match value {
-            toml::Value::String(s) if s == "run" => Ok(()),
-            toml::Value::String(s) => {
-                bail!("{at}: hooks must be \"run\" (delete the key to keep hooks off), got {s:?}")
-            }
-            other => bail!(
-                "{at}: hooks must be \"run\" (delete the key to keep hooks off), got {}",
-                other.type_str()
-            ),
-        })
+    let hooks = (fields.remove("hooks"))
+        .map(|value| hooks_run(&at, value))
         .transpose()?
         .is_some();
     Ok((
@@ -706,6 +700,16 @@ fn dependency_table(
             hooks,
         },
     ))
+}
+
+/// `value` as the one `hooks` value there is, or a refusal naming what it was.
+fn hooks_run(at: &str, value: toml::Value) -> Result<()> {
+    let got = match value {
+        toml::Value::String(s) if s == HOOKS_RUN => return Ok(()),
+        toml::Value::String(s) => format!("{s:?}"),
+        other => other.type_str().to_string(),
+    };
+    bail!("{at}: hooks must be \"{HOOKS_RUN}\" (delete the key to keep hooks off), got {got}")
 }
 
 /// `value` as `owner/repo`: a string of two non-empty parts around one `/`,
@@ -1491,14 +1495,30 @@ e = \"*\"
         .unwrap();
         assert_eq!(p.github.get("a").map(String::as_str), Some("o/r"));
         assert_eq!(p.source_pin_of("b"), Some("first"));
-        assert!(p.hooks_allowed_for("a") && p.hooks_allowed_for("b"));
+        assert!(p.hooks_allowed_for("a"), "hooks lost on the github line");
+        assert!(p.hooks_allowed_for("b"), "hooks lost on the index line");
     }
 
     #[test]
     fn hooks_allowed_for_matches_the_name_in_any_case() {
         let p = parse("[dependencies]\nJKI_Lib = { version = \"*\", hooks = \"run\" }\n").unwrap();
-        assert!(p.hooks_allowed_for("jki_lib") && p.hooks_allowed_for("JKI_LIB"));
+        assert!(p.hooks_allowed_for("jki_lib"), "lower case");
+        assert!(p.hooks_allowed_for("JKI_LIB"), "upper case");
         assert!(!p.hooks_allowed_for("other"));
+    }
+
+    #[test]
+    fn hooks_run_on_one_of_two_lines_for_a_name_allows_it() {
+        let p = parse(
+            "[dependencies]
+a = \"1.0\"
+
+[dev-dependencies]
+A = { version = \"1.0\", hooks = \"run\" }
+",
+        )
+        .unwrap();
+        assert!(p.hooks_allowed_for("a"));
     }
 
     #[test]
