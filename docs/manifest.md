@@ -104,7 +104,7 @@ public defaults.
 
 | Key        | Type    | Meaning                                                                           |
 | ---------- | ------- | --------------------------------------------------------------------------------- |
-| `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`. The name is a label.   |
+| `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`. The name is a label, and what `index` names. |
 | `defaults` | boolean | `true` (default): also use the public indexes. `false`: only the sources listed. |
 | `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. A negative value, a non-integer, or a value larger than 4294967295 is an error. See [A minimum release age](#a-minimum-release-age). |
 
@@ -184,7 +184,8 @@ Rules:
 
 - The version must be quoted. `oglib_array = 6.0` is a TOML float and is
   rejected, as is any other value that is not a string or a table (arrays
-  included). A table is the form [below](#a-dependency-from-github).
+  included). A table is the form [below](#a-dependency-from-github), with
+  `index` [after it](#a-dependency-from-one-source).
 - Versions compare component by component the way VIPM numbers them
   (`major.minor.patch.build`); odd but real forms such as `1.0.1-1` are
   accepted as written.
@@ -230,14 +231,61 @@ and `lvpm build` writes this name. Other assets are ignored.
 **What is refused.** These fail when the manifest is read, naming the package:
 
 - `github` together with `index`: a GitHub dependency comes only from its repo.
-- `index` alone: not supported yet.
-- Any key besides `version` and `github`: `unknown key "hooks"; expected version or github`.
+- Any key besides `version`, `github` and `index`: `unknown key "hooks"; expected version, github or index`.
 - A table without `version`.
 - A `github` value that is not `owner/repo`, such as `"https://github.com/o/r"`
   (drop the `https://github.com/`).
 
 Tokens, rate limits and the commands that call GitHub are in
 [usage.md](usage.md#github-dependencies).
+
+### A dependency from one source
+
+The `index` key is a source pin: it names the one `[sources]` entry a package
+comes from. `[dev-dependencies]` and every `[dependency-groups.<group>]` take
+it too.
+
+```toml
+[sources]
+internal = "http://host:8090/files"
+
+[dependencies]
+hexagon_lib_motion = { version = ">=2.0", index = "internal" }
+```
+
+| Key       | Meaning                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------ |
+| `version` | Required. The same constraint as the string form.                                                       |
+| `index`   | The name of a `[sources]` entry that holds an `index.vipr`. The package comes from that source only.   |
+
+Here is what the index key does:
+
+- The package is pinned to one source and never falls back. If the source
+  does not list it, lists no version that fits, or cannot be reached, the
+  command fails and names the package and the source.
+- It beats every other source: a `sources.local` folder and a `lvpm cache add`
+  import that list the same name are ignored, and so is a source listed
+  earlier or one that has a higher version. The public indexes are ignored
+  too; they have no name in `[sources]`, so a package cannot be pinned to one
+  unless you list its URL there.
+- A name has one source pin. The same name pinned to two different sources in
+  two tables is refused. A line for the same name without `index` in another
+  table follows the pin.
+- It covers its own line only. The package's requirements resolve through
+  `[sources]` as usual. To pin one of them too, list it as a direct
+  dependency with `version = "*"` and its own `index`.
+- Changing, adding or removing it makes `lvpm.lock` out of date.
+  A lock written before source pins existed is not.
+
+**What is refused.** These fail when the manifest is read, naming the line:
+
+- `index` together with `github`.
+- An `index` that is not a key of `[sources]`, with the keys it has. `defaults`
+  and `min-age-days` are settings, not sources, so they are refused too.
+- A name pinned to two sources.
+
+`lvpm add <name> --index <NAME>` writes the line
+([usage.md](usage.md#adding-and-removing-dependencies)).
 
 ### How the manifest resolves
 
@@ -523,8 +571,9 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
 - **More group controls**: `include-groups`, `--only-group`, `--all-groups`, a
   configurable default set (`[project] default-groups`), and groups on a global
   `lvpm install`. Groups are built ([above](#named-dependency-groups)).
-- **More per-dependency keys**: `{ version = "...", hooks = "run", index = "..." }`.
-  `version` and `github` are built ([above](#a-dependency-from-github)).
+- **More per-dependency keys**: `{ version = "...", hooks = "run" }`.
+  `version` and `github` are built ([above](#a-dependency-from-github)), and
+  so is `index` ([above](#a-dependency-from-one-source)).
 - **`[venv]` overrides**: `dir`, `vi-server-port`, `bitness`.
 - **`vipm.toml` conversion, remaining fields**: `labview-bitness` is checked
   against the selected target once `[venv] bitness` exists. Writing an

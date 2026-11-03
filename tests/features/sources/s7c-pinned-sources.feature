@@ -239,3 +239,12 @@ Feature: a dependency can be pinned to one source
     Then the exit code is non-zero
     And the error says "github and index cannot be used together"
     And lvpm.toml and lvpm.lock are byte-identical to before
+
+  Scenario: the docs describe source pins
+    Then docs/usage.md mentions "pinned to one source"
+    And docs/usage.md mentions "never falls back"
+    And docs/usage.md mentions "beats a sources.local folder and a cache import"
+    And docs/usage.md mentions "--index <NAME>"
+    And docs/usage.md mentions "a dependency's source pin (`index`) was added, removed or changed"
+    And docs/manifest.md mentions "the index key"
+    And docs/manifest.md does not mention "index is not supported yet"
