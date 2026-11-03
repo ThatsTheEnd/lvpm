@@ -8,6 +8,7 @@
 //! right, and if that fails, both files are put back byte for byte.
 
 use super::env::{Destination, OpEnv};
+use super::hook_policy::HookAllow;
 use super::install::{InstallOptions, announce_target, finish};
 use super::lock::{self as locking, Moving, announce_written, write_manifest_and_lock};
 use super::session::InstallSession;
@@ -386,8 +387,13 @@ fn commit(
 
     let planned = fetch_locked(env, &edit.project, &plan.wanted)?;
     let lock_text = lock.to_toml()?;
+    // The edited manifest's own lines allow hooks, so `hooks = "run"` on the
+    // line just added counts.
     let sync_options = SyncOptions {
-        install: options.clone(),
+        install: InstallOptions {
+            hook_allow: HookAllow::for_command(&env.config, Some(&edit.project)),
+            ..options.clone()
+        },
         ..SyncOptions::default()
     };
     let manifest = (edit.text != before).then_some((manifest_path.as_path(), edit.text.as_str()));

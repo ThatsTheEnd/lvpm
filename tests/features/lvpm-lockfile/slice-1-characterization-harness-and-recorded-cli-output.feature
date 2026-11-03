@@ -27,7 +27,8 @@ Feature: The current CLI's output is recorded so later changes can be compared a
       | a project using only the loopback feed                  | lvpm search zzz                                  | -     | search-none              |
       | a project using only the loopback feed                  | lvpm install beta --dry-run --prefix dest        | dest  | install-dry-run          |
       | a project using only the loopback feed                  | lvpm install beta --prefix dest                  | dest  | install-beta             |
-      | a project using only the loopback feed                  | lvpm install hooked --prefix dest                | dest  | install-hooked           |
+      # S12: hooks are off by default (#76)
+      | a project using only the loopback feed                  | lvpm install hooked --prefix dest --hooks        | dest  | install-hooked           |
       | beta installed in dest                                  | lvpm list --prefix dest                          | -     | list-beta                |
       | an empty dest                                           | lvpm list --prefix dest                          | -     | list-empty               |
       | beta installed in dest                                  | lvpm uninstall beta --prefix dest                | dest  | uninstall-beta           |
@@ -130,7 +131,8 @@ Feature: The current CLI's output is recorded so later changes can be compared a
     And a LabVIEW 2026 installation
     And the lvpm test fixture in the local package folder
     And the LabVIEW installation is free of the lvpm test fixture
-    When I run "lvpm install lvpm_test_fixture --labview-version 2026"
+    # S12: hooks are off by default (#76)
+    When I run "lvpm install lvpm_test_fixture --labview-version 2026 --hooks"
     Then stdout, stderr and the exit code equal the recording "global-install"
     And the lvpm test fixture is installed on the LabVIEW installation
     And the PostInstall hook ran for "lvpm_test_fixture"

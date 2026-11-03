@@ -24,8 +24,10 @@ pub struct Manifest {
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
     /// Hooks the package declares that were not run: every one in a venv
-    /// (hooks act on a LabVIEW installation, and a venv is not one), and
-    /// globally only a PostInstall that failed. Uninstall hooks are not
+    /// (hooks act on a LabVIEW installation, and a venv is not one), every
+    /// one of a package the install skipped (nothing allowed its hooks, or
+    /// LabVIEW ran headless), and otherwise only a PostInstall that failed.
+    /// Uninstall hooks of a package that ran its install hooks are not
     /// skipped, they are pending — `lvpm uninstall` runs them from the
     /// extracted copies below. Manifests older than that extraction list them
     /// here, which is how uninstall knows it has nothing to run.
@@ -389,6 +391,7 @@ pub(crate) fn unpack_to(
             // PreInstall has run by now, PostInstall runs after the relink
             // pass and is recorded here only if it fails, and the uninstall
             // hooks wait for `lvpm uninstall` in the copies extracted above.
+            // An install that skips a package's hooks records them itself.
             None => Vec::new(),
         },
         relinked: false,

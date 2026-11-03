@@ -227,12 +227,13 @@ const ROWS: &[Row] = &[
             "lvpm install beta --prefix dest",
         )
     },
+    // S12: hooks are off by default (#76)
     Row {
         files: Some("dest"),
         ..row(
             "install-hooked",
             Setup::LoopbackProject,
-            "lvpm install hooked --prefix dest",
+            "lvpm install hooked --prefix dest --hooks",
         )
     },
     Row {

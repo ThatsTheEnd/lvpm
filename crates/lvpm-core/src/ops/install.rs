@@ -7,6 +7,7 @@
 //! [`InstallSession`], and [`install`] runs them in that order.
 
 use super::env::{Destination, OpEnv};
+use super::hook_policy::{HookAllow, HookContext, Verdict};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
@@ -42,10 +43,15 @@ pub struct InstallOptions {
     /// off: nothing there opens the IDE, and a compile or build resolves the
     /// links itself as it loads.
     pub force_relink: bool,
-    /// Run the packages' install hooks even where LabVIEW runs headless, where
-    /// they are otherwise skipped: most hooks add palettes, menus or markers
-    /// for an IDE nobody opens there.
+    /// Run every package's install hooks in this command, whether or not
+    /// anything allowed them, and even where LabVIEW runs headless, where they
+    /// are otherwise skipped: most hooks add palettes, menus or markers for an
+    /// IDE nobody opens there.
     pub run_hooks: bool,
+    /// The packages whose install hooks may run. Set by the command that
+    /// knows who allowed what (`HookAllow::for_command`); the default allows
+    /// none, so a caller that never set it runs no hook.
+    pub hook_allow: HookAllow,
     /// Replace an installed package with an older version. Without this,
     /// resolving to something older than what is installed is refused.
     pub allow_downgrade: bool,
@@ -201,6 +207,12 @@ pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Res
     });
     let plan = resolve_greedy(env, &store, &idx, &wanted, opts.no_deps)?;
 
+    // A named install has no project to allow hooks, even inside one: only the
+    // user's config does.
+    let opts = &InstallOptions {
+        hook_allow: HookAllow::for_command(&env.config, None),
+        ..opts.clone()
+    };
     let mut session = InstallSession::new(dest);
     let applied = apply(env, &mut session, &plan, opts)?;
     finish(env, &mut session, &applied, opts)
@@ -338,30 +350,6 @@ pub fn resolve_greedy(
     Ok(InstallPlan { entries })
 }
 
-/// Which hooks this install runs. Hooks act on the LabVIEW installation; a
-/// venv is not one, and a headless machine has no one to see what they set up.
-#[derive(Debug, Clone, Copy)]
-struct HookPolicy {
-    /// Run the hooks.
-    on: bool,
-    /// They are off because LabVIEW runs headless here, which is worth saying.
-    off_headless: bool,
-}
-
-impl HookPolicy {
-    /// The ones measured (DQMH's six) write a marker file and add a palette
-    /// entry — IDE furniture. Skipping them headless means an install never
-    /// starts LabVIEW at all. A package whose hook does real setup gets
-    /// `--hooks`; the caveat is documented with the flag.
-    fn new(env: &OpEnv, session: &InstallSession, opts: &InstallOptions) -> HookPolicy {
-        let off_headless = env.headless && !opts.run_hooks;
-        HookPolicy {
-            on: session.venv().is_none() && !off_headless,
-            off_headless: off_headless && session.venv().is_none(),
-        }
-    }
-}
-
 /// Put every package of the plan on disk, in order.
 ///
 /// A package already installed is judged by version: the same one is left
@@ -381,18 +369,20 @@ pub fn apply(
     {
         staging::clear_leftover(env, v)?;
     }
-    let hooks = HookPolicy::new(env, session, opts);
     let mut files = 0usize;
-    // How many packages declared a hook this install did not run — decides
-    // whether the headless note below is owed. Each package already said which.
+    // How many packages declared a hook that headless kept from running —
+    // decides whether the headless note below is owed. Each package already
+    // said which.
     let mut hooks_unrun = 0usize;
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
-            if let Some(done) = install_one(env, session, planned, opts, hooks)? {
+            if let Some(done) = install_one(env, session, planned, opts)? {
                 files += done.files;
-                hooks_unrun += usize::from(done.hooks_unrun);
+                hooks_unrun += usize::from(
+                    done.hooks_unrun && done.verdict == Verdict::Skip(SkipReason::Headless),
+                );
             }
         }
         Ok(())
@@ -401,7 +391,7 @@ pub fn apply(
     // On the error path too: the LabVIEW closes and the failures are told.
     let resave_failed = session.resaver.finish(env.sink);
     outcome?;
-    if hooks.off_headless && hooks_unrun > 0 {
+    if hooks_unrun > 0 {
         env.sink.emit(Event::PhaseSkipped {
             phase: Phase::Hooks,
             reason: SkipReason::Headless,
@@ -426,6 +416,8 @@ struct Installed {
     files: usize,
     /// It declared a hook this install did not run.
     hooks_unrun: bool,
+    /// What the install decided about its install hooks.
+    verdict: Verdict,
 }
 
 /// One package's archive, open for planning and unpacking.
@@ -443,7 +435,6 @@ fn install_one(
     session: &mut InstallSession,
     planned: &PlannedPackage,
     opts: &InstallOptions,
-    hooks: HookPolicy,
 ) -> Result<Option<Installed>> {
     let entry = &planned.entry;
     let roots = session.roots_for(&entry.name)?;
@@ -504,14 +495,26 @@ fn install_one(
         archive_sha256,
     };
 
+    let verdict = opts.hook_allow.verdict(
+        HookContext {
+            venv: session.venv().is_some(),
+            headless: env.headless,
+            forced: opts.run_hooks,
+        },
+        &entry.name,
+    );
     let files = pkg.plan.writes.len();
     match opts.dry_run {
         true => preview(env, session, &pkg)?,
-        false => unpack(env, session, &mut pkg, opts, hooks)?,
+        false => unpack(env, session, &mut pkg, opts, verdict)?,
     }
     report_leftovers(env, &pkg.plan);
-    let hooks_unrun = report_unrun_hooks(env, session, &pkg, hooks);
-    Ok(Some(Installed { files, hooks_unrun }))
+    let hooks_unrun = report_unrun_hooks(env, session, &pkg, verdict);
+    Ok(Some(Installed {
+        files,
+        hooks_unrun,
+        verdict,
+    }))
 }
 
 /// Decide what an installed version of `entry` means. False: leave the package
@@ -612,9 +615,10 @@ fn unpack(
     session: &mut InstallSession,
     pkg: &mut Unpacking,
     opts: &InstallOptions,
-    hooks: HookPolicy,
+    verdict: Verdict,
 ) -> Result<()> {
     let name = &pkg.entry.name;
+    let run = verdict == Verdict::Run;
     // The point of no return: nothing is written before this, and what
     // follows cannot be taken back. It comes ahead of the first file written,
     // which is the PreInstall hook's extraction below, and ahead of the
@@ -636,9 +640,7 @@ fn unpack(
         true => install::extract_hook(&pkg.roots, name, &mut pkg.zip, "PreInstall.vi")?,
         false => None,
     };
-    if hooks.on
-        && let (Some(vi), Some(t)) = (&pre, &pkg.roots.target)
-    {
+    if run && let (Some(vi), Some(t)) = (&pre, &pkg.roots.target) {
         let planned: Vec<String> = pkg
             .plan
             .writes
@@ -698,18 +700,16 @@ fn unpack(
         name.clone(),
         m.relink_folders.iter().map(PathBuf::from).collect(),
     ));
-    if hooks.on
-        && let Some(hook) = &m.post_install_vi
-    {
+    if run && let Some(hook) = &m.post_install_vi {
         session.post_install_hooks.push(PostInstallHook {
             package: name.clone(),
             vi: PathBuf::from(hook),
             files: m.files.clone(),
         });
     }
-    // The manifest assumes a global install runs its hooks; headless did not,
-    // and `lvpm list` should say so.
-    if hooks.off_headless {
+    // The manifest assumes a global install runs its hooks; one that was
+    // skipped says so, for `lvpm list`.
+    if matches!(verdict, Verdict::Skip(_)) {
         for (h, v) in &pkg.spec.script_vis {
             install::mark_hook_skipped(&pkg.roots, name, &format!("{h}={v}"))?;
         }
@@ -737,23 +737,23 @@ fn report_leftovers(env: &OpEnv, plan: &install::Plan) {
     }
 }
 
-/// Warn only about hooks this install owes and will not run. Globally,
+/// Warn only about hooks this install owes and will not run. Where they run,
 /// PreInstall has run, PostInstall runs after the relink pass, and the
 /// uninstall hooks are extracted for `lvpm uninstall` to run — nothing to say.
-/// In a venv, or headless, no hook runs at all, so every declared one is
-/// reported. Whether there was any.
+/// Where the verdict is anything else, no hook runs at all, so every declared
+/// one is reported. Whether there was any.
 fn report_unrun_hooks(
     env: &OpEnv,
     session: &InstallSession,
     pkg: &Unpacking,
-    hooks: HookPolicy,
+    verdict: Verdict,
 ) -> bool {
     let unrun: Vec<String> = pkg
         .spec
         .script_vis
         .iter()
         .filter(|(h, _)| {
-            !hooks.on
+            verdict != Verdict::Run
                 || (h == "PostInstall"
                     && !session
                         .post_install_hooks

@@ -681,6 +681,9 @@ pub enum SkipReason {
     Headless,
     /// The caller asked for it to be left out.
     Declined,
+    /// An install hook that nothing allowed: hooks are off unless the project
+    /// or the user's config names the package, or the command says `--hooks`.
+    NotAllowed,
 }
 
 /// The hooks a package can ship.

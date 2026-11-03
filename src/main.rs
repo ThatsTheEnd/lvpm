@@ -143,6 +143,8 @@ impl ApplyArgs {
             run_hooks: self.run_hooks,
             allow_downgrade,
             relink: (&self.relink).into(),
+            // Set by the operation, which knows the project.
+            ..InstallOptions::default()
         }
     }
 }

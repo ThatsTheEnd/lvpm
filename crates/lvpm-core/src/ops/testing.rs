@@ -188,10 +188,30 @@ pub(crate) fn vip_of(
     requires: &str,
     members: &[(&str, Vec<u8>)],
 ) -> PathBuf {
+    vip_declaring(dir, name, version, requires, members, &[])
+}
+
+/// As [`vip_of`], declaring each of `hooks` (`PostInstall` and the like) under
+/// `[Script VIs]` and shipping its `<hook>.vi` at the archive root.
+pub(crate) fn vip_declaring(
+    dir: &Path,
+    name: &str,
+    version: &str,
+    requires: &str,
+    members: &[(&str, Vec<u8>)],
+    hooks: &[&str],
+) -> PathBuf {
     use std::io::Write;
     let mut spec = format!("[Package]\nName=\"{name}\"\nVersion=\"{version}\"\n\n");
     if !requires.is_empty() {
         spec.push_str(&format!("[Dependencies]\nRequires=\"{requires}\"\n\n"));
+    }
+    if !hooks.is_empty() {
+        spec.push_str("[Script VIs]\n");
+        for hook in hooks {
+            spec.push_str(&format!("{hook}=\"{hook}.vi\"\n"));
+        }
+        spec.push('\n');
     }
     spec.push_str(&format!(
         "[Files]\nNum File Groups=\"1\"\n\n[File Group 0]\nTarget Dir=\"<application>\"\n\
@@ -211,6 +231,10 @@ pub(crate) fn vip_of(
             .start_file(format!("File Group 0/{f}"), stored)
             .unwrap();
         writer.write_all(bytes).unwrap();
+    }
+    for hook in hooks {
+        writer.start_file(format!("{hook}.vi"), stored).unwrap();
+        writer.write_all(b"hook").unwrap();
     }
     let bytes = writer.finish().unwrap().into_inner();
     let archive = dir.join(format!("{name}-{version}.vip"));

@@ -8,6 +8,7 @@ pub mod build;
 pub mod check;
 pub mod env;
 mod github_index;
+pub mod hook_policy;
 pub mod hooks;
 pub mod init;
 pub mod install;
