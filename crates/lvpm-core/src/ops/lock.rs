@@ -420,9 +420,10 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let hashes = hash_archives(env, index, &resolution, previous, &source_pins(project)?)?;
-    let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let feeds = index::feeds(&project.resolved_sources()?, project.default_sources);
+    let pins = source_pins(project)?;
+    let hashes = hash_archives(env, index, &resolution, previous, &pins, &feeds)?;
+    let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let lock = build(
         project,
         labview,
@@ -700,14 +701,17 @@ fn wanted_by(constraint: &Constraint) -> String {
 /// A version `previous` already locks keeps the SHA-256 it was locked with, and
 /// only bytes that hash to it count: other bytes under that version are an
 /// error, never a new pin. A source-pinned package keeps it only if `previous`
-/// took it from the feed it is pinned to now: the same version listed by
-/// another source may be other bytes, which are then fetched fresh.
+/// recorded the source and MD5 this run records for the pinned feed's entry:
+/// the same version listed by another source may be other bytes, which are
+/// then fetched fresh. The source is compared as [`build`] writes it, so
+/// nested `[sources]` folders compare the same way on both sides.
 fn hash_archives(
     env: &OpEnv,
     index: &Index,
     resolution: &Resolution,
     previous: Option<&Lockfile>,
     pins: &[SourcePin],
+    feeds: &[(String, String)],
 ) -> Result<HashMap<String, String>, LockError> {
     let total = resolution.packages.len();
     // Nothing to fetch opens nothing: a manifest with no dependencies needs
@@ -729,9 +733,12 @@ fn hash_archives(
             total,
         });
         let from_pinned_feed = |locked: &LockedPackage| {
-            (pins.iter())
-                .find(|pin| same_name(pin.package, &locked.name))
-                .is_none_or(|pin| pin.feed == locked.source)
+            let same_md5 = match (&locked.md5, &entry.md5) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                (a, b) => a == b,
+            };
+            !pins.iter().any(|pin| same_name(pin.package, &locked.name))
+                || (locked.source == index::source_of(&entry.url, feeds) && same_md5)
         };
         if let Some(locked) = kept_of(previous, key, entry).filter(|l| from_pinned_feed(l)) {
             let mut search = Search::in_cache(&downloads, locked);
@@ -3102,10 +3109,16 @@ gamma = \"1.0\""
     }
 
     /// `alpha` 1.0 as the pinned feed `second` lists it, in a file of its own,
-    /// and `previous` locking another copy of it, from `locked_from`, whose
-    /// bytes the cache holds. The SHA-256 the lock keeps for it, and the
-    /// SHA-256 of each copy: (kept, the pinned feed's, the other one's).
-    fn hash_alpha_pinned_to_second(tag: &str, locked_from: &str) -> (String, String, String) {
+    /// and `previous` locking another copy of it, from `locked_from` with
+    /// `locked_md5`, whose bytes the cache holds. The listed entry is a local
+    /// file, so this run records it as [`LOCAL_SOURCE`] with no MD5. The
+    /// SHA-256 the lock keeps for it, and the SHA-256 of each copy: (kept,
+    /// the pinned feed's, the other one's).
+    fn hash_alpha_pinned_to_second(
+        tag: &str,
+        locked_from: &str,
+        locked_md5: Option<&str>,
+    ) -> (String, String, String) {
         let text = with_sources(ALPHA_PINNED);
         let dir = ProjectDir::new(tag, &text, &[]);
         let (decoy, listed) = (dir.root.join("decoy.vip"), dir.root.join("listed.vip"));
@@ -3122,6 +3135,7 @@ gamma = \"1.0\""
             packages: vec![LockedPackage {
                 sha256: decoy_sha.clone(),
                 source: locked_from.to_string(),
+                md5: locked_md5.map(str::to_string),
                 ..lock_of(&[("alpha", "1.0")]).packages.remove(0)
             }],
             ..lock_of(&[])
@@ -3140,6 +3154,7 @@ gamma = \"1.0\""
             &resolution,
             Some(&previous),
             &source_pins(&project).unwrap(),
+            &[],
         )
         .unwrap()
         .remove("alpha")
@@ -3149,7 +3164,7 @@ gamma = \"1.0\""
 
     #[test]
     fn a_package_locked_from_another_feed_is_fetched_again_once_pinned_to_this_one() {
-        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-decoy", FIRST_FEED);
+        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-decoy", FIRST_FEED, None);
         assert_ne!(listed, decoy);
         assert_eq!(
             kept, listed,
@@ -3159,9 +3174,16 @@ gamma = \"1.0\""
 
     #[test]
     fn a_package_locked_from_the_feed_it_is_pinned_to_keeps_its_sha256() {
-        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-kept", SECOND_FEED);
+        let (kept, listed, decoy) = hash_alpha_pinned_to_second("pin-kept", LOCAL_SOURCE, None);
         assert_ne!(kept, listed);
         assert_eq!(kept, decoy);
+    }
+
+    #[test]
+    fn a_pinned_package_whose_locked_md5_is_not_the_feeds_is_fetched_again() {
+        let (kept, listed, _) =
+            hash_alpha_pinned_to_second("pin-md5", LOCAL_SOURCE, Some("0123abcd"));
+        assert_eq!(kept, listed, "same source, other MD5: the feed's bytes");
     }
 
     #[test]

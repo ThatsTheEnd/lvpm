@@ -127,6 +127,12 @@ pub fn error(error: &EditError, rerun: &str) -> String {
              next: pick a version that runs on LabVIEW {project_year} with \
              `lvpm add {name}@<version>`, or raise labview in lvpm.toml"
         ),
+        // lvpm.toml was put back, so the pin may only be on the command line.
+        EditError::Lock(LockError::PinnedNotListed { package, .. }) => format!(
+            "{error}\n\
+             next: pin {package} to a source that lists it, or list it in that source, \
+             then run {rerun} again"
+        ),
         EditError::Lock(cause) => lock_error(cause, rerun),
         EditError::Sync(SyncError::Incomplete { done, left, cause }) => format!(
             "{}\nlvpm.toml and lvpm.lock were put back as they were\n\
@@ -520,6 +526,19 @@ mod tests {
             let last = text.lines().last().unwrap();
             assert!(last.starts_with("next: "), "{text}");
         }
+        let text = written(&EditError::Lock(LockError::PinnedNotListed {
+            package: "alpha".into(),
+            source_name: "second".into(),
+            feed: "http://second.example/index.vipr".into(),
+        }));
+        assert!(
+            text.ends_with(
+                "\nnext: pin alpha to a source that lists it, or list it in that source, \
+                 then run `lvpm add` again"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("index key"), "{text}");
         let text = written(&EditError::Lock(LockError::NoLabview));
         assert!(text.ends_with("then run `lvpm add` again"), "{text}");
         assert!(!text.contains("`lvpm lock`"), "{text}");
