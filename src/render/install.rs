@@ -326,7 +326,8 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
 
 /// The warning for a package whose install hooks were not run: what was
 /// skipped and why, then what to do now, then what to do for good. The lines
-/// the data does not call for are left out.
+/// the data does not call for are left out, and so is a line to paste that
+/// would carry a name that is not safe to paste.
 fn hooks_skipped(
     package: &str,
     hooks: &[HookKind],
@@ -337,24 +338,27 @@ fn hooks_skipped(
 ) -> String {
     let kinds = hook_names(hooks.iter().map(|hook| hook.name()));
     let s = plural(hooks.len(), "", "s");
+    let verb = if dry_run { "would skip" } else { "skipped" };
+    let shown = one_line(package);
     let mut lines = Vec::new();
-    lines.push(match (reason, dry_run) {
-        (SkipReason::AlreadyInstalled, _) => format!(
-            "warning: {package}: install hook{s} {kinds} {} skipped when it was installed",
+    lines.push(match reason {
+        SkipReason::AlreadyInstalled => format!(
+            "warning: {shown}: install hook{s} {kinds} {} skipped when it was installed",
             plural(hooks.len(), "was", "were")
         ),
-        (SkipReason::Headless, _) => format!(
-            "warning: {package}: skipped install hook{s} {kinds} \
+        SkipReason::Headless => format!(
+            "warning: {shown}: {verb} install hook{s} {kinds} \
              (LabVIEW runs headless; hooks = \"run\" and hooks.run do not apply)"
         ),
-        (_, dry_run) => format!(
-            "warning: {package}: {} install hook{s} {kinds} \
-             (hooks are off by default; see docs/labview-integration.md#hooks)",
-            if dry_run { "would skip" } else { "skipped" }
+        _ => format!(
+            "warning: {shown}: {verb} install hook{s} {kinds} \
+             (hooks are off by default; see docs/labview-integration.md#hooks)"
         ),
     });
     if run_now {
-        lines.push(format!("  run it now:     lvpm run-hooks {package}"));
+        if pasteable(package) {
+            lines.push(format!("  run it now:     lvpm run-hooks {package}"));
+        }
     } else if reason == SkipReason::NotAllowed && !dry_run {
         lines.push(
             "  run it:         uninstall, allow it, then install again \
@@ -362,22 +366,41 @@ fn hooks_skipped(
                 .to_string(),
         );
     }
-    lines.extend(allow.map(|allow| match allow {
-        AllowLine::AddKey { name, table } => format!(
+    lines.extend(allow.and_then(allow_line));
+    lines.join("\n")
+}
+
+/// The line that says how to allow the hooks for good; None when a name in it
+/// is not safe to paste.
+fn allow_line(allow: &AllowLine) -> Option<String> {
+    match allow {
+        AllowLine::AddKey { name, table } if pasteable(name) && pasteable(table) => Some(format!(
             "  always run it:  add hooks = \"run\" to the {name} line in [{table}] of lvpm.toml"
-        ),
-        AllowLine::AddLine { name } => format!(
+        )),
+        AllowLine::AddLine { name } if pasteable(name) => Some(format!(
             "  always run it:  add to [dependencies] in lvpm.toml:  \
              {name} = {{ version = \"*\", hooks = \"run\" }}"
-        ),
-        AllowLine::ConfigSet { names, skipped } => format!(
-            "  always run {}:  lvpm config set hooks.run {}",
-            plural(*skipped, "it", "them"),
-            names.join(" ")
-        ),
-        AllowLine::PassHooks => "  always run it:  add --hooks to this command".to_string(),
-    }));
-    lines.join("\n")
+        )),
+        AllowLine::ConfigSet { names, skipped } if names.iter().all(|n| pasteable(n)) => {
+            Some(format!(
+                "  always run {}:  lvpm config set hooks.run {}",
+                plural(*skipped, "it", "them"),
+                names.join(" ")
+            ))
+        }
+        AllowLine::PassHooks => Some("  always run it:  add --hooks to this command".to_string()),
+        _ => None,
+    }
+}
+
+/// Package names come from feeds unvalidated, and the user pastes these lines
+/// into a shell: only a plain name, one that cannot read as a flag, goes in.
+fn pasteable(name: &str) -> bool {
+    !name.starts_with('-')
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
 /// A cause's text on one line, for a warning that must stay one.
@@ -955,6 +978,26 @@ resave (1/1) alpha ... 1 saved (9s)
                 ),
             ),
             (
+                "headless, dry run",
+                vec![skipped_hooks(
+                    "pilot_a",
+                    &[PostInstall],
+                    Headless,
+                    false,
+                    true,
+                    Some(AllowLine::PassHooks),
+                )],
+                "warning: pilot_a: would skip install hook PostInstall (LabVIEW runs headless; hooks = \"run\" and hooks.run do not apply)\n\
+                 \x20 always run it:  add --hooks to this command\n"
+                    .to_string(),
+            ),
+            (
+                "already installed, now allowed, dry run",
+                vec![skipped_hooks("pilot_a", &[PostInstall], AlreadyInstalled, false, true, None)],
+                "warning: pilot_a: install hook PostInstall was skipped when it was installed\n"
+                    .to_string(),
+            ),
+            (
                 "already installed, now allowed",
                 vec![skipped_hooks("pilot_a", &[PostInstall], AlreadyInstalled, true, false, None)],
                 "warning: pilot_a: install hook PostInstall was skipped when it was installed\n\
@@ -983,6 +1026,91 @@ resave (1/1) alpha ... 1 saved (9s)
         assert!(
             err.starts_with("warning: pilot?[2J: skipped install hook"),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_newline_in_a_name_cannot_start_a_line_of_its_own_in_the_warning() {
+        let post = [HookKind::PostInstall];
+        let (_, err) = text_of(&[
+            skipped_hooks(
+                "a\nwarning: b",
+                &post,
+                SkipReason::NotAllowed,
+                true,
+                false,
+                None,
+            ),
+            skipped_hooks(
+                "pilot_a",
+                &post,
+                SkipReason::NotAllowed,
+                false,
+                false,
+                Some(AllowLine::AddKey {
+                    name: "pilot_a\nwarning: c".into(),
+                    table: "dependencies\nwarning: d".into(),
+                }),
+            ),
+            skipped_hooks(
+                "pilot_a",
+                &post,
+                SkipReason::NotAllowed,
+                false,
+                false,
+                config_set(&["pilot_a\nwarning: e"], 1),
+            ),
+        ]);
+        let forged = |l: &&str| !(l.starts_with("warning: ") || l.starts_with("  "));
+        assert_eq!(err.lines().filter(forged).count(), 0, "{err:?}");
+        assert_eq!(err.matches("\nwarning: ").count() + 1, 3, "{err:?}");
+        assert!(
+            err.starts_with("warning: a warning: b: skipped install hook"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_safe_to_paste_keeps_the_warning_and_loses_the_hint_lines() {
+        let post = [HookKind::PostInstall];
+        let shell = "x; rm -rf ~";
+        let (_, err) = text_of(&[
+            skipped_hooks(
+                shell,
+                &post,
+                SkipReason::NotAllowed,
+                true,
+                false,
+                Some(AllowLine::AddLine { name: shell.into() }),
+            ),
+            skipped_hooks(
+                "-all",
+                &post,
+                SkipReason::NotAllowed,
+                true,
+                false,
+                config_set(&["fine_pkg", "-all"], 1),
+            ),
+            skipped_hooks(
+                "fine_pkg",
+                &post,
+                SkipReason::NotAllowed,
+                true,
+                false,
+                Some(AllowLine::AddKey {
+                    name: "fine_pkg".into(),
+                    table: "dependencies; x".into(),
+                }),
+            ),
+        ]);
+        assert_eq!(
+            err,
+            format!(
+                "warning: {shell}: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                 warning: -all: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                 warning: fine_pkg: skipped install hook PostInstall {OFF_BY_DEFAULT}\n\
+                 \x20 run it now:     lvpm run-hooks fine_pkg\n"
+            )
         );
     }
 }

@@ -59,6 +59,21 @@ pub fn line(event: &Event) -> Option<String> {
         }
         Event::DependencyUnresolved { name } => format!("no source has {name}"),
         Event::InstallDone { files, .. } => format!("{files} files written"),
+        Event::HooksSkipped {
+            package,
+            hooks,
+            reason,
+            dry_run,
+            ..
+        } => {
+            let hooks: Vec<&str> = hooks.iter().map(|hook| hook.name()).collect();
+            let verb = if *dry_run { "would skip" } else { "skipped" };
+            format!(
+                "{package}: {verb} install hook {} ({})",
+                hooks.join(", "),
+                progress::reason(*reason)
+            )
+        }
         Event::IndexesLoading | Event::PlannedWrites { .. } => return None,
         // shortcut: the other events are logged as core names them; give
         // them words as the screens that cause them come.
@@ -107,6 +122,7 @@ pub fn timestamp(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lvpm_core::events::{HookKind, SkipReason};
 
     #[test]
     fn timestamps_are_rfc_3339_utc() {
@@ -161,6 +177,26 @@ mod tests {
         assert_eq!(
             outcome(&failed),
             ["failed:", "  installing alpha 2.0", "  caused by: corrupt"]
+        );
+    }
+
+    #[test]
+    fn a_skipped_install_hook_is_one_readable_line() {
+        let skipped = |dry_run| Event::HooksSkipped {
+            package: "alpha".into(),
+            hooks: vec![HookKind::PreInstall, HookKind::PostInstall],
+            reason: SkipReason::NotAllowed,
+            run_now: false,
+            dry_run,
+            allow: None,
+        };
+        assert_eq!(
+            line(&skipped(false)).as_deref(),
+            Some("alpha: skipped install hook PreInstall, PostInstall (not allowed)")
+        );
+        assert_eq!(
+            line(&skipped(true)).as_deref(),
+            Some("alpha: would skip install hook PreInstall, PostInstall (not allowed)")
         );
     }
 }

@@ -48,7 +48,7 @@ struct Listed {
 /// A package whose install hooks an install did not run on a LabVIEW
 /// installation: what [`HookAllow::warnings`] turns into events.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Skipped {
+pub struct HookSkip {
     pub package: String,
     pub hooks: Vec<HookKind>,
     pub reason: SkipReason,
@@ -126,7 +126,7 @@ impl HookAllow {
     /// What to edit so a project allows `name`: the key on its own line, or a
     /// line of its own when none lists it (a transitive dependency). Without a
     /// project, the config line for that one name.
-    pub fn line_for(&self, name: &str) -> AllowLine {
+    fn line_for(&self, name: &str) -> AllowLine {
         match &self.source {
             AllowSource::Project { listed } => match listed.get(&name_key(name)) {
                 Some(line) => AllowLine::AddKey {
@@ -143,7 +143,7 @@ impl HookAllow {
 
     /// The `hooks.run` that allows every name in `skipped` and keeps the names
     /// allowed now: `config set` replaces the list.
-    pub fn config_line(&self, skipped: &[String]) -> AllowLine {
+    fn config_line(&self, skipped: &[String]) -> AllowLine {
         let existing = match &self.source {
             AllowSource::Config { names } => names.as_slice(),
             AllowSource::Project { .. } => &[],
@@ -158,8 +158,8 @@ impl HookAllow {
     /// skipped it. Without a project, one config line gathers every package
     /// that was not allowed, and goes on the last of them, so the user pastes
     /// it once.
-    pub fn warnings(&self, dry_run: bool, skipped: Vec<Skipped>) -> Vec<Event> {
-        let not_allowed = |s: &Skipped| s.reason == SkipReason::NotAllowed;
+    pub fn warnings(&self, dry_run: bool, skipped: Vec<HookSkip>) -> Vec<Event> {
+        let not_allowed = |s: &HookSkip| s.reason == SkipReason::NotAllowed;
         let names: Vec<String> = (skipped.iter().filter(|s| not_allowed(s)))
             .map(|s| s.package.clone())
             .collect();
@@ -399,8 +399,8 @@ mod tests {
         );
     }
 
-    fn skipped(package: &str, reason: SkipReason) -> Skipped {
-        Skipped {
+    fn skipped(package: &str, reason: SkipReason) -> HookSkip {
+        HookSkip {
             package: package.into(),
             hooks: vec![HookKind::PostInstall],
             reason,
@@ -519,7 +519,11 @@ mod installation {
             let root = scratch_dir(&format!("hook-policy-{tag}"));
             std::fs::create_dir_all(root.join("packages")).unwrap();
             let fake = FakeInstallation::new(&root);
-            Bed { root, fake }
+            let bed = Bed { root, fake };
+            // A manifest naming no feed, so a named install reads only the
+            // packages beside it, never the network.
+            bed.manifest("");
+            bed
         }
 
         fn package(&self, name: &str, version: &str, requires: &str, hooks: &[&str]) {
@@ -938,14 +942,6 @@ mod installation {
 
     const PRE: &[&str] = &["PreInstall"];
 
-    /// A bed with an empty manifest that names no feed, so a named install
-    /// reads only the packages beside it.
-    fn offline_bed(tag: &str) -> Bed {
-        let bed = Bed::new(tag);
-        bed.manifest("");
-        bed
-    }
-
     /// Every warning the install told, in order.
     fn told(events: &[Event]) -> Vec<Event> {
         let warnings = |e: &&Event| matches!(e, Event::HooksSkipped { .. });
@@ -978,7 +974,7 @@ mod installation {
 
     #[test]
     fn the_skip_warns_after_the_summary_with_the_config_line() {
-        let bed = offline_bed("warn-config");
+        let bed = Bed::new("warn-config");
         bed.package("hooked", "1.0", "", POST);
         let events = install_into(&bed, &["other_pkg"], "hooked", false);
         assert_eq!(
@@ -1007,7 +1003,7 @@ mod installation {
 
     #[test]
     fn two_skipped_packages_share_one_config_line_that_keeps_both() {
-        let bed = offline_bed("warn-two");
+        let bed = Bed::new("warn-two");
         bed.package("a_hooked", "1.0", "", POST);
         bed.package("b_hooked", "1.0", "a_hooked>=1.0", POST);
         let events = install_into(&bed, &["other_pkg"], "b_hooked", false);
@@ -1102,7 +1098,7 @@ mod installation {
 
     #[test]
     fn a_pre_install_only_package_is_warned_with_no_run_it_now() {
-        let bed = offline_bed("warn-pre-only");
+        let bed = Bed::new("warn-pre-only");
         bed.package("pre_only", "1.0", "", PRE);
         let events = install_into(&bed, &[], "pre_only", false);
         assert_eq!(started(&events), []);
@@ -1120,7 +1116,7 @@ mod installation {
 
     #[test]
     fn both_install_hooks_are_named_in_the_order_they_run() {
-        let bed = offline_bed("warn-both");
+        let bed = Bed::new("warn-both");
         bed.package("hooked", "1.0", "", &["PostInstall", "PreInstall"]);
         let events = install_into(&bed, &[], "hooked", false);
         assert!(
@@ -1135,7 +1131,7 @@ mod installation {
 
     #[test]
     fn a_package_with_only_uninstall_hooks_is_skipped_and_recorded_without_a_warning() {
-        let bed = offline_bed("warn-uninstall-only");
+        let bed = Bed::new("warn-uninstall-only");
         bed.package("hooked", "1.0", "", &["PreUninstall"]);
         let events = install_into(&bed, &[], "hooked", false);
         assert_eq!(told(&events), []);
@@ -1144,7 +1140,7 @@ mod installation {
 
     #[test]
     fn a_dry_run_says_what_it_would_skip_without_a_run_it_now_and_writes_nothing() {
-        let bed = offline_bed("warn-dry-run");
+        let bed = Bed::new("warn-dry-run");
         bed.package("hooked", "1.0", "", POST);
         let sink = Recorded::default();
         let env = bed.on_installation(&sink, &[]);
@@ -1171,7 +1167,7 @@ mod installation {
 
     #[test]
     fn allowing_an_installed_package_with_a_skipped_hook_says_to_run_it_and_runs_nothing() {
-        let bed = offline_bed("warn-already");
+        let bed = Bed::new("warn-already");
         bed.package("hooked", "1.0", "", POST);
         install_into(&bed, &[], "hooked", false);
         let again = install_into(&bed, &["hooked"], "hooked", false);
@@ -1189,8 +1185,33 @@ mod installation {
     }
 
     #[test]
+    fn a_dry_run_over_an_installed_package_now_allowed_offers_no_run_it_now() {
+        let bed = Bed::new("warn-already-dry-run");
+        bed.package("hooked", "1.0", "", POST);
+        install_into(&bed, &[], "hooked", false);
+        let sink = Recorded::default();
+        let env = bed.on_installation(&sink, &["hooked"]);
+        let opts = InstallOptions {
+            dry_run: true,
+            ..options(false)
+        };
+        install_package(&env, Some("hooked"), &opts).unwrap();
+        assert_eq!(
+            told(&sink.events()),
+            [Event::HooksSkipped {
+                package: "hooked".into(),
+                hooks: vec![HookKind::PostInstall],
+                reason: SkipReason::AlreadyInstalled,
+                run_now: false,
+                dry_run: true,
+                allow: None,
+            }]
+        );
+    }
+
+    #[test]
     fn an_installed_package_that_is_still_not_allowed_is_not_warned_about_again() {
-        let bed = offline_bed("warn-already-still-off");
+        let bed = Bed::new("warn-already-still-off");
         bed.package("hooked", "1.0", "", POST);
         install_into(&bed, &[], "hooked", false);
         let again = install_into(&bed, &[], "hooked", false);
@@ -1199,7 +1220,7 @@ mod installation {
 
     #[test]
     fn a_failure_after_a_skipped_package_still_warns_about_it() {
-        let bed = offline_bed("warn-then-fail");
+        let bed = Bed::new("warn-then-fail");
         bed.package("hooked", "1.0", "", POST);
         vip_in(
             &bed.root.join("packages"),
@@ -1225,10 +1246,10 @@ mod installation {
     #[test]
     fn nothing_is_warned_about_where_the_hooks_started_or_cannot_run() {
         // Allowed in hooks.run, or forced with --hooks: started, no warning.
-        let bed = offline_bed("quiet-allowed");
+        let bed = Bed::new("quiet-allowed");
         bed.package("hooked", "1.0", "", POST);
         assert_eq!(told(&install_into(&bed, &["hooked"], "hooked", false)), []);
-        let bed = offline_bed("quiet-forced");
+        let bed = Bed::new("quiet-forced");
         bed.package("hooked", "1.0", "", POST);
         assert_eq!(told(&install_into(&bed, &[], "hooked", true)), []);
 

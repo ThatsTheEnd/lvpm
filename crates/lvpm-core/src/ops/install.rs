@@ -7,7 +7,7 @@
 //! [`InstallSession`], and [`install`] runs them in that order.
 
 use super::env::{Destination, OpEnv};
-use super::hook_policy::{HookAllow, HookContext, Skipped, Verdict};
+use super::hook_policy::{HookAllow, HookContext, HookSkip, Verdict};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
@@ -376,7 +376,7 @@ pub fn apply(
     // in `skipped`.
     let mut hooks_headless = 0usize;
     // The packages whose install hooks did not run, told after the summary.
-    let mut skipped: Vec<Skipped> = Vec::new();
+    let mut skipped: Vec<HookSkip> = Vec::new();
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         for (i, planned) in plan.entries.iter().enumerate() {
@@ -445,7 +445,7 @@ fn install_one(
     session: &mut InstallSession,
     planned: &PlannedPackage,
     opts: &InstallOptions,
-    skipped: &mut Vec<Skipped>,
+    skipped: &mut Vec<HookSkip>,
 ) -> Result<Option<Installed>> {
     let entry = &planned.entry;
     let roots = session.roots_for(&entry.name)?;
@@ -516,7 +516,7 @@ fn install_one(
     let headless_hooks = match verdict {
         // A LabVIEW installation warns per package, once the install is done.
         Verdict::Skip(reason) if session.target().is_some() => {
-            skipped.extend(skipped_install_hooks(&pkg, reason, opts));
+            skipped.extend(hook_skip_for(&pkg, reason, opts));
             false
         }
         _ => {
@@ -555,17 +555,13 @@ fn hook_verdict(
 
 /// The install hooks `pkg` declares, which a skipped package is warned about.
 /// None when it declares none: an uninstall hook is told at its uninstall.
-fn skipped_install_hooks(
-    pkg: &Unpacking,
-    reason: SkipReason,
-    opts: &InstallOptions,
-) -> Option<Skipped> {
+fn hook_skip_for(pkg: &Unpacking, reason: SkipReason, opts: &InstallOptions) -> Option<HookSkip> {
     let declared = |hook: HookKind| pkg.spec.script_vis.iter().any(|(h, _)| h == hook.name());
     let hooks: Vec<HookKind> = [HookKind::PreInstall, HookKind::PostInstall]
         .into_iter()
         .filter(|h| declared(*h))
         .collect();
-    (!hooks.is_empty()).then(|| Skipped {
+    (!hooks.is_empty()).then(|| HookSkip {
         package: pkg.entry.name.clone(),
         run_now: !opts.dry_run
             && reason == SkipReason::NotAllowed
@@ -583,7 +579,7 @@ fn settle_installed(
     roots: &Roots,
     entry: &Entry,
     opts: &InstallOptions,
-    skipped: &mut Vec<Skipped>,
+    skipped: &mut Vec<HookSkip>,
 ) -> Result<bool> {
     if !install::is_installed(roots, &entry.name) {
         return Ok(true);
@@ -599,11 +595,11 @@ fn settle_installed(
                 && old.hook_skipped(HookKind::PostInstall)
                 && hook_verdict(env, session, opts, &entry.name) == Verdict::Run
             {
-                skipped.push(Skipped {
+                skipped.push(HookSkip {
                     package: entry.name.clone(),
                     hooks: vec![HookKind::PostInstall],
                     reason: SkipReason::AlreadyInstalled,
-                    run_now: true,
+                    run_now: !opts.dry_run,
                 });
             }
             env.sink.emit(Event::PackageAlreadyInstalled {
