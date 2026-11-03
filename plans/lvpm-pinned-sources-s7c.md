@@ -531,10 +531,10 @@ Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults
   - [x] Step 1.2: the scenarios for a bad pin
 
 #### Wave 2
-- [ ] Slice 2: resolve and lock a pinned package
+- [x] Slice 2: resolve and lock a pinned package
   - [x] Step 2.1: source pins decide the owner in the first-wins filter
-  - [ ] Step 2.2: failure messages name the package and the pinned source
-  - [ ] Step 2.3: source pins are lock inputs
+  - [x] Step 2.2: failure messages name the package and the pinned source
+  - [x] Step 2.3: source pins are lock inputs
 
 #### Wave 3
 - [ ] Slice 3: `lvpm add --index`
