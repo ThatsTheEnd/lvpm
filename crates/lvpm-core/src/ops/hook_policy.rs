@@ -1219,6 +1219,19 @@ mod installation {
     }
 
     #[test]
+    fn a_package_whose_skipped_hook_run_hooks_has_run_is_not_warned_about_again() {
+        let bed = Bed::new("warn-already-ran");
+        bed.package("hooked", "1.0", "", POST);
+        install_into(&bed, &[], "hooked", false);
+        let roots = bed.fake.roots();
+        let record = bed.record("hooked");
+        assert!(record.hook_skipped(HookKind::PostInstall));
+        crate::ops::hooks::settle_rerun(&roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
+        let again = install_into(&bed, &["hooked"], "hooked", false);
+        assert_eq!(told(&again), []);
+    }
+
+    #[test]
     fn a_failure_after_a_skipped_package_still_warns_about_it() {
         let bed = Bed::new("warn-then-fail");
         bed.package("hooked", "1.0", "", POST);

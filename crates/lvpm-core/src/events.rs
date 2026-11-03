@@ -337,6 +337,9 @@ pub enum Event {
         package: String,
         hooks: Vec<String>,
         reason: UnrunReason,
+        /// Whether `lvpm run-hooks` has an install hook to run for the
+        /// package, which is what puts these hooks back.
+        run_hooks_helps: bool,
     },
 
     // ---- ops::lock ----

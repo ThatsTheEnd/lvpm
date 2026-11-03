@@ -234,6 +234,9 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
             package: m.name.clone(),
             hooks: unrun,
             reason,
+            // `run-hooks` runs only a PostInstall; a package without one stays
+            // off until it is reinstalled with its hooks allowed.
+            run_hooks_helps: m.post_install_vi.is_some(),
         });
     }
     Ok(removed)
@@ -501,6 +504,16 @@ mod tests {
     /// listing `skipped` as not run and shipping the uninstall hooks named in
     /// `declares`. Returns the events: a hook "started" is a `HookStarting`.
     fn uninstall_hooked(tag: &str, skipped: &[&str], declares: &[&str]) -> Vec<Event> {
+        uninstall_hooked_after(tag, skipped, declares, |_| ())
+    }
+
+    /// As [`uninstall_hooked`], with `before` run on the destination first.
+    fn uninstall_hooked_after(
+        tag: &str,
+        skipped: &[&str],
+        declares: &[&str],
+        before: impl FnOnce(&Roots),
+    ) -> Vec<Event> {
         use crate::ops::testing::{FakeInstallation, Recorded, env_on, scratch_dir};
         let dir = scratch_dir(tag);
         let fake = FakeInstallation::new(&dir);
@@ -514,16 +527,17 @@ mod tests {
         for hook in declares {
             let vi = hooks.join(format!("{hook}.vi"));
             std::fs::write(&vi, "vi").unwrap();
-            let key = if *hook == "PreUninstall" {
-                "pre_uninstall_vi"
-            } else {
-                "post_uninstall_vi"
+            let key = match *hook {
+                "PreUninstall" => "pre_uninstall_vi",
+                "PostInstall" => "post_install_vi",
+                _ => "post_uninstall_vi",
             };
             manifest[key] = vi.to_string_lossy().replace('\\', "/").into();
         }
         let store = fake.roots().store_dir();
         std::fs::create_dir_all(&store).unwrap();
         std::fs::write(store.join("hooked.json"), manifest.to_string()).unwrap();
+        before(&fake.roots());
 
         let sink = Recorded::default();
         let mut env = env_on(&sink, &dir);
@@ -555,6 +569,7 @@ mod tests {
                     package,
                     hooks,
                     reason,
+                    ..
                 } => Some((package.clone(), hooks.clone(), *reason)),
                 _ => None,
             })
@@ -613,6 +628,38 @@ mod tests {
         let said = not_run(&events);
         assert_eq!(said.len(), 1, "{events:?}");
         assert_eq!(said[0].2, UnrunReason::InstallHookSkipped);
+    }
+
+    #[test]
+    fn a_package_whose_install_hooks_were_cleared_by_run_hooks_runs_its_uninstall_hooks() {
+        let skipped = ["PreInstall=a", "PostInstall=b"];
+        let events = uninstall_hooked_after("cleared", &skipped, BOTH_UNINSTALL, |roots| {
+            let record = install::read_manifest(roots, "hooked").unwrap();
+            crate::ops::hooks::settle_rerun(roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
+        });
+        assert_eq!(
+            started(&events),
+            [HookKind::PreUninstall, HookKind::PostUninstall]
+        );
+        assert_eq!(not_run(&events), []);
+    }
+
+    #[test]
+    fn the_run_hooks_remedy_is_offered_only_to_a_package_with_a_post_install_to_run() {
+        let helps = |tag: &str, declares: &[&str]| {
+            let events = uninstall_hooked(tag, &["PreInstall=a"], declares);
+            events
+                .iter()
+                .find_map(|e| match e {
+                    Event::UninstallHooksNotRun {
+                        run_hooks_helps, ..
+                    } => Some(*run_hooks_helps),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("nothing said: {events:?}"))
+        };
+        assert!(helps("helps-post", &["PostInstall", "PreUninstall"]));
+        assert!(!helps("helps-pre-only", &["PreUninstall"]));
     }
 
     #[test]

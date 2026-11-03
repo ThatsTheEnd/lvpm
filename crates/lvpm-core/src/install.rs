@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
@@ -87,6 +87,12 @@ impl Manifest {
     /// hooks did not all run, so its uninstall hooks stay off too.
     pub fn hooks_skipped(&self) -> bool {
         !self.skipped_hooks.is_empty()
+    }
+
+    /// Forget every skipped hook, install ones and uninstall ones alike: the
+    /// user ran the package's install hook by hand, so none is held back.
+    pub fn clear_skipped_hooks(&mut self) {
+        self.skipped_hooks.clear();
     }
 }
 
@@ -675,6 +681,18 @@ mod tests {
         assert!(!m.hook_skipped(PreInstall), "another hook is not listed");
         m.skipped_hooks = vec!["PostInstallX=a.vi".into(), "PostInstall".into()];
         assert!(!m.hook_skipped(PostInstall), "a longer name is not it");
+    }
+
+    #[test]
+    fn clearing_the_skipped_hooks_lists_none_of_them() {
+        let mut m = record(&[], None);
+        m.skipped_hooks = vec![
+            "PreInstall=a".into(),
+            "PostInstall=b".into(),
+            "PreUninstall=c".into(),
+        ];
+        m.clear_skipped_hooks();
+        assert!(!m.hooks_skipped(), "{m:?}");
     }
 
     #[test]
