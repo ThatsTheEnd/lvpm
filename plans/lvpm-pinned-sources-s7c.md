@@ -105,6 +105,7 @@ Feature: a dependency can be pinned to one source
 
   Scenario Outline: a pin naming a source [sources] does not define fails for <command>
     Given the project depends on "alpha" "*" pinned to "nope"
+    And the project has a venv bound to a LabVIEW installation
     When I run "<command>"
     Then the exit code is non-zero
     And the error says "[dependencies] alpha: index = \"nope\" is not a [sources] name"
@@ -447,7 +448,7 @@ Feature: a dependency can be pinned to one source
 #### Step 4.1: usage.md and manifest.md
 
 **Complexity**: standard
-**IMPLEMENT**: in usage.md: the first-wins section (~812-824) gains a "Pinning a package to one source" paragraph and example with the verbatim phrases "pinned to one source", "never falls back", "beats a sources.local folder and a cache import" and "--index <NAME>"; manifest.md says "the index key". The CLI reference is usage.md's command table; the "Out of date" reasons list (~228-231) adds the source-pin reason; the manifest example (~172) shows one pinned line; the `lvpm add` row (~13) and its examples list `--index <NAME>`. In manifest.md: replace "not supported yet" (~232-233, ~526) with the `index` key and its rules. Say "source pin" wherever "pin" could mean a version.
+**IMPLEMENT**: in usage.md: the first-wins section (~812-824) gains a "Pinning a package to one source" paragraph and example with the verbatim phrases "pinned to one source", "never falls back", "beats a sources.local folder and a cache import" and "--index <NAME>"; manifest.md says "the index key". The CLI reference is usage.md's command table; the "Out of date" reasons list (~228-231) adds the source-pin reason; the manifest example (~172) shows one pinned line; the `lvpm add` row (~13) and its examples list `--index <NAME>`. In manifest.md: replace "not supported yet" (~232-233, ~526) and the unknown-key text (~234, now `expected version, github or index`) with the `index` key and its rules. Say "source pin" wherever "pin" could mean a version.
 **TEST**: the docs scenario above; the existing every-flag-in-the-usage-guide scenario now passes; `mdbook build` locally if installed, else in CI.
 **REFACTOR**: none beyond removing stale wording.
 **Files**: `docs/usage.md`, `docs/manifest.md`, `tests/features/sources/s7c-pinned-sources.feature`
@@ -518,7 +519,7 @@ Decisions that differ from a reviewer's ask:
 - **No clause on the unreachable message** (UX asked). The S13 text already names the source; the clause had no owner (design W4).
 - **No new stale reason** (UX suggested `sources changed (source pin of alpha)`). The spec says no new reason (design W5).
 
-Build criteria gate (2026-11-03): added `check` and `search` rows to the AC6 outline (`add` is covered in slice 3); the pre-slice fixture takes two URLs; AC8 means a dependency of a listed package that is itself listed with a pin, which the beta/alpha scenario covers (beta 1.0 requires alpha 1.0); AC12's Pages site is the mdBook in docs/ (SUMMARY.md lists usage.md as its CLI reference). Open warnings left to the build: a `[dependency-groups]` pair for AC9 as a unit test; a `--json` scenario for `add --index` (unit test instead).
+Slice 1 review (2026-11-03): `index = "defaults"` is refused even when `defaults` holds a URL string; slice 1 also touched tests/steps/check.rs (`bind_venv` is `pub(super)` for the venv Given `lvpm check` needs) and s4-github-manifest.feature (its expected text is now `is not a [sources] name`, on purpose); a name pinned in one table and listed unpinned in another is accepted, and the source pin owns the name everywhere, since the lock holds one entry per name. Build criteria gate (2026-11-03): added `check` and `search` rows to the AC6 outline (`add` is covered in slice 3); the pre-slice fixture takes two URLs; AC8 means a dependency of a listed package that is itself listed with a pin, which the beta/alpha scenario covers (beta 1.0 requires alpha 1.0); AC12's Pages site is the mdBook in docs/ (SUMMARY.md lists usage.md as its CLI reference). Open warnings left to the build: a `[dependency-groups]` pair for AC9 as a unit test; a `--json` scenario for `add --index` (unit test instead).
 
 ## Build Progress
 

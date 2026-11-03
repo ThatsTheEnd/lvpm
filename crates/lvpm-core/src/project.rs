@@ -546,7 +546,9 @@ fn check_source_pins(
     pins: &BTreeMap<String, (String, String)>,
 ) -> Result<()> {
     for (name, (source, table)) in pins {
-        if sources.iter().any(|(known, _)| known == source) {
+        // A string `defaults = "<url>"` lands in `sources`; it is still a setting.
+        let is_setting = matches!(source.as_str(), "defaults" | "min-age-days");
+        if !is_setting && sources.iter().any(|(known, _)| known == source) {
             continue;
         }
         let known = match sources {
@@ -1457,6 +1459,21 @@ e = \"*\"
                 )
             );
         }
+    }
+
+    #[test]
+    fn a_pin_naming_defaults_is_refused_even_when_defaults_holds_a_url() {
+        let why = parse(
+            "[sources]
+defaults = \"https://example.com/\"
+
+[dependencies]
+alpha = { index = \"defaults\", version = \"*\" }
+",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(why.ends_with("settings, not sources"), "{why}");
     }
 
     #[test]
