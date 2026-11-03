@@ -739,6 +739,24 @@ fn feed_body(
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Whether `{base}{rel}`, parsed the way the download parses it, is still in
+/// the feed's folder. `source_of` names a feed by that folder, so an entry
+/// that leaves it would be credited to a feed it does not come from.
+fn stays_in_folder(base: &str, rel: &str) -> bool {
+    let lower = rel.to_ascii_lowercase();
+    // Some servers decode these, or read `..;` as `..`, and resolve what the client kept literal.
+    if lower.contains("%2f") || lower.contains("%5c") || lower.contains("..;") {
+        return false;
+    }
+    match (
+        reqwest::Url::parse(base),
+        reqwest::Url::parse(&format!("{base}{rel}")),
+    ) {
+        (Ok(base), Ok(url)) => url.as_str().starts_with(base.as_str()),
+        _ => false,
+    }
+}
+
 fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
     let mut cur: Option<(String, HashMap<String, String>)> = None;
 
@@ -750,13 +768,7 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
         let Some(rel) = kv.get("Package.URL") else {
             return;
         };
-        // A `..` would leave the feed's folder while `source_of` still names this feed.
-        if rel
-            .to_ascii_lowercase()
-            .replace("%2e", ".")
-            .split(['/', '\\'])
-            .any(|segment| segment == "..")
-        {
+        if !stays_in_folder(base_url, rel) {
             return;
         }
         out.push(Entry {
@@ -1355,14 +1367,19 @@ Package.Display Name=A Thing
 
     #[test]
     fn a_feed_entry_whose_url_leaves_the_feeds_folder_is_dropped() {
-        let feed = "[Package up-1.0]\nPackage.URL=team/../x.vip\n\n\
-                    [Package encoded-1.0]\nPackage.URL=team/%2E%2e/x.vip\n\n\
-                    [Package slash-1.0]\nPackage.URL=team\\..\\x.vip\n\n\
-                    [Package kept-1.0]\nPackage.URL=team/x..y.vip\n";
+        let feed = "[Package up-1.0]\nPackage.URL=../x.vip\n\n\
+                    [Package encoded-1.0]\nPackage.URL=%2E%2e/x.vip\n\n\
+                    [Package backslash-1.0]\nPackage.URL=..\\x.vip\n\n\
+                    [Package tab-1.0]\nPackage.URL=.\t./x.vip\n\n\
+                    [Package cr-1.0]\nPackage.URL=.\r./x.vip\n\n\
+                    [Package slash-1.0]\nPackage.URL=..%2Fx.vip\n\n\
+                    [Package semicolon-1.0]\nPackage.URL=..;/x.vip\n\n\
+                    [Package inside-1.0]\nPackage.URL=team/../x.vip\n\n\
+                    [Package dots-1.0]\nPackage.URL=team/x..y.vip\n";
         let mut out = Vec::new();
-        parse_into(feed, "http://example.test/", &mut out);
+        parse_into(feed, "http://example.test/feed/", &mut out);
         let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["kept"]);
+        assert_eq!(names, ["inside", "dots"]);
     }
 
     #[test]
