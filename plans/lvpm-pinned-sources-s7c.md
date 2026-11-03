@@ -481,7 +481,7 @@ As in the template: `trivial` skips inline review, `standard` gets spec-complian
 - [x] `cargo test --workspace` and the acceptance suite pass
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`
 - [x] `cargo fmt --check`
-- [ ] `/code-review` passes
+- [x] `/code-review` passes
 - [x] Docs updated (slice 4)
 
 ## Skipped (low value)
