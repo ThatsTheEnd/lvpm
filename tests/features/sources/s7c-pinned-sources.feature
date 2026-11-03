@@ -133,3 +133,45 @@ Feature: a dependency can be pinned to one source
     When I run "lvpm info alpha"
     Then the command fails naming "second"
     And the error says "could not read"
+
+  Scenario: adding a source pin makes the lock stale
+    Given "first" lists "alpha" 1.0
+    And "second" lists "alpha" 1.0
+    And the project depends on "alpha" "*" and lvpm.lock is current
+    When I pin "alpha" to "second" in lvpm.toml
+    And I run "lvpm lock --check"
+    Then the exit code is non-zero
+    And stderr is one line naming sources changed
+
+  Scenario: changing a source pin makes the lock stale
+    Given "first" lists "alpha" 1.0
+    And "second" lists "alpha" 1.0
+    And the project depends on "alpha" "*" pinned to "first" and lvpm.lock is current
+    When I pin "alpha" to "second" in lvpm.toml
+    And I run "lvpm lock --check"
+    Then the exit code is non-zero
+    And stderr is one line naming sources changed
+
+  Scenario: removing a source pin makes the lock stale
+    Given "first" lists "alpha" 1.0
+    And "second" lists "alpha" 1.0
+    And the project depends on "alpha" "*" pinned to "second" and lvpm.lock is current
+    When I remove the source pin of "alpha"
+    And I run "lvpm lock --check"
+    Then the exit code is non-zero
+    And stderr is one line naming sources changed
+
+  Scenario: a pinned project with a current lock is not stale
+    Given "first" lists "alpha" 1.0
+    And "second" lists "alpha" 1.0
+    And the project depends on "alpha" "*" pinned to "second" and lvpm.lock is current
+    When I run "lvpm lock --check"
+    Then the command succeeds
+
+  Scenario: a lock from before pinned sources is not stale and keeps its bytes
+    Given "first" lists "alpha" 1.0
+    And the project depends on "alpha" "*" and a lvpm.lock written before pinned sources
+    When I run "lvpm lock --check"
+    Then the command succeeds
+    When I run "lvpm lock"
+    Then lvpm.lock is byte-identical to before

@@ -824,6 +824,7 @@ mod tests {
                 dependency_groups: BTreeMap::new(),
                 github: BTreeMap::new(),
                 policy: Default::default(),
+                ..Default::default()
             },
             packages,
             unresolved: Vec::new(),

@@ -54,6 +54,29 @@ impl CliWorld {
         std::fs::write(&path, edit(self.manifest_text())).expect("write lvpm.toml");
     }
 
+    /// The `[dependencies]` line of `name` written with the source pin
+    /// `source`, or with none; its constraint stays.
+    fn set_source_pin(&self, name: &str, source: Option<&str>) {
+        self.rewrite_manifest(|text| {
+            let table = text.find("[dependencies]").expect("a [dependencies] table");
+            let start = table
+                + text[table..]
+                    .find(&format!("\n{name} = "))
+                    .expect("the dependency line")
+                + 1;
+            let end = start + text[start..].find('\n').unwrap_or(text.len() - start);
+            // The constraint is the first quoted text of the line, whichever form it has.
+            let constraint = text[start..end].split('"').nth(1).expect("a constraint");
+            let line = match source {
+                Some(source) => {
+                    format!("{name} = {{ version = \"{constraint}\", index = \"{source}\" }}")
+                }
+                None => format!("{name} = \"{constraint}\""),
+            };
+            format!("{}{line}{}", &text[..start], &text[end..])
+        });
+    }
+
     /// The package depends on `constraint`, from `[table]`, with the source pin
     /// written as `{ version = ..., index = ... }` into the line `depend` made.
     fn depend_pinned(&self, table: DependencyTable, name: &str, constraint: &str, source: &str) {
@@ -345,6 +368,55 @@ async fn dev_depends_on_pinned(
         &constraint,
         &source,
     );
+}
+
+#[given(
+    regex = r#"^the project depends on "([^"]+)" "([^"]*)" pinned to "([^"]+)" and lvpm\.lock is current$"#
+)]
+async fn depends_on_pinned_and_the_lock_is_current(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+    source: String,
+) {
+    world.depend_pinned(DependencyTable::Dependencies, &name, &constraint, &source);
+    world.lock_the_project();
+}
+
+/// Today's `lvpm lock` output for `alpha = "*"` listed by `first`, with the
+/// two loopback URLs, which change per run, as `{FIRST}` and `{SECOND}`.
+const LOCK_BEFORE_SOURCE_PINS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/s7c-pre-pin.lock"
+);
+
+#[given(
+    regex = r#"^the project depends on "([^"]+)" "([^"]*)" and a lvpm\.lock written before pinned sources$"#
+)]
+async fn depends_on_with_a_lock_from_before_source_pins(
+    world: &mut CliWorld,
+    name: String,
+    constraint: String,
+) {
+    world.depend(DependencyTable::Dependencies, &name, &constraint);
+    // Git may check the template out with CRLF; lvpm writes LF.
+    let template = std::fs::read_to_string(LOCK_BEFORE_SOURCE_PINS)
+        .expect("the pre-pin lock template")
+        .replace("\r\n", "\n");
+    let lock = (template.replace("{FIRST}", &world.source_url("first")))
+        .replace("{SECOND}", &world.source_url("second"));
+    std::fs::write(world.lock_path(), lock).expect("write lvpm.lock");
+    world.lock.before = world.lock_bytes();
+}
+
+#[when(regex = r#"^I pin "([^"]+)" to "([^"]+)" in lvpm\.toml$"#)]
+async fn pin_in_the_manifest(world: &mut CliWorld, name: String, source: String) {
+    world.set_source_pin(&name, Some(&source));
+}
+
+#[when(regex = r#"^I remove the source pin of "([^"]+)"$"#)]
+async fn remove_the_source_pin(world: &mut CliWorld, name: String) {
+    world.set_source_pin(&name, None);
 }
 
 /// `lvpm check` finds the venv before it reads the manifest, so a scenario that

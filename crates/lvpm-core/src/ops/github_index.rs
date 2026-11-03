@@ -395,6 +395,7 @@ mod tests {
                 github: Default::default(),
                 min_age_days: 0,
                 policy: Default::default(),
+                ..Default::default()
             },
             packages: vec![crate::lockfile::LockedPackage {
                 name: "pkg".into(),
