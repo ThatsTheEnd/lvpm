@@ -105,6 +105,13 @@ $ lvpm publish --to D:/feeds/packages        # copy it into a folder feed, never
 `lvpm build` checks the library's members first, so it needs a venv
 (`lvpm venv create`, `lvpm sync`) or `--no-check`.
 
+To build a LabVIEW application, add an `[application]` table with the
+`.lvproj` and the build specification
+([Building an application](docs/usage.md#building-an-application)), then run
+`lvpm build --app`. lvpm runs the build in the venv's LabVIEW and writes
+`bom.cdx.json`, an SBOM of the locked packages, next to the build. A `.lvpkg`
+carries the same SBOM. Application builds are tested on LabVIEW 2026 only.
+
 ## Why
 
 LabVIEW packaging was open before it was closed. The **OpenG Package Tools**

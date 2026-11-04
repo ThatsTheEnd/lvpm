@@ -428,6 +428,56 @@ non-empty list refuses a release attested by any other repository, and one
 with no attestation. Any other key in `[policy]` is refused. What is checked,
 and when, is in [usage](usage.md#policy).
 
+## `[application]`
+
+Names the LabVIEW project and build specification that `lvpm build --app`
+builds. Both keys are required. The table is for an application; a library
+uses `[distribution]` ([usage](usage.md#building-a-package)).
+
+```toml
+[project]
+name    = "my_app"   # the SBOM names the application after these two
+version = "1.0.0"
+
+[application]
+project    = "app/My App.lvproj"  # a .lvproj inside the folder with lvpm.toml
+build-spec = "My Application"     # the build specification's name in that project
+```
+
+- `project` is a path relative to `lvpm.toml`. It must end in `.lvproj`, name
+  a file, and stay inside the project folder. A link that leads out of the
+  folder is refused.
+- `build-spec` is the name of a build specification under `My Computer` in
+  that project, spelled as LabVIEW shows it. Other targets are not built.
+- `[project] name` and `version` must be set. They name the application in
+  the SBOM.
+- `[application]` is not a lock input: changing it does not make `lvpm.lock`
+  out of date.
+
+An unknown key is refused when any command reads `lvpm.toml`:
+
+```text
+[application] has unknown key "target"; expected project or build-spec
+```
+
+The other checks run when `lvpm build` starts, before it starts LabVIEW. This
+way `lvpm lock` still works while you set up the `.lvproj`. Each message names
+the problem:
+
+| Problem | Message |
+| --- | --- |
+| `[application]` is not a table | `application must be a table` |
+| `project` is missing or empty | `[application] needs project (the LabVIEW project, a .lvproj path relative to lvpm.toml)` |
+| `build-spec` is missing or empty | `[application] needs build-spec (the build specification's name in the LabVIEW project)` |
+| A key is not a string | `[application] project must be a string` (or `build-spec`) |
+| `project` does not end in `.lvproj` | `[application] project "<path>" must end in .lvproj` |
+| `project` names no file | `[application] project "<path>" is not a file` |
+| `project` leaves the folder | `[application] project "<path>" lies outside the folder with lvpm.toml` |
+| `name` or `version` is missing | `an application build needs project.name and project.version in lvpm.toml, for the SBOM` |
+
+What `lvpm build --app` needs besides the manifest, and what it writes, is in
+[usage](usage.md#building-an-application).
+
 ## Unknown keys and tables
 
 Keys and tables lvpm does not know are ignored, not rejected. This keeps a
@@ -435,7 +485,7 @@ manifest readable by older lvpm builds as the format grows, and lets one file
 carry another tool's sections (see below). The flip side is that a misspelt
 key such as `labveiw` is silently ignored; check the install banner, which
 echoes the manifest path, project name, groups and `labview` minimum it read.
-Inside a dependency table and in `[policy]` the rule is the opposite: an unknown key is refused
+Inside a dependency table, in `[policy]` and in `[application]` the rule is the opposite: an unknown key is refused
 ([above](#a-dependency-from-github)), because ignoring it would drop what you
 asked for. (Upstream ignores `[dev-dependencies]` in an `lvpm.toml` and reads
 `[dependencies.dev]`; here `[dev-dependencies]` is the group `dev`.)

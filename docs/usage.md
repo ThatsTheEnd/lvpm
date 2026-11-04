@@ -25,7 +25,7 @@
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
-| `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)) |
+| `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
@@ -578,8 +578,9 @@ resave (2/2) oglib_string ... already saved in LabVIEW 2026, skipped
 `lvpm build` packages one LabVIEW library as a `.lvpkg`, lvpm's own package
 format. It needs no LabVIEW. `lvpm install` reads a `.lvpkg` from every feed
 it reads a `.vip` or `.ogp` from. VIPM does not read a `.lvpkg`; it is for
-lvpm users ([ADR 6](adr/0006-lvpkg-only-vip-read-only.md)). Describe the
-package in `lvpm.toml`:
+lvpm users ([ADR 6](adr/0006-lvpkg-only-vip-read-only.md)). To build an
+application instead, see [Building an application](#building-an-application).
+Describe the package in `lvpm.toml`:
 
 ```toml
 [project]
@@ -743,6 +744,166 @@ install-dir  = "vi.lib/Hampel Software Engineering/HSE Logger"
 
 Check `install-dir` against the rules above when you move it: an old one
 that VIPM accepted may now be refused.
+
+## Building an application
+
+`lvpm build --app` builds a LabVIEW application. It runs one build
+specification of your `.lvproj` in the venv's own LabVIEW, so the build sees
+the packages `lvpm sync` put in the venv. It then writes `bom.cdx.json`, an
+SBOM of those packages, next to the build. Name the project and the build
+specification in `[application]` ([manifest](manifest.md#application)):
+
+```toml
+[application]
+project    = "app/My App.lvproj"
+build-spec = "My Application"
+```
+
+Application builds are tested on LabVIEW 2026 only. The build needs a venv
+bound to LabVIEW 2026 or later.
+
+### Choosing what to build
+
+| Command | What is built |
+| --- | --- |
+| `lvpm build` | Every kind the manifest declares: the `.lvpkg` (from `[distribution]`), then the application (from `[application]`) |
+| `lvpm build --package` | The `.lvpkg` only |
+| `lvpm build --app` | The application only |
+| `lvpm build --app --package` | The same as `lvpm build` with both tables |
+
+A flag for a table the manifest lacks fails and names the table:
+`--app needs [application] in lvpm.toml (see docs/manifest.md)`, or the same
+for `--package` and `[distribution]`. A manifest with neither table fails with
+`nothing to build: lvpm.toml has no [distribution] or [application]`.
+`--no-check` applies to the `.lvpkg` only; with `--app` alone it fails with
+`--no-check applies only to the package build, and this run builds none`.
+
+When both kinds are built, lvpm first checks that the application can be
+built. If the check refuses it, nothing is written. If the `.lvpkg` then fails,
+the application is not built.
+
+### Before you build
+
+Run these once, and again whenever the dependencies change:
+
+```console
+$ lvpm lock                                  # lvpm.lock, current for lvpm.toml
+$ lvpm venv create --labview-version 2026    # a venv bound to LabVIEW 2026
+$ lvpm sync                                  # the venv holds what the lock lists
+$ lvpm build --app
+```
+
+Unlike the package build, the application build does not go on without a
+current lock: the SBOM from a stale lock would be wrong. lvpm checks the
+following in order and, when one fails, starts no LabVIEW and writes nothing.
+Each message names the command that fixes it:
+
+| Problem | Message |
+| --- | --- |
+| No `lvpm.lock` | `no lvpm.lock; run lvpm lock` |
+| The lock cannot be read | `lvpm.lock cannot be read (<reason>); run lvpm lock to regenerate it` |
+| The lock is out of date | `lvpm.lock is out of date (<reason>); run lvpm lock` |
+| No venv | `no venv in <folder>; run lvpm venv create and lvpm sync` |
+| The venv differs from the lock | `the venv differs from lvpm.lock (<first change>); run lvpm sync` |
+| The venv's LabVIEW is older than 2026 | `the application build needs LabVIEW 2026 or later; this venv uses LabVIEW <year>; run lvpm venv create --labview-version 2026` |
+
+A package in the venv that only `[dev-dependencies]` or a group needs does not
+make the venv differ. A package the lock does not list does. The errors for
+`[application]` itself are in the [manifest reference](manifest.md#application).
+
+### What happens during the build
+
+1. stderr says `building application "<build-spec>" with LabVIEW <year> ...`.
+2. lvpm starts the venv's LabVIEW, runs the build specification, and waits for
+   it to finish. There is no time limit.
+3. lvpm closes the LabVIEW it started, whether the build worked or not.
+4. lvpm writes `bom.cdx.json`.
+
+With `LV_RTE_HEADLESS` set, LabVIEW starts headless. It shows no window and
+looks idle while it builds. App Builder can take minutes; wait for the
+`built` line.
+
+A LabVIEW that is already open on the venv is refused with
+`a LabVIEW is already running or starting on this venv (VI Server port <port>) — close it first.`
+Close it, then build again. The build starts its own LabVIEW because LabVIEW
+reads the venv's packages only when it starts.
+
+On success stdout says where the application is:
+
+```console
+$ lvpm build --app
+built application "My Application" in 50.3s: C:\proj\builds\My App\Main.exe
+  (+2 more outputs)
+sbom: C:\proj\builds\My App\bom.cdx.json
+```
+
+The first path is the first file LabVIEW generated, normally the executable.
+The `(+N more outputs)` line appears only when LabVIEW made more files. With
+both kinds, the `.lvpkg`'s `built <path> (N files, with SBOM)` line comes
+first, as soon as the package is written.
+
+### The SBOM
+
+`bom.cdx.json` is a CycloneDX 1.5 file, the same kind a `.lvpkg` carries
+(see [Building a package](#building-a-package)). It lists the packages in `lvpm.lock` that
+`[dependencies]` needs, each with its version, SHA-256 and source, and names
+the application as its subject. The same lock gives the same bytes.
+
+- It goes in the folder of the build's first output, beside the executable.
+- A failed build writes none, and leaves the one from an earlier build as it
+  was. A successful build replaces it.
+- If lvpm cannot write it, the error says where the build output is:
+  `the build output is in <folder>, but bom.cdx.json could not be written: <cause>`.
+- lvpm never deletes build output. Delete the folder yourself.
+
+### When the build fails
+
+If LabVIEW runs the build specification and it fails, lvpm exits 1 and writes
+no SBOM:
+
+```text
+LabVIEW could not build "My Application": 1003 The VI is not executable
+open the LabVIEW project and run the build spec there to see details
+```
+
+The code and message are LabVIEW's. If LabVIEW does not start, lvpm adds
+`the venv uses LabVIEW <year>; lvpm venv create --labview-version <year> rebinds it`.
+If LabVIEW reports success but no output file, the error is
+`LabVIEW reported no output for "<build-spec>"`.
+
+### JSON output
+
+With `--json`, an application run adds an `application` key to the result.
+`package` appears only when the run also built the `.lvpkg`. A kind that was
+not built is left out. A run that builds only the `.lvpkg` keeps its old
+result, `{"command": "build"}`.
+
+```json
+{"result": {"command": "build",
+            "package": {"path": "dist/my_app-1.0.0.lvpkg", "files": 4, "sbom": true},
+            "application": {"build_spec": "My Application",
+                            "outputs": ["C:\\proj\\builds\\My App\\Main.exe"],
+                            "sbom": "C:\\proj\\builds\\My App\\bom.cdx.json",
+                            "took": 50.3}}}
+```
+
+`took` is in seconds. `package.sbom` is `false` for a `.lvpkg` written without
+an SBOM. A failed build prints `{"error": "<message>"}` as its last line and exits 1.
+
+### Limits
+
+- The venv does not hide LabVIEW's own `vi.lib`. A package that is also
+  installed globally can still shadow the venv's copy, as it can for any venv
+  command (issue #78).
+- Only the `My Computer` target is built.
+- Ctrl-C stops lvpm but can leave the LabVIEW it started running. Close it
+  by hand.
+- lvpm lists no checked-in binaries, such as a `.lvlibp`, in the SBOM, and does
+  not sign it.
+
+[The pilot application](https://github.com/ThatsTheEnd/lvpm/tree/main/tests/fixtures/pilot-app)
+is a working example: NI's Continuous Measurement and Logging template, changed
+to call two pilot libraries.
 
 ## Publishing a package
 

@@ -97,10 +97,12 @@ order, so the same lock gives the same bytes. The file is named
 - Application: written into the folder of the build spec's first output
   path, after LabVIEW reports success. A failed build writes no SBOM.
 - `.lvpkg`: added at the archive's root as `bom.cdx.json` and listed in
-  `RECORD` like every other entry. A library with no `[dependencies]` and no
-  lock gets an SBOM with no components; a library with `[dependencies]` needs
-  a fresh lock, refused as above. `lvpkg`'s reader accepts and ignores the
-  entry, so packages without one still install.
+  `RECORD` like every other entry, and `package.toml` says `format = 2`. A
+  library with no `[dependencies]` gets an SBOM with no components, whatever
+  the lock. A library with `[dependencies]` and no lock, a stale lock or an
+  unreadable lock is still built, without an SBOM and with a warning on
+  stderr (A1). `lvpkg`'s reader accepts the entry only under format 2, so
+  packages without one still install.
 
 **Events.** A new `Event::AppBuilt { outputs, sbom, took }`, rendered as
 `built <build-spec> in <s>s: <first output>` and `sbom: <path>` on stdout,
@@ -146,9 +148,12 @@ marked *(inference)* are in the Ambiguity Log.
 4. **SBOM next to the build.** After a successful app build, `bom.cdx.json`
    is in the folder of the first output path. A failed build writes none.
    *(#70 "shipped next to the build"; inference: placement)*
-5. **SBOM inside the `.lvpkg`.** Every `.lvpkg` `lvpm build` writes has
-   `bom.cdx.json` at its root, listed in `RECORD`; a `.lvpkg` without one
-   still installs. *(#70 scope; ADR 6)*
+5. **SBOM inside the `.lvpkg`.** A `.lvpkg` `lvpm build` writes from a
+   current lock, or from a manifest with no `[dependencies]` whatever the
+   lock, has `bom.cdx.json` at its root, listed in `RECORD`, and says
+   `format = 2`. With no lock, a stale lock or an unreadable lock it has none
+   and the build warns (A1). A `.lvpkg` without one still installs.
+   *(#70 scope; ADR 6; amended by A1 and A2 in [the plan](../../plans/lvpm-app-build-s9.md#spec-amendments-shown-at-this-gate))*
 6. **Flags.** With both tables, `lvpm build` builds both, `--package` only
    the `.lvpkg`, `--app` only the application. A flag for a missing table
    fails, naming it. *(user, 2026-11-04)*
@@ -158,9 +163,11 @@ marked *(inference)* are in the Ambiguity Log.
 8. **LabVIEW failure.** A build spec LabVIEW cannot build fails with exit
    code 1 and LabVIEW's code and message, and the spawned LabVIEW is closed.
    *(inference)*
-9. **Bad manifest.** `[application]` without `project` or `build-spec`, with
-   an unknown key, or naming a missing `.lvproj` fails at read, naming the
-   problem. *(inference)*
+9. **Bad manifest.** An unknown key in `[application]` fails when any command
+   reads `lvpm.toml`. A missing or empty key, a wrong type, a missing
+   `.lvproj`, a path not ending in `.lvproj` or a path outside the folder
+   fails `lvpm build` before LabVIEW starts. Each names the problem.
+   *(inference; amended by A4 in [the plan](../../plans/lvpm-app-build-s9.md#spec-amendments-shown-at-this-gate))*
 10. **Nothing else changes.** Every existing scenario passes. `lvpm build` on
     a library-only manifest behaves as today, plus the SBOM entry.
     *(inference)*
