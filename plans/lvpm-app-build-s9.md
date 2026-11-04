@@ -731,7 +731,7 @@ For each PR:
 
 #### Wave 1
 - [ ] Slice 1: the SBOM, and the SBOM inside the `.lvpkg`
-  - [ ] Step 1.1: `sbom::cyclonedx`
+  - [x] Step 1.1: `sbom::cyclonedx`
   - [ ] Step 1.2: the SBOM inside the `.lvpkg`
 - [ ] Slice 2: probe NI's build VI
   - [ ] Step 2.1: read and run `BuildTargetBuildSpecification.vi` once
