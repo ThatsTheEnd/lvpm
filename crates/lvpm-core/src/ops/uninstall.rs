@@ -123,6 +123,29 @@ fn staged_hook_path(dir: &Path, package: &str) -> PathBuf {
     dir.join(format!("lvpm-{name}-PostUninstall.vi"))
 }
 
+/// Why the record's uninstall hooks were not run, read from the record alone.
+/// A skipped entry whose VI the record does not hold is from before uninstall
+/// hooks were extracted; one with its VI was extracted and never allowed.
+fn unrun_reason(m: &install::Manifest, in_venv: bool) -> UnrunReason {
+    let held_back_by_install_hook =
+        m.hook_skipped(HookKind::PreInstall) || m.hook_skipped(HookKind::PostInstall);
+    let nothing_extracted = [
+        (HookKind::PreUninstall, &m.pre_uninstall_vi),
+        (HookKind::PostUninstall, &m.post_uninstall_vi),
+    ]
+    .iter()
+    .any(|(kind, vi)| m.hook_skipped(*kind) && vi.is_none());
+    if in_venv {
+        UnrunReason::VenvRunsNoHooks
+    } else if held_back_by_install_hook {
+        UnrunReason::InstallHookSkipped
+    } else if nothing_extracted {
+        UnrunReason::InstalledBeforeUninstallHooks
+    } else {
+        UnrunReason::NotAllowedAtInstall
+    }
+}
+
 /// Remove one package and run its uninstall hooks. Returns the file count, so
 /// the caller knows whether anything left disk and a palette rebuild is owed.
 pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -> Result<usize> {
@@ -134,7 +157,7 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
     // there. And a package whose record lists a skipped hook did not run its
     // install hook, so its uninstall hooks stay off until `run-hooks` runs it.
     let in_venv = roots.venv().is_some();
-    let hooks = !in_venv && !before.hooks_skipped();
+    let hooks = !in_venv && !before.any_hook_skipped();
 
     // PreUninstall runs while the package's files are still on disk. Both
     // uninstall hooks are best-effort: a hook needs a running LabVIEW, and a
@@ -210,11 +233,6 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
     // made before uninstall hooks were extracted has nothing on disk to run.
     // A hook the gate held back is named even when the record does not list it
     // (a failed PostInstall leaves the uninstall hooks pending, not skipped).
-    let reason = match (in_venv, hooks) {
-        (true, _) => UnrunReason::VenvRunsNoHooks,
-        (false, false) => UnrunReason::InstallHookSkipped,
-        (false, true) => UnrunReason::InstalledBeforeUninstallHooks,
-    };
     let ran = [hooks && m.pre_uninstall_vi.is_some(), post.is_some()];
     let unrun: Vec<String> = [
         (HookKind::PreUninstall, &m.pre_uninstall_vi),
@@ -233,7 +251,7 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
         env.sink.emit(Event::UninstallHooksNotRun {
             package: m.name.clone(),
             hooks: unrun,
-            reason,
+            reason: unrun_reason(&m, in_venv),
             // `run-hooks` runs only a PostInstall; a package without one stays
             // off until it is reinstalled with its hooks allowed.
             run_hooks_helps: m.post_install_vi.is_some(),
@@ -610,32 +628,58 @@ mod tests {
     }
 
     #[test]
-    fn a_headless_record_from_before_s12_listing_every_hook_runs_no_hook() {
-        let skipped = [
-            "PreInstall=a",
-            "PostInstall=b",
-            "PreUninstall=c",
-            "PostUninstall=d",
-        ];
-        let events = uninstall_hooked("headless-old", &skipped, BOTH_UNINSTALL);
+    fn a_record_that_lists_uninstall_hooks_it_never_extracted_says_it_predates_them() {
+        // From before uninstall hooks were extracted: they are listed as
+        // skipped and the record holds no VI for them.
+        let events = uninstall_hooked("legacy", &["PreUninstall=c", "PostUninstall=d"], &[]);
         assert_eq!(started(&events), []);
+        let said = not_run(&events);
+        assert_eq!(said.len(), 1, "{events:?}");
+        assert_eq!(said[0].1.len(), 2, "{events:?}");
+        assert_eq!(said[0].2, UnrunReason::InstalledBeforeUninstallHooks);
     }
 
     #[test]
-    fn a_package_with_only_uninstall_hooks_that_was_not_allowed_runs_none() {
+    fn a_record_with_uninstall_hooks_extracted_and_listed_as_skipped_says_they_were_not_allowed() {
+        // An uninstall-only package installed without hooks allowed.
         let events = uninstall_hooked("only-uninstall", &["PreUninstall=c"], &["PreUninstall"]);
         assert_eq!(started(&events), []);
         let said = not_run(&events);
         assert_eq!(said.len(), 1, "{events:?}");
-        assert_eq!(said[0].2, UnrunReason::InstallHookSkipped);
+        assert_eq!(said[0].2, UnrunReason::NotAllowedAtInstall);
+    }
+
+    #[test]
+    fn a_venv_with_a_skipped_record_says_a_venv_runs_no_hooks() {
+        use crate::ops::testing::{Recorded, env_on, scratch_dir, venv_in};
+        let repo = scratch_dir("venv-skipped");
+        let venv = venv_in(&repo);
+        let store = venv.store().store_dir();
+        std::fs::create_dir_all(&store).unwrap();
+        let record = serde_json::json!({
+            "name": "alpha", "version": "1.0", "display_name": null, "installed_at": 0,
+            "target": "venv", "files": [],
+            "skipped_hooks": ["PostInstall=b.vi", "PreUninstall=c.vi"],
+        });
+        std::fs::write(store.join("alpha.json"), record.to_string()).unwrap();
+
+        let sink = Recorded::default();
+        uninstall(&env_on(&sink, &repo), Some("alpha"), false).unwrap();
+
+        let events = sink.events();
+        assert_eq!(started(&events), []);
+        let said = not_run(&events);
+        assert_eq!(said.len(), 1, "{events:?}");
+        assert_eq!(said[0].2, UnrunReason::VenvRunsNoHooks);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
     fn a_package_whose_install_hooks_were_cleared_by_run_hooks_runs_its_uninstall_hooks() {
         let skipped = ["PreInstall=a", "PostInstall=b"];
         let events = uninstall_hooked_after("cleared", &skipped, BOTH_UNINSTALL, |roots| {
-            let record = install::read_manifest(roots, "hooked").unwrap();
-            crate::ops::hooks::settle_rerun(roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
+            crate::ops::hooks::settle_rerun(roots, "hooked", Ok(std::time::Duration::ZERO))
+                .unwrap();
         });
         assert_eq!(
             started(&events),

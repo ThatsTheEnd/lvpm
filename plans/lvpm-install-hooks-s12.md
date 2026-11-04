@@ -96,7 +96,7 @@ Rendered in `src/render/install.rs`, stderr, plain text (no colour). lvpm never 
 | Already installed, now allowed | `warning: pilot_a: install hook PostInstall was skipped when it was installed` / `  run it now:     lvpm run-hooks pilot_a` |
 | Bad `hooks` value | `[dependencies] pkg: hooks must be "run" (delete the key to keep hooks off), got "yes"`; a non-string gives its TOML type, e.g. `got boolean` |
 | Unknown key list | `unknown key "x"; expected version, github, index or hooks` |
-| Uninstall after a skip | the existing unrun line, reason `its install hook did not run; run lvpm run-hooks <pkg> first to run them` (PreInstall-only: `...did not run`) |
+| Uninstall after a skip | the existing unrun line, reason `its install hook did not run; next time, run lvpm run-hooks <pkg> before uninstalling` (PreInstall-only: `its install hook did not run`) |
 | Config key list | `supported keys: cache, hooks.run, sources.local, venv.dir` |
 
 ## Slices

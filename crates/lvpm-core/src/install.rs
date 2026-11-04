@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Manifest {
     pub name: String,
     pub version: String,
@@ -85,7 +85,7 @@ impl Manifest {
 
     /// Whether the record lists any hook as not run: the package's install
     /// hooks did not all run, so its uninstall hooks stay off too.
-    pub fn hooks_skipped(&self) -> bool {
+    pub fn any_hook_skipped(&self) -> bool {
         !self.skipped_hooks.is_empty()
     }
 
@@ -490,6 +490,15 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
     write_manifest(roots, &m)
 }
 
+/// Record that the user ran the package's install hook by hand: no hook is
+/// listed as skipped any more. Reads the record as it is now, not as it was
+/// before the hook ran.
+pub fn clear_skipped_hooks(roots: &Roots, name: &str) -> Result<()> {
+    let mut m = read_manifest(roots, name)?;
+    m.clear_skipped_hooks();
+    write_manifest(roots, &m)
+}
+
 /// The install record is a file on disk, and uninstall deletes and runs what
 /// it names: refuse a record that names a file outside the places this
 /// destination installs to, or a hook VI outside its hooks directory.
@@ -690,9 +699,10 @@ mod tests {
             "PreInstall=a".into(),
             "PostInstall=b".into(),
             "PreUninstall=c".into(),
+            "PostUninstall=d".into(),
         ];
         m.clear_skipped_hooks();
-        assert!(!m.hooks_skipped(), "{m:?}");
+        assert!(!m.any_hook_skipped(), "{m:?}");
     }
 
     #[test]

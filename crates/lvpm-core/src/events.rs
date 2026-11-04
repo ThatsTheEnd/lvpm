@@ -212,6 +212,9 @@ pub enum Event {
         hook: HookKind,
         error: String,
     },
+    /// A PostInstall hook failed and the install record could not be told, so
+    /// the package's uninstall hooks may still run. `error` is the cause's text.
+    HookRecordNotUpdated { package: String, error: String },
     /// The PostInstall hooks of `count` packages are about to run, one by one.
     PostInstallHooksStarted { count: usize },
     /// A venv install is done; a LabVIEW already open on the venv has to be
@@ -761,6 +764,9 @@ pub enum UnrunReason {
     /// (nothing allowed it, headless, or it failed) leaves the uninstall hooks
     /// off, until `lvpm run-hooks` runs it.
     InstallHookSkipped,
+    /// A package that declares only uninstall hooks was installed without being
+    /// allowed to run hooks: they were extracted, and the record lists them.
+    NotAllowedAtInstall,
 }
 
 /// How a feed answered.

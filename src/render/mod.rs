@@ -117,6 +117,7 @@ impl Renderer {
             Event::HookStarting { .. }
             | Event::HookRan { .. }
             | Event::HookFailed { .. }
+            | Event::HookRecordNotUpdated { .. }
             | Event::PostInstallHooksStarted { .. }
             | Event::RerunHooksNothingToDo
             | Event::RerunHookViGone { .. }

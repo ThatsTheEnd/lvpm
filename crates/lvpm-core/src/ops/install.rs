@@ -953,16 +953,26 @@ fn post_install_hooks(env: &OpEnv, session: &mut InstallSession, opts: &InstallO
             },
         );
         if !ran {
-            // So `lvpm list` shows it; a failed hook is otherwise only in
-            // this scrollback.
-            let _ = install::mark_hook_skipped(
-                session.store(),
-                &hook.package,
-                &format!("PostInstall={}", hook.vi.display()),
-            );
+            record_failed_post_install(env, session.store(), hook);
         }
     }
     session.close_hook_connection();
+}
+
+/// So `lvpm list` shows it, and uninstall holds its hooks back; a failed hook
+/// is otherwise only in this scrollback. Warns when the record cannot be told,
+/// because then the uninstall hooks of a package whose install hook failed run.
+fn record_failed_post_install(env: &OpEnv, roots: &Roots, hook: &PostInstallHook) {
+    if let Err(e) = install::mark_hook_skipped(
+        roots,
+        &hook.package,
+        &format!("PostInstall={}", hook.vi.display()),
+    ) {
+        env.sink.emit(Event::HookRecordNotUpdated {
+            package: hook.package.clone(),
+            error: format!("{e:#}"),
+        });
+    }
 }
 
 /// Palettes and menus last, after the hooks: a hook is free to write more
@@ -1135,6 +1145,31 @@ mod tests {
         assert!(why.contains(&scratch.sha256), "{why}");
         let roots = Roots::scratch(&scratch.root.join("dest"));
         assert!(!install::is_installed(&roots, "alpha"));
+    }
+
+    #[test]
+    fn a_failed_post_install_the_record_cannot_note_is_warned_about() {
+        use crate::ops::testing::{Recorded, env_on, scratch_dir};
+        let dir = scratch_dir("post-install-unrecorded");
+        let roots = Roots::scratch(&dir);
+        // A directory where the record should be: reading it fails.
+        std::fs::create_dir_all(install::manifest_path(&roots, "alpha")).unwrap();
+        let sink = Recorded::default();
+        let env = env_on(&sink, &dir);
+        let hook = PostInstallHook {
+            package: "alpha".into(),
+            vi: PathBuf::from("PostInstall.vi"),
+            files: Vec::new(),
+        };
+
+        record_failed_post_install(&env, &roots, &hook);
+
+        let events = sink.events();
+        assert!(
+            matches!(events.as_slice(), [Event::HookRecordNotUpdated { package, .. }] if package == "alpha"),
+            "{events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1226,7 +1226,7 @@ mod installation {
         let roots = bed.fake.roots();
         let record = bed.record("hooked");
         assert!(record.hook_skipped(HookKind::PostInstall));
-        crate::ops::hooks::settle_rerun(&roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
+        crate::ops::hooks::settle_rerun(&roots, "hooked", Ok(std::time::Duration::ZERO)).unwrap();
         let again = install_into(&bed, &["hooked"], "hooked", false);
         assert_eq!(told(&again), []);
     }

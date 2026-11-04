@@ -84,7 +84,7 @@ pub fn run_hooks(env: &OpEnv, package: Option<&str>, all: bool, timeout_secs: u6
         });
         let info = hook_action_info(&m.name, m.display_name.as_deref(), &target, &m.files);
         let ran = run_hook_vi(env, &mut conn, &target, timeout_secs, vi, &info);
-        match settle_rerun(&roots, m, ran) {
+        match settle_rerun(&roots, &m.name, ran) {
             Ok(took) => env.sink.emit(Event::RerunHookRan {
                 package: m.name.clone(),
                 took,
@@ -114,15 +114,9 @@ pub fn run_hooks(env: &OpEnv, package: Option<&str>, all: bool, timeout_secs: u6
 /// hooks as skipped, which lets uninstall run its hooks again. A failed run
 /// leaves the record as it was. Returns `ran` unchanged, except that a record
 /// that cannot be written turns the success into a failure.
-pub(crate) fn settle_rerun(
-    roots: &Roots,
-    record: &Manifest,
-    ran: Result<Duration>,
-) -> Result<Duration> {
+pub(crate) fn settle_rerun(roots: &Roots, name: &str, ran: Result<Duration>) -> Result<Duration> {
     let took = ran?;
-    let mut cleared = record.clone();
-    cleared.clear_skipped_hooks();
-    install::write_manifest(roots, &cleared)
+    install::clear_skipped_hooks(roots, name)
         .context("the hook ran, but its install record could not be updated")?;
     Ok(took)
 }
@@ -332,15 +326,31 @@ mod tests {
         let record = install::read_manifest(&roots, "hooked").unwrap();
         let before = std::fs::read(&file).unwrap();
 
-        let failed = settle_rerun(&roots, &record, Err(anyhow::anyhow!("boom")));
+        let failed = settle_rerun(&roots, "hooked", Err(anyhow::anyhow!("boom")));
         assert_eq!(failed.unwrap_err().to_string(), "boom");
         assert_eq!(std::fs::read(&file).unwrap(), before);
 
         let took = Duration::from_secs(2);
-        assert_eq!(settle_rerun(&roots, &record, Ok(took)).unwrap(), took);
+        assert_eq!(settle_rerun(&roots, "hooked", Ok(took)).unwrap(), took);
         let cleared = install::read_manifest(&roots, "hooked").unwrap();
         assert_eq!(cleared.skipped_hooks, Vec::<String>::new());
         assert_eq!(cleared.post_install_vi, record.post_install_vi);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hook_that_ran_but_whose_record_cannot_be_updated_is_a_failure_that_says_so() {
+        let dir = testing::scratch_dir("hooks-settle-unwritable");
+        let fake = testing::FakeInstallation::new(&dir);
+        let roots = fake.roots();
+        // A directory where the record should be: it can be neither read nor written.
+        std::fs::create_dir_all(install::manifest_path(&roots, "hooked")).unwrap();
+
+        let why = settle_rerun(&roots, "hooked", Ok(Duration::from_secs(2))).unwrap_err();
+        assert_eq!(
+            why.to_string(),
+            "the hook ran, but its install record could not be updated"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

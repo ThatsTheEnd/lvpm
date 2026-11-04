@@ -89,6 +89,13 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             error,
             ..
         } => r.line(Stream::Out, &format!("post-uninstall FAILED: {error}")),
+        Event::HookRecordNotUpdated { package, error } => r.line(
+            Stream::Err,
+            &super::printable(format!(
+                "warning: {package}: the install record could not be updated ({error}); \
+                 its uninstall hooks may run"
+            )),
+        ),
         // `lvpm run-hooks`: the same hook, on a line with no indent.
         Event::RerunHooksNothingToDo => r.line(
             Stream::Out,
@@ -212,6 +219,21 @@ mod tests {
             "alpha ... ok (2.0s)\nbeta ... FAILED: no VI Server\n\
              gamma: extracted hook is gone (gone.vi) — reinstall the package\n\
              nothing to do: no package with an extracted PostInstall hook\n"
+        );
+    }
+
+    #[test]
+    fn a_failed_post_install_the_record_could_not_note_is_a_warning_on_stderr() {
+        let (mut renderer, out, err) = renderer();
+        renderer.render(&Event::HookRecordNotUpdated {
+            package: "alpha".into(),
+            error: "access denied".into(),
+        });
+        assert_eq!(out.text(), "");
+        assert_eq!(
+            err.text(),
+            "warning: alpha: the install record could not be updated (access denied); \
+             its uninstall hooks may run\n"
         );
     }
 
