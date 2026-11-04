@@ -154,6 +154,14 @@ Reading the code found four places where the spec does not fit it.
   - Slice 2 decides and records how the wrapper reaches NI's VI (static link or by path) and the LabVIEW version it is saved in. A 2026 static link ties it to 2026, which matches the "tested on 2026 only" stance.
   - Inside, it calls `<labview>/vi.lib/AppBuilder/BuildTargetBuildSpecification.vi` with target `My Computer`. An error cluster with status false (a warning) is not a failure: the wrapper returns code 0.
   - Slice 2 (the probe) fixes the real terminal names of NI's VI before this interface is frozen.
+  - **Probe result (slice 2, 2026-11-04, LabVIEW 2026 26.3.1f1 64-bit, the only 2026 on this machine).** NI's VI was run over VI Server (ActiveX) against an unmodified copy of NI's Continuous Measurement template in the session scratchpad:
+    - Terminals: inputs `Path to project` (path, required), `Name of build specification (if empty: build all)` (string), `Name of target (My Computer)` (string), `error in (no error)`; outputs `error out` (error cluster), `Generated files` (1-D array of path).
+    - Build spec "Continuous Measurement and Logging Application": built in 50 s, `error out` status false code 0, `Generated files` = `Main.exe`, `Main.aliases`, `Main.ini` under `<project dir>/../builds/Continuous Measurement/<spec>/`, the exe first. So `outputs[0]` is the exe and the SBOM goes in its folder.
+    - A misspelled spec: `error out` status true, **code 1**, source `The build specification "<spec>" was not found.` followed by a blank line and `<Call Chain>...`. The wrapper's `error message` is the source up to the first blank line; `error code` is the code.
+    - An empty spec name builds every spec. The wrapper refuses an empty `build spec` before calling NI's VI (code 1, `no build spec given`), although `application::validate` already refuses it.
+  - **Wrapper interface, final**: inputs `project path` (Str, converted to a path inside), `build spec` (Str); outputs `outputs` (Str, `Generated files` joined by `
+`), `error code` (I32), `error message` (Str), `Done` (Bool, set last). Target is the constant `My Computer`.
+  - **Link**: a static subVI call to `<vi.lib>/AppBuilder/BuildTargetBuildSpecification.vi`. LabVIEW resolves `<vi.lib>` in whichever LabVIEW opens the wrapper, so the venv's LabVIEW finds its own copy. Saved in LabVIEW 2026; an older LabVIEW cannot open it, which matches "tested on 2026 only".
 - **SBOM next to the build**: written to `outputs[0].parent()/bom.cdx.json` only after `build` returns `Ok`, staged and renamed as `write_atomically` does. Empty `outputs` is an error: `LabVIEW reported no output for "<spec>"`. If the SBOM write fails, the error says `the build output is in <dir>, but bom.cdx.json could not be written: <cause>`.
 - **CLI** (`src/main.rs`):
   - `Build { no_check, #[arg(long)] app: bool, #[arg(long)] package: bool }`.
@@ -733,8 +741,8 @@ For each PR:
 - [x] Slice 1: the SBOM, and the SBOM inside the `.lvpkg`
   - [x] Step 1.1: `sbom::cyclonedx`
   - [x] Step 1.2: the SBOM inside the `.lvpkg`
-- [ ] Slice 2: probe NI's build VI
-  - [ ] Step 2.1: read and run `BuildTargetBuildSpecification.vi` once
+- [x] Slice 2: probe NI's build VI
+  - [x] Step 2.1: read and run `BuildTargetBuildSpecification.vi` once
 
 #### Wave 2
 - [ ] Slice 3: `[application]`, the flags and the refusals
