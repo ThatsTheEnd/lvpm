@@ -8,7 +8,7 @@ use lvpm_core::application;
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
-use lvpm_core::ops::build_app::{AppLauncher, AppSession};
+use lvpm_core::ops::build_app::{AppLauncher, AppSession, VenvAppLauncher};
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
 use lvpm_core::ops::relink::RelinkOptions;
@@ -954,38 +954,41 @@ fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyA
         .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
 }
 
-/// Stands in for the venv's LabVIEW until the build runs in it: it says what
-/// the real launcher would say before it starts LabVIEW, and does not start it.
-struct UnwiredLauncher {
+/// Says what is about to start, just before the venv's LabVIEW does. It is
+/// reached only once the build's preconditions hold.
+struct AnnouncingLauncher {
     build_spec: String,
+    labview: VenvAppLauncher,
 }
 
-impl AppLauncher for UnwiredLauncher {
+impl AppLauncher for AnnouncingLauncher {
     fn start(
         &self,
         venv: &venv::Venv,
-        _headless: bool,
-        _sink: &dyn EventSink,
+        headless: bool,
+        sink: &dyn EventSink,
     ) -> Result<Box<dyn AppSession>> {
         eprintln!(
             "building application \"{}\" with LabVIEW {} ...",
             self.build_spec,
             venv.target.year()
         );
-        bail!("launcher not wired")
+        self.labview.start(venv, headless, sink)
     }
 }
 
 /// A refused build is a result, not an error: its stdout and `--json` are
 /// `check`'s, and the exit code is 1. With both kinds, the package is shown as
-/// soon as it is written, so an application that then fails does not hide it.
+/// soon as it is written in the text output, so an application that then fails
+/// does not hide it; under `--json` a failure prints no JSON.
 fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) -> Result<Report> {
     let project = ops::build::project(env)?;
     let kinds = ops::build::kinds(&project, app, package, no_check)?;
-    let launcher = UnwiredLauncher {
+    let launcher = AnnouncingLauncher {
         build_spec: application::build_spec_as_written(&project)
             .unwrap_or_default()
             .to_string(),
+        labview: VenvAppLauncher::new(env.work_dir()),
     };
     let shown_early = kinds.package && kinds.app && !json;
     let show = |outcome: &ops::build::Outcome| {
@@ -994,6 +997,7 @@ fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) 
             print!("{}", render::build::built(built));
         }
     };
+    // shortcut: Ctrl-C skips Drop and leaves the spawned LabVIEW running, handle SIGINT in cmd_build when users report it.
     let outcomes =
         ops::build::run(env, kinds, no_check, &launcher, show).map_err(render::build::run_error)?;
     if let [ops::build::Outcome::Refused(library)] = outcomes.as_slice() {

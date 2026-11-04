@@ -42,7 +42,7 @@ const LOG_INDICATOR: &str = "report log out";
 /// over an empty list. Install manifests store forward slashes, which is how
 /// a whole relink pass came back reporting nothing at all. On Linux it is the
 /// other way round, so there the path goes as it is.
-fn lv_folder(folder: &Path) -> String {
+pub(crate) fn lv_folder(folder: &Path) -> String {
     let s = folder.to_string_lossy();
     #[cfg(windows)]
     let s = s.replace('/', "\\");

@@ -750,7 +750,7 @@ For each PR:
 
 #### Wave 3
 - [ ] Slice 4: the build in the venv's LabVIEW
-  - [ ] Step 4.1: `VenvAppLauncher` runs the wrapper VI
+  - [x] Step 4.1: `VenvAppLauncher` runs the wrapper VI
 
 #### Wave 4
 - [ ] Slice 5: the pilot application

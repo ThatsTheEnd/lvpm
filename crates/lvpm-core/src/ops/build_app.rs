@@ -15,11 +15,14 @@ use super::sync::{Selection, plan_sync};
 use crate::application::{self, Application};
 use crate::events::{EventSink, SyncStep};
 use crate::install;
+use crate::launch::{self, Instance};
 use crate::lockfile::{Lockfile, StaleReason};
 use crate::lvpkg::SBOM;
+use crate::relink;
 use crate::sbom::{self, Kind, Subject};
 use crate::venv::{self, Venv};
-use anyhow::{Context, anyhow};
+use crate::viserver::{Connection, LvValue, VIRef};
+use anyhow::{Context, anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -230,6 +233,170 @@ pub fn build_ready(
         sbom,
         took: started.elapsed(),
     })
+}
+
+/// The wrapper VI, embedded so the executable needs no companion file. It
+/// calls NI's `BuildTargetBuildSpecification.vi`, whose error cluster lvpm
+/// cannot read over VI Server, and flattens its answer into the controls and
+/// indicators below. Saved in LabVIEW 2026.
+const BUILD_VI_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/lv-src/build-app.vi"
+));
+
+/// The wrapper's front panel, by label.
+const PROJECT_CONTROL: &str = "project path";
+const BUILD_SPEC_CONTROL: &str = "build spec";
+const OUTPUTS_INDICATOR: &str = "outputs";
+const CODE_INDICATOR: &str = "error code";
+const MESSAGE_INDICATOR: &str = "error message";
+/// False when the VI starts, true as its last act.
+const DONE_INDICATOR: &str = "Done";
+
+/// How long to wait between two looks at `Done`.
+const POLL: Duration = Duration::from_millis(500);
+
+/// Starts the LabVIEW of the venv, fresh, and builds in it over VI Server.
+pub struct VenvAppLauncher {
+    /// Where the wrapper VI is written so LabVIEW can open it by path.
+    work_dir: PathBuf,
+}
+
+impl VenvAppLauncher {
+    pub fn new(work_dir: PathBuf) -> VenvAppLauncher {
+        VenvAppLauncher { work_dir }
+    }
+}
+
+impl AppLauncher for VenvAppLauncher {
+    fn start(
+        &self,
+        venv: &Venv,
+        headless: bool,
+        sink: &dyn EventSink,
+    ) -> anyhow::Result<Box<dyn AppSession>> {
+        // Before LabVIEW starts, so a folder that cannot be written costs no start.
+        let vi = materialize(&self.work_dir)?;
+        let (instance, connection) = launch::connect_venv(venv, headless, sink)?;
+        Ok(Box::new(VenvAppSession {
+            connection: Some(connection),
+            instance: Some(instance),
+            vi,
+        }))
+    }
+}
+
+/// Write the wrapper VI into `dir`, as the relink VI is.
+fn materialize(dir: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let vi = dir.join(format!("lvpm-build-app-{}.vi", env!("CARGO_PKG_VERSION")));
+    std::fs::write(&vi, BUILD_VI_BYTES)
+        .with_context(|| format!("materializing the build VI at {}", vi.display()))?;
+    Ok(vi)
+}
+
+/// A LabVIEW lvpm talks to over VI Server. Dropping it closes the connection
+/// and the LabVIEW lvpm spawned, whether the build worked or not.
+struct VenvAppSession {
+    connection: Option<Connection>,
+    instance: Option<Instance>,
+    vi: PathBuf,
+}
+
+impl AppSession for VenvAppSession {
+    fn build(
+        &mut self,
+        project: &Path,
+        target: &str,
+        build_spec: &str,
+    ) -> Result<Vec<PathBuf>, AppBuildError> {
+        let (project, build_spec) = wrapper_inputs(project, target, build_spec)?;
+        let connection = self.connection.as_mut().expect("open until dropped");
+        let vi = connection
+            .open_vi_reference(&self.vi)
+            .with_context(|| format!("opening {}", self.vi.display()))
+            .map_err(AppBuildError::Other)?;
+        let answer = run_wrapper(connection, vi, &project, &build_spec);
+        let _ = connection.release(vi);
+        let (code, message, outputs) = answer.map_err(AppBuildError::Other)?;
+        wrapper_outputs(code, message, &outputs)
+    }
+}
+
+impl Drop for VenvAppSession {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            connection.close();
+        }
+        if let Some(instance) = self.instance.take() {
+            instance.shutdown_if_spawned();
+        }
+    }
+}
+
+/// What the wrapper's two controls are set to. Its target is fixed, so another
+/// one is refused rather than ignored.
+fn wrapper_inputs(
+    project: &Path,
+    target: &str,
+    build_spec: &str,
+) -> Result<(String, String), AppBuildError> {
+    if target != TARGET {
+        return Err(AppBuildError::Other(anyhow!(
+            "the build VI builds the {TARGET} target only, not \"{target}\""
+        )));
+    }
+    // Native separators: LabVIEW splits a Windows path on backslashes only.
+    Ok((relink::lv_folder(project), build_spec.to_string()))
+}
+
+/// Set the wrapper's inputs, run it, wait for `Done`, and read its answer:
+/// the error code, the error message and the outputs, joined by newlines.
+fn run_wrapper(
+    connection: &mut Connection,
+    vi: VIRef,
+    project: &str,
+    build_spec: &str,
+) -> anyhow::Result<(i32, String, String)> {
+    connection.ctrl_val_set(vi, PROJECT_CONTROL, LvValue::Str(project.to_string()))?;
+    connection.ctrl_val_set(vi, BUILD_SPEC_CONTROL, LvValue::Str(build_spec.to_string()))?;
+    connection.ctrl_val_set(vi, DONE_INDICATOR, LvValue::Bool(false))?;
+    connection.run_vi_async(vi)?;
+    // No overall limit: a build runs until LabVIEW says it is done.
+    loop {
+        std::thread::sleep(POLL);
+        match connection.ctrl_val_get(vi, DONE_INDICATOR)? {
+            LvValue::Bool(true) => break,
+            LvValue::Bool(false) => {}
+            other => bail!("{DONE_INDICATOR} read back as {other}, not a boolean"),
+        }
+    }
+    let code = match connection.ctrl_val_get(vi, CODE_INDICATOR)? {
+        LvValue::I32(code) => code,
+        other => bail!("{CODE_INDICATOR} read back as {other}, not an I32"),
+    };
+    let mut text = |name: &str| match connection.ctrl_val_get(vi, name)? {
+        LvValue::Str(text) => Ok(text),
+        other => bail!("{name} read back as {other}, not a string"),
+    };
+    Ok((code, text(MESSAGE_INDICATOR)?, text(OUTPUTS_INDICATOR)?))
+}
+
+/// The wrapper's answer: code 0 is success and `outputs` holds the generated
+/// files, one per line; any other code is LabVIEW's error.
+fn wrapper_outputs(
+    code: i32,
+    message: String,
+    outputs: &str,
+) -> Result<Vec<PathBuf>, AppBuildError> {
+    if code != 0 {
+        return Err(AppBuildError::LabView(LvError { code, message }));
+    }
+    Ok(outputs
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect())
 }
 
 /// What the tests of the application build and of the run that sequences it
@@ -763,5 +930,113 @@ mod tests {
         assert_eq!(fake.log().starts, 0);
         assert!(!folder.builds().exists());
         folder.finish();
+    }
+
+    #[test]
+    fn the_embedded_wrapper_is_a_labview_2026_vi_that_has_every_label_lvpm_uses() {
+        let vi = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lv-src/build-app.vi");
+        assert_eq!(crate::ops::resave::saved_major(&vi), Some(26));
+        for label in [
+            PROJECT_CONTROL,
+            BUILD_SPEC_CONTROL,
+            OUTPUTS_INDICATOR,
+            CODE_INDICATOR,
+            MESSAGE_INDICATOR,
+            DONE_INDICATOR,
+        ] {
+            let found = BUILD_VI_BYTES
+                .windows(label.len())
+                .any(|window| window == label.as_bytes());
+            assert!(found, "the wrapper VI has no label {label:?}");
+        }
+    }
+
+    #[test]
+    fn the_wrapper_is_written_where_asked_and_is_the_embedded_one() {
+        let dir = testing::scratch_dir("app-materialize").join("work");
+        let vi = materialize(&dir).unwrap();
+        assert_eq!(vi.parent(), Some(dir.as_path()));
+        assert!(
+            vi.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("lvpm-build-app-")
+        );
+        assert_eq!(std::fs::read(&vi).unwrap(), BUILD_VI_BYTES);
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_written_stops_the_launcher_before_labview_starts() {
+        let dir = testing::scratch_dir("app-materialize-fails");
+        // A file where the folder should be: nothing can be created in it.
+        let blocked = dir.join("file");
+        std::fs::write(&blocked, "x").unwrap();
+        let launcher = VenvAppLauncher::new(blocked.join("work"));
+        let venv = testing::venv_in(&dir);
+        let failure = launcher
+            .start(&venv, true, &crate::events::NullSink)
+            .err()
+            .expect("the wrapper cannot be written");
+        assert!(format!("{failure:#}").contains("creating "), "{failure:#}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_wrapper_gets_the_project_with_native_separators_and_the_spec_as_it_is() {
+        let (project, spec) =
+            wrapper_inputs(Path::new("C:/work/app/Main.lvproj"), TARGET, "Demo App").unwrap();
+        #[cfg(windows)]
+        assert_eq!(project, r"C:\work\app\Main.lvproj");
+        #[cfg(not(windows))]
+        assert_eq!(project, "C:/work/app/Main.lvproj");
+        assert_eq!(spec, "Demo App");
+    }
+
+    #[test]
+    fn a_target_the_wrapper_cannot_build_is_refused_not_ignored() {
+        let why = wrapper_inputs(Path::new("Main.lvproj"), "RT CompactRIO", "S").unwrap_err();
+        let AppBuildError::Other(cause) = why else {
+            panic!("not LabVIEW's error");
+        };
+        assert_eq!(
+            cause.to_string(),
+            "the build VI builds the My Computer target only, not \"RT CompactRIO\""
+        );
+    }
+
+    #[test]
+    fn code_zero_hands_on_the_outputs_one_per_line_and_skips_blank_lines() {
+        let said = "b/Main.exe\n\nb/data\r\nb/Main.ini\n";
+        assert_eq!(
+            wrapper_outputs(0, String::new(), said).unwrap(),
+            [
+                PathBuf::from("b/Main.exe"),
+                PathBuf::from("b/data"),
+                PathBuf::from("b/Main.ini"),
+            ]
+        );
+        assert!(wrapper_outputs(0, String::new(), "").unwrap().is_empty());
+    }
+
+    #[test]
+    fn any_other_code_is_labviews_error_with_its_message_whatever_the_outputs_say() {
+        let why =
+            wrapper_outputs(1003, "The VI is not executable".into(), "b/Main.exe").unwrap_err();
+        let AppBuildError::LabView(error) = why else {
+            panic!("expected LabVIEW's error");
+        };
+        assert_eq!(
+            error,
+            LvError {
+                code: 1003,
+                message: "The VI is not executable".into()
+            }
+        );
+        let negative = wrapper_outputs(-1, String::new(), "").unwrap_err();
+        assert!(matches!(
+            negative,
+            AppBuildError::LabView(LvError { code: -1, .. })
+        ));
     }
 }

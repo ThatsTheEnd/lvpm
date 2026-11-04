@@ -54,7 +54,7 @@ pub fn validate(p: &Project, root: &Path) -> Result<Application> {
         "the build specification's name in the LabVIEW project",
     )?;
     let project = project_file(root, &project)?;
-    let (Some(name), Some(version)) = (non_empty(&p.name), non_empty(&p.version)) else {
+    let (Some(name), Some(version)) = (non_blank(&p.name), non_blank(&p.version)) else {
         bail!(
             "an application build needs project.name and project.version in lvpm.toml, for the SBOM"
         );
@@ -67,8 +67,8 @@ pub fn validate(p: &Project, root: &Path) -> Result<Application> {
     })
 }
 
-fn non_empty(value: &Option<String>) -> Option<&str> {
-    value.as_deref().filter(|v| !v.is_empty())
+fn non_blank(value: &Option<String>) -> Option<&str> {
+    value.as_deref().filter(|v| !v.trim().is_empty())
 }
 
 /// The key's value: present, a string and not blank.
@@ -260,6 +260,8 @@ build-spec = "My Application"
             GOOD.replace("version = \"1.2.3\"\n", ""),
             GOOD.replace("name = \"demo_app\"\n", ""),
             GOOD.replace("\"1.2.3\"", "\"\""),
+            GOOD.replace("\"1.2.3\"", "\"  \""),
+            GOOD.replace("\"demo_app\"", "\" \t\""),
         ] {
             assert_eq!(error(&root, &text), said, "{text}");
         }

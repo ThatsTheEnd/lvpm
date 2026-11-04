@@ -11,7 +11,7 @@ use crate::venv::Venv;
 use crate::viserver::Connection;
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Starts the LabVIEW the resave runs in. The seam the tests replace.
 pub(crate) trait Launcher {
@@ -29,30 +29,13 @@ pub(crate) trait Session {
 #[cfg_attr(test, allow(dead_code))]
 struct VenvLauncher;
 
-/// How long one VI Server call may go unanswered.
-#[cfg_attr(test, allow(dead_code))]
-const CALL_TIMEOUT: Duration = Duration::from_secs(180);
-
 impl Launcher for VenvLauncher {
     fn start(&self, venv: &Venv, headless: bool, sink: &dyn EventSink) -> Result<Box<dyn Session>> {
-        let instance = launch::ensure_instance(venv, true, CALL_TIMEOUT, headless, sink)?;
-        // `ensure_instance` waited for one handshake; a LabVIEW still settling
-        // can refuse the next (error 63) for a moment.
-        let mut last = None;
-        for _ in 0..10 {
-            match Connection::connect("127.0.0.1", instance.port, CALL_TIMEOUT) {
-                Ok(connection) => {
-                    return Ok(Box::new(VenvSession {
-                        connection: Some(connection),
-                        instance: Some(instance),
-                    }));
-                }
-                Err(why) => last = Some(why),
-            }
-            std::thread::sleep(Duration::from_secs(2));
-        }
-        instance.shutdown_if_spawned();
-        Err(last.expect("tried at least once"))
+        let (instance, connection) = launch::connect_venv(venv, headless, sink)?;
+        Ok(Box::new(VenvSession {
+            connection: Some(connection),
+            instance: Some(instance),
+        }))
     }
 }
 

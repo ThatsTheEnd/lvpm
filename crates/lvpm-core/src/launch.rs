@@ -503,6 +503,33 @@ pub fn ensure_instance(
     })
 }
 
+/// How long one VI Server call to a venv's LabVIEW may go unanswered.
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// A fresh LabVIEW on `v` and a VI Server connection to it. Neither closes on
+/// drop: the caller closes the connection, then calls
+/// [`Instance::shutdown_if_spawned`]. When no connection is made, the LabVIEW
+/// this started is ended before the error returns.
+pub(crate) fn connect_venv(
+    v: &Venv,
+    headless: bool,
+    sink: &dyn EventSink,
+) -> Result<(Instance, Connection)> {
+    let instance = ensure_instance(v, true, CALL_TIMEOUT, headless, sink)?;
+    // `ensure_instance` waited for one handshake; a LabVIEW still settling
+    // can refuse the next (error 63) for a moment.
+    let mut last = None;
+    for _ in 0..10 {
+        match Connection::connect("127.0.0.1", instance.port, CALL_TIMEOUT) {
+            Ok(connection) => return Ok((instance, connection)),
+            Err(why) => last = Some(why),
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    instance.shutdown_if_spawned();
+    Err(last.expect("tried at least once"))
+}
+
 impl Instance {
     /// End the LabVIEW lvpm started, and only that one. An instance found
     /// already running is the user's, and stays.
