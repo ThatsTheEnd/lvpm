@@ -18,7 +18,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// Project B's dependencies: both pilots, at the pinned versions.
-const PROJECT_B_DEPENDENCIES: [(&str, &str); 2] = [
+pub(super) const PROJECT_B_DEPENDENCIES: [(&str, &str); 2] = [
     ("hse_lib_hse_logger", "2.2.2.114"),
     ("labview_open_source_lib_serializer", "1.2.1.16"),
 ];

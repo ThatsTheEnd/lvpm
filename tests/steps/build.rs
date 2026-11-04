@@ -5,6 +5,7 @@
 
 use crate::CliWorld;
 use crate::steps::check::quoted;
+use crate::steps::pilots::{PROJECT_B_DEPENDENCIES, copy_pilots_to};
 use crate::support::events::RecordingSink;
 use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::golden::Output;
@@ -1263,4 +1264,91 @@ async fn stdout_mentions(world: &mut CliWorld, first: String, second: String) {
 #[then("dist holds no package")]
 async fn dist_holds_no_package(world: &mut CliWorld) {
     world.no_package_in_dist();
+}
+
+// ---- the pilot application ----
+
+const PILOT_APP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pilot-app");
+
+fn pilot_app_file(rel: &str) -> String {
+    let path = PathBuf::from(PILOT_APP).join(rel);
+    std::fs::read_to_string(&path).unwrap_or_else(|why| panic!("{}: {why}", path.display()))
+}
+
+/// The scenario reads the repository's files, so there is nothing to set up.
+#[given("the repository")]
+async fn the_repository(_: &mut CliWorld) {}
+
+#[then(
+    regex = r#"^tests/fixtures/pilot-app/lvpm\.toml has \[application\] build-spec "([^"]+)" and both pilots in \[dependencies\]$"#
+)]
+async fn pilot_app_manifest(_: &mut CliWorld, build_spec: String) {
+    let manifest: toml::Table = pilot_app_file(MANIFEST_FILE)
+        .parse()
+        .expect("the pilot application's manifest is TOML");
+    assert_eq!(
+        manifest["application"]["build-spec"].as_str(),
+        Some(build_spec.as_str())
+    );
+    for (name, version) in PROJECT_B_DEPENDENCIES {
+        assert_eq!(
+            manifest["dependencies"][name].as_str(),
+            Some(version),
+            "[dependencies] {name}"
+        );
+    }
+}
+
+#[then(regex = r#"^tests/fixtures/pilot-app/README\.md names "([^"]+)", "([^"]+)" and "([^"]+)"$"#)]
+async fn pilot_app_readme_names(_: &mut CliWorld, a: String, b: String, c: String) {
+    let readme = pilot_app_file("README.md");
+    for name in [a, b, c] {
+        assert!(readme.contains(&name), "the README does not name {name:?}");
+    }
+}
+
+#[then(regex = r#"^the README has a section "([^"]+)"$"#)]
+async fn pilot_app_readme_section(_: &mut CliWorld, heading: String) {
+    let has = pilot_app_file("README.md")
+        .lines()
+        .any(|line| line.starts_with('#') && line.trim_start_matches('#').trim() == heading);
+    assert!(has, "the README has no heading {heading:?}");
+}
+
+/// The build spec's destination is relative to the `.lvproj`, which sits in
+/// `app/`, so `../builds/` is the fixture's `builds/`.
+#[then(regex = r#"^the \.lvproj's build spec writes below the fixture's "([^"]+)" folder$"#)]
+async fn pilot_app_builds_below(_: &mut CliWorld, folder: String) {
+    let lvproj = pilot_app_file("app/Continuous Measurement.lvproj");
+    let spec = format!(
+        "<Property Name=\"Bld_buildSpecName\" Type=\"Str\">{}</Property>",
+        "Continuous Measurement and Logging Application"
+    );
+    let after = lvproj.split(&spec).nth(1).expect("the build spec is there");
+    let item = after.split("</Item>").next().expect("the spec's item ends");
+    let path = item
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("<Property Name=\"Destination[0].path\" Type=\"Path\">")
+        })
+        .expect("the spec has a Destination[0].path");
+    assert!(
+        path.starts_with(&format!("../{folder}/")),
+        "Destination[0].path is {path}"
+    );
+}
+
+/// The lock and the manifest, with the pilots as the only source, in the
+/// sandbox: `app/` is not copied, so `[application] project` is not a file
+/// there, and `lock --check` reads the manifest and the lock only.
+#[then("the fixture's lvpm.lock is current")]
+async fn pilot_app_lock_is_current(world: &mut CliWorld) {
+    for file in [MANIFEST_FILE, "lvpm.lock"] {
+        world.put(file, &pilot_app_file(file));
+    }
+    copy_pilots_to(&world.sandbox.add_local_source_folder("pilots"));
+    world.run("lvpm lock --check", None);
+    let output = world.output();
+    assert_eq!(output.exit_code, 0, "{output:?}");
 }

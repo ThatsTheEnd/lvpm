@@ -17,3 +17,6 @@ __pycache__/
 /.claude/metrics/
 /.claude/memory/
 /metrics/
+
+# What lvpm build --app writes beside the pilot application
+/tests/fixtures/pilot-app/builds/

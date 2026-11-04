@@ -5,3 +5,6 @@
 *.ctt binary
 *.llb binary
 *.lvlib binary
+
+# NI template copied byte-for-byte: no line-ending conversion, or the VIs and project change
+tests/fixtures/pilot-app/app/** binary

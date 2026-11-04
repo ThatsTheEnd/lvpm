@@ -187,3 +187,11 @@ Feature: lvpm build writes an SBOM, and builds applications
   Scenario: the help names the flags
     When I run "lvpm build --help"
     Then stdout mentions "--app" and "--package"
+
+  Scenario: the pilot application is in the repository
+    Given the repository
+    Then tests/fixtures/pilot-app/lvpm.toml has [application] build-spec "Continuous Measurement and Logging Application" and both pilots in [dependencies]
+    And tests/fixtures/pilot-app/README.md names "Continuous Measurement and Logging", "LabVIEW 2026" and "National Instruments"
+    And the README has a section "What lvpm changed"
+    And the .lvproj's build spec writes below the fixture's "builds" folder
+    And the fixture's lvpm.lock is current
