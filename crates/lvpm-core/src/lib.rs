@@ -26,6 +26,7 @@ pub mod project;
 pub mod refresh;
 pub mod released;
 pub mod relink;
+pub mod sbom;
 pub mod spec;
 pub mod target;
 pub mod timefmt;
