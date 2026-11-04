@@ -7,8 +7,8 @@
 //! SHA-256, one `<sha256 hex>  <path>` line each.
 //!
 //! A package may also carry its SBOM, [`SBOM`], at the root. It is not part of
-//! the payload and is never installed. Such a package says `format = 2`, so an
-//! lvpm that reads only the payload asks for an update instead of naming a path.
+//! the payload and is never installed. Such a package says `format = 2`: an lvpm
+//! older than this change rejects it with "update lvpm" instead of reading it.
 
 use crate::project::{Constraint, labview_minimum};
 use crate::spec::{FileGroup, Spec};
@@ -94,7 +94,7 @@ fn as_table<S: Serializer>(deps: &&[(String, String)], s: S) -> Result<S::Ok, S:
 
 impl Meta {
     /// `package.toml`'s text, saying it is of `format`.
-    pub fn to_toml(&self, format: u32) -> String {
+    fn to_toml(&self, format: u32) -> String {
         toml::to_string(&Wire {
             format,
             project: WireProject {
@@ -394,16 +394,11 @@ fn read_within<R: Read + Seek>(zip: &mut ZipArchive<R>, total: u64) -> Result<Sp
     spec_from(&package_toml, &names)
 }
 
-/// `package.toml`'s `text` and the archive's entry `names` as a [`Spec`].
-fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
-    let text = std::str::from_utf8(package_toml).context("package.toml is not UTF-8")?;
-    let toml: toml::Table = match text.parse() {
-        Ok(t) => t,
-        Err(e) => bail!("package.toml is not valid TOML: {e}"),
-    };
-    let sbom_allowed = match toml.get("format") {
-        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_PLAIN) => false,
-        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_WITH_SBOM) => true,
+/// Whether `package.toml`'s `format` lets the package carry an [`SBOM`].
+fn sbom_allowed(toml: &toml::Table) -> Result<bool> {
+    match toml.get("format") {
+        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_PLAIN) => Ok(false),
+        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_WITH_SBOM) => Ok(true),
         Some(toml::Value::Integer(n)) if *n > i64::from(FORMAT_WITH_SBOM) => {
             bail!("package.toml format = {n} was written by a newer lvpm; update lvpm")
         }
@@ -411,7 +406,17 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
             "package.toml format must be {FORMAT_PLAIN} or {FORMAT_WITH_SBOM}; \
              this is not a valid .lvpkg"
         ),
+    }
+}
+
+/// `package.toml`'s `text` and the archive's entry `names` as a [`Spec`].
+fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
+    let text = std::str::from_utf8(package_toml).context("package.toml is not UTF-8")?;
+    let toml: toml::Table = match text.parse() {
+        Ok(t) => t,
+        Err(e) => bail!("package.toml is not valid TOML: {e}"),
     };
+    let sbom_allowed = sbom_allowed(&toml)?;
 
     let project = table(&toml, "project")?;
     let name = text_of(project, "project", "name")?;
@@ -674,6 +679,23 @@ mod tests {
                 .starts_with("format = 2\n")
         );
         assert_eq!(all[2].2, b"{}");
+    }
+
+    #[test]
+    fn the_sbom_stays_before_a_payload_that_sorts_before_it() {
+        let mut m = meta();
+        m.install_dir = "Addons/V/D".into();
+        let bytes = write(&m, &files(&["b.vi", "a.vi"]), Some(b"{}")).unwrap();
+        assert_eq!(
+            names(&bytes),
+            [
+                "RECORD",
+                "package.toml",
+                "bom.cdx.json",
+                "Addons/V/D/a.vi",
+                "Addons/V/D/b.vi"
+            ]
+        );
     }
 
     // --- reading ---
@@ -984,6 +1006,18 @@ mod tests {
             ["vi.lib/V/D/a.vi", "vi.lib/V/D/b.vi"]
         );
         assert_eq!(with.file_groups[0].files, without.file_groups[0].files);
+    }
+
+    #[test]
+    fn a_format_2_package_with_no_sbom_reads() {
+        let mut entries = written();
+        let text = toml_of(&entries).replace("format = 1", "format = 2");
+        set(&mut entries, PACKAGE_TOML, text.as_bytes());
+        let spec = read_bytes(zip_of(&with_record(entries))).unwrap();
+        assert_eq!(
+            spec.file_groups[0].files,
+            ["vi.lib/V/D/a.vi", "vi.lib/V/D/b.vi"]
+        );
     }
 
     #[test]

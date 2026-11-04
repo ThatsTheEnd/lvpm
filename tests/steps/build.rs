@@ -76,8 +76,8 @@ impl CliWorld {
         std::fs::write(self.work(MANIFEST_FILE), text).expect("write the manifest");
     }
 
-    /// `lvpm build` as the S1, S2 and S7a scenarios mean it: their members are
-    /// text, not VIs, and they have no venv, so the member check is skipped.
+    /// `lvpm build` for the scenarios whose members are text, not VIs, and that
+    /// have no venv, so the member check is skipped.
     pub(super) fn lvpm_build_unchecked(&mut self) {
         self.lvpm_build_with(&["--no-check"]);
     }
@@ -369,9 +369,7 @@ async fn unreadable(world: &mut CliWorld) {
 
 #[given(regex = r#"^dist holds a built "([^"]+)"$"#)]
 async fn built_before(world: &mut CliWorld, _package: String) {
-    world.lvpm_build_unchecked();
-    world.succeeded();
-    world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
+    world.build_keeping_the_package();
 }
 
 #[when("lvpm build runs")]
@@ -383,9 +381,7 @@ async fn build_runs(world: &mut CliWorld) {
     "lvpm build runs, every member's modification time is set to a different value, dist is emptied, and lvpm build runs again"
 )]
 async fn build_twice(world: &mut CliWorld) {
-    world.lvpm_build_unchecked();
-    world.succeeded();
-    world.build.earlier = Some(std::fs::read(world.package_path()).expect("the package"));
+    world.build_keeping_the_package();
     let then = SystemTime::now() - Duration::from_secs(86_400);
     for (i, rel) in world.build.members.clone().iter().enumerate() {
         let file = std::fs::File::options()
@@ -532,7 +528,7 @@ fn holds(world: &CliWorld, wanted: &[String]) {
 #[then("both packages are byte-identical")]
 async fn identical(world: &mut CliWorld) {
     world.succeeded();
-    let now = std::fs::read(world.package_path()).expect("the package");
+    let now = world.package_bytes();
     assert!(
         world.build.earlier.as_ref() == Some(&now),
         "the two builds differ"
@@ -663,14 +659,14 @@ async fn found_lists(world: &mut CliWorld, keys: String) {
 #[then("it fails and that package is unchanged")]
 async fn fails_unchanged(world: &mut CliWorld) {
     world.failed();
-    let now = std::fs::read(world.package_path()).expect("the package");
+    let now = world.package_bytes();
     assert!(
         world.build.earlier.as_ref() == Some(&now),
         "the package changed"
     );
 }
 
-// ---- the SBOM in the package (S9) ----
+// ---- the SBOM in the package ----
 
 const ANY_VERSION: &str = ">=1.0";
 /// The consumer's oldest LabVIEW, and the one the library locks for: newer
@@ -716,6 +712,14 @@ impl CliWorld {
         std::fs::read(self.package_path()).expect("the package")
     }
 
+    /// `lvpm build`, which must succeed, and the package it wrote kept as the
+    /// earlier one.
+    fn build_keeping_the_package(&mut self) {
+        self.lvpm_build_unchecked();
+        self.succeeded();
+        self.build.earlier = Some(self.package_bytes());
+    }
+
     /// The package's SBOM text, as JSON.
     fn sbom(&self) -> Value {
         let text = entry_of(&self.package_bytes(), SBOM).expect("a bom.cdx.json entry");
@@ -735,7 +739,7 @@ impl CliWorld {
     }
 }
 
-/// The library of S1, with the fixtures it may depend on published.
+/// A library project with the fixtures it may depend on published.
 async fn library_project(world: &mut CliWorld) {
     project(
         world,
@@ -824,16 +828,22 @@ async fn library_with_no_dependencies(world: &mut CliWorld) {
     library_project(world).await;
 }
 
+#[given(
+    regex = r#"^a library project depending on "([^"]+)" ([\d.]+) and an lvpm\.lock that cannot be read$"#
+)]
+async fn library_with_an_unreadable_lock(world: &mut CliWorld, name: String, version: String) {
+    library_depending_on(world, name, version).await;
+    std::fs::write(world.lock_path(), "this is not a lock = =").expect("write lvpm.lock");
+}
+
 #[when("lvpm build --no-check runs")]
 async fn build_without_check(world: &mut CliWorld) {
-    world.lvpm_build_with(&["--no-check"]);
+    world.lvpm_build_unchecked();
 }
 
 #[when("lvpm build runs twice, keeping the first package")]
 async fn build_twice_keeping_the_first(world: &mut CliWorld) {
-    world.lvpm_build_unchecked();
-    world.succeeded();
-    world.build.earlier = Some(world.package_bytes());
+    world.build_keeping_the_package();
     world.lvpm_build_unchecked();
 }
 
@@ -910,6 +920,24 @@ async fn sbom_lists_exactly(world: &mut CliWorld, listed: String) {
     }
 }
 
+#[then(regex = r#"^lvpm\.lock lists "([^"]+)" in the group "([^"]+)"$"#)]
+async fn lock_lists_in_group(world: &mut CliWorld, name: String, group: String) {
+    let locked = world.locked_package(&name);
+    let groups = locked["groups"].as_array().expect("groups");
+    assert!(
+        groups.iter().any(|g| g.as_str() == Some(&group)),
+        "{locked:?}"
+    );
+}
+
+#[then(regex = r#"^its bom\.cdx\.json has metadata\.component "([^"]+)" ([\d.]+)$"#)]
+async fn sbom_describes_the_package(world: &mut CliWorld, name: String, version: String) {
+    let sbom = world.sbom();
+    let component = &sbom["metadata"]["component"];
+    assert_eq!(component["name"], name.as_str(), "{sbom}");
+    assert_eq!(component["version"], version.as_str(), "{sbom}");
+}
+
 #[then(regex = r#"^(\S+)'s dependencies name "([^"]+)"$"#)]
 async fn sbom_dependencies_name(world: &mut CliWorld, package: String, required: String) {
     let sbom = world.sbom();
@@ -953,13 +981,10 @@ async fn sbom_of_a_library_with_no_components(world: &mut CliWorld, kind: String
     );
 }
 
-#[then(regex = r"^the package has no bom\.cdx\.json( and says format = 1)?$")]
-async fn package_has_no_sbom(world: &mut CliWorld, format: String) {
+#[then("the package has no bom.cdx.json")]
+async fn package_has_no_sbom(world: &mut CliWorld) {
     world.succeeded();
     assert_eq!(entry_of(&world.package_bytes(), SBOM), None);
-    if !format.is_empty() {
-        assert_eq!(world.package_toml()["format"].as_integer(), Some(1));
-    }
 }
 
 #[given(regex = r#"^a built "([^"]+)" with bom\.cdx\.json$"#)]

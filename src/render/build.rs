@@ -66,6 +66,10 @@ fn no_sbom(sbom: &Sbom) -> String {
         Sbom::Included => return String::new(),
         Sbom::NoLock => "no lvpm.lock".to_string(),
         Sbom::Stale(reason) => format!("lvpm.lock is out of date ({})", lock::stale_reason(reason)),
+        Sbom::Unreadable(reason) => format!(
+            "lvpm.lock cannot be read ({})",
+            reason.lines().next().unwrap_or_default()
+        ),
     };
     format!("{why}, so the package has no SBOM; run lvpm lock to add one\n")
 }
@@ -110,7 +114,12 @@ mod tests {
         let with = a_build(None, Sbom::Included);
         let path = with.path.display();
         assert_eq!(built(&with), format!("built {path} (4 files, with SBOM)\n"));
-        for without in [Sbom::NoLock, Sbom::Stale(StaleReason::LabviewChanged)] {
+        let without = [
+            Sbom::NoLock,
+            Sbom::Stale(StaleReason::LabviewChanged),
+            Sbom::Unreadable("bad".into()),
+        ];
+        for without in without {
             assert_eq!(
                 built(&a_build(None, without)),
                 format!("built {path} (4 files)\n")
@@ -141,6 +150,18 @@ mod tests {
              run lvpm lock to add one"
         );
         assert_eq!(lines.len(), 2, "{text}");
+    }
+
+    #[test]
+    fn a_lock_that_cannot_be_read_says_so_and_why_in_its_first_line() {
+        let unreadable = a_build(None, Sbom::Unreadable("expected `=`\nat line 2".into()));
+        assert_eq!(
+            built_warning(&unreadable),
+            format!(
+                "{SKIPPED}lvpm.lock cannot be read (expected `=`), so the package has no SBOM; \
+                 run lvpm lock to add one\n"
+            )
+        );
     }
 
     #[test]

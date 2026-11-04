@@ -130,8 +130,7 @@ Feature: lvpm build checks the library's members first
     And [dependencies] names "spare"
     When lvpm build --no-check runs on it
     Then it exits 0 and dist holds the package
-    And stderr has the line "check skipped (--no-check)"
-    And stderr's last line is "no lvpm.lock, so the package has no SBOM; run lvpm lock to add one"
+    And stderr is exactly the lines "check skipped (--no-check)" and "no lvpm.lock, so the package has no SBOM; run lvpm lock to add one"
 
   Scenario: --json reports a refusal as check does
     Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty

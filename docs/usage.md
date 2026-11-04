@@ -673,17 +673,19 @@ and what it requires. A package that only `[dev-dependencies]` or a
 bytes. `lvpm install` does not install the file. stdout says
 `built <path> (N files, with SBOM)`.
 
-- A project with no `[dependencies]` gets an SBOM that lists no packages, even
-  with no lock.
-- A project with `[dependencies]` and no `lvpm.lock`, or a lock that is out of
-  date, still builds. The package has no SBOM, and stderr says why, after the
-  check's own warnings and once the package is written:
-  `no lvpm.lock, so the package has no SBOM; run lvpm lock to add one` or
+- A project with no `[dependencies]` gets an SBOM that lists no packages,
+  whatever the lock: missing, out of date or unreadable. The lock is not read.
+- A project with `[dependencies]` and no `lvpm.lock`, a lock that cannot be
+  read, or a lock that is out of date, still builds. The package has no SBOM,
+  and stderr says why, after the check's own warnings and once the package is
+  written:
+  `no lvpm.lock, so the package has no SBOM; run lvpm lock to add one`,
+  `lvpm.lock cannot be read (<reason>), so the package has no SBOM; run lvpm lock to add one` or
   `lvpm.lock is out of date (<reason>), so the package has no SBOM; run lvpm lock to add one`.
   Run `lvpm lock`, then build again.
 - `--no-check` keeps the SBOM.
 - A package with an SBOM says `format = 2` in its `package.toml`; one without
-  stays `format = 1`. **These packages need an lvpm with the SBOM (S9).** lvpm
+  stays `format = 1`. **These packages need an lvpm release that includes this change.** lvpm
   0.23 and older stop on them with
   `package.toml format = 2 was written by a newer lvpm; update lvpm`. Update
   lvpm where the package is installed. A package without an SBOM, and every

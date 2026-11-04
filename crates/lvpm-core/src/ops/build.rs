@@ -10,15 +10,17 @@
 //! does, and a member that breaks a rule refuses the build before the members
 //! are packaged or the package is written.
 //!
-//! The package carries an SBOM of the locked `[dependencies]`. A project that
-//! has dependencies but no usable lock gets a package without one, and the
-//! outcome says why: the build does not fail over the lock.
+//! The package carries an SBOM of the locked `[dependencies]`. A project with
+//! no `[dependencies]` needs no lock: its SBOM lists nothing. One that has
+//! dependencies but no usable lock (missing, unreadable or out of date) gets a
+//! package without an SBOM, and the outcome says why: the build does not fail
+//! over the lock.
 
 use super::check::{Library, check_library};
 use super::env::OpEnv;
 use crate::errors::{CheckError, LockError};
-use crate::lockfile::{self, Lockfile, StaleReason};
-use crate::project::{self, Project};
+use crate::lockfile::{self, StaleReason};
+use crate::project::Project;
 use crate::sbom::{self, Kind, Subject};
 use crate::{distribution, lvlib, lvpkg};
 use anyhow::{Context, Result, bail};
@@ -45,6 +47,8 @@ pub enum Sbom {
     NoLock,
     /// `lvpm.lock` no longer represents the manifest, so it is not listed from.
     Stale(StaleReason),
+    /// `lvpm.lock` is there but cannot be read; the reason is in its own words.
+    Unreadable(String),
 }
 
 /// What a build did: wrote the package, or refused to.
@@ -56,7 +60,7 @@ pub enum Outcome {
 }
 
 pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
-    let (root, d) = super::packaged(env, "build")?;
+    let (root, d, project) = super::packaged(env, "build")?;
     let root = root.as_path();
     let checked = match check {
         true => Some(check_library(env)?),
@@ -120,13 +124,7 @@ pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
         })
         .collect::<Result<_>>()?;
     let meta = d.meta();
-    let project = env.read_manifest(&root.join(project::FILE_NAME))?;
-    let subject = Subject {
-        name: meta.name.clone(),
-        version: meta.version.clone(),
-        kind: Kind::Library,
-    };
-    let (sbom_text, sbom) = package_sbom(&project, read_lock(root)?.as_ref(), subject);
+    let (sbom_text, sbom) = sbom_for(root, &project, &meta);
     let bytes = lvpkg::write(&meta, &files, sbom_text.as_deref().map(str::as_bytes))?;
     let package = super::package_path(root, &d);
     let dist = package.parent().context("the package has no folder")?;
@@ -140,29 +138,26 @@ pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
     }))
 }
 
-/// `lvpm.lock` beside the manifest in `root`; `None` when there is none.
-pub(super) fn read_lock(root: &Path) -> Result<Option<Lockfile>> {
-    match super::lock::read_lock(&root.join(lockfile::FILE_NAME)) {
-        Ok(lock) => Ok(Some(lock)),
-        Err(LockError::NoLock { .. }) => Ok(None),
-        Err(other) => Err(other.into()),
+/// The SBOM text of the package of `project` at `root`, and what that says for
+/// the outcome. A project with no `[dependencies]` needs no lock, so it is not
+/// read: whatever its state, the SBOM lists nothing.
+fn sbom_for(root: &Path, project: &Project, meta: &lvpkg::Meta) -> (Option<String>, Sbom) {
+    let subject = Subject {
+        name: meta.name.clone(),
+        version: meta.version.clone(),
+        kind: Kind::Library,
+    };
+    if project.dependencies.is_empty() {
+        return (Some(sbom::cyclonedx(None, subject)), Sbom::Included);
     }
-}
-
-/// The SBOM text of `lock` for `subject`, and what that says for the outcome.
-/// A project with no `[dependencies]` needs no lock: its SBOM lists nothing.
-fn package_sbom(
-    project: &Project,
-    lock: Option<&Lockfile>,
-    subject: Subject,
-) -> (Option<String>, Sbom) {
-    match lock {
-        None if !project.dependencies.is_empty() => (None, Sbom::NoLock),
-        Some(lock) => match lock.staleness(project) {
+    match super::lock::read_lock(&root.join(lockfile::FILE_NAME)) {
+        Err(LockError::NoLock { .. }) => (None, Sbom::NoLock),
+        Err(LockError::UnreadableLock { reason, .. }) => (None, Sbom::Unreadable(reason)),
+        Err(other) => (None, Sbom::Unreadable(other.to_string())),
+        Ok(lock) => match lock.staleness(project) {
             Some(reason) => (None, Sbom::Stale(reason)),
-            None => (Some(sbom::cyclonedx(Some(lock), subject)), Sbom::Included),
+            None => (Some(sbom::cyclonedx(Some(&lock), subject)), Sbom::Included),
         },
-        None => (Some(sbom::cyclonedx(None, subject)), Sbom::Included),
     }
 }
 
@@ -189,17 +184,26 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lockfile::{FORMAT_VERSION, Inputs, LOCAL_SOURCE, LockedPackage};
+    use crate::lockfile::{FORMAT_VERSION, Inputs, LOCAL_SOURCE, LockedPackage, Lockfile};
+    use crate::project;
 
-    fn subject() -> Subject {
-        Subject {
+    fn meta() -> lvpkg::Meta {
+        lvpkg::Meta {
             name: "demo".into(),
             version: "1.0".into(),
-            kind: Kind::Library,
+            labview: ">=2024".into(),
+            vendor: "acme".into(),
+            display_name: "Demo".into(),
+            install_dir: "vi.lib/acme/demo".into(),
+            dependencies: Vec::new(),
         }
     }
 
-    const MANIFEST: &str = "[project]\nname = \"demo\"\nversion = \"1.0\"\nlabview = \">=2024\"\n";
+    const MANIFEST: &str = "[project]
+name = \"demo\"
+version = \"1.0\"
+labview = \">=2024\"
+";
 
     fn project(dependencies: &str) -> Project {
         project::parse(&format!("{MANIFEST}{dependencies}")).unwrap()
@@ -226,57 +230,101 @@ mod tests {
         }
     }
 
-    const ALPHA: &str = "\n[dependencies]\nalpha = \"1.0\"\n";
+    const ALPHA: &str = "
+[dependencies]
+alpha = \"1.0\"
+";
+
+    /// A project folder holding `lock`'s text as `lvpm.lock`, when there is any.
+    fn folder_with(name: &str, lock: Option<&str>) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lvpm-build-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Some(text) = lock {
+            std::fs::write(dir.join(lockfile::FILE_NAME), text).unwrap();
+        }
+        dir
+    }
+
+    fn lock_text_of(project: &Project) -> String {
+        lock_of(project).to_toml().unwrap()
+    }
 
     #[test]
     fn a_current_lock_gives_the_package_an_sbom_of_it() {
         let project = project(ALPHA);
-        let (text, sbom) = package_sbom(&project, Some(&lock_of(&project)), subject());
+        let dir = folder_with("current", Some(&lock_text_of(&project)));
+        let (text, sbom) = sbom_for(&dir, &project, &meta());
         assert_eq!(sbom, Sbom::Included);
-        let text = text.expect("an SBOM");
-        assert!(text.contains("\"bom-ref\": \"alpha@1.0\""), "{text}");
+        let bom: serde_json::Value = serde_json::from_str(&text.expect("an SBOM")).unwrap();
+        let refs: Vec<_> = bom["components"].as_array().unwrap().iter().collect();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0]["bom-ref"], "alpha@1.0");
+        assert_eq!(bom["metadata"]["component"]["name"], "demo");
+        assert_eq!(bom["metadata"]["component"]["version"], "1.0");
+        assert_eq!(bom["metadata"]["component"]["type"], "library");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn no_lock_and_dependencies_gives_no_sbom_and_says_why() {
-        let (text, sbom) = package_sbom(&project(ALPHA), None, subject());
+        let dir = folder_with("no-lock", None);
+        let (text, sbom) = sbom_for(&dir, &project(ALPHA), &meta());
         assert_eq!((text, sbom), (None, Sbom::NoLock));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn no_lock_and_no_dependencies_gives_an_sbom_with_no_components() {
-        let dev_only = "\n[dev-dependencies]\ngamma = \"1.0\"\n";
+    fn no_dependencies_gives_an_sbom_with_no_components_whatever_the_lock() {
+        let dev_only = "
+[dev-dependencies]
+gamma = \"1.0\"
+";
+        let held = project(ALPHA);
+        // Missing, out of date (it lists a dependency the manifest dropped), unreadable.
+        let locks = [
+            None,
+            Some(lock_text_of(&held)),
+            Some("not a lock = =".into()),
+        ];
         for manifest in ["", dev_only] {
-            let (text, sbom) = package_sbom(&project(manifest), None, subject());
-            assert_eq!(sbom, Sbom::Included, "{manifest:?}");
-            let text = text.expect("an SBOM");
-            assert!(text.contains("\"components\": []"), "{text}");
-            assert!(text.contains("\"type\": \"library\""), "{text}");
+            for (n, lock) in locks.iter().enumerate() {
+                let dir = folder_with(&format!("empty-{n}"), lock.as_deref());
+                let (text, sbom) = sbom_for(&dir, &project(manifest), &meta());
+                assert_eq!(sbom, Sbom::Included, "{manifest:?} {lock:?}");
+                let text = text.expect("an SBOM");
+                assert!(text.contains("\"components\": []"), "{text}");
+                assert!(text.contains("\"type\": \"library\""), "{text}");
+                std::fs::remove_dir_all(&dir).ok();
+            }
         }
     }
 
     #[test]
     fn a_stale_lock_gives_no_sbom_and_says_why() {
-        let locked = project(ALPHA);
-        let lock = lock_of(&locked);
-        let now = project(&format!("{ALPHA}beta = \"2.0\"\n"));
-        let (text, sbom) = package_sbom(&now, Some(&lock), subject());
+        let dir = folder_with("stale", Some(&lock_text_of(&project(ALPHA))));
+        let now = project(&format!(
+            "{ALPHA}beta = \"2.0\"
+"
+        ));
+        let (text, sbom) = sbom_for(&dir, &now, &meta());
         let added = StaleReason::DependencyAdded {
             name: "beta".into(),
             table: crate::manifest_edit::DependencyTable::Dependencies,
         };
         assert_eq!((text, sbom), (None, Sbom::Stale(added)));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn a_lock_that_is_not_there_is_none_and_one_that_cannot_be_read_is_an_error() {
-        let dir = std::env::temp_dir().join(format!("lvpm-build-lock-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        assert!(read_lock(&dir).unwrap().is_none());
-        std::fs::write(dir.join(lockfile::FILE_NAME), "not a lock = =").unwrap();
-        let why = format!("{:#}", read_lock(&dir).unwrap_err());
-        assert!(why.contains("lvpm.lock cannot be read"), "{why}");
+    fn a_lock_that_cannot_be_read_gives_no_sbom_and_says_why() {
+        let dir = folder_with("unreadable", Some("not a lock = ="));
+        let (text, sbom) = sbom_for(&dir, &project(ALPHA), &meta());
+        assert_eq!(text, None);
+        let Sbom::Unreadable(reason) = sbom else {
+            panic!("expected Unreadable, got {sbom:?}");
+        };
+        assert!(!reason.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

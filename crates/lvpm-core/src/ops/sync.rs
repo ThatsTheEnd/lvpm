@@ -133,7 +133,7 @@ impl Selection {
     /// The package is put on disk: `[dependencies]` needs it, or a group that
     /// is selected does. The lock lists no groups for what `[dependencies]` needs.
     fn wants(&self, package: &LockedPackage) -> bool {
-        package.groups.is_empty()
+        package.needed_by_dependencies()
             || (package.groups.iter()).any(|group| match group == DEV_GROUP {
                 true => !self.no_dev,
                 false => self.groups.contains(group),

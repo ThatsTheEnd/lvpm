@@ -184,6 +184,11 @@ pub struct LockedPackage {
 }
 
 impl LockedPackage {
+    /// `[dependencies]` needs it: no other table does, so `groups` is empty.
+    pub fn needed_by_dependencies(&self) -> bool {
+        self.groups.is_empty()
+    }
+
     /// The attestation the lock records, when it records one.
     pub fn attestation(&self) -> Option<crate::verify::Attestation> {
         Some(crate::verify::Attestation {

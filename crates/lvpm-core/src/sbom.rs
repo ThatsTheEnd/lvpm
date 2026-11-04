@@ -96,7 +96,7 @@ fn bom_ref(package: &LockedPackage) -> String {
 fn closure(lock: Option<&Lockfile>) -> Vec<&LockedPackage> {
     let mut packages: Vec<&LockedPackage> = (lock.iter())
         .flat_map(|lock| &lock.packages)
-        .filter(|package| package.groups.is_empty())
+        .filter(|package| package.needed_by_dependencies())
         .collect();
     packages.sort_by_cached_key(|package| (name_key(&package.name), package.version.clone()));
     packages
@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn the_text_parses_as_cyclonedx_1_5_and_ends_in_a_newline() {
+    fn the_text_names_cyclonedx_1_5_and_ends_in_a_newline() {
         let text = cyclonedx(None, subject(Kind::Library));
         let bom = parsed(&text);
         assert_eq!(bom["bomFormat"], "CycloneDX");
@@ -315,6 +315,18 @@ mod tests {
             "}
 "
         ));
+    }
+
+    #[test]
+    fn a_local_package_gives_its_source_verbatim() {
+        let mut package = locked("alpha", "1.0", &[], &[]);
+        package.source = crate::lockfile::LOCAL_SOURCE.to_string();
+        let bom = parsed(&cyclonedx(
+            Some(&lock(vec![package])),
+            subject(Kind::Library),
+        ));
+        let expected = serde_json::json!([{ "type": "distribution", "url": "local" }]);
+        assert_eq!(bom["components"][0]["externalReferences"], expected);
     }
 
     #[test]

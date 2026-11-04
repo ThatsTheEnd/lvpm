@@ -841,6 +841,12 @@ async fn stderr_is_exactly(world: &mut CliWorld, text: String) {
     assert_eq!(out.stderr.trim_end(), text, "{out:?}");
 }
 
+#[then(regex = r#"^stderr is exactly the lines "([^"]+)" and "([^"]+)"$"#)]
+async fn stderr_is_exactly_two_lines(world: &mut CliWorld, first: String, second: String) {
+    let out = world.checked();
+    assert_eq!(out.stderr, format!("{first}\n{second}\n"), "{out:?}");
+}
+
 #[then(
     regex = r#"^it exits 1, dist holds no \.lvpkg, and the JSON has "ok": false, "command": "build" and one finding for "([^"]+)"$"#
 )]
