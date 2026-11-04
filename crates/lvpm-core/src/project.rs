@@ -29,6 +29,10 @@
 //! [policy]                          # what a GitHub release's attestation must say
 //! require-signature = true          # refuse a release with no attestation
 //! trusted-publishers = ["https://github.com/a/*"]  # and one from any other repository
+//!
+//! [application]                     # what `lvpm build --app` builds
+//! project = "app/Main.lvproj"       # the LabVIEW project, relative to lvpm.toml
+//! build-spec = "My Application"     # a build specification of that project
 //! ```
 //!
 //! `labview` is a minimum: a venv binds to that version or a newer one, never
@@ -208,6 +212,9 @@ pub struct Project {
     /// `[distribution]`, as written: `lvpm build` reads it through
     /// `distribution::validate`, and `lvpm check` for the library it names.
     pub distribution: Option<toml::Table>,
+    /// `[application]`, as written, with no unknown key: `lvpm build --app`
+    /// reads it through `application::validate`.
+    pub application: Option<toml::Table>,
     /// `[policy]`: what a GitHub release's attestation must say. Trust on
     /// first use when absent.
     pub policy: Policy,
@@ -230,6 +237,7 @@ impl Default for Project {
             hooks_allowed: BTreeSet::new(),
             nipm: Vec::new(),
             distribution: None,
+            application: None,
             policy: Policy::default(),
         }
     }
@@ -293,6 +301,8 @@ struct File {
     dependency_groups: toml::Table,
     nipm: NipmTable,
     distribution: Option<toml::Table>,
+    /// Any value: `application = 1` is refused by key, not as a shape mismatch.
+    application: Option<toml::Value>,
     /// Any value: `policy = 1` is refused by key, not as a shape mismatch.
     policy: Option<toml::Value>,
 }
@@ -379,7 +389,30 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     p.hooks_allowed = stated.hooks;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
+    p.application = f.application.map(parse_application).transpose()?;
     Ok(p)
+}
+
+/// The keys of `[application]`; `application::validate` reads their values.
+pub(crate) const APPLICATION_KEYS: [&str; 2] = ["project", "build-spec"];
+
+/// `[application]` as a table with no key but its own two. What the values are
+/// is `application::validate`'s to say, so `lvpm lock` works on a project
+/// whose `.lvproj` is not there yet.
+fn parse_application(value: toml::Value) -> Result<toml::Table> {
+    let toml::Value::Table(table) = value else {
+        bail!("application must be a table");
+    };
+    if let Some(key) = table
+        .keys()
+        .find(|k| !APPLICATION_KEYS.contains(&k.as_str()))
+    {
+        bail!(
+            "[application] has unknown key \"{key}\"; expected {}",
+            APPLICATION_KEYS.join(" or ")
+        );
+    }
+    Ok(table)
 }
 
 /// `[policy]`: the two keys it knows, `require-signature` and
@@ -1437,6 +1470,59 @@ e = \"*\"
             why("[policy]\ntrusted-publishers = 1"),
             "[policy] trusted-publishers must be a list of URL patterns"
         );
+    }
+
+    #[test]
+    fn an_application_table_is_kept_as_written_and_is_none_without_one() {
+        let p = parse(
+            "[application]
+project = \"a/B.lvproj\"
+build-spec = 5
+",
+        )
+        .unwrap();
+        let table = p.application.expect("a table");
+        assert_eq!(table["project"].as_str(), Some("a/B.lvproj"));
+        // What its values are is `application::validate`'s to say.
+        assert_eq!(table["build-spec"].as_integer(), Some(5));
+        assert_eq!(
+            parse(
+                "[project]
+name = \"x\"
+"
+            )
+            .unwrap()
+            .application,
+            None
+        );
+        assert_eq!(
+            parse(
+                "[application]
+"
+            )
+            .unwrap()
+            .application,
+            Some(toml::Table::new())
+        );
+    }
+
+    #[test]
+    fn an_application_table_with_another_key_or_no_table_is_refused() {
+        let why = |text| parse(text).unwrap_err().to_string();
+        assert_eq!(
+            why("[application]
+target = \"RT\"
+"),
+            "[application] has unknown key \"target\"; expected project or build-spec"
+        );
+        assert_eq!(
+            why("[application]
+project = \"a.lvproj\"
+Build-Spec = \"s\"
+"),
+            "[application] has unknown key \"Build-Spec\"; expected project or build-spec"
+        );
+        assert_eq!(why("application = 1"), "application must be a table");
     }
 
     #[test]

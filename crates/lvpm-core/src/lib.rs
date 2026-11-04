@@ -8,6 +8,7 @@
 #[cfg(not(any(windows, target_os = "linux")))]
 compile_error!("lvpm supports Windows and Linux; macOS is on the roadmap (docs/roadmap.md)");
 
+pub mod application;
 pub mod cache;
 pub mod config;
 pub mod distribution;
