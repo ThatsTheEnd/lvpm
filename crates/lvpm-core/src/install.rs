@@ -24,8 +24,10 @@ pub struct Manifest {
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
     /// Hooks the package declares that were not run: every one in a venv
-    /// (hooks act on a LabVIEW installation, and a venv is not one), and
-    /// globally only a PostInstall that failed. Uninstall hooks are not
+    /// (hooks act on a LabVIEW installation, and a venv is not one), every
+    /// one of a package the install skipped (nothing allowed its hooks, or
+    /// LabVIEW ran headless), and otherwise only a PostInstall that failed.
+    /// Uninstall hooks of a package that ran its install hooks are not
     /// skipped, they are pending — `lvpm uninstall` runs them from the
     /// extracted copies below. Manifests older than that extraction list them
     /// here, which is how uninstall knows it has nothing to run.
@@ -67,6 +69,31 @@ pub struct Manifest {
     /// Manifests written before it was recorded have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_sha256: Option<String>,
+}
+
+impl Manifest {
+    /// Whether the record lists `hook` among the hooks that did not run.
+    pub fn hook_skipped(&self, hook: crate::events::HookKind) -> bool {
+        self.skipped_entry(hook).is_some()
+    }
+
+    /// The `Name=path` entry that lists `hook` as not run, if any.
+    pub fn skipped_entry(&self, hook: crate::events::HookKind) -> Option<&String> {
+        let prefix = format!("{}=", hook.name());
+        self.skipped_hooks.iter().find(|h| h.starts_with(&prefix))
+    }
+
+    /// Whether the record lists any hook as not run: the package's install
+    /// hooks did not all run, so its uninstall hooks stay off too.
+    pub fn any_hook_skipped(&self) -> bool {
+        !self.skipped_hooks.is_empty()
+    }
+
+    /// Forget every skipped hook, install ones and uninstall ones alike: the
+    /// user ran the package's install hook by hand, so none is held back.
+    pub fn clear_skipped_hooks(&mut self) {
+        self.skipped_hooks.clear();
+    }
 }
 
 /// What an install *would* do. Produced first so `--dry-run` and the real run
@@ -279,7 +306,9 @@ pub(crate) fn addon_info(name: &str, target: &LvTarget) -> String {
 }
 
 /// Execute a plan and record the manifest, with the SHA-256 of the archive
-/// the files were read from.
+/// the files were read from. `hooks_skipped` lists every declared hook as not
+/// run in that same write: a record patched afterwards would, if the patch
+/// failed, let uninstall run hooks nobody allowed.
 pub fn apply(
     roots: &Roots,
     spec: &Spec,
@@ -287,8 +316,12 @@ pub fn apply(
     plan: &Plan,
     pre_install_vi: Option<&Path>,
     archive_sha256: &str,
+    hooks_skipped: bool,
 ) -> Result<Manifest> {
-    let manifest = unpack_to(roots, spec, zip, plan, pre_install_vi, archive_sha256, None)?;
+    let mut manifest = unpack_to(roots, spec, zip, plan, pre_install_vi, archive_sha256, None)?;
+    if hooks_skipped {
+        manifest.skipped_hooks = declared_hooks(spec);
+    }
     write_manifest(roots, &manifest)?;
     Ok(manifest)
 }
@@ -381,14 +414,11 @@ pub(crate) fn unpack_to(
         },
         files: written,
         skipped_hooks: match roots.venv() {
-            Some(_) => spec
-                .script_vis
-                .iter()
-                .map(|(h, v)| format!("{h}={v}"))
-                .collect(),
+            Some(_) => declared_hooks(spec),
             // PreInstall has run by now, PostInstall runs after the relink
             // pass and is recorded here only if it fails, and the uninstall
             // hooks wait for `lvpm uninstall` in the copies extracted above.
+            // An install that skips a package's hooks has `apply` record them.
             None => Vec::new(),
         },
         relinked: false,
@@ -430,10 +460,27 @@ pub fn extract_hook(
     Ok(Some(dest))
 }
 
+/// Every hook the package declares, in the `Name=path` form the record uses.
+fn declared_hooks(spec: &Spec) -> Vec<String> {
+    spec.script_vis
+        .iter()
+        .map(|(h, v)| format!("{h}={v}"))
+        .collect()
+}
+
+/// Written beside the record, synced and renamed over it, so a kill or power
+/// loss mid-write leaves the old record, not a truncated one that `lvpm list`
+/// silently drops. The tmp name is per process, so two writers never share it.
 pub(crate) fn write_manifest(roots: &Roots, m: &Manifest) -> Result<()> {
+    use std::io::Write;
     let mp = manifest_path(roots, &m.name);
     std::fs::create_dir_all(mp.parent().unwrap())?;
-    std::fs::write(&mp, serde_json::to_string_pretty(m)?)?;
+    let tmp = mp.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(serde_json::to_string_pretty(m)?.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, &mp)?;
     Ok(())
 }
 
@@ -459,6 +506,21 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
         return Ok(());
     }
     m.skipped_hooks.push(hook.to_string());
+    write_manifest(roots, &m)
+}
+
+/// Record that the user ran the package's install hook by hand: no hook is
+/// listed as skipped any more. `ran_for` is the record the hook ran from; one
+/// written since, by a reinstall or upgrade while the hook ran, is left as it is.
+// shortcut: no lock spans the read and the write, so a reinstall landing between
+// them (or within the same second) is not caught; add a store lock if lvpm ever
+// supports two commands on one installation at once.
+pub fn clear_skipped_hooks(roots: &Roots, ran_for: &Manifest) -> Result<()> {
+    let mut m = read_manifest(roots, &ran_for.name)?;
+    if (m.installed_at, &m.version) != (ran_for.installed_at, &ran_for.version) {
+        bail!("{} was reinstalled while its hook ran", m.name);
+    }
+    m.clear_skipped_hooks();
     write_manifest(roots, &m)
 }
 
@@ -641,6 +703,32 @@ mod tests {
             skipped_groups: Vec::new(),
             archive_sha256: None,
         }
+    }
+
+    #[test]
+    fn a_record_says_which_hook_it_lists_as_skipped_by_the_hooks_name_alone() {
+        use crate::events::HookKind::{PostInstall, PreInstall};
+        let mut m = record(&[], None);
+        assert!(!m.hook_skipped(PostInstall));
+        m.skipped_hooks = vec![r"PostInstall=<OS Boot Volume Root>\ci\PostInstall.vi".into()];
+        assert!(m.hook_skipped(PostInstall));
+        assert!(!m.hook_skipped(PreInstall), "another hook is not listed");
+        m.skipped_hooks = vec!["PostInstallX=a.vi".into(), "PostInstall".into()];
+        assert!(!m.hook_skipped(PostInstall), "a longer name is not it");
+    }
+
+    #[test]
+    fn clearing_the_skipped_hooks_lists_none_of_them() {
+        let mut m = record(&[], None);
+        m.skipped_hooks = vec![
+            "PreInstall=a".into(),
+            "PostInstall=b".into(),
+            "PreUninstall=c".into(),
+            "PostUninstall=d".into(),
+        ];
+        assert!(m.any_hook_skipped());
+        m.clear_skipped_hooks();
+        assert!(!m.any_hook_skipped(), "{m:?}");
     }
 
     #[test]

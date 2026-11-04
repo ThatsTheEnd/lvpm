@@ -163,6 +163,20 @@ pub enum Event {
     MissingFromArchive { entry: String },
     /// Hooks a package declares that this install did not run, as `Name=path`.
     HooksNotRun { hooks: Vec<String> },
+    /// A package's install hooks were not run on a LabVIEW installation, for
+    /// `reason`; or, with [`SkipReason::AlreadyInstalled`], were not run when
+    /// it was installed, and may be now. A dry run says what it would skip.
+    /// `run_now`: `lvpm run-hooks` can run its PostInstall at once. `allow` is
+    /// what makes the next install run them, when there is anything to do.
+    /// Told once per package, after the install's summary and before any error.
+    HooksSkipped {
+        package: String,
+        hooks: Vec<HookKind>,
+        reason: SkipReason,
+        run_now: bool,
+        dry_run: bool,
+        allow: Option<AllowLine>,
+    },
     /// The install is finished as far as the files go. On a dry run `files`
     /// would be written and nothing changed.
     /// `resave_failed` names the venv packages that landed without a resave.
@@ -198,6 +212,9 @@ pub enum Event {
         hook: HookKind,
         error: String,
     },
+    /// A PostInstall hook failed and the install record could not be told, so
+    /// the package's uninstall hooks may still run. `error` is the cause's text.
+    HookRecordNotUpdated { package: String, error: String },
     /// The PostInstall hooks of `count` packages are about to run, one by one.
     PostInstallHooksStarted { count: usize },
     /// A venv install is done; a LabVIEW already open on the venv has to be
@@ -320,8 +337,12 @@ pub enum Event {
     PostUninstallNotStaged { error: String },
     /// Uninstall hooks the package declares that did not run, as `Name=path`.
     UninstallHooksNotRun {
+        package: String,
         hooks: Vec<String>,
         reason: UnrunReason,
+        /// Whether `lvpm run-hooks` has an install hook to run for the
+        /// package, which is what puts these hooks back.
+        run_hooks_helps: bool,
     },
 
     // ---- ops::lock ----
@@ -681,6 +702,31 @@ pub enum SkipReason {
     Headless,
     /// The caller asked for it to be left out.
     Declined,
+    /// An install hook that nothing allowed: hooks are off unless the project
+    /// or the user's config names the package, or the command says `--hooks`.
+    NotAllowed,
+    /// The package is installed at this version already, with an install hook
+    /// that was skipped and would be allowed now. The install leaves it alone.
+    AlreadyInstalled,
+}
+
+/// How the user makes the next install run a package's hooks, as data the
+/// front end words.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AllowLine {
+    /// Add `hooks = "run"` to the package's own line in `table`, which is
+    /// named as it is between the brackets. `name` is as the line writes it.
+    AddKey { name: String, table: String },
+    /// A dependency that no line lists: add `name = { version = "*", hooks =
+    /// "run" }` to `[dependencies]`.
+    AddLine { name: String },
+    /// `lvpm config set hooks.run <names>`: the names already allowed, then the
+    /// `skipped` packages this command skipped. The command replaces the list,
+    /// so pasting it drops nobody lvpm allows now.
+    ConfigSet { names: Vec<String>, skipped: usize },
+    /// Pass `--hooks`: where LabVIEW runs headless, no list allows a hook.
+    PassHooks,
 }
 
 /// The hooks a package can ship.
@@ -693,6 +739,18 @@ pub enum HookKind {
     PostUninstall,
 }
 
+impl HookKind {
+    /// The name a package's spec and `lvpm list` give it.
+    pub fn name(self) -> &'static str {
+        match self {
+            HookKind::PreInstall => "PreInstall",
+            HookKind::PostInstall => "PostInstall",
+            HookKind::PreUninstall => "PreUninstall",
+            HookKind::PostUninstall => "PostUninstall",
+        }
+    }
+}
+
 /// Why an uninstall hook was declared and not run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -702,6 +760,13 @@ pub enum UnrunReason {
     InstalledBeforeUninstallHooks,
     /// Hooks act on a LabVIEW installation, and a venv is not one.
     VenvRunsNoHooks,
+    /// The record lists a hook as skipped: an install hook that did not run
+    /// (nothing allowed it, headless, or it failed) leaves the uninstall hooks
+    /// off, until `lvpm run-hooks` runs it.
+    InstallHookSkipped,
+    /// A package that declares only uninstall hooks was installed without being
+    /// allowed to run hooks: they were extracted, and the record lists them.
+    NotAllowedAtInstall,
 }
 
 /// How a feed answered.

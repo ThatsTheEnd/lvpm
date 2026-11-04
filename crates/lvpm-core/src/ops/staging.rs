@@ -279,6 +279,7 @@ mod tests {
     fn env_on<'a>(sink: &'a dyn EventSink, repo: &Path) -> OpEnv<'a> {
         let config = Config {
             cache: repo.join("cache"),
+            hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
         };

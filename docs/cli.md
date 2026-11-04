@@ -51,6 +51,11 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   vi-run <vi> [--set N=T:V]... [--get N]... [--get-all] [--timeout] [--watch N] [--poll-ms MS] [--done N]
 ```
 
+`config` takes the keys `cache`, `hooks.run`, `sources.local` and `venv.dir`.
+`hooks.run` lists the packages whose install hooks may run in an install
+outside a project; its variable is `LVPM_CONFIG_HOOKS_RUN`
+([usage.md](usage.md#configuration)).
+
 What works and stays:
 
 - Names users already know from cargo and npm: `install`, `uninstall`,
@@ -120,11 +125,13 @@ as a hidden alias. Breaking: no.
 
 ### 6. Relink and hooks: one flag each, three values
 
-`install` has `--no-relink`, `--relink` and `--hooks`, and the default of
-each depends on `LV_RTE_HEADLESS`.
+`install` has `--no-relink`, `--relink` and `--hooks`. The relink default
+depends on `LV_RTE_HEADLESS`. Hooks are off by default everywhere and
+`--hooks` runs them for one command ([Hooks](labview-integration.md#hooks)).
 
 Proposed: `--relink auto|always|never` and `--hooks auto|always|never`,
-`auto` being today's behaviour. `--no-relink` stays as an alias for
+`auto` being the allowlist behaviour (`hooks = "run"` or `hooks.run`; off
+otherwise). `--no-relink` stays as an alias for
 `--relink never`. Breaking: `--relink` and `--hooks` without a value would
 need a value; clap's `default_missing_value = "always"` keeps them working.
 

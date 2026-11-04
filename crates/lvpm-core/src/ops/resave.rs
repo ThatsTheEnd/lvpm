@@ -426,6 +426,7 @@ mod tests {
     fn env_on<'a>(sink: &'a Recorded, repo: &Path) -> OpEnv<'a> {
         let config = Config {
             cache: repo.join("cache"),
+            hooks_run: Vec::new(),
             local_sources: vec![repo.join("packages")],
             venv_dir: PathBuf::from(".lv-venv"),
         };

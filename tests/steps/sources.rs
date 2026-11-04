@@ -24,8 +24,8 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 
-const FIRST: &str = "/first/";
-const SECOND: &str = "/second/";
+pub(super) const FIRST: &str = "/first/";
+pub(super) const SECOND: &str = "/second/";
 
 fn dir(source: &str) -> &'static str {
     match source {
@@ -82,18 +82,30 @@ impl CliWorld {
         });
     }
 
-    /// The package depends on `constraint`, from `[table]`, with the source pin
-    /// written as `{ version = ..., index = ... }` into the line `depend` made.
-    fn depend_pinned(&self, table: DependencyTable, name: &str, constraint: &str, source: &str) {
+    /// The package depends on `constraint`, from `[table]`, with `keys`
+    /// (TOML such as `index = "first"`) written after `version` into the line
+    /// `depend` made.
+    pub(super) fn depend_with_keys(
+        &self,
+        table: DependencyTable,
+        name: &str,
+        constraint: &str,
+        keys: &str,
+    ) {
         self.depend(table.clone(), name, constraint);
         let header = format!("[{}]", table.key());
         let line = format!("\n{name} = \"{constraint}\"");
-        let pinned = format!("\n{name} = {{ version = \"{constraint}\", index = \"{source}\" }}");
+        let with_keys = format!("\n{name} = {{ version = \"{constraint}\", {keys} }}");
         self.rewrite_manifest(|text| {
             let from = text.find(&header).expect("the table is in lvpm.toml");
             let at = from + text[from..].find(&line).expect("the line is in the table");
-            format!("{}{pinned}{}", &text[..at], &text[at + line.len()..])
+            format!("{}{with_keys}{}", &text[..at], &text[at + line.len()..])
         });
+    }
+
+    /// [`Self::depend_with_keys`] with the source pin `index = "<source>"`.
+    fn depend_pinned(&self, table: DependencyTable, name: &str, constraint: &str, source: &str) {
+        self.depend_with_keys(table, name, constraint, &format!("index = \"{source}\""));
     }
 }
 

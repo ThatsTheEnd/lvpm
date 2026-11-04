@@ -30,8 +30,8 @@ This folder is this fork's direction. The upstream author's plan stays in
    or fork; files live wherever the author releases them.
 3. **Verify, don't trust.** SHA-256 pinned in the lock, signatures and
    provenance checked against the consumer's policy, no install-time code
-   unless allowed by name. (Target: today hooks still run by default on a
-   developer machine.)
+   unless allowed by name. Since S12 an install runs no hook unless the
+   package is allowed.
 4. **Meet people where they are.** Read VIPM and NI indexes and install
    `.vip`, import `.vipc` projects, check NIPM drivers. lvpm stops writing
    `.vip` with S7a: VIPM refuses it, because its spec lacks the `ID` that VIPM's own builder writes ([ADR 6](../adr/0006-lvpkg-only-vip-read-only.md)).
@@ -43,7 +43,7 @@ This folder is this fork's direction. The upstream author's plan stays in
 Each one is usable on its own. Ticks mean done.
 
 **M0 — consume (done)**
-- [x] Install from VIPM/NI indexes and folders; hooks run on a developer machine, never run in a venv, and are skipped headless unless `--hooks` is given
+- [x] Install from VIPM/NI indexes and folders; hooks run on a developer machine only for allowed packages, never run in a venv, and are skipped headless unless `--hooks` is given
 - [x] Per-project venvs, `lvpm launch`, relink, refresh, headless
 - [x] NIPM dependencies checked
 
@@ -58,7 +58,7 @@ Each one is usable on its own. Ticks mean done.
 - [x] `--json`, documented exit codes
 - [ ] `--yes`, `--labview-bitness`
 - [ ] Dependency groups (`--group`)
-- [ ] Install hooks off by default, with a warning and an allowlist
+- [x] Install hooks off by default, with a warning and an allowlist
 
 **M2 — build**
 - [ ] `lvpm check` / `tree`: linker scan without LabVIEW

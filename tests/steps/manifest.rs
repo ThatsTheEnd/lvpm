@@ -47,7 +47,7 @@ pub struct ManifestState {
     /// The line of the manifest a `Given` made unparseable (1-based).
     broken_line: Option<usize>,
     /// What reading the manifest gave.
-    read: Option<Result<Project, String>>,
+    pub(super) read: Option<Result<Project, String>>,
 }
 
 impl CliWorld {

@@ -11,6 +11,7 @@ pub mod destination;
 pub mod docs;
 pub mod github;
 pub mod headless;
+pub mod hooks;
 pub mod in_process;
 pub mod init;
 pub mod install;

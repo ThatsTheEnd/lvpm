@@ -657,6 +657,15 @@ beta = \">=1.0\"
     }
 
     #[test]
+    fn a_table_line_keeps_hooks_when_its_version_changes() {
+        let text = "[dependencies]\nalpha = { version = \"1.0\", hooks = \"run\" }\n";
+        assert_eq!(
+            set(text, &Dependencies, "alpha", "2.0").unwrap(),
+            "[dependencies]\nalpha = { version = \"2.0\", hooks = \"run\" }\n"
+        );
+    }
+
+    #[test]
     fn a_table_line_with_the_same_version_comes_back_byte_identical() {
         let text = "[dev-dependencies]\nalpha = {github='o/r',  version = '1.0' }   # x\n";
         assert_eq!(set(text, &DevDependencies, "alpha", "1.0").unwrap(), text);

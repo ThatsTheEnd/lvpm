@@ -31,6 +31,8 @@ pub fn reason(reason: SkipReason) -> &'static str {
         SkipReason::ScratchDestination => "scratch destination",
         SkipReason::Headless => "LabVIEW runs headless",
         SkipReason::Declined => "left out",
+        SkipReason::NotAllowed => "not allowed",
+        SkipReason::AlreadyInstalled => "already installed",
     }
 }
 

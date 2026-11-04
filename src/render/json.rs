@@ -262,6 +262,62 @@ mod tests {
     }
 
     #[test]
+    fn a_skipped_hook_carries_its_package_hooks_reason_and_the_allow_line_by_kind() {
+        use lvpm_core::events::{AllowLine, HookKind, SkipReason};
+        let skipped = |reason, allow| {
+            serde_json::json!(Event::HooksSkipped {
+                package: "pilot_a".into(),
+                hooks: vec![HookKind::PreInstall, HookKind::PostInstall],
+                reason,
+                run_now: true,
+                dry_run: false,
+                allow,
+            })
+        };
+        assert_eq!(
+            skipped(
+                SkipReason::NotAllowed,
+                Some(AllowLine::ConfigSet {
+                    names: vec!["other".into(), "pilot_a".into()],
+                    skipped: 1,
+                })
+            ),
+            serde_json::json!({"event": "hooks_skipped", "data":
+                {"package": "pilot_a", "hooks": ["pre_install", "post_install"],
+                 "reason": "not_allowed", "run_now": true, "dry_run": false,
+                 "allow": {"kind": "config_set", "names": ["other", "pilot_a"], "skipped": 1}}})
+        );
+        assert_eq!(
+            skipped(
+                SkipReason::NotAllowed,
+                Some(AllowLine::AddKey {
+                    name: "pilot_a".into(),
+                    table: "dependencies".into(),
+                })
+            )["data"]["allow"],
+            serde_json::json!({"kind": "add_key", "name": "pilot_a", "table": "dependencies"})
+        );
+        assert_eq!(
+            skipped(
+                SkipReason::NotAllowed,
+                Some(AllowLine::AddLine {
+                    name: "pilot_a".into()
+                })
+            )["data"]["allow"],
+            serde_json::json!({"kind": "add_line", "name": "pilot_a"})
+        );
+        let headless = skipped(SkipReason::Headless, Some(AllowLine::PassHooks));
+        assert_eq!(headless["data"]["reason"], "headless");
+        assert_eq!(
+            headless["data"]["allow"],
+            serde_json::json!({"kind": "pass_hooks"})
+        );
+        let installed = skipped(SkipReason::AlreadyInstalled, None);
+        assert_eq!(installed["data"]["reason"], "already_installed");
+        assert_eq!(installed["data"]["allow"], serde_json::Value::Null);
+    }
+
+    #[test]
     fn the_install_summary_carries_the_failed_resaves_only_when_there_are_any() {
         let done = |resave_failed: Vec<String>| {
             serde_json::json!(Event::InstallDone {

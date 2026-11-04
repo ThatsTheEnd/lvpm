@@ -40,7 +40,7 @@ use crate::verify::Policy;
 use crate::version::Version;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -200,6 +200,9 @@ pub struct Project {
     /// by the name the line is written under: the `[sources]` name that
     /// package comes from and from no other.
     pub source_pins: BTreeMap<String, String>,
+    /// The name, as written, of every dependency whose line says
+    /// `hooks = "run"`, in any table.
+    pub hooks_allowed: BTreeSet<String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
     /// `[distribution]`, as written: `lvpm build` reads it through
@@ -224,6 +227,7 @@ impl Default for Project {
             groups: Vec::new(),
             github: BTreeMap::new(),
             source_pins: BTreeMap::new(),
+            hooks_allowed: BTreeSet::new(),
             nipm: Vec::new(),
             distribution: None,
             policy: Policy::default(),
@@ -247,6 +251,12 @@ impl Project {
     /// case either is written in.
     pub fn source_pin_of(&self, name: &str) -> Option<&str> {
         stated_for(&self.source_pins, name).map(String::as_str)
+    }
+
+    /// Whether a dependency line says `hooks = "run"` for `name`, in any
+    /// table, whatever the case either is written in.
+    pub fn hooks_allowed_for(&self, name: &str) -> bool {
+        self.hooks_allowed.iter().any(|n| same_name(n, name))
     }
 
     /// Every dependency table, with its lines: `[dependencies]`,
@@ -366,6 +376,7 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
     p.source_pins = (stated.index.into_iter())
         .map(|(name, (source, _))| (name, source))
         .collect();
+    p.hooks_allowed = stated.hooks;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
     Ok(p)
@@ -482,13 +493,16 @@ fn parse_groups(groups: toml::Table, stated: &mut Stated) -> Result<Vec<(String,
 
 /// What the dependency lines read so far say about where a package comes
 /// from. One name says it once across the tables: a second table may repeat
-/// it but not change it.
+/// it but not change it. `hooks` is no such statement: a line in any table
+/// that says `hooks = "run"` allows them.
 #[derive(Default)]
 struct Stated {
     /// Name to its repo and the table that line is in.
     github: BTreeMap<String, (String, String)>,
     /// Name to the source it is pinned to and the table that line is in.
     index: BTreeMap<String, (String, String)>,
+    /// Names whose line says `hooks = "run"`, as written.
+    hooks: BTreeSet<String>,
 }
 
 /// What `name` was stated as, whatever the case it was written in.
@@ -539,8 +553,8 @@ impl Stated {
 }
 
 /// One dependency table, in file order. `table` names it in error messages;
-/// the `github` repo and the `index` source of a line that has them go to
-/// `stated`.
+/// the `github` repo and the `index` source of a line that has them, and the
+/// name of a line that says `hooks = "run"`, go to `stated`.
 fn parse_dependencies(
     table: &str,
     entries: toml::Table,
@@ -555,6 +569,9 @@ fn parse_dependencies(
             }
             if let Some(source) = keys.index {
                 stated.state_index(table, &name, source)?;
+            }
+            if keys.hooks {
+                stated.hooks.insert(name.clone());
             }
             Ok((name, constraint))
         })
@@ -596,15 +613,17 @@ fn check_source_pins(
     Ok(())
 }
 
-/// The keys of a table-form dependency line that name where it comes from.
+/// The optional keys of a table-form dependency line besides `version`.
 #[derive(Default)]
 struct LineKeys {
     github: Option<String>,
     index: Option<String>,
+    /// `hooks = "run"`.
+    hooks: bool,
 }
 
 /// One dependency line: a version string, or a table with `version` and,
-/// optionally, `github` or `index`.
+/// optionally, `github`, `index` or `hooks`.
 fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, LineKeys)> {
     let (version, keys) = match value {
         toml::Value::String(version) => (version, LineKeys::default()),
@@ -618,8 +637,14 @@ fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint
     Ok((constraint, keys))
 }
 
-/// The `version`, `github` and `index` of a table-form dependency line. Any
-/// key not known yet is refused, never ignored.
+/// The keys a table-form dependency line may have.
+const LINE_KEYS: [&str; 4] = ["version", "github", "index", "hooks"];
+
+/// The one value `hooks` may have.
+const HOOKS_RUN: &str = "run";
+
+/// The `version`, `github`, `index` and `hooks` of a table-form dependency
+/// line. Any key not known yet is refused, never ignored.
 fn dependency_table(
     table: &str,
     name: &str,
@@ -631,11 +656,12 @@ fn dependency_table(
             "{at}: github and index cannot be used together; a github dependency comes only from its repo"
         );
     }
-    if let Some(key) = fields
-        .keys()
-        .find(|k| !matches!(k.as_str(), "version" | "github" | "index"))
-    {
-        bail!("{at}: unknown key {key:?}; expected version, github or index");
+    if let Some(key) = fields.keys().find(|k| !LINE_KEYS.contains(&k.as_str())) {
+        let (last, rest) = LINE_KEYS.split_last().expect("LINE_KEYS is not empty");
+        bail!(
+            "{at}: unknown key {key:?}; expected {} or {last}",
+            rest.join(", ")
+        );
     }
     let Some(version) = fields.remove("version") else {
         bail!(
@@ -662,7 +688,28 @@ fn dependency_table(
             ),
         })
         .transpose()?;
-    Ok((version, LineKeys { github, index }))
+    let hooks = (fields.remove("hooks"))
+        .map(|value| hooks_run(&at, value))
+        .transpose()?
+        .is_some();
+    Ok((
+        version,
+        LineKeys {
+            github,
+            index,
+            hooks,
+        },
+    ))
+}
+
+/// `value` as the one `hooks` value there is, or a refusal naming what it was.
+fn hooks_run(at: &str, value: toml::Value) -> Result<()> {
+    let got = match value {
+        toml::Value::String(s) if s == HOOKS_RUN => return Ok(()),
+        toml::Value::String(s) => format!("{s:?}"),
+        other => other.type_str().to_string(),
+    };
+    bail!("{at}: hooks must be \"{HOOKS_RUN}\" (delete the key to keep hooks off), got {got}")
 }
 
 /// `value` as `owner/repo`: a string of two non-empty parts around one `/`,
@@ -1036,6 +1083,37 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
     }
 
     #[test]
+    fn a_hooks_value_other_than_the_string_run_is_refused_with_its_value_or_type() {
+        let said = |got: &str| {
+            format!(
+                "[dependencies] pkg: hooks must be \"run\" (delete the key to keep hooks off), got {got}"
+            )
+        };
+        for (value, got) in [
+            ("\"yes\"", "\"yes\""),
+            ("\"Run\"", "\"Run\""),
+            ("\"\"", "\"\""),
+            ("true", "boolean"),
+            ("1", "integer"),
+            ("[]", "array"),
+        ] {
+            let line = format!("pkg = {{ version = \"*\", hooks = {value} }}");
+            assert_eq!(refusal("dependencies", &line), said(got), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_hooks_refusal_names_the_table_it_is_in() {
+        assert_eq!(
+            refusal(
+                "dev-dependencies",
+                "pkg = { version = \"*\", hooks = \"skip\" }"
+            ),
+            "[dev-dependencies] pkg: hooks must be \"run\" (delete the key to keep hooks off), got \"skip\""
+        );
+    }
+
+    #[test]
     fn a_table_lvpm_cannot_use_is_refused_by_table_and_name_with_its_reason() {
         let github_and_index = "[dependencies] pkg: github and index cannot be used together; a github dependency comes only from its repo";
         let a_table_needs_version = "[dependencies] pkg: a table needs version, e.g. pkg = { github = \"owner/repo\", version = \"*\" }";
@@ -1049,8 +1127,8 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
                 github_and_index,
             ),
             (
-                "pkg = { github = \"o/r\", version = \"*\", hooks = \"run\" }",
-                "[dependencies] pkg: unknown key \"hooks\"; expected version, github or index",
+                "pkg = { github = \"o/r\", version = \"*\", foo = \"x\" }",
+                "[dependencies] pkg: unknown key \"foo\"; expected version, github, index or hooks",
             ),
             ("pkg = { github = \"o/r\" }", a_table_needs_version),
             ("pkg = {}", a_table_needs_version),
@@ -1391,6 +1469,63 @@ e = \"*\"
             ],
             "by the name as written; the short form has no pin"
         );
+    }
+
+    #[test]
+    fn hooks_run_is_read_from_a_line_in_every_kind_of_table() {
+        let p = parse(
+            "[dependencies]\nalpha = { version = \"1.0\", hooks = \"run\" }\nplain = \"1.0\"\n\n\
+             [dev-dependencies]\nBeta = { hooks = \"run\", version = \"*\" }\n\n\
+             [dependency-groups.ci]\ngamma = { version = \"2.0\", hooks = \"run\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            p.hooks_allowed.into_iter().collect::<Vec<_>>(),
+            ["Beta", "alpha", "gamma"],
+            "by the name as written; the short form allows nothing"
+        );
+    }
+
+    #[test]
+    fn hooks_run_next_to_github_or_index_keeps_both() {
+        let p = with_two_sources(
+            "[dependencies]\na = { github = \"o/r\", version = \"*\", hooks = \"run\" }\n\
+             b = { index = \"first\", version = \"1.0\", hooks = \"run\" }\n",
+        )
+        .unwrap();
+        assert_eq!(p.github.get("a").map(String::as_str), Some("o/r"));
+        assert_eq!(p.source_pin_of("b"), Some("first"));
+        assert!(p.hooks_allowed_for("a"), "hooks lost on the github line");
+        assert!(p.hooks_allowed_for("b"), "hooks lost on the index line");
+    }
+
+    #[test]
+    fn hooks_allowed_for_matches_the_name_in_any_case() {
+        let p = parse("[dependencies]\nJKI_Lib = { version = \"*\", hooks = \"run\" }\n").unwrap();
+        assert!(p.hooks_allowed_for("jki_lib"), "lower case");
+        assert!(p.hooks_allowed_for("JKI_LIB"), "upper case");
+        assert!(!p.hooks_allowed_for("other"));
+    }
+
+    #[test]
+    fn hooks_run_on_one_of_two_lines_for_a_name_allows_it() {
+        let p = parse(
+            "[dependencies]
+a = \"1.0\"
+
+[dev-dependencies]
+A = { version = \"1.0\", hooks = \"run\" }
+",
+        )
+        .unwrap();
+        assert!(p.hooks_allowed_for("a"));
+    }
+
+    #[test]
+    fn a_manifest_without_hooks_allows_none() {
+        let p = parse("[dependencies]\na = \"1.0\"\nb = { version = \"*\" }\n").unwrap();
+        assert!(p.hooks_allowed.is_empty());
+        assert!(!p.hooks_allowed_for("a"));
     }
 
     #[test]

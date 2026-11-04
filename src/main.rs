@@ -124,9 +124,12 @@ struct ApplyArgs {
     /// a compile or build resolves the links itself as it loads.
     #[arg(long = "relink", conflicts_with = "no_relink")]
     force_relink: bool,
-    /// Run the packages' install hooks even where LabVIEW runs headless
-    /// (LV_RTE_HEADLESS is set), where they are otherwise skipped: most
-    /// hooks add palettes, menus or markers for an IDE nobody opens there.
+    /// Run every package's install hooks for this command. They are package
+    /// code, run inside LabVIEW with your rights, and are off by default for
+    /// any package not allowed by `hooks = "run"` in lvpm.toml or `hooks.run`
+    /// in the user config. A headless LabVIEW (LV_RTE_HEADLESS is set) runs
+    /// none without this: most hooks add palettes, menus or markers for an IDE
+    /// nobody opens there.
     #[arg(long = "hooks")]
     run_hooks: bool,
     #[command(flatten)]
@@ -143,6 +146,8 @@ impl ApplyArgs {
             run_hooks: self.run_hooks,
             allow_downgrade,
             relink: (&self.relink).into(),
+            // Set by the operation, which knows the project.
+            ..InstallOptions::default()
         }
     }
 }
@@ -311,15 +316,19 @@ enum Cmd {
         #[command(flatten)]
         relink: RelinkArgs,
     },
-    /// Re-run a package's PostInstall hook, without reinstalling it.
+    /// Run a package's PostInstall hook now, without reinstalling it.
     ///
-    /// For retrying a hook that failed during install. Hooks are not
-    /// decoration: ni_lib_advanced_http_client_api's PostInstall is the only
-    /// thing that repairs the Call Library paths its builder broke.
+    /// A hook is package code, run inside LabVIEW with your rights. Running
+    /// this command is your say-so for that package: use it for a hook that
+    /// failed during install or that install skipped (hooks are off by
+    /// default). Hooks are not decoration:
+    /// ni_lib_advanced_http_client_api's PostInstall is the only thing that
+    /// repairs the Call Library paths its builder broke.
     RunHooks {
         /// Package whose PostInstall hook to run. Omit when using --all.
         package: Option<String>,
-        /// Run the PostInstall hook of every installed package that has one.
+        /// Run the PostInstall hook of every installed package that has one,
+        /// allowed or not. Each that succeeds also turns on its uninstall hooks.
         #[arg(long, conflicts_with = "package")]
         all: bool,
         /// Seconds to wait for one hook to finish.
@@ -525,16 +534,16 @@ enum CacheCmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
-    /// Set a user-level setting. `sources.local` accepts directories; omit them to clear the list.
+    /// Set a user-level setting. `sources.local` accepts directories and `hooks.run` package names; omit them to clear the list.
     Set {
-        /// The setting: `cache`, `sources.local` or `venv.dir`.
+        /// The setting: `cache`, `hooks.run`, `sources.local` or `venv.dir`.
         key: String,
-        /// Its value; `sources.local` takes any number of directories.
+        /// Its value; `sources.local` takes directories and `hooks.run` package names, any number.
         values: Vec<String>,
     },
     /// Show the effective value of a setting.
     Get {
-        /// The setting: `cache`, `sources.local` or `venv.dir`.
+        /// The setting: `cache`, `hooks.run`, `sources.local` or `venv.dir`.
         key: String,
     },
 }

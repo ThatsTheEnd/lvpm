@@ -7,6 +7,7 @@
 //! [`InstallSession`], and [`install`] runs them in that order.
 
 use super::env::{Destination, OpEnv};
+use super::hook_policy::{HookAllow, HookContext, HookSkip, Verdict};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
@@ -42,10 +43,15 @@ pub struct InstallOptions {
     /// off: nothing there opens the IDE, and a compile or build resolves the
     /// links itself as it loads.
     pub force_relink: bool,
-    /// Run the packages' install hooks even where LabVIEW runs headless, where
-    /// they are otherwise skipped: most hooks add palettes, menus or markers
-    /// for an IDE nobody opens there.
+    /// Run every package's install hooks in this command, whether or not
+    /// anything allowed them, and even where LabVIEW runs headless, where they
+    /// are otherwise skipped: most hooks add palettes, menus or markers for an
+    /// IDE nobody opens there.
     pub run_hooks: bool,
+    /// The packages whose install hooks may run. Set by the command that
+    /// knows who allowed what (`HookAllow::for_command`); the default allows
+    /// none, so a caller that never set it runs no hook.
+    pub hook_allow: HookAllow,
     /// Replace an installed package with an older version. Without this,
     /// resolving to something older than what is installed is refused.
     pub allow_downgrade: bool,
@@ -201,6 +207,12 @@ pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Res
     });
     let plan = resolve_greedy(env, &store, &idx, &wanted, opts.no_deps)?;
 
+    // A named install has no project to allow hooks, even inside one: only the
+    // user's config does.
+    let opts = &InstallOptions {
+        hook_allow: HookAllow::for_command(&env.config, None),
+        ..opts.clone()
+    };
     let mut session = InstallSession::new(dest);
     let applied = apply(env, &mut session, &plan, opts)?;
     finish(env, &mut session, &applied, opts)
@@ -338,30 +350,6 @@ pub fn resolve_greedy(
     Ok(InstallPlan { entries })
 }
 
-/// Which hooks this install runs. Hooks act on the LabVIEW installation; a
-/// venv is not one, and a headless machine has no one to see what they set up.
-#[derive(Debug, Clone, Copy)]
-struct HookPolicy {
-    /// Run the hooks.
-    on: bool,
-    /// They are off because LabVIEW runs headless here, which is worth saying.
-    off_headless: bool,
-}
-
-impl HookPolicy {
-    /// The ones measured (DQMH's six) write a marker file and add a palette
-    /// entry — IDE furniture. Skipping them headless means an install never
-    /// starts LabVIEW at all. A package whose hook does real setup gets
-    /// `--hooks`; the caveat is documented with the flag.
-    fn new(env: &OpEnv, session: &InstallSession, opts: &InstallOptions) -> HookPolicy {
-        let off_headless = env.headless && !opts.run_hooks;
-        HookPolicy {
-            on: session.venv().is_none() && !off_headless,
-            off_headless: off_headless && session.venv().is_none(),
-        }
-    }
-}
-
 /// Put every package of the plan on disk, in order.
 ///
 /// A package already installed is judged by version: the same one is left
@@ -381,18 +369,21 @@ pub fn apply(
     {
         staging::clear_leftover(env, v)?;
     }
-    let hooks = HookPolicy::new(env, session, opts);
     let mut files = 0usize;
-    // How many packages declared a hook this install did not run — decides
-    // whether the headless note below is owed. Each package already said which.
-    let mut hooks_unrun = 0usize;
+    // How many packages of a scratch tree declared a hook that headless kept
+    // from running — decides whether the headless note below is owed. Each
+    // package already said which. A LabVIEW installation says it per package,
+    // in `skipped`.
+    let mut hooks_headless = 0usize;
+    // The packages whose install hooks did not run, told after the summary.
+    let mut skipped: Vec<HookSkip> = Vec::new();
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
-            if let Some(done) = install_one(env, session, planned, opts, hooks)? {
+            if let Some(done) = install_one(env, session, planned, opts, &mut skipped)? {
                 files += done.files;
-                hooks_unrun += usize::from(done.hooks_unrun);
+                hooks_headless += usize::from(done.headless_hooks);
             }
         }
         Ok(())
@@ -400,12 +391,21 @@ pub fn apply(
     let outcome = each();
     // On the error path too: the LabVIEW closes and the failures are told.
     let resave_failed = session.resaver.finish(env.sink);
-    outcome?;
-    if hooks.off_headless && hooks_unrun > 0 {
+    // A later failure must not hide an earlier skip.
+    let warn = |skipped| {
+        for event in opts.hook_allow.warnings(opts.dry_run, skipped) {
+            env.sink.emit(event);
+        }
+    };
+    if let Err(why) = outcome {
+        warn(skipped);
+        return Err(why);
+    }
+    if hooks_headless > 0 {
         env.sink.emit(Event::PhaseSkipped {
             phase: Phase::Hooks,
             reason: SkipReason::Headless,
-            skipped: hooks_unrun,
+            skipped: hooks_headless,
         });
     }
     env.sink.emit(Event::InstallDone {
@@ -413,6 +413,7 @@ pub fn apply(
         dry_run: opts.dry_run,
         resave_failed,
     });
+    warn(skipped);
     Ok(Applied {
         files,
         removed: 0,
@@ -424,8 +425,9 @@ pub fn apply(
 struct Installed {
     /// Files it would write; the total [`Applied`] reports.
     files: usize,
-    /// It declared a hook this install did not run.
-    hooks_unrun: bool,
+    /// It went to a scratch tree and declared a hook that headless kept from
+    /// running.
+    headless_hooks: bool,
 }
 
 /// One package's archive, open for planning and unpacking.
@@ -443,11 +445,11 @@ fn install_one(
     session: &mut InstallSession,
     planned: &PlannedPackage,
     opts: &InstallOptions,
-    hooks: HookPolicy,
+    skipped: &mut Vec<HookSkip>,
 ) -> Result<Option<Installed>> {
     let entry = &planned.entry;
     let roots = session.roots_for(&entry.name)?;
-    if !settle_installed(env, &roots, entry, opts)? {
+    if !settle_installed(env, session, &roots, entry, opts, skipped)? {
         return Ok(None);
     }
     env.sink.emit(Event::PackageStart {
@@ -504,23 +506,80 @@ fn install_one(
         archive_sha256,
     };
 
+    let verdict = hook_verdict(env, session, opts, &entry.name);
     let files = pkg.plan.writes.len();
     match opts.dry_run {
         true => preview(env, session, &pkg)?,
-        false => unpack(env, session, &mut pkg, opts, hooks)?,
+        false => unpack(env, session, &mut pkg, opts, verdict)?,
     }
     report_leftovers(env, &pkg.plan);
-    let hooks_unrun = report_unrun_hooks(env, session, &pkg, hooks);
-    Ok(Some(Installed { files, hooks_unrun }))
+    let headless_hooks = match verdict {
+        // A LabVIEW installation warns per package, once the install is done.
+        Verdict::Skip(reason) if session.target().is_some() => {
+            skipped.extend(hook_skip_for(&pkg, reason, opts));
+            false
+        }
+        _ => {
+            report_unrun_hooks(env, session, &pkg, verdict)
+                && verdict == Verdict::Skip(SkipReason::Headless)
+        }
+    };
+    Ok(Some(Installed {
+        files,
+        headless_hooks,
+    }))
+}
+
+/// What the install does about the install hooks of `name`. A scratch tree has
+/// no LabVIEW, so no hook can run there whoever is allowed (`post_install_hooks`
+/// says so): the allowlist is bypassed. Headless still skips, as it did before
+/// the allowlist existed.
+fn hook_verdict(
+    env: &OpEnv,
+    session: &InstallSession,
+    opts: &InstallOptions,
+    name: &str,
+) -> Verdict {
+    match session.target() {
+        None if !env.headless || opts.run_hooks => Verdict::Run,
+        _ => opts.hook_allow.verdict(
+            HookContext {
+                venv: session.venv().is_some(),
+                headless: env.headless,
+                forced: opts.run_hooks,
+            },
+            name,
+        ),
+    }
+}
+
+/// The install hooks `pkg` declares, which a skipped package is warned about.
+/// None when it declares none: an uninstall hook is told at its uninstall.
+fn hook_skip_for(pkg: &Unpacking, reason: SkipReason, opts: &InstallOptions) -> Option<HookSkip> {
+    let declared = |hook: HookKind| pkg.spec.script_vis.iter().any(|(h, _)| h == hook.name());
+    let hooks: Vec<HookKind> = [HookKind::PreInstall, HookKind::PostInstall]
+        .into_iter()
+        .filter(|h| declared(*h))
+        .collect();
+    (!hooks.is_empty()).then(|| HookSkip {
+        package: pkg.entry.name.clone(),
+        run_now: !opts.dry_run
+            && reason == SkipReason::NotAllowed
+            && hooks.contains(&HookKind::PostInstall),
+        hooks,
+        reason,
+    })
 }
 
 /// Decide what an installed version of `entry` means. False: leave the package
 /// alone. True: install it, replacing any installed version ([`remove_old`]).
 fn settle_installed(
     env: &OpEnv,
+    session: &InstallSession,
     roots: &Roots,
     entry: &Entry,
     opts: &InstallOptions,
+    skipped: &mut Vec<HookSkip>,
 ) -> Result<bool> {
     if !install::is_installed(roots, &entry.name) {
         return Ok(true);
@@ -530,6 +589,19 @@ fn settle_installed(
     let order = Version::parse(&old.version).cmp(&entry.version);
     match order {
         Equal => {
+            // The allowlist applies from the next install or upgrade: say that
+            // the hook this version skipped can be run now.
+            if session.target().is_some()
+                && old.hook_skipped(HookKind::PostInstall)
+                && hook_verdict(env, session, opts, &entry.name) == Verdict::Run
+            {
+                skipped.push(HookSkip {
+                    package: entry.name.clone(),
+                    hooks: vec![HookKind::PostInstall],
+                    reason: SkipReason::AlreadyInstalled,
+                    run_now: !opts.dry_run,
+                });
+            }
             env.sink.emit(Event::PackageAlreadyInstalled {
                 name: entry.name.clone(),
                 version: old.version,
@@ -612,9 +684,10 @@ fn unpack(
     session: &mut InstallSession,
     pkg: &mut Unpacking,
     opts: &InstallOptions,
-    hooks: HookPolicy,
+    verdict: Verdict,
 ) -> Result<()> {
     let name = &pkg.entry.name;
+    let run = verdict == Verdict::Run;
     // The point of no return: nothing is written before this, and what
     // follows cannot be taken back. It comes ahead of the first file written,
     // which is the PreInstall hook's extraction below, and ahead of the
@@ -636,9 +709,7 @@ fn unpack(
         true => install::extract_hook(&pkg.roots, name, &mut pkg.zip, "PreInstall.vi")?,
         false => None,
     };
-    if hooks.on
-        && let (Some(vi), Some(t)) = (&pre, &pkg.roots.target)
-    {
+    if run && let (Some(vi), Some(t)) = (&pre, &pkg.roots.target) {
         let planned: Vec<String> = pkg
             .plan
             .writes
@@ -667,6 +738,7 @@ fn unpack(
             &pkg.plan,
             pre.as_deref(),
             &pkg.archive_sha256,
+            matches!(verdict, Verdict::Skip(_)),
         )?,
         Some(staging) => {
             if staging::clear_unrecorded(env, session, &staging, name)? {
@@ -698,21 +770,12 @@ fn unpack(
         name.clone(),
         m.relink_folders.iter().map(PathBuf::from).collect(),
     ));
-    if hooks.on
-        && let Some(hook) = &m.post_install_vi
-    {
+    if run && let Some(hook) = &m.post_install_vi {
         session.post_install_hooks.push(PostInstallHook {
             package: name.clone(),
             vi: PathBuf::from(hook),
             files: m.files.clone(),
         });
-    }
-    // The manifest assumes a global install runs its hooks; headless did not,
-    // and `lvpm list` should say so.
-    if hooks.off_headless {
-        for (h, v) in &pkg.spec.script_vis {
-            install::mark_hook_skipped(&pkg.roots, name, &format!("{h}={v}"))?;
-        }
     }
     Ok(())
 }
@@ -737,23 +800,25 @@ fn report_leftovers(env: &OpEnv, plan: &install::Plan) {
     }
 }
 
-/// Warn only about hooks this install owes and will not run. Globally,
+/// Warn only about hooks this install owes and will not run. Where they run,
 /// PreInstall has run, PostInstall runs after the relink pass, and the
 /// uninstall hooks are extracted for `lvpm uninstall` to run — nothing to say.
-/// In a venv, or headless, no hook runs at all, so every declared one is
-/// reported. Whether there was any.
+/// Where the verdict is anything else, no hook runs at all, so every declared
+/// one is reported, except on a LabVIEW installation, whose skipped install
+/// hooks are warned about by [`Event::HooksSkipped`] once the install is done.
+/// Whether there was any.
 fn report_unrun_hooks(
     env: &OpEnv,
     session: &InstallSession,
     pkg: &Unpacking,
-    hooks: HookPolicy,
+    verdict: Verdict,
 ) -> bool {
     let unrun: Vec<String> = pkg
         .spec
         .script_vis
         .iter()
         .filter(|(h, _)| {
-            !hooks.on
+            verdict != Verdict::Run
                 || (h == "PostInstall"
                     && !session
                         .post_install_hooks
@@ -882,16 +947,26 @@ fn post_install_hooks(env: &OpEnv, session: &mut InstallSession, opts: &InstallO
             },
         );
         if !ran {
-            // So `lvpm list` shows it; a failed hook is otherwise only in
-            // this scrollback.
-            let _ = install::mark_hook_skipped(
-                session.store(),
-                &hook.package,
-                &format!("PostInstall={}", hook.vi.display()),
-            );
+            record_failed_post_install(env, session.store(), hook);
         }
     }
     session.close_hook_connection();
+}
+
+/// So `lvpm list` shows it, and uninstall holds its hooks back; a failed hook
+/// is otherwise only in this scrollback. Warns when the record cannot be told,
+/// because then the uninstall hooks of a package whose install hook failed run.
+fn record_failed_post_install(env: &OpEnv, roots: &Roots, hook: &PostInstallHook) {
+    if let Err(e) = install::mark_hook_skipped(
+        roots,
+        &hook.package,
+        &format!("PostInstall={}", hook.vi.display()),
+    ) {
+        env.sink.emit(Event::HookRecordNotUpdated {
+            package: hook.package.clone(),
+            error: format!("{e:#}"),
+        });
+    }
 }
 
 /// Palettes and menus last, after the hooks: a hook is free to write more
@@ -1014,6 +1089,7 @@ mod tests {
         fn env<'a>(&self, sink: &'a NullSink) -> OpEnv<'a> {
             let config = Config {
                 cache: self.root.join("cache"),
+                hooks_run: Vec::new(),
                 local_sources: Vec::new(),
                 venv_dir: PathBuf::from(".lv-venv"),
             };
@@ -1063,6 +1139,31 @@ mod tests {
         assert!(why.contains(&scratch.sha256), "{why}");
         let roots = Roots::scratch(&scratch.root.join("dest"));
         assert!(!install::is_installed(&roots, "alpha"));
+    }
+
+    #[test]
+    fn a_failed_post_install_the_record_cannot_note_is_warned_about() {
+        use crate::ops::testing::{Recorded, env_on, scratch_dir};
+        let dir = scratch_dir("post-install-unrecorded");
+        let roots = Roots::scratch(&dir);
+        // A directory where the record should be: reading it fails.
+        std::fs::create_dir_all(install::manifest_path(&roots, "alpha")).unwrap();
+        let sink = Recorded::default();
+        let env = env_on(&sink, &dir);
+        let hook = PostInstallHook {
+            package: "alpha".into(),
+            vi: PathBuf::from("PostInstall.vi"),
+            files: Vec::new(),
+        };
+
+        record_failed_post_install(&env, &roots, &hook);
+
+        let events = sink.events();
+        assert!(
+            matches!(events.as_slice(), [Event::HookRecordNotUpdated { package, .. }] if package == "alpha"),
+            "{events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

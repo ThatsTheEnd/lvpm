@@ -1,6 +1,7 @@
 //! The wording of the hook events. A hook's line is part of whatever line its
 //! operation has open: PreInstall extends its package's, the others stand alone.
 
+use super::install::one_line;
 use super::{Renderer, Stream};
 use lvpm_core::events::{Event, HookKind};
 
@@ -89,6 +90,15 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             error,
             ..
         } => r.line(Stream::Out, &format!("post-uninstall FAILED: {error}")),
+        Event::HookRecordNotUpdated { package, error } => r.line(
+            Stream::Err,
+            &super::printable(format!(
+                "warning: {}: the install record could not be updated ({}); \
+                 its uninstall hooks may run",
+                one_line(package),
+                one_line(error)
+            )),
+        ),
         // `lvpm run-hooks`: the same hook, on a line with no indent.
         Event::RerunHooksNothingToDo => r.line(
             Stream::Out,
@@ -212,6 +222,35 @@ mod tests {
             "alpha ... ok (2.0s)\nbeta ... FAILED: no VI Server\n\
              gamma: extracted hook is gone (gone.vi) — reinstall the package\n\
              nothing to do: no package with an extracted PostInstall hook\n"
+        );
+    }
+
+    #[test]
+    fn a_failed_post_install_the_record_could_not_note_is_a_warning_on_stderr() {
+        let (mut renderer, out, err) = renderer();
+        renderer.render(&Event::HookRecordNotUpdated {
+            package: "alpha".into(),
+            error: "access denied".into(),
+        });
+        assert_eq!(out.text(), "");
+        assert_eq!(
+            err.text(),
+            "warning: alpha: the install record could not be updated (access denied); \
+             its uninstall hooks may run\n"
+        );
+    }
+
+    #[test]
+    fn a_newline_in_the_record_warning_cannot_start_a_line_of_its_own() {
+        let (mut renderer, _, err) = renderer();
+        renderer.render(&Event::HookRecordNotUpdated {
+            package: "alpha\nrun it now: x".into(),
+            error: "denied\nwarning: forged".into(),
+        });
+        assert_eq!(
+            err.text(),
+            "warning: alpha run it now: x: the install record could not be updated \
+             (denied warning: forged); its uninstall hooks may run\n"
         );
     }
 

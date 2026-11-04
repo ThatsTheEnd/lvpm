@@ -4,9 +4,9 @@ use super::env::OpEnv;
 use super::refresh::refresh_palettes_and_menus;
 use crate::events::{Event, HookKind};
 use crate::install::{self, Manifest};
-use crate::target::LvTarget;
+use crate::target::{LvTarget, Roots};
 use crate::viserver::{self, Connection, LvValue};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -83,7 +83,8 @@ pub fn run_hooks(env: &OpEnv, package: Option<&str>, all: bool, timeout_secs: u6
             package: m.name.clone(),
         });
         let info = hook_action_info(&m.name, m.display_name.as_deref(), &target, &m.files);
-        match run_hook_vi(env, &mut conn, &target, timeout_secs, vi, &info) {
+        let ran = run_hook_vi(env, &mut conn, &target, timeout_secs, vi, &info);
+        match settle_rerun(&roots, m, ran) {
             Ok(took) => env.sink.emit(Event::RerunHookRan {
                 package: m.name.clone(),
                 took,
@@ -107,6 +108,21 @@ pub fn run_hooks(env: &OpEnv, package: Option<&str>, all: bool, timeout_secs: u6
         bail!("{failed} hook(s) failed");
     }
     Ok(())
+}
+
+/// A hook run by hand that succeeded counts as run: the record stops listing
+/// hooks as skipped, which lets uninstall run its hooks again. A failed run
+/// leaves the record as it was. Returns `ran` unchanged, except that a record
+/// that cannot be written turns the success into a failure.
+pub(crate) fn settle_rerun(
+    roots: &Roots,
+    ran_for: &Manifest,
+    ran: Result<Duration>,
+) -> Result<Duration> {
+    let took = ran?;
+    install::clear_skipped_hooks(roots, ran_for)
+        .context("the hook ran, but its install record could not be updated")?;
+    Ok(took)
 }
 
 /// One hook to run: whose it is, which one, the VI and what the VI is told.
@@ -281,6 +297,118 @@ mod tests {
                 if package == "planted" && error.contains("outside this destination"))
         });
         assert!(refused, "{events:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An install record for `name` whose PostInstall hook is `vi` and which
+    /// lists its install and one uninstall hook as not run. Returns the record's file.
+    fn skipped_record(fake: &testing::FakeInstallation, name: &str, vi: &Path) -> PathBuf {
+        let store = fake.roots().store_dir();
+        std::fs::create_dir_all(&store).unwrap();
+        let record = serde_json::json!({
+            "name": name, "version": "1.0", "display_name": null, "installed_at": 0,
+            "target": "fake", "files": [],
+            "skipped_hooks": ["PreInstall=a.vi", "PostInstall=b.vi", "PreUninstall=c.vi"],
+            "post_install_vi": vi.to_string_lossy().replace('\\', "/"),
+        });
+        let file = store.join(format!("{name}.json"));
+        std::fs::write(&file, serde_json::to_string_pretty(&record).unwrap()).unwrap();
+        file
+    }
+
+    #[test]
+    fn a_hook_that_ran_clears_the_record_and_one_that_failed_leaves_it_as_it_was() {
+        let dir = testing::scratch_dir("hooks-settle");
+        let fake = testing::FakeInstallation::new(&dir);
+        let vi = fake
+            .roots()
+            .hooks_dir()
+            .join("hooked")
+            .join("PostInstall.vi");
+        let file = skipped_record(&fake, "hooked", &vi);
+        let roots = fake.roots();
+        let record = install::read_manifest(&roots, "hooked").unwrap();
+        let before = std::fs::read(&file).unwrap();
+
+        let failed = settle_rerun(&roots, &record, Err(anyhow::anyhow!("boom")));
+        assert_eq!(failed.unwrap_err().to_string(), "boom");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+
+        let took = Duration::from_secs(2);
+        assert_eq!(settle_rerun(&roots, &record, Ok(took)).unwrap(), took);
+        let cleared = install::read_manifest(&roots, "hooked").unwrap();
+        assert_eq!(cleared.skipped_hooks, Vec::<String>::new());
+        assert_eq!(cleared.post_install_vi, record.post_install_vi);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hook_that_ran_but_whose_record_cannot_be_updated_is_a_failure_that_says_so() {
+        let dir = testing::scratch_dir("hooks-settle-unwritable");
+        let fake = testing::FakeInstallation::new(&dir);
+        let roots = fake.roots();
+        let file = skipped_record(&fake, "hooked", Path::new("PostInstall.vi"));
+        let record = install::read_manifest(&roots, "hooked").unwrap();
+        // A directory where the record should be: it can be neither read nor written.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir_all(&file).unwrap();
+
+        let why = settle_rerun(&roots, &record, Ok(Duration::from_secs(2))).unwrap_err();
+        assert_eq!(
+            why.to_string(),
+            "the hook ran, but its install record could not be updated"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hook_that_ran_while_its_package_was_reinstalled_leaves_the_new_record_alone() {
+        let dir = testing::scratch_dir("hooks-settle-reinstalled");
+        let fake = testing::FakeInstallation::new(&dir);
+        let roots = fake.roots();
+        let file = skipped_record(&fake, "hooked", Path::new("PostInstall.vi"));
+        let ran_for = install::read_manifest(&roots, "hooked").unwrap();
+        let mut newer = install::read_manifest(&roots, "hooked").unwrap();
+        newer.installed_at += 1;
+        install::write_manifest(&roots, &newer).unwrap();
+        let before = std::fs::read(&file).unwrap();
+
+        let why = settle_rerun(&roots, &ran_for, Ok(Duration::from_secs(2))).unwrap_err();
+        assert_eq!(
+            format!("{why:#}"),
+            "the hook ran, but its install record could not be updated: hooked was reinstalled while its hook ran"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_hooks_that_finds_the_hook_vi_gone_leaves_the_record_byte_identical() {
+        let dir = testing::scratch_dir("hooks-gone");
+        let fake = testing::FakeInstallation::new(&dir);
+        let vi = fake
+            .roots()
+            .hooks_dir()
+            .join("hooked")
+            .join("PostInstall.vi");
+        let file = skipped_record(&fake, "hooked", &vi);
+        let before = std::fs::read(&file).unwrap();
+
+        let sink = testing::Recorded::default();
+        let mut env = testing::env_on(&sink, &dir);
+        fake.place(&mut env);
+        env.flags.labview_version = Some("2099".into());
+        let why = run_hooks(&env, Some("hooked"), false, 1).unwrap_err();
+        assert_eq!(why.to_string(), "1 hook(s) failed");
+
+        let events = sink.events();
+        assert!(
+            events.iter().any(
+                |e| matches!(e, Event::RerunHookViGone { package, .. } if package == "hooked")
+            ),
+            "{events:?}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

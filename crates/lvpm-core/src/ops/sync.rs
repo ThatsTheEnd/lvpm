@@ -9,6 +9,7 @@
 
 use super::env::OpEnv;
 use super::github_index;
+use super::hook_policy::HookAllow;
 use super::install::{
     Applied, InstallOptions, InstallPlan, PlannedPackage, announce_target, apply, finish,
     order_dependencies_first,
@@ -197,6 +198,14 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
     }
 
     let planned = fetch_locked(env, project, &plan.wanted)?;
+    // The project's own lines allow hooks; a dependency's manifest never does.
+    let opts = &SyncOptions {
+        install: InstallOptions {
+            hook_allow: HookAllow::for_command(&env.config, Some(project)),
+            ..opts.install.clone()
+        },
+        ..opts.clone()
+    };
     let mut session = InstallSession::new(dest);
     let applied = apply_sync(env, &mut session, &lock, &plan, &selection, planned, opts)?;
     finish(env, &mut session, &applied, &opts.install)?;
@@ -1217,6 +1226,7 @@ mod tests {
         fn env<'a>(&self, sink: &'a dyn EventSink, folders: Vec<PathBuf>) -> OpEnv<'a> {
             let config = Config {
                 cache: self.root.join("cache"),
+                hooks_run: Vec::new(),
                 local_sources: folders,
                 venv_dir: PathBuf::from(".lv-venv"),
             };
