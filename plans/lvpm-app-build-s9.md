@@ -749,7 +749,7 @@ For each PR:
   - [x] Step 3.2: `kinds`, `--app`, `--package` and the preconditions
 
 #### Wave 3
-- [ ] Slice 4: the build in the venv's LabVIEW
+- [x] Slice 4: the build in the venv's LabVIEW
   - [x] Step 4.1: `VenvAppLauncher` runs the wrapper VI
 
 #### Wave 4

@@ -527,7 +527,7 @@ pub fn ensure_instance(
     })
 }
 
-/// How long one VI Server call to a venv's LabVIEW may go unanswered.
+/// How long one VI Server call to a venv's LabVIEW may go unanswered, and how long a fresh one may take to start.
 pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A fresh LabVIEW on a venv and a VI Server connection to it. Dropping it
