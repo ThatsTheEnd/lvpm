@@ -32,7 +32,7 @@ A hook runs only for a package you allowed.
 | Either of those, for one command | The command has `--hooks`, which allows every package |
 | A venv | Never. A venv runs no hook, and nothing allows one |
 | A LabVIEW that runs headless (`LV_RTE_HEADLESS`) | Only with `--hooks`. `hooks = "run"` and `hooks.run` do not apply there |
-| A scratch `--prefix` tree | Never |
+| A scratch `--prefix` tree | Never, and no warning: no LabVIEW is there to run one |
 
 Only the root `lvpm.toml` allows a package. A `hooks = "run"` in a
 dependency's own `lvpm.toml` allows nothing. To allow a package that is only a
@@ -49,8 +49,9 @@ warning: pilot_a: skipped install hook PostInstall (hooks are off by default; se
   always run it:  add hooks = "run" to the pilot_a line in [dependencies] of lvpm.toml
 ```
 
-Outside a project the last line is `lvpm config set hooks.run <names>`: the
-names already in `hooks.run` and every package that command skipped. A headless install says
+Outside a project the always-run-it line is `lvpm config set hooks.run <names>`.
+It appears once, on the last warning, and lists the names already in
+`hooks.run` and every package that command skipped. A headless install says
 `(LabVIEW runs headless; hooks = "run" and hooks.run do not apply)` and
 offers `add --hooks to this command`. `--dry-run` says `would skip`.
 
@@ -126,4 +127,5 @@ For diagnosis the primitives are exposed directly:
 
 Verified end to end: a 46-dependency project manifest resolved to 48
 packages / 8766 files, installed, relinked in one deduplicated pass and its
-15 post-install hooks run, from a single `lvpm install`.
+15 post-install hooks run, from a single `lvpm install`. This was recorded
+before S12, when hooks ran by default; today those hooks run only when allowed.

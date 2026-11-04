@@ -92,7 +92,7 @@ Feature: install hooks run only for allowed packages
     And stderr says "lvpm run-hooks lvpm_test_fixture"
 
   @labview @unsafe
-  Scenario: following the run-it-now line runs the hook and re-enables uninstall hooks
+  Scenario: following the run-it-now line runs the hook
     Given the hook fixture was installed with its PostInstall skipped
     When I run "lvpm run-hooks lvpm_test_fixture"
     Then the PostInstall hook ran for "lvpm_test_fixture"

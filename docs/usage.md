@@ -981,7 +981,8 @@ lvpm search caraya
 
 `LVPM_CONFIG_HOOKS_RUN` wins over the file. While it is set, the
 `lvpm config set hooks.run ...` line in an install hook warning changes the
-file but not what lvpm uses: unset the variable or edit its value.
+file but not what lvpm uses: unset the variable or edit its value. An empty
+value counts as set: it turns the file's list off.
 
 In CI, set it on the job to keep the cache on a persistent volume between
 runs.

@@ -18,6 +18,12 @@
     Given a project that depends on "hooked" with hooks set to "run" and a current lock
     When the project is synced into the LabVIEW installation
     Then the PostInstall hook of "hooked" is started
+    And no hooks-skipped warning is given
+
+  Scenario: sync --global --hooks starts a hook nobody allowed
+    Given a project that depends on "hooked" without hooks = "run" and a current lock
+    When the project is synced into the LabVIEW installation with --hooks
+    Then the PostInstall hook of "hooked" is started
 
   Scenario: only the package that is not allowed is skipped
     Given a project that depends on "hooked" with hooks set to "run" and on "other_hooked" without it, with a current lock

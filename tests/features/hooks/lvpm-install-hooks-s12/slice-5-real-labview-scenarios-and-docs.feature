@@ -8,7 +8,7 @@
     And stderr says "lvpm run-hooks lvpm_test_fixture"
 
   @labview @unsafe
-  Scenario: following the run-it-now line runs the hook and re-enables uninstall hooks
+  Scenario: following the run-it-now line runs the hook
     Given the hook fixture was installed with its PostInstall skipped
     When I run "lvpm run-hooks lvpm_test_fixture"
     Then the PostInstall hook ran for "lvpm_test_fixture"
@@ -27,6 +27,6 @@
     When they are read
     Then README.md mentions "hooks are off by default"
     And docs/manifest.md mentions "hooks = \"run\""
-    And docs/usage.md mentions "hooks.run" and "skipped install hook"
-    And docs/labview-integration.md mentions "lvpm run-hooks" and "hooks.run"
+    And docs/usage.md mentions "hooks = \"run\"", "hooks.run" and "skipped install hook"
+    And docs/labview-integration.md mentions "lvpm run-hooks", "hooks = \"run\"", "hooks.run" and "skipped install hook"
     And docs/cli.md mentions "hooks.run"

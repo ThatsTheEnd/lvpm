@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-03
 **Branch**: claude/dev-team-ship-831367, off `main` at aab9a58
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: custom: tests/features/hooks/
 **Spec**: [docs/specs/lvpm-install-hooks-s12.md](../docs/specs/lvpm-install-hooks-s12.md)
 
@@ -432,6 +432,7 @@ Rendering (unit tests in `src/render/install.rs`, exact text, no colour):
 **IMPLEMENT**: `Event::HooksSkipped`, `AllowLine`, `SkipReason::AlreadyInstalled`; collect in `apply`, emit after `InstallDone` and on the error path; the combined config line; the same-version check in `settle_installed`. Render to stderr per the message table; JSON (inline in `src/render/json.rs`). Drop the `PhaseSkipped { Hooks, Headless }` note on a LabVIEW installation, since the per-package warning replaces it; update the render tests at `src/render/install.rs` around lines 549–559 and `src/render/headless.rs`. Recorded goldens that show the old note are edited by hand, only the changed rows, and the PR says they were hand-adjusted, not re-recorded.
 **TEST**: render unit tests for every message-table row; FakeInstallation tests for the `[3.2]` scenarios; the CLI scenario; the JSON test. Full suite green.
 **REFACTOR**: one `hook_names` helper for the warning and the venv line.
+**Deviation**: the CLI scenario is tagged `@labview`: it needs a LabVIEW installation, so the offline suite does not run it. The FakeInstallation tests cover the same warning.
 **Files**: `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/ops/hook_policy.rs`, `crates/lvpm-core/src/events.rs`, `src/render/install.rs`, `src/render/headless.rs`, `src/render/mod.rs`, `src/render/json.rs`, `tests/features/hooks/s12-install-hooks.feature`, `tests/steps/hooks.rs`, `tests/golden/`
 **Commit**: `feat(s12): warn after an install that skipped a hook`
 
@@ -524,7 +525,7 @@ Rendering (unit tests in `src/render/install.rs`, exact text, no colour):
     And stderr says "lvpm run-hooks lvpm_test_fixture"
 
   @labview @unsafe
-  Scenario: following the run-it-now line runs the hook and re-enables uninstall hooks
+  Scenario: following the run-it-now line runs the hook
     Given the hook fixture was installed with its PostInstall skipped
     When I run "lvpm run-hooks lvpm_test_fixture"
     Then the PostInstall hook ran for "lvpm_test_fixture"
@@ -640,9 +641,9 @@ None.
   - [x] Step 4.2: `run-hooks` clears the skip
 
 #### Wave 5
-- [ ] Slice 5: real LabVIEW scenarios and docs
-  - [ ] Step 5.1: the `@labview` scenarios
-  - [ ] Step 5.2: docs
+- [x] Slice 5: real LabVIEW scenarios and docs
+  - [x] Step 5.1: the `@labview` scenarios
+  - [x] Step 5.2: docs
 
 ## Plan Review Summary
 
