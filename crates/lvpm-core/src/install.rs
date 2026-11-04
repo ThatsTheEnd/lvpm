@@ -718,6 +718,7 @@ mod tests {
             "PreUninstall=c".into(),
             "PostUninstall=d".into(),
         ];
+        assert!(m.any_hook_skipped());
         m.clear_skipped_hooks();
         assert!(!m.any_hook_skipped(), "{m:?}");
     }

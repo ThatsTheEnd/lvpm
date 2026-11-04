@@ -656,6 +656,18 @@ mod tests {
     }
 
     #[test]
+    fn a_skipped_install_hook_outranks_uninstall_hooks_that_were_never_extracted() {
+        // A headless install from before uninstall hooks were extracted.
+        let skipped = [
+            "PreInstall=a",
+            "PostInstall=b",
+            "PreUninstall=c",
+            "PostUninstall=d",
+        ];
+        held_back(&uninstall_hooked("legacy-headless", &skipped, &[]));
+    }
+
+    #[test]
     fn a_record_that_lists_uninstall_hooks_it_never_extracted_says_it_predates_them() {
         // From before uninstall hooks were extracted: they are listed as
         // skipped and the record holds no VI for them.

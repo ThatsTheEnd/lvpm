@@ -26,7 +26,7 @@ unless `--hooks` is given, allowed or not.
 
 ## Architecture Specification
 
-**Who decides.** One rule, `HookPolicy` in `ops/install.rs`, now per package:
+**Who decides.** One rule, `HookAllow::verdict` in `ops/hook_policy.rs`, now per package:
 
 | Where | A package's hooks run when |
 |---|---|
@@ -49,7 +49,7 @@ the manifest is read, naming the line. `Project` gains
 `lvpm add pkg@<newer>` keeps `hooks = "run"`; a test proves it.
 
 **The user config.** `config.rs` gains `[hooks] run = [..]`, read through
-`LVPM_CONFIG_HOOKS_RUN` (comma- or path-list separated like `sources.local`)
+`LVPM_CONFIG_HOOKS_RUN` (names separated by commas or whitespace)
 or the file, and written by `lvpm config set hooks.run <name>...`, which
 replaces the list, as `sources.local` does. `config get hooks.run` lists it.
 
@@ -94,7 +94,9 @@ stays unhooked until it is reinstalled allowed. `lvpm list` already shows the
 list.
 
 **Uninstall.** `uninstall_one` runs PreUninstall and PostUninstall only when
-the record's `skipped_hooks` holds neither PreInstall nor PostInstall. A
+the record's `skipped_hooks` lists no hook at all. An install that skips
+writes every hook the package declares into the record, uninstall hooks
+included. A
 record from before this slice has none listed for a global install, so its
 hooks run as before. Headless records, and records whose PostInstall failed,
 already list their install hooks, so their uninstall hooks stop running (ADR 3 ยง4). A skipped uninstall hook is reported with a new
@@ -104,11 +106,12 @@ already list their install hooks, so their uninstall hooks stop running (ADR 3 ย
 |---|---|
 | `hooks` key, `Project::hooks_allowed` | `crates/lvpm-core/src/project.rs` (`dependency_table`, `LineKeys`) |
 | `hooks.run` key | `crates/lvpm-core/src/config.rs` |
-| Per-package policy, `HooksSkipped`, the `allow` text | `crates/lvpm-core/src/ops/install.rs`, `ops/sync.rs`, `events.rs` |
+| Per-package policy, `HooksSkipped`, the `allow` text | `crates/lvpm-core/src/ops/hook_policy.rs`, `ops/install.rs`, `ops/sync.rs`, `events.rs` |
 | `run-hooks` clears the skip | `crates/lvpm-core/src/ops/hooks.rs`, `install.rs` |
 | Uninstall follows the record | `crates/lvpm-core/src/ops/uninstall.rs` |
 | Rendering | `src/render/install.rs`, `src/render/uninstall.rs`, `src/render/hooks.rs`, `src/render/mod.rs` |
-| Wiring the allowlist into the env | `src/main.rs` |
+| Wiring the allowlist into the env | `src/main.rs` (`HookAllow::for_command`) |
+| The TUI log line | `crates/lvpm-tui/src/log.rs` |
 | `add` keeps `hooks` | `crates/lvpm-core/src/manifest_edit.rs` (test only) |
 | Scenarios | `tests/features/hooks/s12-install-hooks.feature` (new), listed in `tests/acceptance.rs` `FEATURE_FILES`; a fake installation with a hook-declaring package, as `ops::testing` builds |
 | Docs | README.md (hooks line), docs/usage.md, docs/manifest.md, docs/labview-integration.md, docs/cli.md |
@@ -215,3 +218,12 @@ allow it. *(#76)*
 - [x] Terminology consistent across artifacts
 - [x] No contradictions between artifacts
 - [x] Every gap/ambiguity finding is logged. The three `requires-stakeholder-input` items were answered by the user.
+
+## Amendments after review
+
+- The uninstall gate is "no hook listed as skipped", not "no install hook
+  listed": a skip records every declared hook, so the two agree for new
+  records and the wider gate also holds back legacy records that list only
+  uninstall hooks.
+- A package that declares only uninstall hooks gets no warning at install;
+  `lvpm uninstall` says its hooks were not allowed (`UnrunReason::NotAllowedAtInstall`).

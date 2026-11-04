@@ -71,7 +71,7 @@ From the spec; numbers match it.
   Verdict order: venv → `Venv`; forced (`--hooks`) → `Run`; headless → `Skip(Headless)`; allowed → `Run`; else `Skip(NotAllowed)`. `InstallOptions.hook_allow` defaults to allowing nothing, so a missed wiring site fails safe. `for_command` is called at exactly three sites: `sync`, `add_remove::commit` (with `edit.project`, set on `sync_options.install` only), and `install` (no project, so the config). Only the root `Project` is ever passed, so AC8 holds by construction; a unit test proves it.
 - **`SkipReason`** gains `NotAllowed` and `AlreadyInstalled`; no parallel enum.
 - **The event**: `Event::HooksSkipped { package, hooks: Vec<HookKind>, reason: SkipReason, run_now: bool, dry_run: bool, allow: Option<AllowLine> }`, where
-  `AllowLine::{ AddKey { name, table }, AddLine { name }, ConfigSet { names }, PassHooks }`.
+  `AllowLine::{ AddKey { name, table }, AddLine { name }, ConfigSet { names, skipped }, PassHooks }` (`skipped`: how many of `names`, at the end, are the packages this command skipped; the line says `it` or `them` from it).
   Core carries data; `src/render/install.rs` writes the text, and `--json` carries the fields. `run_now` is false when no PostInstall was declared, when headless, and in a dry run. `install_one` collects the events during `apply`, and `apply` emits them after `InstallDone`, and also before it returns an error, so a later failure never hides an earlier skip. On a global install, only the last event carries `allow: Some(ConfigSet { names })`, with the existing names plus every package skipped in this command. Pasting it once allows all of them and drops none.
 - **Already installed, now allowed**: in `settle_installed`'s same-version branch, if the record lists a skipped PostInstall and the verdict is now `Run`, emit `HooksSkipped { reason: AlreadyInstalled, run_now: true, allow: None }`. It tells the user to run `run-hooks`. The hook is not run automatically. The allowlist takes effect from the next install or upgrade, and the docs say so.
 - **The record** (`install.rs`, next to `mark_hook_skipped`): `Manifest::any_hook_skipped()` (any entry in `skipped_hooks`, so an uninstall-only package counts too) and `Manifest::clear_skipped_hooks()`. A skipped package gets every declared hook in `skipped_hooks` when the record is built, as headless does today. The field's doc comment is updated. `uninstall.rs` and `hooks.rs` call these methods; no new string-prefix checks elsewhere.
@@ -98,6 +98,10 @@ Rendered in `src/render/install.rs`, stderr, plain text (no colour). lvpm never 
 | Unknown key list | `unknown key "x"; expected version, github, index or hooks` |
 | Uninstall after a skip | the existing unrun line, reason `its install hook did not run; next time, run lvpm run-hooks <pkg> before uninstalling` (PreInstall-only: `its install hook did not run`) |
 | Config key list | `supported keys: cache, hooks.run, sources.local, venv.dir` |
+| Uninstall, uninstall-only package not allowed | the existing unrun line, reason `hooks were not allowed when it was installed` (`UnrunReason::NotAllowedAtInstall`) |
+| Record not updated after a hook | `warning: pilot_a: the install record could not be updated (<cause on one line>); its uninstall hooks may run` |
+
+A package name goes into a run-it-now or always-run-it line only when it is pasteable: not empty, no leading `-`, and only ASCII letters, digits, `_`, `.`, `-`. Otherwise the line is left out.
 
 ## Slices
 
