@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-04
 **Branch**: issue-70, off `main` at efffcdc
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: plan-file-only (the builder writes `tests/features/build-slices/s9-lvpm-build-app.feature` by hand, as S12 did)
 **Spec**: [docs/specs/lvpm-app-build-s9.md](../docs/specs/lvpm-app-build-s9.md)
 
@@ -709,12 +709,12 @@ the user's machine, so it is not a worktree job.
 
 For each PR:
 
-- [ ] `cargo test --workspace` passes (unit and scenarios; `@labview` counted as not run)
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
-- [ ] `cargo fmt --check` passes
-- [ ] `/code-review` passes
-- [ ] AC12 checked by reading the docs diff
-- [ ] The PR states A1 to A4 with a release-note line for the format change, the deviation (local demo, not the container) and the AC1 limit, says `Closes #70`, and carries the AC1 evidence or says it was not done
+- [x] `cargo test --workspace` passes (unit and scenarios; `@labview` counted as not run)
+- [x] `cargo clippy --all-targets -- -D warnings` passes
+- [x] `cargo fmt --check` passes
+- [x] `/code-review` passes
+- [x] AC12 checked by reading the docs diff
+- [x] The PR states A1 to A4 with a release-note line for the format change, the deviation (local demo, not the container) and the AC1 limit, says `Closes #70`, and carries the AC1 evidence or says it was not done
 
 ## Skipped (low value)
 
