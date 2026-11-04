@@ -25,16 +25,16 @@ amendments below.
 
 - [ ] AC1: with the pilot application synced into its venv, `lvpm build --app` headless builds `Main.exe`, which starts *(manual, `@labview`: needs LabVIEW 2026)*. It does not prove that HSE Logger came from the venv and not the global vi.lib (#78); the PR says so.
 - [ ] AC2: the SBOM lists every package in the lock's `[dependencies]` closure with its version and SHA-256, and no other package.
-- [ ] AC3: the SBOM parses as CycloneDX 1.5 JSON with the spec's fields; two runs over the same lock give identical bytes.
+- [ ] AC3: the SBOM parses as JSON with `bomFormat` "CycloneDX" and `specVersion` "1.5", and its fields match the spec's architecture section (no schema validation); two runs over the same lock give identical bytes.
 - [ ] AC4: after a successful app build, `bom.cdx.json` is in the folder of the first output path; a failed build writes none and leaves an earlier one untouched.
 - [ ] AC5: a `.lvpkg` `lvpm build` writes from a current lock (or with no `[dependencies]` and no lock) has `bom.cdx.json` at its root, listed in `RECORD`, and says `format = 2`. With no lock or a stale lock it has none and the build warns (A1). A `.lvpkg` without one still installs.
 - [ ] AC6: with both tables, `lvpm build` builds both, `--package` only the `.lvpkg`, `--app` only the application; a flag for a missing table fails, naming it.
 - [ ] AC7: no lock, a stale lock, no venv, or a venv that differs from the lock each fail the app build before LabVIEW starts, naming `lvpm lock`, `lvpm venv create` or `lvpm sync`.
 - [ ] AC8: a build spec LabVIEW cannot build fails with exit code 1 and LabVIEW's code and message, and the spawned LabVIEW is closed.
 - [ ] AC9 (A4): an unknown key in `[application]` fails when any command reads `lvpm.toml`. A missing or empty key, a wrong type, a missing `.lvproj`, a path not ending in `.lvproj` or a path outside the folder fails `lvpm build` before LabVIEW starts. Each names the problem.
-- [ ] AC10: every existing scenario passes, except two s5b expectations that now include the A1 warning (A1). `lvpm build` on a library-only manifest behaves as today, plus the SBOM entry and the A1 warning.
-- [ ] AC11: `tests/fixtures/pilot-app/` holds the copied template; its README names NI's template and LabVIEW 2026; it calls both pilots.
-- [ ] AC12: docs/manifest.md and docs/usage.md describe `[application]`, the flags and the SBOM; the README M2 SBOM milestone is ticked.
+- [ ] AC10: every existing feature file passes unchanged, except s5b lines 87 and 132, which now expect the A1 warning. `lvpm build` on a library-only manifest behaves as today, plus the SBOM entry and the A1 warning.
+- [ ] AC11: `tests/fixtures/pilot-app/` holds the copied template; its README names NI's template and LabVIEW 2026 and lists what lvpm changed; a template VI links `lvpm Pilots.vi`, which calls both pilots. The link is a text check; the `@labview` run is the runtime check.
+- [ ] AC12: docs/manifest.md has an `[application]` section with both keys and the refusal messages; docs/usage.md names `--app`, `--package` and `bom.cdx.json`; the README M2 SBOM line is ticked. Checked at PR review (no test).
 
 ### AC to slice
 
@@ -581,6 +581,7 @@ The real VI call is covered only by slice 5's `@labview` scenario.
     Given the repository
     Then tests/fixtures/pilot-app/lvpm.toml has [application] build-spec "Continuous Measurement and Logging Application" and both pilots in [dependencies]
     And tests/fixtures/pilot-app/README.md names "Continuous Measurement and Logging", "LabVIEW 2026" and "National Instruments"
+    And the README has a section "What lvpm changed"
     And the .lvproj's build spec writes below the fixture's "builds" folder
     And the fixture's lvpm.lock is current
 
@@ -646,7 +647,7 @@ subVI name. It shows the call is linked, not that it runs.
 ### Slice 6: application docs
 
 **Depends-on:** 4
-**Files:** `docs/manifest.md`, `docs/usage.md`, `README.md`
+**Files:** `docs/manifest.md`, `docs/usage.md`, `README.md`, `docs/specs/lvpm-app-build-s9.md`
 
 No scenario: the help text is checked in slice 3, and a substring check of
 prose proves little.
@@ -660,11 +661,12 @@ prose proves little.
 - docs/manifest.md `[application]`: a copy-paste example, the keys and the errors.
 - docs/usage.md: the flags table, the preconditions with `lvpm venv create --labview-version 2026`, where the SBOM goes, the `--json` shape, that application builds are tested on LabVIEW 2026 only, what an idle headless LabVIEW looks like during a build, and that a LabVIEW already open on the venv must be closed first (`ensure_instance` refuses it with "close it first").
 - README M2 tick.
+- docs/specs/lvpm-app-build-s9.md: AC5 and AC9 reworded to A1 and A4, so the spec matches what ships.
 - Book links to pages not in `docs/SUMMARY.md` use GitHub URLs.
 
 **TEST**: the lychee check passes in CI. Full suite green.
 **REFACTOR**: none.
-**Files**: `docs/manifest.md`, `docs/usage.md`, `README.md`
+**Files**: `docs/manifest.md`, `docs/usage.md`, `README.md`, `docs/specs/lvpm-app-build-s9.md`
 **Commit**: `docs(s9): application builds`
 
 ## Parallelization
@@ -703,6 +705,7 @@ For each PR:
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo fmt --check` passes
 - [ ] `/code-review` passes
+- [ ] AC12 checked by reading the docs diff
 - [ ] The PR states A1 to A4 with a release-note line for the format change, the deviation (local demo, not the container) and the AC1 limit, says `Closes #70`, and carries the AC1 evidence or says it was not done
 
 ## Skipped (low value)
