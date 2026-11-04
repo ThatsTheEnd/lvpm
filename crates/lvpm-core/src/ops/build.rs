@@ -9,10 +9,17 @@
 //! With `check`, the library's members are checked first, as `lvpm check`
 //! does, and a member that breaks a rule refuses the build before the members
 //! are packaged or the package is written.
+//!
+//! The package carries an SBOM of the locked `[dependencies]`. A project that
+//! has dependencies but no usable lock gets a package without one, and the
+//! outcome says why: the build does not fail over the lock.
 
 use super::check::{Library, check_library};
 use super::env::OpEnv;
-use crate::errors::CheckError;
+use crate::errors::{CheckError, LockError};
+use crate::lockfile::{self, Lockfile, StaleReason};
+use crate::project::{self, Project};
+use crate::sbom::{self, Kind, Subject};
 use crate::{distribution, lvlib, lvpkg};
 use anyhow::{Context, Result, bail};
 use std::io::Write;
@@ -26,6 +33,18 @@ pub struct Built {
     pub files: usize,
     /// What the check made of the library; `None` when it was not run.
     pub library: Option<Library>,
+    pub sbom: Sbom,
+}
+
+/// What a package build made of the package's SBOM.
+#[derive(Debug, PartialEq)]
+pub enum Sbom {
+    /// The package carries one.
+    Included,
+    /// `[dependencies]` is not empty and there is no `lvpm.lock` to list it from.
+    NoLock,
+    /// `lvpm.lock` no longer represents the manifest, so it is not listed from.
+    Stale(StaleReason),
 }
 
 /// What a build did: wrote the package, or refused to.
@@ -100,7 +119,15 @@ pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
             Ok((rel, bytes))
         })
         .collect::<Result<_>>()?;
-    let bytes = lvpkg::write(&d.meta(), &files)?;
+    let meta = d.meta();
+    let project = env.read_manifest(&root.join(project::FILE_NAME))?;
+    let subject = Subject {
+        name: meta.name.clone(),
+        version: meta.version.clone(),
+        kind: Kind::Library,
+    };
+    let (sbom_text, sbom) = package_sbom(&project, read_lock(root)?.as_ref(), subject);
+    let bytes = lvpkg::write(&meta, &files, sbom_text.as_deref().map(str::as_bytes))?;
     let package = super::package_path(root, &d);
     let dist = package.parent().context("the package has no folder")?;
     std::fs::create_dir_all(dist).with_context(|| format!("creating {}", dist.display()))?;
@@ -109,7 +136,34 @@ pub fn build(env: &OpEnv, check: bool) -> Result<Outcome, CheckError> {
         path,
         files: files.len(),
         library: checked,
+        sbom,
     }))
+}
+
+/// `lvpm.lock` beside the manifest in `root`; `None` when there is none.
+pub(super) fn read_lock(root: &Path) -> Result<Option<Lockfile>> {
+    match super::lock::read_lock(&root.join(lockfile::FILE_NAME)) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(LockError::NoLock { .. }) => Ok(None),
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// The SBOM text of `lock` for `subject`, and what that says for the outcome.
+/// A project with no `[dependencies]` needs no lock: its SBOM lists nothing.
+fn package_sbom(
+    project: &Project,
+    lock: Option<&Lockfile>,
+    subject: Subject,
+) -> (Option<String>, Sbom) {
+    match lock {
+        None if !project.dependencies.is_empty() => (None, Sbom::NoLock),
+        Some(lock) => match lock.staleness(project) {
+            Some(reason) => (None, Sbom::Stale(reason)),
+            None => (Some(sbom::cyclonedx(Some(lock), subject)), Sbom::Included),
+        },
+        None => (Some(sbom::cyclonedx(None, subject)), Sbom::Included),
+    }
 }
 
 /// Write the package beside `path` and rename it over `path` once complete;
@@ -135,6 +189,96 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lockfile::{FORMAT_VERSION, Inputs, LOCAL_SOURCE, LockedPackage};
+
+    fn subject() -> Subject {
+        Subject {
+            name: "demo".into(),
+            version: "1.0".into(),
+            kind: Kind::Library,
+        }
+    }
+
+    const MANIFEST: &str = "[project]\nname = \"demo\"\nversion = \"1.0\"\nlabview = \">=2024\"\n";
+
+    fn project(dependencies: &str) -> Project {
+        project::parse(&format!("{MANIFEST}{dependencies}")).unwrap()
+    }
+
+    /// The lock `lvpm lock` would write for `project`, holding `alpha 1.0`.
+    fn lock_of(project: &Project) -> Lockfile {
+        Lockfile {
+            version: FORMAT_VERSION,
+            labview: "2024".into(),
+            inputs: Inputs::of(project),
+            packages: vec![LockedPackage {
+                name: "alpha".into(),
+                version: "1.0".into(),
+                sha256: "ab".repeat(32),
+                md5: None,
+                source: LOCAL_SOURCE.into(),
+                requires: Vec::new(),
+                groups: Vec::new(),
+                signer: None,
+                subject: None,
+            }],
+            unresolved: Vec::new(),
+        }
+    }
+
+    const ALPHA: &str = "\n[dependencies]\nalpha = \"1.0\"\n";
+
+    #[test]
+    fn a_current_lock_gives_the_package_an_sbom_of_it() {
+        let project = project(ALPHA);
+        let (text, sbom) = package_sbom(&project, Some(&lock_of(&project)), subject());
+        assert_eq!(sbom, Sbom::Included);
+        let text = text.expect("an SBOM");
+        assert!(text.contains("\"bom-ref\": \"alpha@1.0\""), "{text}");
+    }
+
+    #[test]
+    fn no_lock_and_dependencies_gives_no_sbom_and_says_why() {
+        let (text, sbom) = package_sbom(&project(ALPHA), None, subject());
+        assert_eq!((text, sbom), (None, Sbom::NoLock));
+    }
+
+    #[test]
+    fn no_lock_and_no_dependencies_gives_an_sbom_with_no_components() {
+        let dev_only = "\n[dev-dependencies]\ngamma = \"1.0\"\n";
+        for manifest in ["", dev_only] {
+            let (text, sbom) = package_sbom(&project(manifest), None, subject());
+            assert_eq!(sbom, Sbom::Included, "{manifest:?}");
+            let text = text.expect("an SBOM");
+            assert!(text.contains("\"components\": []"), "{text}");
+            assert!(text.contains("\"type\": \"library\""), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_stale_lock_gives_no_sbom_and_says_why() {
+        let locked = project(ALPHA);
+        let lock = lock_of(&locked);
+        let now = project(&format!("{ALPHA}beta = \"2.0\"\n"));
+        let (text, sbom) = package_sbom(&now, Some(&lock), subject());
+        let added = StaleReason::DependencyAdded {
+            name: "beta".into(),
+            table: crate::manifest_edit::DependencyTable::Dependencies,
+        };
+        assert_eq!((text, sbom), (None, Sbom::Stale(added)));
+    }
+
+    #[test]
+    fn a_lock_that_is_not_there_is_none_and_one_that_cannot_be_read_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("lvpm-build-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_lock(&dir).unwrap().is_none());
+        std::fs::write(dir.join(lockfile::FILE_NAME), "not a lock = =").unwrap();
+        let why = format!("{:#}", read_lock(&dir).unwrap_err());
+        assert!(why.contains("lvpm.lock cannot be read"), "{why}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn a_write_that_fails_at_the_rename_leaves_what_was_there_and_no_staged_file() {

@@ -5,6 +5,10 @@
 //! LabVIEW tree. `package.toml` carries the package's metadata with
 //! `lvpm.toml`'s table and key names; `RECORD` lists every other entry with its
 //! SHA-256, one `<sha256 hex>  <path>` line each.
+//!
+//! A package may also carry its SBOM, [`SBOM`], at the root. It is not part of
+//! the payload and is never installed. Such a package says `format = 2`, so an
+//! lvpm that reads only the payload asks for an update instead of naming a path.
 
 use crate::project::{Constraint, labview_minimum};
 use crate::spec::{FileGroup, Spec};
@@ -20,6 +24,13 @@ use zip::write::SimpleFileOptions;
 pub const RECORD: &str = "RECORD";
 /// The entry that carries the package's metadata.
 pub const PACKAGE_TOML: &str = "package.toml";
+/// The entry, at the root, that carries the package's SBOM.
+pub const SBOM: &str = "bom.cdx.json";
+
+/// `package.toml`'s `format` of a package with no SBOM.
+const FORMAT_PLAIN: u32 = 1;
+/// `package.toml`'s `format` of a package that carries [`SBOM`].
+const FORMAT_WITH_SBOM: u32 = 2;
 
 /// The most of `RECORD` or `package.toml` that is read: real ones are a few
 /// KiB, and an archive from a feed must not inflate one until memory runs out.
@@ -82,10 +93,10 @@ fn as_table<S: Serializer>(deps: &&[(String, String)], s: S) -> Result<S::Ok, S:
 }
 
 impl Meta {
-    /// `package.toml`'s text.
-    pub fn to_toml(&self) -> String {
+    /// `package.toml`'s text, saying it is of `format`.
+    pub fn to_toml(&self, format: u32) -> String {
         toml::to_string(&Wire {
-            format: 1,
+            format,
             project: WireProject {
                 name: &self.name,
                 version: &self.version,
@@ -103,8 +114,9 @@ impl Meta {
     }
 }
 
-/// The package as bytes: `RECORD`, `package.toml`, then `files` (path below
-/// `install-dir`, content) at `<install-dir>/<path>`, sorted byte-wise by path.
+/// The package as bytes: `RECORD`, `package.toml`, the `sbom` if there is one
+/// (at the root, and `format = 2`), then `files` (path below `install-dir`,
+/// content) at `<install-dir>/<path>`, sorted byte-wise by path.
 ///
 /// Nothing in an entry varies between two writes of the same input: fixed 1980
 /// timestamps, one Deflate level, the zip crate's default permissions and no
@@ -113,7 +125,7 @@ impl Meta {
 /// Fails, as [`read`] would, on an `install-dir` or a member path that may not
 /// go into a package, and on two members that are one file on Windows. A
 /// member of 4 GiB or more fails too: a zip without zip64 cannot hold it.
-pub fn write(meta: &Meta, files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+pub fn write(meta: &Meta, files: &[(String, Vec<u8>)], sbom: Option<&[u8]>) -> Result<Vec<u8>> {
     check_install_dir(&meta.install_dir)?;
     let mut lower: HashMap<String, &str> = HashMap::new();
     for (rel, _) in files {
@@ -126,13 +138,18 @@ pub fn write(meta: &Meta, files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
             None => {}
         }
     }
-    let toml = meta.to_toml();
+    let format = match sbom {
+        Some(_) => FORMAT_WITH_SBOM,
+        None => FORMAT_PLAIN,
+    };
+    let toml = meta.to_toml(format);
     let mut payload: Vec<(String, &[u8])> = files
         .iter()
         .map(|(rel, bytes)| (format!("{}/{rel}", meta.install_dir), bytes.as_slice()))
         .collect();
     payload.sort_by(|a, b| a.0.cmp(&b.0));
     let mut entries = vec![(PACKAGE_TOML.to_string(), toml.as_bytes())];
+    entries.extend(sbom.map(|bytes| (SBOM.to_string(), bytes)));
     entries.extend(payload);
 
     let record: String = entries
@@ -320,7 +337,8 @@ fn parse_record(bytes: &[u8]) -> Result<Vec<(String, String)>> {
 /// The archive as a [`Spec`]: one `<application>` group of the files below
 /// `install-dir`, no hooks. Nothing is returned unless every entry but `RECORD`
 /// is listed in it with its hash, every line of it names an entry, and every
-/// entry sits where a package may put it.
+/// entry sits where a package may put it: below `install-dir`, but for
+/// [`SBOM`] at the root of a package of `format = 2`.
 pub fn read<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Spec> {
     read_within(zip, MAX_TOTAL_BYTES)
 }
@@ -383,13 +401,17 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
         Ok(t) => t,
         Err(e) => bail!("package.toml is not valid TOML: {e}"),
     };
-    match toml.get("format") {
-        Some(toml::Value::Integer(1)) => {}
-        Some(toml::Value::Integer(n)) if *n > 1 => {
+    let sbom_allowed = match toml.get("format") {
+        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_PLAIN) => false,
+        Some(toml::Value::Integer(n)) if *n == i64::from(FORMAT_WITH_SBOM) => true,
+        Some(toml::Value::Integer(n)) if *n > i64::from(FORMAT_WITH_SBOM) => {
             bail!("package.toml format = {n} was written by a newer lvpm; update lvpm")
         }
-        _ => bail!("package.toml format must be 1; this is not a valid .lvpkg"),
-    }
+        _ => bail!(
+            "package.toml format must be {FORMAT_PLAIN} or {FORMAT_WITH_SBOM}; \
+             this is not a valid .lvpkg"
+        ),
+    };
 
     let project = table(&toml, "project")?;
     let name = text_of(project, "project", "name")?;
@@ -434,7 +456,8 @@ fn spec_from(package_toml: &[u8], names: &[String]) -> Result<Spec> {
     let prefix = format!("{install_dir}/");
     let mut lower: HashMap<String, &str> = HashMap::new();
     let mut files = Vec::new();
-    for entry in names.iter().filter(|n| *n != RECORD && *n != PACKAGE_TOML) {
+    let is_meta = |n: &str| n == RECORD || n == PACKAGE_TOML || (sbom_allowed && n == SBOM);
+    for entry in names.iter().filter(|n| !is_meta(n)) {
         if entry.ends_with(['/', '\\']) {
             bail!("entry {entry:?} is a directory; a .lvpkg holds files only");
         }
@@ -526,7 +549,7 @@ mod tests {
 
     #[test]
     fn entries_are_sorted_with_record_and_package_toml_first() {
-        let bytes = write(&meta(), &files(&["b.vi", "a.vi"])).unwrap();
+        let bytes = write(&meta(), &files(&["b.vi", "a.vi"]), None).unwrap();
         assert_eq!(
             names(&bytes),
             [
@@ -543,6 +566,7 @@ mod tests {
         let bytes = write(
             &meta(),
             &files(&["d.vi", "B.vi", "a.vi", "sub/c.vi", "_x.vi"]),
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -559,8 +583,8 @@ mod tests {
 
     #[test]
     fn writing_is_deterministic_and_every_entry_is_dated_1980() {
-        let a = write(&meta(), &files(&["b.vi", "a.vi"])).unwrap();
-        let b = write(&meta(), &files(&["a.vi", "b.vi"])).unwrap();
+        let a = write(&meta(), &files(&["b.vi", "a.vi"]), None).unwrap();
+        let b = write(&meta(), &files(&["a.vi", "b.vi"]), None).unwrap();
         assert_eq!(a, b, "the order the files are given in does not matter");
         for (name, time, _) in read_all(&a) {
             assert_eq!(
@@ -587,7 +611,7 @@ mod tests {
             ("@o/c".into(), ">=2.0".into()),
         ];
         assert_eq!(
-            m.to_toml(),
+            m.to_toml(FORMAT_PLAIN),
             "format = 1\n\
              \n\
              [project]\n\
@@ -612,7 +636,7 @@ mod tests {
     fn record_lists_every_entry_but_itself_in_entry_order_with_lower_case_sha256() {
         let mut f = files(&["b.vi"]);
         f.push(("a.vi".into(), b"abc".to_vec()));
-        let bytes = write(&meta(), &f).unwrap();
+        let bytes = write(&meta(), &f, None).unwrap();
         let all = read_all(&bytes);
         let record = String::from_utf8(all[0].2.clone()).unwrap();
         let lines: Vec<&str> = record.lines().collect();
@@ -631,13 +655,34 @@ mod tests {
         assert!(record.ends_with('\n'));
     }
 
+    #[test]
+    fn an_sbom_goes_at_the_root_after_package_toml_and_into_record_and_says_format_2() {
+        let bytes = write(&meta(), &files(&["a.vi"]), Some(b"{}")).unwrap();
+        assert_eq!(
+            names(&bytes),
+            ["RECORD", "package.toml", "bom.cdx.json", "vi.lib/V/D/a.vi"]
+        );
+        let all = read_all(&bytes);
+        let record = String::from_utf8(all[0].2.clone()).unwrap();
+        // SHA-256("{}"), from `printf '{}' | sha256sum`, not computed by the code under test.
+        let listed =
+            "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a  bom.cdx.json";
+        assert_eq!(record.lines().nth(1), Some(listed), "{record}");
+        assert!(
+            String::from_utf8(all[1].2.clone())
+                .unwrap()
+                .starts_with("format = 2\n")
+        );
+        assert_eq!(all[2].2, b"{}");
+    }
+
     // --- reading ---
 
     type Entries = Vec<(String, Vec<u8>)>;
 
     /// A written archive's entries, in archive order.
     fn written() -> Entries {
-        let bytes = write(&meta(), &files(&["a.vi", "b.vi"])).unwrap();
+        let bytes = write(&meta(), &files(&["a.vi", "b.vi"]), None).unwrap();
         read_all(&bytes)
             .into_iter()
             .map(|(name, _, content)| (name, content))
@@ -672,6 +717,15 @@ mod tests {
         entries
     }
 
+    /// [`written`], with the SBOM `{}` at the root.
+    fn written_with_sbom() -> Entries {
+        let bytes = write(&meta(), &files(&["a.vi", "b.vi"]), Some(b"{}")).unwrap();
+        read_all(&bytes)
+            .into_iter()
+            .map(|(name, _, content)| (name, content))
+            .collect()
+    }
+
     fn set(entries: &mut Entries, name: &str, content: &[u8]) {
         let slot = entries.iter_mut().find(|(n, _)| n == name).unwrap();
         slot.1 = content.to_vec();
@@ -703,7 +757,7 @@ mod tests {
             ("b".into(), "*".into()),
             ("@o/c".into(), ">=2.0".into()),
         ];
-        let s = read_bytes(write(&m, &files(&["b.vi", "a.vi"])).unwrap()).unwrap();
+        let s = read_bytes(write(&m, &files(&["b.vi", "a.vi"]), None).unwrap()).unwrap();
         assert_eq!((s.name.as_str(), s.version.as_str()), ("demo_lib", "1.2.3"));
         assert_eq!(s.lv_gate.as_deref(), Some("LabVIEW>=16.0"));
         assert_eq!(s.display_name.as_deref(), Some("D"));
@@ -720,7 +774,7 @@ mod tests {
 
     #[test]
     fn a_package_without_dependencies_has_no_requires() {
-        let s = read_bytes(write(&meta(), &files(&["a.vi"])).unwrap()).unwrap();
+        let s = read_bytes(write(&meta(), &files(&["a.vi"]), None).unwrap()).unwrap();
         assert_eq!(s.requires, None);
     }
 
@@ -730,7 +784,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let roots = crate::target::Roots::scratch(&dir);
         let mut archive =
-            crate::install::open_archive(write(&meta(), &files(&["a.vi", "b.vi"])).unwrap())
+            crate::install::open_archive(write(&meta(), &files(&["a.vi", "b.vi"]), None).unwrap())
                 .unwrap();
         let spec = read(&mut archive).unwrap();
         let plan = crate::install::plan(&roots, &spec, &mut archive).unwrap();
@@ -826,12 +880,12 @@ mod tests {
                 "package.toml project.version must be a non-empty string",
             ),
             (
-                "format = 2",
+                "format = 3",
                 |e| {
-                    let text = toml_of(e).replace("format = 1", "format = 2");
+                    let text = toml_of(e).replace("format = 1", "format = 3");
                     set(e, PACKAGE_TOML, text.as_bytes());
                 },
-                "package.toml format = 2 was written by a newer lvpm",
+                "package.toml format = 3 was written by a newer lvpm",
             ),
             (
                 "not TOML",
@@ -912,12 +966,97 @@ mod tests {
     #[test]
     fn a_newer_format_says_to_update_lvpm() {
         let mut entries = written();
-        let text = toml_of(&entries).replace("format = 1", "format = 2");
+        let text = toml_of(&entries).replace("format = 1", "format = 3");
         set(&mut entries, PACKAGE_TOML, text.as_bytes());
         assert_eq!(
             refusal(&with_record(entries)),
-            "package.toml format = 2 was written by a newer lvpm; update lvpm"
+            "package.toml format = 3 was written by a newer lvpm; update lvpm"
         );
+    }
+
+    #[test]
+    fn a_package_with_an_sbom_reads_back_with_the_files_below_install_dir_only() {
+        let with = read_bytes(write(&meta(), &files(&["a.vi", "b.vi"]), Some(b"{}")).unwrap());
+        let without = read_bytes(write(&meta(), &files(&["a.vi", "b.vi"]), None).unwrap());
+        let (with, without) = (with.unwrap(), without.unwrap());
+        assert_eq!(
+            with.file_groups[0].files,
+            ["vi.lib/V/D/a.vi", "vi.lib/V/D/b.vi"]
+        );
+        assert_eq!(with.file_groups[0].files, without.file_groups[0].files);
+    }
+
+    #[test]
+    fn an_sbom_that_differs_from_record_is_refused() {
+        let mut entries = written_with_sbom();
+        set(&mut entries, SBOM, b"other");
+        assert_eq!(
+            refusal(&entries),
+            altered("entry \"bom.cdx.json\" differs from RECORD")
+        );
+    }
+
+    #[test]
+    fn an_sbom_that_record_does_not_list_is_refused_naming_it() {
+        let mut entries = written_with_sbom();
+        let record = String::from_utf8(entries[0].1.clone()).unwrap();
+        let without_sbom: String = record
+            .lines()
+            .filter(|line| !line.ends_with(SBOM))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        set(&mut entries, RECORD, without_sbom.as_bytes());
+        assert_eq!(
+            refusal(&entries),
+            altered("entry \"bom.cdx.json\" is not listed in RECORD")
+        );
+    }
+
+    #[test]
+    fn an_sbom_in_a_format_1_package_is_refused_like_any_entry_outside_install_dir() {
+        let mut entries = written();
+        entries.push((SBOM.into(), b"{}".to_vec()));
+        assert_eq!(
+            refusal(&with_record(entries)),
+            "entry \"bom.cdx.json\" is not below install-dir \"vi.lib/V/D\""
+        );
+    }
+
+    #[test]
+    fn only_the_exact_root_name_is_the_sbom_in_a_format_2_package() {
+        for other in ["BOM.cdx.json", "x/bom.cdx.json", "vi.lib/bom.cdx.json"] {
+            let mut entries = written_with_sbom();
+            entries.push((other.into(), b"{}".to_vec()));
+            assert_eq!(
+                refusal(&with_record(entries)),
+                format!("entry {other:?} is not below install-dir \"vi.lib/V/D\""),
+                "{other}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_named_like_the_sbom_below_install_dir_installs_and_the_root_sbom_does_not() {
+        let dir = std::env::temp_dir().join(format!("lvpm-lvpkg-sbom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let roots = crate::target::Roots::scratch(&dir);
+        let mut archive = crate::install::open_archive(
+            write(&meta(), &files(&["a.vi", SBOM]), Some(b"the SBOM")).unwrap(),
+        )
+        .unwrap();
+        let spec = read(&mut archive).unwrap();
+        let plan = crate::install::plan(&roots, &spec, &mut archive).unwrap();
+        crate::install::apply(&roots, &spec, &mut archive, &plan, None, "sha", false).unwrap();
+        let installed = |rel: &str| std::fs::read_to_string(dir.join("LabVIEW").join(rel));
+        assert_eq!(
+            installed("vi.lib/V/D/bom.cdx.json").unwrap(),
+            "content of bom.cdx.json"
+        );
+        assert!(
+            installed("bom.cdx.json").is_err(),
+            "the root SBOM was installed"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -928,7 +1067,7 @@ mod tests {
             set(&mut entries, PACKAGE_TOML, text.as_bytes());
             assert_eq!(
                 refusal(&with_record(entries)),
-                "package.toml format must be 1; this is not a valid .lvpkg",
+                "package.toml format must be 1 or 2; this is not a valid .lvpkg",
                 "{format:?}"
             );
         }
@@ -1070,7 +1209,7 @@ mod tests {
 
     #[test]
     fn write_refuses_what_read_would_and_never_panics_on_it() {
-        let write_with = |names: &[&str]| write(&meta(), &files(names));
+        let write_with = |names: &[&str]| write(&meta(), &files(names), None);
         for (names, why) in [
             (
                 &["../x.vi"][..],
@@ -1100,7 +1239,7 @@ mod tests {
         }
         let mut m = meta();
         m.install_dir = "../x".into();
-        let err = write(&m, &files(&["a.vi"])).unwrap_err().to_string();
+        let err = write(&m, &files(&["a.vi"]), None).unwrap_err().to_string();
         assert!(err.starts_with("distribution.install-dir"), "{err}");
     }
 
@@ -1182,7 +1321,7 @@ mod tests {
     #[test]
     fn read_spec_reads_by_content_a_package_toml_as_a_lvpkg() {
         let mut archive =
-            crate::install::open_archive(write(&meta(), &files(&["a.vi"])).unwrap()).unwrap();
+            crate::install::open_archive(write(&meta(), &files(&["a.vi"]), None).unwrap()).unwrap();
         let s = crate::install::read_spec(&mut archive).unwrap();
         assert_eq!(s.name, "demo_lib");
         // and checks its RECORD on the way

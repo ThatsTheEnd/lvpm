@@ -81,10 +81,11 @@ Feature: lvpm build checks the library's members first
     Then it exits 0 and dist holds the package
     And stderr has the line "[dependencies] names spare, which no member links to (ignore this if it is loaded by path at run time)"
 
-  Scenario: a declared dependency a member uses gives no warning
+  Scenario: a declared dependency a member uses gives no unused-dependency warning
     Given member "UsesDep.vi" links into package "check_fixture_dep" installed in the venv, and "check_fixture_dep" in [dependencies]
     When lvpm build runs on it
-    Then it exits 0, dist holds the package, and stderr is empty
+    Then it exits 0 and dist holds the package
+    And stderr is exactly "no lvpm.lock, so the package has no SBOM; run lvpm lock to add one"
 
   Scenario: links lvpm cannot look for are warned of and no dependency is called unused
     Given the bound installation folder does not exist
@@ -129,7 +130,8 @@ Feature: lvpm build checks the library's members first
     And [dependencies] names "spare"
     When lvpm build --no-check runs on it
     Then it exits 0 and dist holds the package
-    And stderr is exactly "check skipped (--no-check)"
+    And stderr has the line "check skipped (--no-check)"
+    And stderr's last line is "no lvpm.lock, so the package has no SBOM; run lvpm lock to add one"
 
   Scenario: --json reports a refusal as check does
     Given "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty

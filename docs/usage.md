@@ -665,6 +665,30 @@ nothing written; fix them or pass --no-check`. With `--json` the result is
   behind a link too, since the build packages it there. Only `lvpm check`,
   which walks a folder, skips such names.
 
+**The SBOM.** The package carries `bom.cdx.json`, a CycloneDX 1.5 SBOM of
+the `[dependencies]` in `lvpm.lock` ([the spec](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/specs/lvpm-app-build-s9.md)):
+each locked package with its version, its SHA-256 and the source it came from,
+and what it requires. A package that only `[dev-dependencies]` or a
+`[dependency-groups]` table needs is left out. The same lock gives the same
+bytes. `lvpm install` does not install the file. stdout says
+`built <path> (N files, with SBOM)`.
+
+- A project with no `[dependencies]` gets an SBOM that lists no packages, even
+  with no lock.
+- A project with `[dependencies]` and no `lvpm.lock`, or a lock that is out of
+  date, still builds. The package has no SBOM, and stderr says why, after the
+  check's own warnings and once the package is written:
+  `no lvpm.lock, so the package has no SBOM; run lvpm lock to add one` or
+  `lvpm.lock is out of date (<reason>), so the package has no SBOM; run lvpm lock to add one`.
+  Run `lvpm lock`, then build again.
+- `--no-check` keeps the SBOM.
+- A package with an SBOM says `format = 2` in its `package.toml`; one without
+  stays `format = 1`. **These packages need an lvpm with the SBOM (S9).** lvpm
+  0.23 and older stop on them with
+  `package.toml format = 2 was written by a newer lvpm; update lvpm`. Update
+  lvpm where the package is installed. A package without an SBOM, and every
+  package built before, installs with any version.
+
 ### Installing a .lvpkg
 
 A `.lvpkg` lists the SHA-256 of every file in it (`RECORD`), and lvpm checks

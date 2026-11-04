@@ -5,14 +5,18 @@
 
 use crate::CliWorld;
 use crate::support::events::RecordingSink;
+use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::golden::Output;
 use crate::support::project::MANIFEST_FILE;
-use crate::support::sandbox::LOCAL_PACKAGES_DIR;
+use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR};
 use cucumber::{given, then, when};
 use lvpm_core::config::Config;
+use lvpm_core::lvpkg::{self, SBOM};
+use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::OpEnv;
 use lvpm_core::ops::build::Outcome;
-use std::io::Read;
+use serde_json::Value;
+use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -108,6 +112,7 @@ impl CliWorld {
                 }
             }
         };
+        self.last_output = Some(output.clone());
         self.build.output = Some(output);
     }
 
@@ -434,7 +439,8 @@ async fn package_toml_reads(world: &mut CliWorld, name: String, version: String,
     world.succeeded();
     let toml = world.package_toml();
     let text = |table: &str, key: &str| toml[table][key].as_str().expect("a string").to_string();
-    assert_eq!(toml["format"].as_integer(), Some(1));
+    // No [dependencies] and no lock: the package carries an SBOM with no components.
+    assert_eq!(toml["format"].as_integer(), Some(2));
     assert_eq!(text("project", "name"), name);
     assert_eq!(text("project", "version"), version);
     // `">=2016", kind "source", vendor "V", ...`: a value, then key-value pairs.
@@ -444,15 +450,15 @@ async fn package_toml_reads(world: &mut CliWorld, name: String, version: String,
         let (key, value) = pair.split_once(' ').expect("a key and a value");
         assert_eq!(text("distribution", key), value.trim_matches('"'), "{key}");
     }
-    // What makes two builds byte-identical: `RECORD` and `package.toml`
-    // first, the payload in order, the zip epoch and one compression method
-    // throughout.
+    // What makes two builds byte-identical: `RECORD`, `package.toml` and the
+    // SBOM first, the payload in order, the zip epoch and one compression
+    // method throughout.
     let mut archive = world.archive();
     let names: Vec<String> = archive.file_names().map(String::from).collect();
-    let mut payload = names[2..].to_vec();
+    let mut payload = names[3..].to_vec();
     payload.sort();
-    assert_eq!(names[..2], ["RECORD", "package.toml"]);
-    assert_eq!(names[2..], payload[..], "the payload is in sorted order");
+    assert_eq!(names[..3], ["RECORD", "package.toml", SBOM]);
+    assert_eq!(names[3..], payload[..], "the payload is in sorted order");
     for i in 0..archive.len() {
         let entry = archive.by_index(i).expect("an entry");
         assert_eq!(
@@ -662,4 +668,359 @@ async fn fails_unchanged(world: &mut CliWorld) {
         world.build.earlier.as_ref() == Some(&now),
         "the package changed"
     );
+}
+
+// ---- the SBOM in the package (S9) ----
+
+const ANY_VERSION: &str = ">=1.0";
+/// The consumer's oldest LabVIEW, and the one the library locks for: newer
+/// than the fixtures' `20.0`.
+const LABVIEW_MINIMUM: &str = ">=2024";
+const DEMO_LIB: &str = "demo_lib-1.2.3.lvpkg";
+const INSTALL_DIR: &str = "vi.lib/Vendor/Demo Lib";
+
+const fn text_package(
+    name: &'static str,
+    version: &'static str,
+    requires: &'static [(&'static str, &'static str)],
+) -> FixturePackage {
+    FixturePackage {
+        name,
+        version,
+        display_name: name,
+        requires,
+        lv_min: "20.0",
+        payload: Payload::Text,
+        post_install_hook: None,
+    }
+}
+
+/// What the SBOM scenarios lock from: alpha 1.0 requiring beta >= 2.0, beta
+/// 2.0, and gamma 1.0.
+const SBOM_PACKAGES: &[FixturePackage] = &[
+    text_package("alpha", "1.0", &[("beta", "2.0")]),
+    text_package("beta", "2.0", &[]),
+    text_package("gamma", "1.0", &[]),
+];
+
+/// The entry `name` of the zip `bytes`, when it has one.
+fn entry_of(bytes: &[u8], name: &str) -> Option<Vec<u8>> {
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).expect("a zip");
+    let mut content = Vec::new();
+    zip.by_name(name).ok()?.read_to_end(&mut content).ok()?;
+    Some(content)
+}
+
+impl CliWorld {
+    fn package_bytes(&self) -> Vec<u8> {
+        std::fs::read(self.package_path()).expect("the package")
+    }
+
+    /// The package's SBOM text, as JSON.
+    fn sbom(&self) -> Value {
+        let text = entry_of(&self.package_bytes(), SBOM).expect("a bom.cdx.json entry");
+        serde_json::from_slice(&text).expect("an SBOM that is JSON")
+    }
+
+    /// `lvpm lock` for the manifest the scenario's table says.
+    fn lock_now(&self) {
+        self.write_build_manifest();
+        self.sandbox.setup_lvpm(&["lock"]);
+    }
+
+    /// The package, under its name, in the folder lvpm reads packages from.
+    fn put_demo_lib_in_package_folder(&self, bytes: &[u8]) {
+        let path = self.sandbox.root().join(LOCAL_PACKAGES_DIR).join(DEMO_LIB);
+        std::fs::write(path, bytes).expect("write a package into the folder");
+    }
+}
+
+/// The library of S1, with the fixtures it may depend on published.
+async fn library_project(world: &mut CliWorld) {
+    project(
+        world,
+        "demo_lib".into(),
+        "1.2.3".into(),
+        LABVIEW_MINIMUM.into(),
+    )
+    .await;
+    distribution(
+        world,
+        "Lib.lvlib".into(),
+        "Vendor".into(),
+        "Demo Lib".into(),
+    )
+    .await;
+    library_with_one_member(world).await;
+    world.set(&["sources"], "defaults", false);
+    world.publish(&SBOM_PACKAGES.iter().collect::<Vec<_>>());
+}
+
+async fn library_depending_on(world: &mut CliWorld, name: String, version: String) {
+    library_project(world).await;
+    world.set(&["dependencies"], &name, version);
+}
+
+#[given(
+    regex = r#"^a library project depending on "([^"]+)" ([\d.]+), which requires "([^"]+)" ([\d.]+)$"#
+)]
+async fn library_requiring(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    required: String,
+    required_version: String,
+) {
+    let fixture = &SBOM_PACKAGES[0];
+    assert_eq!(
+        (fixture.name, fixture.version, fixture.requires),
+        (
+            name.as_str(),
+            version.as_str(),
+            &[(required.as_str(), required_version.as_str())][..]
+        ),
+        "the feature and the fixture table disagree"
+    );
+    library_depending_on(world, name, version).await;
+}
+
+#[given(regex = r#"^"([^"]+)" ([\d.]+) only in \[dev-dependencies\]$"#)]
+async fn only_a_dev_dependency(world: &mut CliWorld, name: String, version: String) {
+    world.set(&["dev-dependencies"], &name, version);
+}
+
+#[given("lvpm.lock is current")]
+async fn lock_is_current(world: &mut CliWorld) {
+    world.lock_now();
+}
+
+#[given(regex = r#"^a library project depending on "([^"]+)" ([\d.]+) and lvpm\.lock is current$"#)]
+async fn library_with_a_current_lock(world: &mut CliWorld, name: String, version: String) {
+    library_depending_on(world, name, version).await;
+    world.lock_now();
+}
+
+#[given(regex = r#"^a library project depending on "([^"]+)" ([\d.]+) and no lvpm\.lock$"#)]
+async fn library_with_no_lock(world: &mut CliWorld, name: String, version: String) {
+    library_depending_on(world, name, version).await;
+}
+
+#[given(
+    regex = r#"^a library project depending on "([^"]+)" ([\d.]+) and a lock written before "([^"]+)" was added to \[dependencies\]$"#
+)]
+async fn library_with_a_stale_lock(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    added: String,
+) {
+    library_depending_on(world, name, version).await;
+    world.lock_now();
+    world.set(&["dependencies"], &added, "2.0");
+}
+
+#[given(regex = r"^a library project with no \[dependencies\] and no lvpm\.lock$")]
+async fn library_with_no_dependencies(world: &mut CliWorld) {
+    library_project(world).await;
+}
+
+#[when("lvpm build --no-check runs")]
+async fn build_without_check(world: &mut CliWorld) {
+    world.lvpm_build_with(&["--no-check"]);
+}
+
+#[when("lvpm build runs twice, keeping the first package")]
+async fn build_twice_keeping_the_first(world: &mut CliWorld) {
+    world.lvpm_build_unchecked();
+    world.succeeded();
+    world.build.earlier = Some(world.package_bytes());
+    world.lvpm_build_unchecked();
+}
+
+#[then(regex = r#"^stdout has a line ending "([^"]+)"$"#)]
+async fn stdout_has_a_line_ending(world: &mut CliWorld, end: String) {
+    let out = world.built();
+    assert!(out.stdout.lines().any(|l| l.ends_with(&end)), "{out:?}");
+}
+
+#[then(regex = r#"^stderr has a line starting "([^"]+)" and ending "([^"]+)"$"#)]
+async fn stderr_has_a_line_starting_and_ending(world: &mut CliWorld, start: String, end: String) {
+    let out = world.built();
+    let found = out
+        .stderr
+        .lines()
+        .any(|l| l.starts_with(&start) && l.ends_with(&end));
+    assert!(found, "{out:?}");
+}
+
+#[then(regex = r#"^the package's RECORD lists "([^"]+)" at the root$"#)]
+async fn record_lists_at_the_root(world: &mut CliWorld, file: String) {
+    world.succeeded();
+    let record = entry_of(&world.package_bytes(), lvpkg::RECORD).expect("a RECORD");
+    let record = String::from_utf8(record).expect("a text RECORD");
+    let at_root = record
+        .lines()
+        .any(|l| l.split_once("  ").map(|(_, path)| path) == Some(&file));
+    assert!(at_root, "{file} is not at the root in:\n{record}");
+}
+
+#[then(regex = r"^its package\.toml says format = (\d+)$")]
+async fn package_toml_says_format(world: &mut CliWorld, format: i64) {
+    assert_eq!(world.package_toml()["format"].as_integer(), Some(format));
+}
+
+#[then(regex = r#"^its bom\.cdx\.json has specVersion "([^"]+)" and bomFormat "([^"]+)"$"#)]
+async fn sbom_says_its_format(world: &mut CliWorld, spec_version: String, bom_format: String) {
+    let sbom = world.sbom();
+    assert_eq!(sbom["specVersion"], spec_version.as_str(), "{sbom}");
+    assert_eq!(sbom["bomFormat"], bom_format.as_str(), "{sbom}");
+}
+
+#[then(regex = r"^its bom\.cdx\.json lists exactly (.+), each with the lock's SHA-256$")]
+async fn sbom_lists_exactly(world: &mut CliWorld, listed: String) {
+    let want: Vec<(String, String)> = listed
+        .split(" and ")
+        .map(|item| {
+            let (name, version) = item.split_once(' ').expect("a name and a version");
+            (name.to_string(), version.to_string())
+        })
+        .collect();
+    let sbom = world.sbom();
+    let components = sbom["components"].as_array().expect("components");
+    let got: Vec<(String, String)> = components
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().expect("a name").to_string(),
+                c["version"].as_str().expect("a version").to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(got, want, "{sbom}");
+    for component in components {
+        let name = component["name"].as_str().expect("a name");
+        let locked = world.locked_package(name);
+        let hash = &component["hashes"][0];
+        assert_eq!(hash["alg"], "SHA-256", "{name}");
+        assert_eq!(
+            hash["content"].as_str(),
+            locked["sha256"].as_str(),
+            "{name}"
+        );
+    }
+}
+
+#[then(regex = r#"^(\S+)'s dependencies name "([^"]+)"$"#)]
+async fn sbom_dependencies_name(world: &mut CliWorld, package: String, required: String) {
+    let sbom = world.sbom();
+    let prefix = format!("{package}@");
+    let entry = sbom["dependencies"]
+        .as_array()
+        .expect("dependencies")
+        .iter()
+        .find(|d| d["ref"].as_str().is_some_and(|r| r.starts_with(&prefix)))
+        .unwrap_or_else(|| panic!("no dependencies entry for {package}: {sbom}"));
+    let names: Vec<&str> = entry["dependsOn"]
+        .as_array()
+        .expect("dependsOn")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(names, [required.as_str()], "{sbom}");
+}
+
+#[then("the bom.cdx.json inside both packages is byte-identical")]
+async fn sboms_are_identical(world: &mut CliWorld) {
+    world.succeeded();
+    let first = world.build.earlier.as_deref().expect("a first package");
+    let first = entry_of(first, SBOM).expect("an SBOM in the first package");
+    let second = entry_of(&world.package_bytes(), SBOM).expect("an SBOM in the second package");
+    assert_eq!(first, second);
+}
+
+#[then(regex = r#"^its bom\.cdx\.json has metadata\.component type "([^"]+)" and no components$"#)]
+async fn sbom_of_a_library_with_no_components(world: &mut CliWorld, kind: String) {
+    let sbom = world.sbom();
+    assert_eq!(
+        sbom["metadata"]["component"]["type"],
+        kind.as_str(),
+        "{sbom}"
+    );
+    assert_eq!(
+        sbom["components"].as_array().map(Vec::len),
+        Some(0),
+        "{sbom}"
+    );
+}
+
+#[then(regex = r"^the package has no bom\.cdx\.json( and says format = 1)?$")]
+async fn package_has_no_sbom(world: &mut CliWorld, format: String) {
+    world.succeeded();
+    assert_eq!(entry_of(&world.package_bytes(), SBOM), None);
+    if !format.is_empty() {
+        assert_eq!(world.package_toml()["format"].as_integer(), Some(1));
+    }
+}
+
+#[given(regex = r#"^a built "([^"]+)" with bom\.cdx\.json$"#)]
+async fn a_built_package_with_an_sbom(world: &mut CliWorld, file: String) {
+    assert_eq!(file, DEMO_LIB);
+    library_project(world).await;
+    world.lvpm_build_unchecked();
+    world.succeeded();
+    let bytes = world.package_bytes();
+    assert!(entry_of(&bytes, SBOM).is_some(), "the build wrote no SBOM");
+    world.put_demo_lib_in_package_folder(&bytes);
+}
+
+/// A package from before the SBOM: `lvpm build` writes no such package for a
+/// library with no dependencies.
+#[given(regex = r#"^a built "([^"]+)" written without bom\.cdx\.json$"#)]
+async fn a_built_package_without_an_sbom(world: &mut CliWorld, file: String) {
+    assert_eq!(file, DEMO_LIB);
+    let meta = lvpkg::Meta {
+        name: "demo_lib".into(),
+        version: "1.2.3".into(),
+        labview: ">=2016".into(),
+        vendor: "Vendor".into(),
+        display_name: "Demo Lib".into(),
+        install_dir: INSTALL_DIR.into(),
+        dependencies: Vec::new(),
+    };
+    let files = [("A.vi".to_string(), b"a vi".to_vec())];
+    let bytes = lvpkg::write(&meta, &files, None).expect("a package");
+    assert_eq!(entry_of(&bytes, SBOM), None);
+    world.put_demo_lib_in_package_folder(&bytes);
+}
+
+/// The package is installed into the scratch destination `dest`, which stands
+/// for the venv: a venv needs a LabVIEW, and the sandbox refuses to touch a
+/// real one.
+#[when("it is installed into a venv")]
+async fn installed_into_a_venv(world: &mut CliWorld) {
+    world.sandbox.use_local_project(Some("2024"));
+    world.depend(DependencyTable::Dependencies, "demo_lib", ANY_VERSION);
+    world.sandbox.make_empty_dest();
+    let output = world
+        .sandbox
+        .run_lvpm(&["install", "--prefix", DEST_DIR], None);
+    world.record_output(output);
+}
+
+#[then("the install succeeds")]
+async fn the_install_succeeds(world: &mut CliWorld) {
+    world.succeeded();
+    let installed = world.sandbox.list_file_names(DEST_DIR);
+    assert!(
+        installed
+            .lines()
+            .any(|l| l.ends_with(&format!("{INSTALL_DIR}/A.vi"))),
+        "dest holds:\n{installed}"
+    );
+}
+
+#[then("no bom.cdx.json is installed")]
+async fn no_sbom_is_installed(world: &mut CliWorld) {
+    let installed = world.sandbox.list_file_names(DEST_DIR);
+    assert!(!installed.contains(SBOM), "dest holds:\n{installed}");
 }

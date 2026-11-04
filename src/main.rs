@@ -955,7 +955,7 @@ fn cmd_build(env: &OpEnv, check: bool) -> Result<Report> {
             .failed(true))
         }
         ops::build::Outcome::Built(built) => {
-            let warning = render::build::built_warning(built.library.as_ref());
+            let warning = render::build::built_warning(&built);
             Ok(Report::said(render::build::built(&built), "build").warning(warning))
         }
     }
