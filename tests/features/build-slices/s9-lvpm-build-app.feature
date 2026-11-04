@@ -195,3 +195,14 @@ Feature: lvpm build writes an SBOM, and builds applications
     And the README has a section "What lvpm changed"
     And the .lvproj's build spec writes below the fixture's "builds" folder
     And the fixture's lvpm.lock is current
+
+  @labview
+  Scenario: the pilot application builds headless from its venv
+    Given a copy of the pilot application and the pilots, side by side in the sandbox
+    And lvpm venv create and lvpm sync have run in it
+    And LabVIEW runs headless
+    When I run "lvpm build --app"
+    Then the command succeeds
+    And "builds/<the build spec's folder>/Main.exe" exists, with bom.cdx.json next to it
+    And bom.cdx.json lists both pilots and their locked dependencies
+    And Main.exe, once launched, is still running after 5 seconds

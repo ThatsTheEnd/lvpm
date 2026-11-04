@@ -100,6 +100,10 @@ async fn check_fails_naming(world: &mut CliWorld, name: String) {
 /// what the scenario tested.
 #[given("a LabVIEW 2026 installation without the pilots")]
 async fn installation_without_pilots(world: &mut CliWorld) {
+    require_installation_without_pilots(world);
+}
+
+pub(super) fn require_installation_without_pilots(world: &CliWorld) {
     if let Err(why) = check_checksums(&pilots_dir()) {
         panic!("{why}");
     }

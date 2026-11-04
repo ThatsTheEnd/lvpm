@@ -5,12 +5,15 @@
 
 use crate::CliWorld;
 use crate::steps::check::quoted;
-use crate::steps::pilots::{PROJECT_B_DEPENDENCIES, copy_pilots_to};
+use crate::steps::pilots::{
+    PROJECT_B_DEPENDENCIES, copy_pilots_to, require_installation_without_pilots,
+};
 use crate::support::events::RecordingSink;
 use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::golden::Output;
+use crate::support::pilots::copy_tree;
 use crate::support::project::MANIFEST_FILE;
-use crate::support::sandbox::{DEST_DIR, LOCAL_PACKAGES_DIR};
+use crate::support::sandbox::{DEST_DIR, LABVIEW_YEAR, LOCAL_PACKAGES_DIR};
 use cucumber::{given, then, when};
 use lvpm_core::config::Config;
 use lvpm_core::lvpkg::{self, SBOM};
@@ -20,6 +23,7 @@ use lvpm_core::ops::build::Outcome;
 use serde_json::Value;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
+use std::process::{Child, Command};
 use std::time::{Duration, SystemTime};
 
 const LIBRARY: &str = "Lib.lvlib";
@@ -1351,4 +1355,146 @@ async fn pilot_app_lock_is_current(world: &mut CliWorld) {
     world.run("lvpm lock --check", None);
     let output = world.output();
     assert_eq!(output.exit_code, 0, "{output:?}");
+}
+
+// ---- the pilot application builds, `@labview` ----
+
+/// How long Main.exe must have been running for the scenario to call it up.
+const APP_RUN_TIME: Duration = Duration::from_secs(5);
+
+/// The pilot application's files in the work directory, so that `lvpm.toml` is
+/// at its root, and the pilots in a source folder beside it.
+#[given("a copy of the pilot application and the pilots, side by side in the sandbox")]
+async fn copy_of_the_pilot_application(world: &mut CliWorld) {
+    let work = world.sandbox.work_dir();
+    for entry in std::fs::read_dir(PILOT_APP).expect("read the pilot application") {
+        let path = entry.expect("a directory entry").path();
+        let name = path.file_name().expect("a file name");
+        // What an earlier build in the fixture itself left is not part of it.
+        if name == "builds" {
+            continue;
+        }
+        match path.is_dir() {
+            true => copy_tree(&path, &work.join(name)),
+            false => drop(std::fs::copy(&path, work.join(name)).expect("copy a file")),
+        }
+    }
+    copy_pilots_to(&world.sandbox.add_local_source_folder("pilots"));
+}
+
+#[given("lvpm venv create and lvpm sync have run in it")]
+async fn venv_created_and_synced(world: &mut CliWorld) {
+    require_installation_without_pilots(world);
+    world
+        .sandbox
+        .setup_lvpm(&["venv", "create", "--labview-version", LABVIEW_YEAR]);
+    world.sandbox.setup_lvpm(&["sync"]);
+}
+
+#[given("LabVIEW runs headless")]
+async fn labview_runs_headless(world: &mut CliWorld) {
+    world.sandbox.set_headless(true);
+}
+
+impl CliWorld {
+    /// Main.exe, as `lvpm build --app` printed its path: the first output of
+    /// the build, which the sandbox's output normalising has left spelled in
+    /// either separator. Its path below the work directory, starting at `builds/`.
+    fn built_app(&self) -> String {
+        let printed = self.printed();
+        let (_, line) = printed
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("built application \"")?
+                    .split_once("\" in ")
+            })
+            .unwrap_or_else(|| panic!("no \"built application\" line in:\n{printed}"));
+        let path = line
+            .split_once(": ")
+            .unwrap_or_else(|| panic!("no path in {line:?}"))
+            .1
+            .replace('\\', "/");
+        let at = path
+            .rfind("builds/")
+            .unwrap_or_else(|| panic!("{path:?} is not below builds/"));
+        path[at..].to_string()
+    }
+}
+
+#[then(
+    regex = r#"^"builds/<the build spec's folder>/Main\.exe" exists, with bom\.cdx\.json next to it$"#
+)]
+async fn the_application_and_its_sbom_exist(world: &mut CliWorld) {
+    let exe = world.work(&world.built_app());
+    assert_eq!(exe.file_name().and_then(|n| n.to_str()), Some("Main.exe"));
+    assert!(exe.is_file(), "{} is not a file", exe.display());
+    let sbom = exe.with_file_name(SBOM);
+    assert!(sbom.is_file(), "{} is not a file", sbom.display());
+}
+
+#[then("bom.cdx.json lists both pilots and their locked dependencies")]
+async fn the_sbom_lists_the_locked_packages(world: &mut CliWorld) {
+    let sbom = world.work(&world.built_app()).with_file_name(SBOM);
+    let text = std::fs::read_to_string(&sbom).expect("read the SBOM");
+    let sbom: Value = serde_json::from_str(&text).expect("the SBOM is JSON");
+    let listed: Vec<(&str, &str)> = sbom["components"]
+        .as_array()
+        .expect("components")
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap_or(""),
+                c["version"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    // The lock is the copy in the work directory, so the versions are its own.
+    let locked = world.locked_versions();
+    for (name, version) in PROJECT_B_DEPENDENCIES {
+        assert!(
+            locked.contains(&(name.to_string(), version.to_string())),
+            "{name} {version}"
+        );
+    }
+    assert!(
+        locked.len() > PROJECT_B_DEPENDENCIES.len(),
+        "no transitive package is locked"
+    );
+    for (name, version) in &locked {
+        assert!(
+            listed.contains(&(name, version)),
+            "{name} {version} is not in: {listed:?}"
+        );
+    }
+}
+
+/// Ends the application it holds, whether the step that launched it passed or panicked.
+struct RunningApp(Child);
+
+impl Drop for RunningApp {
+    fn drop(&mut self) {
+        // Already gone is fine: `kill` then says so, and there is nothing to wait for.
+        self.0.kill().ok();
+        self.0.wait().ok();
+    }
+}
+
+#[then("Main.exe, once launched, is still running after 5 seconds")]
+async fn the_application_keeps_running(world: &mut CliWorld) {
+    let exe = world.work(&world.built_app());
+    let mut command = Command::new(&exe);
+    command.current_dir(exe.parent().expect("a folder"));
+    // The sandbox's own environment, headless included, as the build ran in.
+    world.sandbox.apply_environment(&mut command);
+    let mut app = RunningApp(
+        command
+            .spawn()
+            .unwrap_or_else(|why| panic!("launch {}: {why}", exe.display())),
+    );
+    std::thread::sleep(APP_RUN_TIME);
+    let status = app.0.try_wait().expect("ask whether Main.exe has ended");
+    assert!(
+        status.is_none(),
+        "Main.exe ended within {APP_RUN_TIME:?}: {status:?}"
+    );
 }

@@ -534,7 +534,7 @@ impl Sandbox {
 
     /// The environment of a child: empty, then the allow-list, then the
     /// sandbox's own settings.
-    fn apply_environment(&self, command: &mut Command) {
+    pub fn apply_environment(&self, command: &mut Command) {
         command.env_clear();
         for name in INHERITED_ENV_VARS {
             if let Some(value) = std::env::var_os(name) {
