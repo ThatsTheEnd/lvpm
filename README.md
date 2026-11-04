@@ -32,7 +32,7 @@ flowchart LR
   S["Package sources<br/>VIPM / NI indexes · GitHub releases · your indexes · local folders"] --> L["lvpm<br/>resolve · download · verify · unpack"]
   P["lvpm.toml + lvpm.lock<br/>(optional, per project)"] -.-> L
   L --> T["LabVIEW installation<br/>or project .lv-venv"]
-  L -- "VI Server" --> LV["LabVIEW<br/>relink VIs · run install hooks"]
+  L -- "VI Server" --> LV["LabVIEW<br/>relink VIs · run allowed install hooks"]
 ```
 
 1. lvpm resolves the package and its dependencies, downloads them and checks

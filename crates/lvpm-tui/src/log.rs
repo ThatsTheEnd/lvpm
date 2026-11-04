@@ -3,7 +3,7 @@
 
 use crate::progress;
 use crate::worker::Outcome;
-use lvpm_core::events::Event;
+use lvpm_core::events::{Event, SkipReason};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,13 @@ pub fn line(event: &Event) -> Option<String> {
             ..
         } => {
             let hooks: Vec<&str> = hooks.iter().map(|hook| hook.name()).collect();
+            // An installed package's hooks were skipped back then, not by this command.
+            if *reason == SkipReason::AlreadyInstalled {
+                return Some(format!(
+                    "{package}: install hook {} was skipped when it was installed",
+                    hooks.join(", ")
+                ));
+            }
             let verb = if *dry_run { "would skip" } else { "skipped" };
             format!(
                 "{package}: {verb} install hook {} ({})",
@@ -122,7 +129,7 @@ pub fn timestamp(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lvpm_core::events::{HookKind, SkipReason};
+    use lvpm_core::events::HookKind;
 
     #[test]
     fn timestamps_are_rfc_3339_utc() {
@@ -197,6 +204,18 @@ mod tests {
         assert_eq!(
             line(&skipped(true)).as_deref(),
             Some("alpha: would skip install hook PreInstall, PostInstall (not allowed)")
+        );
+        let earlier = Event::HooksSkipped {
+            package: "alpha".into(),
+            hooks: vec![HookKind::PostInstall],
+            reason: SkipReason::AlreadyInstalled,
+            run_now: true,
+            dry_run: true,
+            allow: None,
+        };
+        assert_eq!(
+            line(&earlier).as_deref(),
+            Some("alpha: install hook PostInstall was skipped when it was installed")
         );
     }
 }

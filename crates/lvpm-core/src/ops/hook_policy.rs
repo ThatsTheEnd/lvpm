@@ -143,6 +143,10 @@ impl HookAllow {
 
     /// The `hooks.run` that allows every name in `skipped` and keeps the names
     /// allowed now: `config set` replaces the list.
+    // shortcut: built from the resolved list, so with LVPM_CONFIG_HOOKS_RUN set
+    // it writes the variable's names to the file, which the variable still
+    // overrides (docs/usage.md says so); keep the file's list apart in Config
+    // if users hit it.
     fn config_line(&self, skipped: &[String]) -> AllowLine {
         let existing = match &self.source {
             AllowSource::Config { names } => names.as_slice(),
@@ -1226,7 +1230,7 @@ mod installation {
         let roots = bed.fake.roots();
         let record = bed.record("hooked");
         assert!(record.hook_skipped(HookKind::PostInstall));
-        crate::ops::hooks::settle_rerun(&roots, "hooked", Ok(std::time::Duration::ZERO)).unwrap();
+        crate::ops::hooks::settle_rerun(&roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
         let again = install_into(&bed, &["hooked"], "hooked", false);
         assert_eq!(told(&again), []);
     }

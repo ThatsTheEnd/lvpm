@@ -736,7 +736,7 @@ mod tests {
         let plan = crate::install::plan(&roots, &spec, &mut archive).unwrap();
         assert!(plan.missing_from_archive.is_empty(), "{plan:?}");
         assert_eq!(plan.writes.len(), 2);
-        crate::install::apply(&roots, &spec, &mut archive, &plan, None, "sha").unwrap();
+        crate::install::apply(&roots, &spec, &mut archive, &plan, None, "sha", false).unwrap();
         let installed = dir.join("LabVIEW/vi.lib/V/D");
         assert_eq!(
             std::fs::read_to_string(installed.join("a.vi")).unwrap(),

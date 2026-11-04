@@ -130,7 +130,8 @@ depends on `LV_RTE_HEADLESS`. Hooks are off by default everywhere and
 `--hooks` runs them for one command ([Hooks](labview-integration.md#hooks)).
 
 Proposed: `--relink auto|always|never` and `--hooks auto|always|never`,
-`auto` being today's behaviour. `--no-relink` stays as an alias for
+`auto` being the allowlist behaviour (`hooks = "run"` or `hooks.run`; off
+otherwise). `--no-relink` stays as an alias for
 `--relink never`. Breaking: `--relink` and `--hooks` without a value would
 need a value; clap's `default_missing_value = "always"` keeps them working.
 

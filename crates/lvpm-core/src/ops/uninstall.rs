@@ -247,7 +247,8 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
         _ => None,
     })
     .collect();
-    if !unrun.is_empty() {
+    // A scratch tree has no LabVIEW: no hook runs there, so none is held back.
+    if !unrun.is_empty() && roots.target.is_some() {
         env.sink.emit(Event::UninstallHooksNotRun {
             package: m.name.clone(),
             hooks: unrun,
@@ -388,6 +389,33 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn a_scratch_uninstall_says_nothing_about_the_hooks_its_record_lists_as_skipped() {
+        let (dir, _) = scratch_with_alpha("scratch-skipped");
+        let record = Roots::scratch(&dir).store_dir().join("alpha.json");
+        let mut m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+        m["skipped_hooks"] = serde_json::json!(["PostInstall=a.vi", "PreUninstall=b.vi"]);
+        std::fs::write(&record, m.to_string()).unwrap();
+
+        let sink = Recorder::default();
+        uninstall(&env_for(&sink, &dir), Some("alpha"), false).unwrap();
+        let events = sink.0.lock().unwrap().clone();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::PackageRemoved { .. })),
+            "{events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::UninstallHooksNotRun { .. })),
+            "{events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -678,8 +706,8 @@ mod tests {
     fn a_package_whose_install_hooks_were_cleared_by_run_hooks_runs_its_uninstall_hooks() {
         let skipped = ["PreInstall=a", "PostInstall=b"];
         let events = uninstall_hooked_after("cleared", &skipped, BOTH_UNINSTALL, |roots| {
-            crate::ops::hooks::settle_rerun(roots, "hooked", Ok(std::time::Duration::ZERO))
-                .unwrap();
+            let record = crate::install::read_manifest(roots, "hooked").unwrap();
+            crate::ops::hooks::settle_rerun(roots, &record, Ok(std::time::Duration::ZERO)).unwrap();
         });
         assert_eq!(
             started(&events),

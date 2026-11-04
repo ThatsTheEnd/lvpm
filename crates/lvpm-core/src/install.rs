@@ -306,7 +306,9 @@ pub(crate) fn addon_info(name: &str, target: &LvTarget) -> String {
 }
 
 /// Execute a plan and record the manifest, with the SHA-256 of the archive
-/// the files were read from.
+/// the files were read from. `hooks_skipped` lists every declared hook as not
+/// run in that same write: a record patched afterwards would, if the patch
+/// failed, let uninstall run hooks nobody allowed.
 pub fn apply(
     roots: &Roots,
     spec: &Spec,
@@ -314,8 +316,12 @@ pub fn apply(
     plan: &Plan,
     pre_install_vi: Option<&Path>,
     archive_sha256: &str,
+    hooks_skipped: bool,
 ) -> Result<Manifest> {
-    let manifest = unpack_to(roots, spec, zip, plan, pre_install_vi, archive_sha256, None)?;
+    let mut manifest = unpack_to(roots, spec, zip, plan, pre_install_vi, archive_sha256, None)?;
+    if hooks_skipped {
+        manifest.skipped_hooks = declared_hooks(spec);
+    }
     write_manifest(roots, &manifest)?;
     Ok(manifest)
 }
@@ -408,15 +414,11 @@ pub(crate) fn unpack_to(
         },
         files: written,
         skipped_hooks: match roots.venv() {
-            Some(_) => spec
-                .script_vis
-                .iter()
-                .map(|(h, v)| format!("{h}={v}"))
-                .collect(),
+            Some(_) => declared_hooks(spec),
             // PreInstall has run by now, PostInstall runs after the relink
             // pass and is recorded here only if it fails, and the uninstall
             // hooks wait for `lvpm uninstall` in the copies extracted above.
-            // An install that skips a package's hooks records them itself.
+            // An install that skips a package's hooks has `apply` record them.
             None => Vec::new(),
         },
         relinked: false,
@@ -458,10 +460,22 @@ pub fn extract_hook(
     Ok(Some(dest))
 }
 
+/// Every hook the package declares, in the `Name=path` form the record uses.
+fn declared_hooks(spec: &Spec) -> Vec<String> {
+    spec.script_vis
+        .iter()
+        .map(|(h, v)| format!("{h}={v}"))
+        .collect()
+}
+
+/// Written beside the record and renamed over it, so a kill mid-write leaves
+/// the old record, not a truncated one that `lvpm list` silently drops.
 pub(crate) fn write_manifest(roots: &Roots, m: &Manifest) -> Result<()> {
     let mp = manifest_path(roots, &m.name);
     std::fs::create_dir_all(mp.parent().unwrap())?;
-    std::fs::write(&mp, serde_json::to_string_pretty(m)?)?;
+    let tmp = mp.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(m)?)?;
+    std::fs::rename(&tmp, &mp)?;
     Ok(())
 }
 
@@ -491,10 +505,13 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
 }
 
 /// Record that the user ran the package's install hook by hand: no hook is
-/// listed as skipped any more. Reads the record as it is now, not as it was
-/// before the hook ran.
-pub fn clear_skipped_hooks(roots: &Roots, name: &str) -> Result<()> {
-    let mut m = read_manifest(roots, name)?;
+/// listed as skipped any more. `ran_for` is the record the hook ran from; one
+/// written since, by a reinstall or upgrade while the hook ran, is left as it is.
+pub fn clear_skipped_hooks(roots: &Roots, ran_for: &Manifest) -> Result<()> {
+    let mut m = read_manifest(roots, &ran_for.name)?;
+    if (m.installed_at, &m.version) != (ran_for.installed_at, &ran_for.version) {
+        bail!("{} was reinstalled while its hook ran", m.name);
+    }
     m.clear_skipped_hooks();
     write_manifest(roots, &m)
 }

@@ -949,7 +949,8 @@ downloaded again, and an unchanged one answers `304` and costs no bytes. See
 
 Settings are named the way npm names `npm_config_<key>`: the environment
 variable is `LVPM_CONFIG_<KEY>` (or lowercase `lvpm_config_<key>`), and an
-empty value counts as unset. Precedence, highest first:
+empty value counts as unset, except `LVPM_CONFIG_HOOKS_RUN`, where an empty
+value is kept and turns the file's list off. Precedence, highest first:
 
 1. Environment variable `LVPM_CONFIG_<KEY>`.
 2. User config file at `%LOCALAPPDATA%\lvpm\config.toml` (Linux:

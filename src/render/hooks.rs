@@ -1,6 +1,7 @@
 //! The wording of the hook events. A hook's line is part of whatever line its
 //! operation has open: PreInstall extends its package's, the others stand alone.
 
+use super::install::one_line;
 use super::{Renderer, Stream};
 use lvpm_core::events::{Event, HookKind};
 
@@ -92,8 +93,10 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         Event::HookRecordNotUpdated { package, error } => r.line(
             Stream::Err,
             &super::printable(format!(
-                "warning: {package}: the install record could not be updated ({error}); \
-                 its uninstall hooks may run"
+                "warning: {}: the install record could not be updated ({}); \
+                 its uninstall hooks may run",
+                one_line(package),
+                one_line(error)
             )),
         ),
         // `lvpm run-hooks`: the same hook, on a line with no indent.
@@ -235,6 +238,16 @@ mod tests {
             "warning: alpha: the install record could not be updated (access denied); \
              its uninstall hooks may run\n"
         );
+    }
+
+    #[test]
+    fn a_newline_in_the_record_warning_cannot_start_a_line_of_its_own() {
+        let (mut renderer, _, err) = renderer();
+        renderer.render(&Event::HookRecordNotUpdated {
+            package: "alpha\nrun it now: x".into(),
+            error: "denied\nwarning: forged".into(),
+        });
+        assert_eq!(err.text().lines().count(), 1, "{}", err.text());
     }
 
     #[test]

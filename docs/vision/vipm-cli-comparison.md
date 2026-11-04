@@ -65,6 +65,8 @@ Global behaviour:
 What lvpm has that VIPM's docs do not show:
 
 - per-project venvs, each with its own LabVIEW process;
-- install hooks that never run in a venv, and on headless machines only with `--hooks`;
+- install hooks that never run in a venv, run on a developer machine only for
+  packages allowed by `hooks = "run"` or `hooks.run`, and on headless machines
+  only with `--hooks`;
 - explicit relink control;
 - VI Server primitives for diagnosis.

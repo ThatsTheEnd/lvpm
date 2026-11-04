@@ -723,7 +723,7 @@ pub enum AllowLine {
     AddLine { name: String },
     /// `lvpm config set hooks.run <names>`: the names already allowed, then the
     /// `skipped` packages this command skipped. The command replaces the list,
-    /// so pasting it drops nobody.
+    /// so pasting it drops nobody lvpm allows now.
     ConfigSet { names: Vec<String>, skipped: usize },
     /// Pass `--hooks`: where LabVIEW runs headless, no list allows a hook.
     PassHooks,

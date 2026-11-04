@@ -32,7 +32,7 @@ A hook runs only for a package you allowed.
 | Either of those, for one command | The command has `--hooks`, which allows every package |
 | A venv | Never. A venv runs no hook, and nothing allows one |
 | A LabVIEW that runs headless (`LV_RTE_HEADLESS`) | Only with `--hooks`. `hooks = "run"` and `hooks.run` do not apply there |
-| A scratch `--prefix` tree | Never, and no warning: no LabVIEW is there to run one |
+| A scratch `--prefix` tree | Never. No warning; a plain note says the scratch tree has no LabVIEW to run them |
 
 Only the root `lvpm.toml` allows a package. A `hooks = "run"` in a
 dependency's own `lvpm.toml` allows nothing. To allow a package that is only a
@@ -75,7 +75,8 @@ note: declared but not run (its install hook did not run; next time, run lvpm ru
 
 A `lvpm run-hooks <pkg>` that succeeds counts the package's hooks as run, so
 its uninstall hooks run again. Run it before you uninstall. A package with
-only a PreInstall hook stays off, as above.
+only a PreInstall hook stays off, as above. `lvpm run-hooks --all` does this
+for every installed package with a PostInstall hook, allowed or not.
 
 Records written before this change are read as they are. A global,
 non-headless install from before it lists no skipped hook, so its uninstall
@@ -128,4 +129,4 @@ For diagnosis the primitives are exposed directly:
 Verified end to end: a 46-dependency project manifest resolved to 48
 packages / 8766 files, installed, relinked in one deduplicated pass and its
 15 post-install hooks run, from a single `lvpm install`. This was recorded
-before S12, when hooks ran by default; today those hooks run only when allowed.
+before install hooks were off by default; today those hooks run only when allowed.

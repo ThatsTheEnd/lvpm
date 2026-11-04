@@ -738,6 +738,7 @@ fn unpack(
             &pkg.plan,
             pre.as_deref(),
             &pkg.archive_sha256,
+            matches!(verdict, Verdict::Skip(_)),
         )?,
         Some(staging) => {
             if staging::clear_unrecorded(env, session, &staging, name)? {
@@ -775,13 +776,6 @@ fn unpack(
             vi: PathBuf::from(hook),
             files: m.files.clone(),
         });
-    }
-    // The manifest assumes a global install runs its hooks; one that was
-    // skipped says so, for `lvpm list`.
-    if matches!(verdict, Verdict::Skip(_)) {
-        for (h, v) in &pkg.spec.script_vis {
-            install::mark_hook_skipped(&pkg.roots, name, &format!("{h}={v}"))?;
-        }
     }
     Ok(())
 }

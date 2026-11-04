@@ -404,7 +404,7 @@ pub(super) fn pasteable(name: &str) -> bool {
 }
 
 /// A cause's text on one line, for a warning that must stay one.
-fn one_line(error: &str) -> String {
+pub(super) fn one_line(error: &str) -> String {
     error.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
