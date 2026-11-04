@@ -4,6 +4,8 @@
 
 use super::sources::FIRST;
 use crate::CliWorld;
+use crate::support::fixtures::FixturePackage;
+use crate::support::global::FIXTURE_NAME;
 use crate::support::sandbox::LABVIEW_YEAR;
 use cucumber::{given, then};
 use lvpm_core::manifest_edit::DependencyTable;
@@ -146,20 +148,79 @@ async fn stdout_does_not_say(world: &mut CliWorld, text: String) {
 }
 
 /// `lvpm list` on the LabVIEW installation names the hooks it lists as skipped
-/// after the package's line: `(hooks skipped: PostInstall)`.
-#[then(regex = r#"^"lvpm list" shows "([^"]+)" as skipped for "([^"]+)"$"#)]
-async fn list_shows_the_hook_as_skipped(world: &mut CliWorld, hook: String, package: String) {
+/// after the package's line: `(hooks skipped: PostInstall)`. Returns the line
+/// and those hooks.
+fn listed_as_skipped(world: &CliWorld, package: &str) -> (String, Vec<String>) {
     let listing = world
         .sandbox
         .run_lvpm(&["list", "--labview-version", LABVIEW_YEAR], None);
     let line = listing
         .stdout
         .lines()
-        .find(|line| line.split_whitespace().next() == Some(package.as_str()))
+        .find(|line| line.split_whitespace().next() == Some(package))
         .unwrap_or_else(|| panic!("{package} is not listed in:\n{}", listing.stdout));
-    let skipped = line.split_once("(hooks skipped: ").map(|(_, rest)| rest);
+    let hooks = line
+        .split_once("(hooks skipped: ")
+        .map(|(_, rest)| {
+            rest.trim_end_matches(')')
+                .split(", ")
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    (line.to_string(), hooks)
+}
+
+#[then(regex = r#"^"lvpm list" shows "([^"]+)" as skipped for "([^"]+)"$"#)]
+async fn list_shows_the_hook_as_skipped(world: &mut CliWorld, hook: String, package: String) {
+    let (line, hooks) = listed_as_skipped(world, &package);
     assert!(
-        skipped.is_some_and(|hooks| hooks.trim_end_matches(')').split(", ").any(|h| h == hook)),
+        hooks.contains(&hook),
         "{hook} is not listed as skipped in: {line}"
     );
+}
+
+#[then(regex = r#"^"lvpm list" no longer shows "([^"]+)" as skipped for "([^"]+)"$"#)]
+async fn list_no_longer_shows_the_hook_as_skipped(
+    world: &mut CliWorld,
+    hook: String,
+    package: String,
+) {
+    let (line, hooks) = listed_as_skipped(world, &package);
+    assert!(
+        !hooks.contains(&hook),
+        "{hook} is still listed as skipped in: {line}"
+    );
+}
+
+#[then(regex = r#"^stderr does not say "([^"]+)"$"#)]
+async fn stderr_does_not_say(world: &mut CliWorld, text: String) {
+    let stderr = &world.output().stderr;
+    assert!(!stderr.contains(&text), "{text:?} is in:\n{stderr}");
+}
+
+/// The fixture is in the local package folder and the installation is proved
+/// free of it, as the characterization scenario does. Only the `@unsafe`
+/// scenarios use these: the sandbox refuses a `--global` install otherwise.
+#[given("the hook fixture package is not installed")]
+async fn hook_fixture_not_installed(world: &mut CliWorld) {
+    world.sandbox.detect_labview();
+    world
+        .sandbox
+        .put_local_package(FixturePackage::find(FIXTURE_NAME, "1.0"));
+    world.sandbox.require_clean_labview_installation();
+}
+
+#[given("the hook fixture was installed with its PostInstall skipped")]
+async fn hook_fixture_installed_skipped(world: &mut CliWorld) {
+    hook_fixture_not_installed(world).await;
+    world
+        .sandbox
+        .setup_lvpm(&["install", FIXTURE_NAME, "--global"]);
+    assert_eq!(world.sandbox.hook_marker(), None, "the hook ran on install");
+}
+
+#[then("the PostInstall hook did not run")]
+async fn hook_did_not_run(world: &mut CliWorld) {
+    assert_eq!(world.sandbox.hook_marker(), None, "the hook's marker");
 }
