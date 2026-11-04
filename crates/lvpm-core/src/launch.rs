@@ -438,6 +438,30 @@ pub fn wait_ready(port: u16, budget: Duration, headless: bool) -> Result<()> {
     );
 }
 
+/// The venv's LabVIEW is missing or does not start answering VI Server, as
+/// opposed to a refusal to start one (another is running) or lvpm's own
+/// failure to prepare for it. Says what its cause says; a caller finds it
+/// with `downcast_ref`.
+#[derive(Debug)]
+pub(crate) struct Unstartable(anyhow::Error);
+
+impl std::fmt::Display for Unstartable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for Unstartable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (*self.0).source()
+    }
+}
+
+/// `cause`, marked as [`Unstartable`].
+pub(crate) fn unstartable(cause: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(Unstartable(cause))
+}
+
 /// A LabVIEW on a venv that lvpm can talk to, and whether lvpm started it.
 pub struct Instance {
     pub port: u16,
@@ -489,13 +513,13 @@ pub fn ensure_instance(
         labview: v.target.label(),
         port: v.port,
     });
-    let mut child = spawn(v, &ini, None, sink)?;
+    let mut child = spawn(v, &ini, None, sink).map_err(unstartable)?;
     if let Err(why) = wait_ready(v.port, wait, headless) {
         // Left running, a LabVIEW that never answered holds the venv, and its
         // pid makes the next command take it for one still starting.
         let _ = child.kill();
         let _ = child.wait();
-        return Err(why);
+        return Err(unstartable(why));
     }
     Ok(Instance {
         port: v.port,
@@ -506,28 +530,52 @@ pub fn ensure_instance(
 /// How long one VI Server call to a venv's LabVIEW may go unanswered.
 pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// A fresh LabVIEW on `v` and a VI Server connection to it. Neither closes on
-/// drop: the caller closes the connection, then calls
-/// [`Instance::shutdown_if_spawned`]. When no connection is made, the LabVIEW
-/// this started is ended before the error returns.
-pub(crate) fn connect_venv(
-    v: &Venv,
-    headless: bool,
-    sink: &dyn EventSink,
-) -> Result<(Instance, Connection)> {
+/// A fresh LabVIEW on a venv and a VI Server connection to it. Dropping it
+/// closes the connection, then the LabVIEW lvpm started.
+pub(crate) struct VenvLabview {
+    connection: Option<Connection>,
+    instance: Option<Instance>,
+}
+
+impl VenvLabview {
+    pub(crate) fn connection(&mut self) -> &mut Connection {
+        self.connection.as_mut().expect("open until dropped")
+    }
+}
+
+impl Drop for VenvLabview {
+    fn drop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            connection.close();
+        }
+        if let Some(instance) = self.instance.take() {
+            instance.shutdown_if_spawned();
+        }
+    }
+}
+
+/// A fresh LabVIEW on `v` and a VI Server connection to it. When no
+/// connection is made, the LabVIEW this started is ended before the error
+/// returns.
+pub(crate) fn connect_venv(v: &Venv, headless: bool, sink: &dyn EventSink) -> Result<VenvLabview> {
     let instance = ensure_instance(v, true, CALL_TIMEOUT, headless, sink)?;
     // `ensure_instance` waited for one handshake; a LabVIEW still settling
     // can refuse the next (error 63) for a moment.
     let mut last = None;
     for _ in 0..10 {
         match Connection::connect("127.0.0.1", instance.port, CALL_TIMEOUT) {
-            Ok(connection) => return Ok((instance, connection)),
+            Ok(connection) => {
+                return Ok(VenvLabview {
+                    connection: Some(connection),
+                    instance: Some(instance),
+                });
+            }
             Err(why) => last = Some(why),
         }
         std::thread::sleep(Duration::from_secs(2));
     }
     instance.shutdown_if_spawned();
-    Err(last.expect("tried at least once"))
+    Err(unstartable(last.expect("tried at least once")))
 }
 
 impl Instance {
@@ -607,6 +655,15 @@ mod tests {
     #[test]
     fn override_of_an_empty_ini_is_just_the_keys() {
         assert_eq!(override_keys("", &[("a", "1")]), format!("a=1{EOL}"));
+    }
+
+    #[test]
+    fn an_unstartable_error_says_what_its_cause_says_and_can_be_found() {
+        let cause = anyhow::anyhow!("no such file").context("launching LabVIEW.exe");
+        let marked = unstartable(cause);
+        assert!(marked.downcast_ref::<Unstartable>().is_some());
+        assert_eq!(format!("{marked:#}"), "launching LabVIEW.exe: no such file");
+        assert!(anyhow::anyhow!("x").downcast_ref::<Unstartable>().is_none());
     }
 
     #[test]

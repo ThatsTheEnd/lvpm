@@ -4,11 +4,10 @@
 // it from `lvpm-core` only.
 #![allow(clippy::disallowed_methods)]
 
-use lvpm_core::application;
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
-use lvpm_core::ops::build_app::{AppLauncher, AppSession, VenvAppLauncher};
+use lvpm_core::ops::build_app::VenvAppLauncher;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
 use lvpm_core::ops::relink::RelinkOptions;
@@ -954,29 +953,6 @@ fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyA
         .map_err(|why| anyhow!(render::edit::error(&why, "`lvpm remove`")))
 }
 
-/// Says what is about to start, just before the venv's LabVIEW does. It is
-/// reached only once the build's preconditions hold.
-struct AnnouncingLauncher {
-    build_spec: String,
-    labview: VenvAppLauncher,
-}
-
-impl AppLauncher for AnnouncingLauncher {
-    fn start(
-        &self,
-        venv: &venv::Venv,
-        headless: bool,
-        sink: &dyn EventSink,
-    ) -> Result<Box<dyn AppSession>> {
-        eprintln!(
-            "building application \"{}\" with LabVIEW {} ...",
-            self.build_spec,
-            venv.target.year()
-        );
-        self.labview.start(venv, headless, sink)
-    }
-}
-
 /// A refused build is a result, not an error: its stdout and `--json` are
 /// `check`'s, and the exit code is 1. With both kinds, the package is shown as
 /// soon as it is written in the text output, so an application that then fails
@@ -984,12 +960,7 @@ impl AppLauncher for AnnouncingLauncher {
 fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) -> Result<Report> {
     let project = ops::build::project(env)?;
     let kinds = ops::build::kinds(&project, app, package, no_check)?;
-    let launcher = AnnouncingLauncher {
-        build_spec: application::build_spec_as_written(&project)
-            .unwrap_or_default()
-            .to_string(),
-        labview: VenvAppLauncher::new(env.work_dir()),
-    };
+    let launcher = VenvAppLauncher::new(env.work_dir());
     let shown_early = kinds.package && kinds.app && !json;
     let show = |outcome: &ops::build::Outcome| {
         if let (true, ops::build::Outcome::Built(built)) = (shown_early, outcome) {

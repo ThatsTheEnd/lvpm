@@ -270,7 +270,7 @@ pub(super) fn current_lock(root: &Path, project: &Project) -> Result<Lockfile, L
 
 /// Write the file beside `path` and rename it over `path` once complete;
 /// on any failure the staged file goes and `path` stays as it was.
-pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     let temp = crate::paths::staging_path(path);
     let written = write_synced(&temp, bytes)
         .and_then(|()| std::fs::rename(&temp, path).context("replacing the file"));

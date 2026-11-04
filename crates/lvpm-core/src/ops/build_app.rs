@@ -13,9 +13,9 @@ use super::build::{LockProblem, current_lock, write_atomically};
 use super::env::OpEnv;
 use super::sync::{Selection, plan_sync};
 use crate::application::{self, Application};
-use crate::events::{EventSink, SyncStep};
+use crate::events::{Event, EventSink, SyncStep};
 use crate::install;
-use crate::launch::{self, Instance};
+use crate::launch::{self, VenvLabview};
 use crate::lockfile::{Lockfile, StaleReason};
 use crate::lvpkg::SBOM;
 use crate::relink;
@@ -86,6 +86,11 @@ pub enum AppRefusal {
     /// The first change a sync would make to the venv.
     #[error("the venv differs from lvpm.lock")]
     VenvDiffers(SyncStep),
+    /// The venv's LabVIEW cannot open the build VI.
+    #[error(
+        "the application build needs LabVIEW {MIN_LABVIEW_YEAR} or later; this venv uses LabVIEW {year}"
+    )]
+    LabviewTooOld { year: u32 },
 }
 
 impl From<LockProblem> for AppRefusal {
@@ -152,7 +157,8 @@ fn wanted_in_the_venv() -> Selection {
 
 /// Every precondition of an application build, in order, with no LabVIEW
 /// started and nothing written: the last is that the venv's LabVIEW is
-/// installed here and of the bitness `--labview-bitness` asks for.
+/// installed here, of the bitness `--labview-bitness` asks for, and new enough
+/// to open the build VI.
 pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     let (root, project) = super::project_of(env, "build")?;
     let application = application::validate(&project, &root)?;
@@ -169,6 +175,10 @@ pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     }
     let venv = venv::load(&root, &env.config.venv_dir, &env.targets)?;
     env.check_bitness(&venv.target)?;
+    let year = venv.target.year();
+    if year < MIN_LABVIEW_YEAR {
+        return Err(AppRefusal::LabviewTooOld { year }.into());
+    }
     Ok(Ready {
         application,
         lock,
@@ -198,9 +208,17 @@ pub fn build_ready(
     } = ready;
     let started = Instant::now();
     let year = venv.target.year();
+    env.sink.emit(Event::AppBuildStarting {
+        build_spec: application.build_spec.clone(),
+        labview: year,
+    });
     let mut session = launcher
         .start(&venv, env.headless, env.sink)
-        .map_err(|cause| AppError::Launch { year, cause })?;
+        .map_err(|cause| match cause.downcast_ref::<launch::Unstartable>() {
+            // Only a LabVIEW that is missing or will not start is put right by rebinding the venv.
+            Some(_) => AppError::Launch { year, cause },
+            None => AppError::Other(cause),
+        })?;
     let built = session.build(&application.project, TARGET, &application.build_spec);
     drop(session);
     let build_spec = application.build_spec;
@@ -244,6 +262,9 @@ const BUILD_VI_BYTES: &[u8] = include_bytes!(concat!(
     "/src/lv-src/build-app.vi"
 ));
 
+/// The oldest LabVIEW that opens the wrapper VI: the one it was saved in.
+pub const MIN_LABVIEW_YEAR: u32 = 2026;
+
 /// The wrapper's front panel, by label.
 const PROJECT_CONTROL: &str = "project path";
 const BUILD_SPEC_CONTROL: &str = "build spec";
@@ -277,29 +298,20 @@ impl AppLauncher for VenvAppLauncher {
     ) -> anyhow::Result<Box<dyn AppSession>> {
         // Before LabVIEW starts, so a folder that cannot be written costs no start.
         let vi = materialize(&self.work_dir)?;
-        let (instance, connection) = launch::connect_venv(venv, headless, sink)?;
-        Ok(Box::new(VenvAppSession {
-            connection: Some(connection),
-            instance: Some(instance),
-            vi,
-        }))
+        let labview = launch::connect_venv(venv, headless, sink)?;
+        Ok(Box::new(VenvAppSession { labview, vi }))
     }
 }
 
 /// Write the wrapper VI into `dir`, as the relink VI is.
 fn materialize(dir: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let vi = dir.join(format!("lvpm-build-app-{}.vi", env!("CARGO_PKG_VERSION")));
-    std::fs::write(&vi, BUILD_VI_BYTES)
-        .with_context(|| format!("materializing the build VI at {}", vi.display()))?;
-    Ok(vi)
+    relink::materialize_vi(dir, "lvpm-build-app", BUILD_VI_BYTES)
 }
 
-/// A LabVIEW lvpm talks to over VI Server. Dropping it closes the connection
-/// and the LabVIEW lvpm spawned, whether the build worked or not.
+/// A LabVIEW lvpm talks to over VI Server. Dropping it closes it, whether the
+/// build worked or not.
 struct VenvAppSession {
-    connection: Option<Connection>,
-    instance: Option<Instance>,
+    labview: VenvLabview,
     vi: PathBuf,
 }
 
@@ -311,7 +323,7 @@ impl AppSession for VenvAppSession {
         build_spec: &str,
     ) -> Result<Vec<PathBuf>, AppBuildError> {
         let (project, build_spec) = wrapper_inputs(project, target, build_spec)?;
-        let connection = self.connection.as_mut().expect("open until dropped");
+        let connection = self.labview.connection();
         let vi = connection
             .open_vi_reference(&self.vi)
             .with_context(|| format!("opening {}", self.vi.display()))
@@ -320,17 +332,6 @@ impl AppSession for VenvAppSession {
         let _ = connection.release(vi);
         let (code, message, outputs) = answer.map_err(AppBuildError::Other)?;
         wrapper_outputs(code, message, &outputs)
-    }
-}
-
-impl Drop for VenvAppSession {
-    fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            connection.close();
-        }
-        if let Some(instance) = self.instance.take() {
-            instance.shutdown_if_spawned();
-        }
     }
 }
 
@@ -363,23 +364,47 @@ fn run_wrapper(
     connection.ctrl_val_set(vi, DONE_INDICATOR, LvValue::Bool(false))?;
     connection.run_vi_async(vi)?;
     // No overall limit: a build runs until LabVIEW says it is done.
+    // shortcut: each poll must answer within CALL_TIMEOUT (180 s); if App Builder blocks VI Server longer, the build fails as Other. Raise or loop on timeout if slice 5's real run shows it.
     loop {
         std::thread::sleep(POLL);
-        match connection.ctrl_val_get(vi, DONE_INDICATOR)? {
-            LvValue::Bool(true) => break,
-            LvValue::Bool(false) => {}
-            other => bail!("{DONE_INDICATOR} read back as {other}, not a boolean"),
+        if want_bool(DONE_INDICATOR, connection.ctrl_val_get(vi, DONE_INDICATOR)?)? {
+            break;
         }
     }
-    let code = match connection.ctrl_val_get(vi, CODE_INDICATOR)? {
-        LvValue::I32(code) => code,
-        other => bail!("{CODE_INDICATOR} read back as {other}, not an I32"),
-    };
-    let mut text = |name: &str| match connection.ctrl_val_get(vi, name)? {
+    let code = want_i32(CODE_INDICATOR, connection.ctrl_val_get(vi, CODE_INDICATOR)?)?;
+    let message = want_str(
+        MESSAGE_INDICATOR,
+        connection.ctrl_val_get(vi, MESSAGE_INDICATOR)?,
+    )?;
+    let outputs = want_str(
+        OUTPUTS_INDICATOR,
+        connection.ctrl_val_get(vi, OUTPUTS_INDICATOR)?,
+    )?;
+    Ok((code, message, outputs))
+}
+
+/// What the wrapper's indicator `name` was read back as, if it is a boolean.
+fn want_bool(name: &str, value: LvValue) -> anyhow::Result<bool> {
+    match value {
+        LvValue::Bool(done) => Ok(done),
+        other => bail!("{name} read back as {other}, not a boolean"),
+    }
+}
+
+/// As [`want_bool`], an I32.
+fn want_i32(name: &str, value: LvValue) -> anyhow::Result<i32> {
+    match value {
+        LvValue::I32(code) => Ok(code),
+        other => bail!("{name} read back as {other}, not an I32"),
+    }
+}
+
+/// As [`want_bool`], a string.
+fn want_str(name: &str, value: LvValue) -> anyhow::Result<String> {
+    match value {
         LvValue::Str(text) => Ok(text),
         other => bail!("{name} read back as {other}, not a string"),
-    };
-    Ok((code, text(MESSAGE_INDICATOR)?, text(OUTPUTS_INDICATOR)?))
+    }
 }
 
 /// The wrapper's answer: code 0 is success and `outputs` holds the generated
@@ -541,8 +566,15 @@ build-spec = "Demo App"
         LabViewFails(i32, &'static str),
         /// The build VI cannot be run.
         ConnectionLost(&'static str),
-        /// Cannot be started.
-        WontStart(&'static str),
+    }
+
+    /// Why a fake LabVIEW does not start.
+    #[derive(Clone, Copy)]
+    pub(crate) enum StartFailure {
+        /// The venv's LabVIEW is missing or never answers.
+        Unstartable(&'static str),
+        /// Anything else that stops a start: a LabVIEW already running, a folder.
+        Other(&'static str),
     }
 
     #[derive(Debug, Default, Clone)]
@@ -563,6 +595,7 @@ build-spec = "Demo App"
         log: Arc<Mutex<Log>>,
         answer: Answer,
         watched: Option<PathBuf>,
+        start_fails: Option<StartFailure>,
     }
 
     impl Fake {
@@ -571,6 +604,15 @@ build-spec = "Demo App"
                 log: Arc::default(),
                 answer,
                 watched: None,
+                start_fails: None,
+            }
+        }
+
+        /// Makes every start fail, as `why` says.
+        pub(crate) fn failing_to_start(self, why: StartFailure) -> Fake {
+            Fake {
+                start_fails: Some(why),
+                ..self
             }
         }
 
@@ -605,8 +647,12 @@ build-spec = "Demo App"
             if let Some(path) = &self.watched {
                 log.watched_at_start.push(path.exists());
             }
-            if let Answer::WontStart(why) = self.answer {
-                anyhow::bail!(why);
+            match self.start_fails {
+                Some(StartFailure::Unstartable(why)) => {
+                    return Err(launch::unstartable(anyhow!(why)));
+                }
+                Some(StartFailure::Other(why)) => anyhow::bail!(why),
+                None => {}
             }
             Ok(Box::new(Session { fake: self.clone() }))
         }
@@ -642,7 +688,6 @@ build-spec = "Demo App"
                     message: message.to_string(),
                 })),
                 Answer::ConnectionLost(why) => Err(AppBuildError::Other(anyhow!(*why))),
-                Answer::WontStart(_) => unreachable!("never started"),
             }
         }
     }
@@ -656,9 +701,10 @@ build-spec = "Demo App"
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{Answer, BUILD_SPEC, Fake, Folder, sha};
+    use super::fixture::{Answer, BUILD_SPEC, Fake, Folder, StartFailure, sha};
     use super::*;
     use crate::ops::testing;
+    use crate::target::LvTarget;
 
     fn outputs(folder: &Folder) -> Vec<PathBuf> {
         vec![
@@ -699,6 +745,46 @@ mod tests {
         folder.finish();
     }
 
+    /// Notes, in the fake's order, that the build was announced.
+    struct Announcements<'a>(&'a Fake, testing::Recorded);
+
+    impl EventSink for Announcements<'_> {
+        fn emit(&self, event: Event) {
+            if matches!(event, Event::AppBuildStarting { .. }) {
+                self.0.note("announced");
+            }
+            self.1.emit(event);
+        }
+    }
+
+    #[test]
+    fn the_build_is_announced_with_the_spec_and_year_just_before_labview_starts() {
+        let folder = Folder::new("app-announced");
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)));
+        let sink = Announcements(&fake, testing::Recorded::default());
+        build_app(&testing::env_on(&sink, &folder.root), &fake).unwrap();
+        assert_eq!(fake.log().order, ["announced", "start"]);
+        assert_eq!(
+            sink.1.events(),
+            [Event::AppBuildStarting {
+                build_spec: BUILD_SPEC.into(),
+                labview: 2026
+            }]
+        );
+        folder.finish();
+    }
+
+    #[test]
+    fn a_refusal_announces_nothing() {
+        let folder = Folder::new("app-not-announced");
+        folder.remove_lock();
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)));
+        let sink = testing::Recorded::default();
+        build_app(&testing::env_on(&sink, &folder.root), &fake).unwrap_err();
+        assert_eq!(sink.events(), []);
+        folder.finish();
+    }
+
     #[test]
     fn the_headless_flag_reaches_the_launcher() {
         let folder = Folder::new("app-headless");
@@ -713,8 +799,15 @@ mod tests {
     #[test]
     fn each_refusal_starts_no_labview_and_says_why() {
         type Break = fn(&Folder);
-        let cases: [(&str, Break, &str); 8] = [
-            ("no lock", |f| f.remove_lock(), "there is no lvpm.lock"),
+        type Variant = fn(&AppRefusal) -> bool;
+        let differs: Variant = |r| matches!(r, AppRefusal::VenvDiffers(_));
+        let cases: [(&str, Break, Variant, &str); 8] = [
+            (
+                "no lock",
+                |f| f.remove_lock(),
+                |r| matches!(r, AppRefusal::NoLock),
+                "there is no lvpm.lock",
+            ),
             (
                 "stale lock",
                 |f| {
@@ -723,45 +816,55 @@ mod tests {
                         &f.lock_text(&[("alpha", &[])]).replace("2026", "2025"),
                     )
                 },
+                |r| matches!(r, AppRefusal::StaleLock(_)),
                 "lvpm.lock is out of date",
             ),
             (
                 "unreadable lock",
                 |f| f.write("lvpm.lock", "not a lock = ="),
+                |r| matches!(r, AppRefusal::UnreadableLock(_)),
                 "lvpm.lock cannot be read",
             ),
             (
                 "no venv",
                 |f| std::fs::remove_dir_all(&f.venv.dir).unwrap(),
+                |r| matches!(r, AppRefusal::NoVenv(_)),
                 "there is no venv in",
             ),
             (
                 "venv lacks a locked package",
                 |f| std::fs::remove_dir_all(f.venv.store().store_dir()).unwrap(),
+                differs,
                 "the venv differs from lvpm.lock",
             ),
             (
                 "venv has another version",
                 |f| f.install("alpha", "0.9", &sha()),
+                differs,
                 "the venv differs from lvpm.lock",
             ),
             (
                 "venv has another archive",
                 |f| f.install("alpha", "1.0", &"cd".repeat(32)),
+                differs,
                 "the venv differs from lvpm.lock",
             ),
             (
                 "venv has a package the lock does not list",
                 |f| f.install("stray", "1.0", &sha()),
+                differs,
                 "the venv differs from lvpm.lock",
             ),
         ];
-        for (n, (what, break_it, said)) in cases.into_iter().enumerate() {
+        for (n, (what, break_it, is_variant, said)) in cases.into_iter().enumerate() {
             let folder = Folder::new(&format!("app-refused-{n}"));
             break_it(&folder);
             let fake = Fake::answering(Answer::Builds(outputs(&folder)));
             let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
-            assert!(matches!(why, AppError::Refused(_)), "{what}: {why:?}");
+            assert!(
+                matches!(&why, AppError::Refused(r) if is_variant(r)),
+                "{what}: {why:?}"
+            );
             assert!(why.to_string().starts_with(said), "{what}: {why}");
             assert_eq!(fake.log().starts, 0, "{what}");
             assert!(!folder.builds().exists(), "{what}");
@@ -851,9 +954,7 @@ mod tests {
         let fake = Fake::answering(Answer::ConnectionLost("connection lost"));
         let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
         assert!(matches!(why, AppError::Other(_)), "{why:?}");
-        let text = why.to_string();
-        assert!(text.contains("connection lost"), "{text}");
-        assert!(!text.contains("could not build"), "{text}");
+        assert_eq!(why.to_string(), "connection lost");
         assert!(!folder.builds().exists());
         assert_eq!(fake.log().closes, 1);
         folder.finish();
@@ -876,7 +977,8 @@ mod tests {
     #[test]
     fn a_labview_that_cannot_start_is_a_launch_failure_naming_the_venvs_year() {
         let folder = Folder::new("app-wont-start");
-        let fake = Fake::answering(Answer::WontStart("LabVIEW 2026 not found"));
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)))
+            .failing_to_start(StartFailure::Unstartable("LabVIEW 2026 not found"));
         let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
         assert!(
             matches!(&why, AppError::Launch { year: 2026, .. }),
@@ -888,8 +990,21 @@ mod tests {
     }
 
     #[test]
+    fn a_start_refused_for_another_reason_is_not_a_launch_failure() {
+        let folder = Folder::new("app-start-refused");
+        let said = "a LabVIEW is already running or starting on this venv (VI Server port 3364) - close it first.";
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)))
+            .failing_to_start(StartFailure::Other(said));
+        let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
+        assert!(matches!(&why, AppError::Other(_)), "{why:?}");
+        assert_eq!(why.to_string(), said);
+        folder.finish();
+    }
+
+    #[test]
     fn an_sbom_that_cannot_be_written_says_where_the_build_output_is() {
         let folder = Folder::new("app-sbom-fails");
+        // The fake only reports the outputs, so their folder is never made and the SBOM cannot land in it.
         let fake = Fake::answering(Answer::ReportsOnly(outputs(&folder)));
         let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
         let text = why.to_string();
@@ -933,6 +1048,48 @@ mod tests {
     }
 
     #[test]
+    fn a_venv_of_a_labview_older_than_the_build_vi_is_refused_before_labview_starts() {
+        let mut folder = Folder::new("app-too-old");
+        let binding = venv::binding_path(&folder.venv.dir);
+        let text = std::fs::read_to_string(&binding).unwrap();
+        assert!(text.contains("LabVIEW-2026-64bit"), "{text}");
+        std::fs::write(
+            &binding,
+            text.replace("LabVIEW-2026-64bit", "LabVIEW-2025-64bit")
+                .replace("26.3", "25.3"),
+        )
+        .unwrap();
+        let old = LvTarget {
+            version: 25.3,
+            ..testing::labview_2026()
+        };
+        folder.venv = venv::load(
+            &folder.root,
+            Path::new(".lv-venv"),
+            std::slice::from_ref(&old),
+        )
+        .unwrap();
+        folder.install("alpha", "1.0", &sha());
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)));
+        let mut env = testing::env(&folder.root);
+        env.targets = vec![old];
+        let why = build_app(&env, &fake).unwrap_err();
+        assert!(
+            matches!(
+                why,
+                AppError::Refused(AppRefusal::LabviewTooOld { year: 2025 })
+            ),
+            "{why:?}"
+        );
+        assert_eq!(
+            why.to_string(),
+            "the application build needs LabVIEW 2026 or later; this venv uses LabVIEW 2025"
+        );
+        assert_eq!(fake.log().starts, 0);
+        folder.finish();
+    }
+
+    #[test]
     fn the_embedded_wrapper_is_a_labview_2026_vi_that_has_every_label_lvpm_uses() {
         let vi = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lv-src/build-app.vi");
         assert_eq!(crate::ops::resave::saved_major(&vi), Some(26));
@@ -972,13 +1129,20 @@ mod tests {
         // A file where the folder should be: nothing can be created in it.
         let blocked = dir.join("file");
         std::fs::write(&blocked, "x").unwrap();
-        let launcher = VenvAppLauncher::new(blocked.join("work"));
+        let work = blocked.join("work");
+        let launcher = VenvAppLauncher::new(work.clone());
         let venv = testing::venv_in(&dir);
         let failure = launcher
             .start(&venv, true, &crate::events::NullSink)
             .err()
             .expect("the wrapper cannot be written");
-        assert!(format!("{failure:#}").contains("creating "), "{failure:#}");
+        let said = format!("{failure:#}");
+        assert!(
+            said.starts_with(&format!("creating {}: ", work.display())),
+            "{said}"
+        );
+        // Not the venv's LabVIEW failing, so the front end adds no rebinding hint.
+        assert!(failure.downcast_ref::<launch::Unstartable>().is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1002,6 +1166,29 @@ mod tests {
         assert_eq!(
             cause.to_string(),
             "the build VI builds the My Computer target only, not \"RT CompactRIO\""
+        );
+    }
+
+    #[test]
+    fn an_indicator_of_another_type_is_named_with_what_it_read_back_as() {
+        assert!(want_bool("Done", LvValue::Bool(true)).unwrap());
+        assert_eq!(want_i32("error code", LvValue::I32(7)).unwrap(), 7);
+        assert_eq!(want_str("outputs", LvValue::Str("a".into())).unwrap(), "a");
+        assert_eq!(
+            want_bool("Done", LvValue::I32(1)).unwrap_err().to_string(),
+            "Done read back as 1, not a boolean"
+        );
+        assert_eq!(
+            want_i32("error code", LvValue::Str("x".into()))
+                .unwrap_err()
+                .to_string(),
+            "error code read back as \"x\", not an I32"
+        );
+        assert_eq!(
+            want_str("outputs", LvValue::Bool(false))
+                .unwrap_err()
+                .to_string(),
+            "outputs read back as false, not a string"
         );
     }
 

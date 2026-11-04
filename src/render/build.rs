@@ -1,10 +1,11 @@
 //! The wording of `lvpm build`.
 
-use super::{check, lock, sync};
+use super::{Renderer, Stream, check, lock, sync};
 use anyhow::anyhow;
 use lvpm_core::errors::CheckError;
+use lvpm_core::events::Event;
 use lvpm_core::ops::build::{Built, RunError, Sbom};
-use lvpm_core::ops::build_app::{AppBuilt, AppError, AppRefusal};
+use lvpm_core::ops::build_app::{AppBuilt, AppError, AppRefusal, MIN_LABVIEW_YEAR};
 use lvpm_core::ops::check::Checked;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -18,6 +19,19 @@ pub fn no_venv(repo: &Path) -> String {
         "no venv in {}: run lvpm venv create and lvpm sync, or pass --no-check",
         repo.display()
     )
+}
+
+pub(super) fn render(r: &mut Renderer, event: &Event) {
+    match event {
+        Event::AppBuildStarting {
+            build_spec,
+            labview,
+        } => r.line(
+            Stream::Err,
+            &format!("building application \"{build_spec}\" with LabVIEW {labview} ..."),
+        ),
+        _ => unreachable!("routed here by Renderer::render: {event:?}"),
+    }
 }
 
 /// What `lvpm build` prints once the package is written.
@@ -114,6 +128,9 @@ fn app_error(error: &AppError) -> String {
             "the venv differs from lvpm.lock ({}); run lvpm sync",
             sync::step_line(step)
         ),
+        AppError::Refused(AppRefusal::LabviewTooOld { .. }) => {
+            format!("{error}; run lvpm venv create --labview-version {MIN_LABVIEW_YEAR}")
+        }
         AppError::Launch { year, cause } => format!(
             "{cause:#}
 the venv uses LabVIEW {year}; lvpm venv create --labview-version {year} rebinds it"
@@ -382,6 +399,21 @@ mod tests {
     }
 
     #[test]
+    fn the_application_build_announces_itself_on_stderr() {
+        let (mut renderer, out, err) = super::super::tests::renderer();
+        renderer.render(&Event::AppBuildStarting {
+            build_spec: "Demo App".into(),
+            labview: 2026,
+        });
+        assert_eq!(
+            err.text(),
+            "building application \"Demo App\" with LabVIEW 2026 ...
+"
+        );
+        assert_eq!(out.text(), "");
+    }
+
+    #[test]
     fn every_refusal_says_what_to_run() {
         let text = |why: AppRefusal| run_error(RunError::App(AppError::Refused(why))).to_string();
         assert_eq!(text(AppRefusal::NoLock), "no lvpm.lock; run lvpm lock");
@@ -396,6 +428,13 @@ mod tests {
         assert_eq!(
             text(AppRefusal::NoVenv(PathBuf::from("proj"))),
             "no venv in proj; run lvpm venv create and lvpm sync"
+        );
+        assert_eq!(
+            text(AppRefusal::LabviewTooOld { year: 2025 }),
+            concat!(
+                "the application build needs LabVIEW 2026 or later; this venv uses LabVIEW 2025; ",
+                "run lvpm venv create --labview-version 2026"
+            )
         );
         assert_eq!(
             text(AppRefusal::VenvDiffers(SyncStep::Replace {

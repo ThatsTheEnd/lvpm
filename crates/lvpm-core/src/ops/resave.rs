@@ -5,10 +5,9 @@
 
 use super::staging::Staging;
 use crate::events::{Event, EventSink};
-use crate::launch::{self, Instance};
+use crate::launch::{self, VenvLabview};
 use crate::linker::Rsrc;
 use crate::venv::Venv;
-use crate::viserver::Connection;
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -31,23 +30,19 @@ struct VenvLauncher;
 
 impl Launcher for VenvLauncher {
     fn start(&self, venv: &Venv, headless: bool, sink: &dyn EventSink) -> Result<Box<dyn Session>> {
-        let (instance, connection) = launch::connect_venv(venv, headless, sink)?;
-        Ok(Box::new(VenvSession {
-            connection: Some(connection),
-            instance: Some(instance),
-        }))
+        let labview = launch::connect_venv(venv, headless, sink)?;
+        Ok(Box::new(VenvSession { labview }))
     }
 }
 
 #[cfg_attr(test, allow(dead_code))]
 struct VenvSession {
-    connection: Option<Connection>,
-    instance: Option<Instance>,
+    labview: VenvLabview,
 }
 
 impl Session for VenvSession {
     fn resave(&mut self, _staged: &Path, files: &[PathBuf]) -> Result<usize> {
-        let connection = self.connection.as_mut().expect("open until dropped");
+        let connection = self.labview.connection();
         let mut first_failure = None;
         let mut failed = 0;
         for file in files {
@@ -67,17 +62,6 @@ impl Session for VenvSession {
                 "{failed} of {} files did not save; first {first}",
                 files.len()
             ),
-        }
-    }
-}
-
-impl Drop for VenvSession {
-    fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            connection.close();
-        }
-        if let Some(instance) = self.instance.take() {
-            instance.shutdown_if_spawned();
         }
     }
 }

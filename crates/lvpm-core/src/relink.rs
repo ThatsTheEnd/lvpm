@@ -110,14 +110,22 @@ const RELINK_VI_BYTES: &[u8] = include_bytes!(concat!(
 /// The VI is embedded in the executable at compile time, so the installed
 /// executable does not depend on the source checkout or a companion file.
 pub fn locate_vi(dir: &Path) -> Result<PathBuf> {
+    materialize_vi(dir, "lvpm-relink-package", RELINK_VI_BYTES)
+}
+
+/// Write `bytes` as `<stem>-<lvpm version>.vi` in `dir`, which is made, so
+/// LabVIEW can open it by path; its path. A file that already holds `bytes` is
+/// left alone: another run's LabVIEW may have it open, and Windows will not
+/// replace that. Otherwise it is written beside and renamed, so a run starting
+/// while another writes never opens half a VI.
+pub(crate) fn materialize_vi(dir: &Path, stem: &str, bytes: &[u8]) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let p = dir.join(format!(
-        "lvpm-relink-package-{}.vi",
-        env!("CARGO_PKG_VERSION")
-    ));
-    std::fs::write(&p, RELINK_VI_BYTES)
-        .with_context(|| format!("materializing relink VI at {}", p.display()))?;
-    Ok(p)
+    let vi = dir.join(format!("{stem}-{}.vi", env!("CARGO_PKG_VERSION")));
+    if std::fs::read(&vi).is_ok_and(|held| held == bytes) {
+        return Ok(vi);
+    }
+    crate::ops::build::write_atomically(&vi, bytes)
+        .with_context(|| format!("materializing {stem} at {}", vi.display()))
 }
 
 /// Whether `dir` has a `resource` folder on the way to `Framework/Providers`.
@@ -497,6 +505,35 @@ impl<'a> Relinker<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vi_is_written_whole_over_an_older_one_and_leaves_no_temp_file() {
+        let dir = crate::ops::testing::scratch_dir("materialize-vi");
+        let vi = materialize_vi(&dir, "lvpm-demo", b"old").unwrap();
+        assert_eq!(
+            vi.file_name().unwrap().to_string_lossy(),
+            format!("lvpm-demo-{}.vi", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(materialize_vi(&dir, "lvpm-demo", b"new").unwrap(), vi);
+        assert_eq!(std::fs::read(&vi).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_vi_that_is_already_there_is_not_written_again() {
+        let dir = crate::ops::testing::scratch_dir("materialize-vi-same");
+        let vi = materialize_vi(&dir, "lvpm-demo", b"same").unwrap();
+        // A read-only file cannot be replaced on Windows: succeeding proves it was left alone.
+        let mut held = std::fs::metadata(&vi).unwrap().permissions();
+        held.set_readonly(true);
+        std::fs::set_permissions(&vi, held.clone()).unwrap();
+        assert_eq!(materialize_vi(&dir, "lvpm-demo", b"same").unwrap(), vi);
+        #[allow(clippy::permissions_set_readonly_false)]
+        held.set_readonly(false);
+        std::fs::set_permissions(&vi, held).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The report as LabVIEW writes it: a JSON array of absolute paths, which
     /// becomes a count and folder-relative names, capped past six.

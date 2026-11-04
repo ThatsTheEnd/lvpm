@@ -513,6 +513,12 @@ pub enum Event {
     /// What `init` did about a git repository.
     InitGit { outcome: GitOutcome },
 
+    // ---- ops::build_app ----
+    /// The application's build is about to start the venv's LabVIEW: its
+    /// build specification `build_spec`, in LabVIEW `labview` (the year).
+    /// Said only once the build's preconditions hold.
+    AppBuildStarting { build_spec: String, labview: u32 },
+
     // ---- ops::query ----
     /// A package's archive is not cached and is about to be downloaded.
     ArchiveFetching { name: String, version: String },
