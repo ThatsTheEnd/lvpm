@@ -179,8 +179,7 @@ pub fn write_ini(v: &Venv) -> Result<PathBuf> {
 
     std::fs::create_dir_all(dest.parent().expect("ini path has a parent"))?;
     // Atomic: the next start reads this file as its base.
-    crate::ops::build::write_atomically(&dest, out.as_bytes())
-        .with_context(|| format!("writing {}", dest.display()))?;
+    crate::ops::build::write_atomically(&dest, out.as_bytes())?;
     Ok(dest)
 }
 
@@ -486,8 +485,7 @@ pub fn ensure_instance(
     let v = &crate::venv::ensure_port(v, sink)?;
     if fresh {
         refuse_running(v)?;
-    }
-    if is_running(v) {
+    } else if is_running(v) {
         if !is_listening(v.port) {
             sink.emit(Event::VenvLabviewStillStarting { port: v.port });
         }
@@ -533,8 +531,8 @@ pub(crate) fn refuse_running(v: &Venv) -> Result<()> {
     ensure!(
         !is_running(v),
         "a LabVIEW is already running or starting on this venv (VI Server port {}) — close it first.\n\
-         LabVIEW reads an addon's contents when it starts, so what was just installed \
-         is invisible to a LabVIEW that was running before.",
+         LabVIEW reads an addon's contents when it starts, so a LabVIEW that was \
+         running before the last sync or install does not see it.",
         v.port
     );
     Ok(())
