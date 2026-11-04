@@ -4,6 +4,7 @@
 //! scenario's change to it is one edit of that table.
 
 use crate::CliWorld;
+use crate::steps::check::quoted;
 use crate::support::events::RecordingSink;
 use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::golden::Output;
@@ -116,8 +117,10 @@ impl CliWorld {
         self.build.output = Some(output);
     }
 
+    /// What the last build printed; or, for a scenario that ran `lvpm` itself
+    /// with "I run", what that printed.
     fn built(&self) -> &Output {
-        self.build.output.as_ref().expect("lvpm build ran")
+        (self.build.output.as_ref().or(self.last_output.as_ref())).expect("lvpm build ran")
     }
 
     /// The command a scenario ran last, for the steps that read "it succeeds"
@@ -1048,4 +1051,216 @@ async fn the_install_succeeds(world: &mut CliWorld) {
 async fn no_sbom_is_installed(world: &mut CliWorld) {
     let installed = world.sandbox.list_file_names(DEST_DIR);
     assert!(!installed.contains(SBOM), "dest holds:\n{installed}");
+}
+
+// ---- the application build, and what it refuses ----
+
+/// The `.lvproj` and the build specification `[application]` names unless a
+/// scenario breaks them. The specification is the one NI's template has.
+const APP_PROJECT: &str = "app/Main.lvproj";
+const APP_SPEC: &str = "Continuous Measurement and Logging Application";
+/// The library members a project that builds both kinds holds.
+const LIBRARY_MEMBERS: &str = "\"Lib.lvlib\", \"Good.vi\" and \"Helper.vi\"";
+/// What `lvpm lock` resolves `alpha` to: `alpha` and the `beta` it requires.
+const LOCKED_BY_ALPHA: [&str; 2] = ["alpha", "beta"];
+
+impl CliWorld {
+    /// A project that builds an application: `[application]` as `table`, and
+    /// `[dependencies]` of `alpha` when `with_dependency`. It has the
+    /// `.lvproj`, a VI beside it, no venv and no lock.
+    fn application_project(&mut self, table: toml::Table, with_dependency: bool) {
+        let mut tables = Self::application_text(table);
+        if with_dependency {
+            tables += "\n[dependencies]\nalpha = \"1.0\"\n";
+        }
+        self.publish(&SBOM_PACKAGES.iter().collect::<Vec<_>>());
+        self.check_project(Some(">=2026"), false, &tables, "");
+        self.put(APP_PROJECT, "<Project/>");
+        self.put("app/Main.vi", "a vi");
+    }
+
+    /// `[application]` as `table`, in TOML.
+    fn application_text(table: toml::Table) -> String {
+        let application = toml::Table::from_iter([("application".to_string(), table.into())]);
+        toml::to_string(&application).expect("the table is TOML")
+    }
+
+    /// `[application]` with both keys right.
+    fn good_application_table() -> toml::Table {
+        toml::Table::from_iter([
+            ("project".to_string(), APP_PROJECT.into()),
+            ("build-spec".to_string(), APP_SPEC.into()),
+        ])
+    }
+
+    /// A library project (the check fixtures, with a venv) that also has
+    /// `[application]`: it builds both kinds.
+    fn project_with_both_tables(&self) {
+        self.build_project(">=2026", "Lib.lvlib", LIBRARY_MEMBERS);
+        self.append_to_manifest(&Self::application_text(Self::good_application_table()));
+        self.put(APP_PROJECT, "<Project/>");
+    }
+
+    /// The venv's record of `name`, as an install of that archive leaves it.
+    fn install_in_venv_as_locked(&self, name: &str, version: &str, sha256: &str) {
+        let record = serde_json::json!({
+            "name": name, "version": version, "installed_at": 0, "target": "",
+            "files": [], "skipped_hooks": [], "archive_sha256": sha256,
+        });
+        let path = self
+            .sandbox
+            .venv_dir()
+            .join(".lvpm/installed")
+            .join(format!("{name}.json"));
+        std::fs::create_dir_all(path.parent().expect("a folder")).expect("make the store");
+        std::fs::write(path, record.to_string()).expect("write the record");
+    }
+
+    /// The venv holds each of `LOCKED_BY_ALPHA` as the lock has it, with the
+    /// version `version_of` says.
+    fn venv_holding_the_locked_packages(&self, version_of: impl Fn(&str, &str) -> String) {
+        self.bind_venv();
+        for name in LOCKED_BY_ALPHA {
+            let locked = self.locked_package(name);
+            let version = locked["version"].as_str().expect("a version");
+            let sha256 = locked["sha256"].as_str().expect("a SHA-256");
+            self.install_in_venv_as_locked(name, &version_of(name, version), sha256);
+        }
+    }
+}
+
+#[given(regex = r"^an application project whose \[application\] (.+)$")]
+async fn application_project_whose_table(world: &mut CliWorld, problem: String) {
+    let mut table = CliWorld::good_application_table();
+    let text = |text: &str| toml::Value::String(text.to_string());
+    let root = world.sandbox.root().to_path_buf();
+    // The projects a table can name outside the folder: they exist, and lie
+    // beside it or above it.
+    let outside = [root.join("other/X.lvproj"), root.join("X.lvproj")];
+    match problem.as_str() {
+        "has no project" => drop(table.remove("project")),
+        "has no build-spec" => drop(table.remove("build-spec")),
+        "has build-spec = \"\"" => drop(table.insert("build-spec".into(), text(""))),
+        "has project = \"\"" => drop(table.insert("project".into(), text(""))),
+        "has project = 5" => drop(table.insert("project".into(), 5.into())),
+        "has build-spec = 5" => drop(table.insert("build-spec".into(), 5.into())),
+        key if key.starts_with("has the key ") => {
+            let words = quoted(key);
+            table.insert(words[0].clone(), text(&words[1]));
+        }
+        name if name.starts_with("names ") => {
+            let named = quoted(name).remove(0);
+            let named = match named.strip_prefix("<sandbox parent>/") {
+                Some(rest) => root.join(rest).to_string_lossy().into_owned(),
+                None => named,
+            };
+            table.insert("project".into(), text(&named));
+        }
+        other => panic!("no such [application] problem: {other}"),
+    }
+    world.application_project(table, false);
+    for project in outside {
+        std::fs::create_dir_all(project.parent().expect("a folder")).expect("make a folder");
+        std::fs::write(project, "<Project/>").expect("write a project outside the folder");
+    }
+}
+
+#[given("an application project with no version in lvpm.toml")]
+async fn application_project_without_a_version(world: &mut CliWorld) {
+    world.application_project(CliWorld::good_application_table(), false);
+    let manifest = std::fs::read_to_string(world.work(MANIFEST_FILE)).expect("the manifest");
+    let without = manifest.replace("version = \"0.1.0\"\n", "");
+    assert_ne!(manifest, without, "the manifest had a version");
+    world.put(MANIFEST_FILE, &without);
+}
+
+#[given("an application project with no [distribution]")]
+async fn application_project_without_distribution(world: &mut CliWorld) {
+    world.application_project(CliWorld::good_application_table(), false);
+}
+
+/// A project that builds an application, in the state the step says: what
+/// the lock is, and what the venv holds.
+#[given(
+    regex = r"^an application project (with no lvpm\.lock|whose lock predates a new \[dependencies\] entry|with a current lock and no venv|whose venv lacks a locked package|whose venv has alpha 0\.9 where the lock says 1\.0|whose venv holds a package the lock does not list)$"
+)]
+async fn application_project_in_a_state(world: &mut CliWorld, state: String) {
+    let predates = "whose lock predates a new [dependencies] entry";
+    // The lock that predates the entry is written before the entry is.
+    let with_dependency = !["with no lvpm.lock", predates].contains(&state.as_str());
+    world.application_project(CliWorld::good_application_table(), with_dependency);
+    if state == "with no lvpm.lock" {
+        return;
+    }
+    world.sandbox.setup_lvpm(&["lock"]);
+    match state.as_str() {
+        s if s == predates => world.append_to_manifest("[dependencies]\nalpha = \"1.0\"\n"),
+        "whose venv lacks a locked package" => world.bind_venv(),
+        "whose venv has alpha 0.9 where the lock says 1.0" => {
+            world.venv_holding_the_locked_packages(|name, locked| match name {
+                "alpha" => "0.9".to_string(),
+                _ => locked.to_string(),
+            });
+        }
+        "whose venv holds a package the lock does not list" => {
+            world.venv_holding_the_locked_packages(|_, locked| locked.to_string());
+            world.install_in_venv_as_locked("stray", "1.0", "ab");
+        }
+        _ => {}
+    }
+}
+
+#[given(regex = r"^a project with only (\[distribution\]|\[application\])$")]
+async fn project_with_one_table(world: &mut CliWorld, table: String) {
+    match table.as_str() {
+        "[distribution]" => world.build_project(">=2026", "Lib.lvlib", LIBRARY_MEMBERS),
+        _ => world.application_project(CliWorld::good_application_table(), false),
+    }
+}
+
+#[given("a project with no [distribution] and no [application]")]
+async fn project_with_no_table(world: &mut CliWorld) {
+    world.check_project(Some(">=2026"), false, "", "");
+}
+
+#[given("a project with [distribution] and [application], lvpm.lock current, and no venv")]
+async fn both_tables_current_lock_no_venv(world: &mut CliWorld) {
+    world.project_with_both_tables();
+    std::fs::remove_dir_all(world.sandbox.venv_dir()).expect("remove the venv");
+    world.sandbox.setup_lvpm(&["lock"]);
+}
+
+#[given("a project with [distribution] and [application] and no lvpm.lock")]
+async fn both_tables_no_lock(world: &mut CliWorld) {
+    world.project_with_both_tables();
+}
+
+#[given(
+    "a project with [distribution] and [application], lvpm.lock current and the venv synced, so the app would otherwise build"
+)]
+async fn both_tables_ready_to_build(world: &mut CliWorld) {
+    world.project_with_both_tables();
+    world.sandbox.setup_lvpm(&["lock"]);
+}
+
+#[then(regex = r#"^stderr has no line starting "([^"]+)"$"#)]
+async fn stderr_has_no_line_starting(world: &mut CliWorld, start: String) {
+    let out = world.output();
+    assert!(
+        !out.stderr.lines().any(|l| l.starts_with(&start)),
+        "{out:?}"
+    );
+}
+
+#[then(regex = r#"^stdout mentions "([^"]+)" and "([^"]+)"$"#)]
+async fn stdout_mentions(world: &mut CliWorld, first: String, second: String) {
+    let out = world.output();
+    for text in [first, second] {
+        assert!(out.stdout.contains(&text), "{text:?} is not in: {out:?}");
+    }
+}
+
+#[then("dist holds no package")]
+async fn dist_holds_no_package(world: &mut CliWorld) {
+    world.no_package_in_dist();
 }

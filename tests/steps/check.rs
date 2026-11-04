@@ -46,7 +46,13 @@ impl CliWorld {
     /// A project: an `lvpm.toml` with `labview` (a `>=YYYY` as written) and
     /// then `tables` (TOML), and the files `holding` lists. With `venv`, a venv
     /// bound to the installation.
-    fn check_project(&self, labview: Option<&str>, venv: bool, tables: &str, holding: &str) {
+    pub(super) fn check_project(
+        &self,
+        labview: Option<&str>,
+        venv: bool,
+        tables: &str,
+        holding: &str,
+    ) {
         let manifest = match labview {
             Some(text) => ProjectManifest::new().labview(
                 text.strip_prefix(">=")
@@ -107,13 +113,13 @@ impl CliWorld {
 
     /// A project a build can package: `Lib.lvlib` is `library`, and lists only
     /// the members the scenario holds.
-    fn build_project(&self, labview: &str, library: &str, holding: &str) {
+    pub(super) fn build_project(&self, labview: &str, library: &str, holding: &str) {
         self.check_project(Some(labview), true, &distribution(library), holding);
         self.keep_held_members();
     }
 
     /// The fixture VI `name`, listed by `Lib.lvlib`.
-    fn add_member(&self, name: &str) {
+    pub(super) fn add_member(&self, name: &str) {
         self.put_fixture(name, &self.sandbox.work_dir());
         self.list_member(name);
     }
@@ -125,7 +131,7 @@ impl CliWorld {
     }
 
     /// `text` added to `lvpm.toml`: a table the manifest does not have yet.
-    fn append_to_manifest(&self, text: &str) {
+    pub(super) fn append_to_manifest(&self, text: &str) {
         let path = self.sandbox.work_dir().join(MANIFEST_FILE);
         let manifest = std::fs::read_to_string(&path).expect("read the manifest");
         std::fs::write(path, format!("{manifest}\n{text}")).expect("write the manifest");
@@ -309,7 +315,7 @@ fn pilot_vi_2013() -> Vec<u8> {
 }
 
 /// The text between each pair of double quotes in `text`.
-fn quoted(text: &str) -> Vec<String> {
+pub(super) fn quoted(text: &str) -> Vec<String> {
     text.split('"')
         .skip(1)
         .step_by(2)

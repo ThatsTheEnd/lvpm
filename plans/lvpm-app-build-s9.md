@@ -747,7 +747,7 @@ For each PR:
 #### Wave 2
 - [ ] Slice 3: `[application]`, the flags and the refusals
   - [x] Step 3.1: read `[application]`
-  - [ ] Step 3.2: `kinds`, `--app`, `--package` and the preconditions
+  - [x] Step 3.2: `kinds`, `--app`, `--package` and the preconditions
 
 #### Wave 3
 - [ ] Slice 4: the build in the venv's LabVIEW

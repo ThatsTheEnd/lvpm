@@ -31,6 +31,11 @@ pub struct Application {
 
 const EXTENSION: &str = ".lvproj";
 
+/// The `build-spec` as written, for what is said before [`validate`] has run.
+pub fn build_spec_as_written(p: &Project) -> Option<&str> {
+    p.application.as_ref()?.get(APPLICATION_KEYS[1])?.as_str()
+}
+
 /// `p`'s `[application]`, checked against the project folder `root`.
 pub fn validate(p: &Project, root: &Path) -> Result<Application> {
     let Some(table) = &p.application else {
