@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.23.0...v0.24.0) (2026-11-04)
+
+
+### Features
+
+* **s12:** install hooks off by default ([#118](https://github.com/ThatsTheEnd/lvpm/issues/118)) ([efffcdc](https://github.com/ThatsTheEnd/lvpm/commit/efffcdc647b30c2fd4f09a08238f1d39ab937055))
+* **s7c:** pin a dependency to one source ([#116](https://github.com/ThatsTheEnd/lvpm/issues/116)) ([aab9a58](https://github.com/ThatsTheEnd/lvpm/commit/aab9a58efa15ef42063b7130358e9c0d35b6c260))
+
 ## [0.23.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.22.0...v0.23.0) (2026-11-02)
 
 
