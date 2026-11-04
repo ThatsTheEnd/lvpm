@@ -614,7 +614,7 @@ subVI name. It shows the call is linked, not that it runs.
 1. Copy `<LabVIEW 2026>\ProjectTemplates\Source\Core\Continuous Measurement` to `tests/fixtures/pilot-app/app/`.
 2. Edit the `.lvproj` build spec's destination to `builds/` inside the fixture. This is an XML edit; the tag names are checked against the file. Nothing else changes.
 3. Add `lvpm.toml`: name, version, `labview = "2026"`, `sources.local` relative to the fixture (`../pilots`), both pilots in `[dependencies]`.
-4. Add the README and `tests/fixtures/pilot-app/builds/` to `.gitignore`.
+4. Add the README, with a "What lvpm changed" section, and add `tests/fixtures/pilot-app/builds/` to `.gitignore`.
 5. `lvpm lock` in the fixture. Commit `lvpm.lock`. If the lock records the source path absolutely, the `@labview` scenario runs `lvpm lock` in the sandbox first, and the step says so.
 
 **TEST**: the "is in the repository" scenario passes. Full suite green.
