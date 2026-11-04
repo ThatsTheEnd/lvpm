@@ -196,6 +196,11 @@ Feature: lvpm build writes an SBOM, and builds applications
     And the .lvproj's build spec writes below the fixture's "builds" folder
     And the fixture's lvpm.lock is current
 
+  Scenario: the pilot application calls both pilots
+    Given the repository
+    Then "lvpm Pilots.vi" is in tests/fixtures/pilot-app/app
+    And a template VI's bytes name "lvpm Pilots.vi"
+
   @labview
   Scenario: the pilot application builds headless from its venv
     Given a copy of the pilot application and the pilots, side by side in the sandbox

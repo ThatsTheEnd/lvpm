@@ -112,12 +112,16 @@ code 1 and the message `LabVIEW could not build "<build-spec>": <code> <message>
 **The pilot application.** `tests/fixtures/pilot-app/` holds a copy of
 `<LabVIEW 2026>\ProjectTemplates\Source\Core\Continuous Measurement`, with:
 
-- the build spec's destination changed to `builds/` inside the fixture, so a
-  build never writes outside it;
+- the build spec's destination as the template has it, which already writes
+  to `builds/` inside the fixture, so a build never writes outside it;
 - an `lvpm.toml` with `[application]`, both pilots in `[dependencies]`, and
   `labview = "2026"`;
-- one call into each pilot: HSE Logger logs when acquisition starts and
-  stops; OpenSerializer writes the settings to JSON when they are saved;
+- one call into both pilots: `Main.vi` calls a new `lvpm Pilots.vi` at
+  start, which logs through HSE Logger and serializes the settings through
+  OpenSerializer (as plain text: OpenSerializer 1.2.1.16 has no JSON
+  serializer). *As built:* the planned calls at acquisition start, stop and
+  settings save could not be added without cutting the template VIs' typedef
+  links;
 - a `README.md` naming the template, the LabVIEW version it came from, NI as
   its author, and what lvpm changed.
 

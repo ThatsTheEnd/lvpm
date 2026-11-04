@@ -645,6 +645,7 @@ subVI name. It shows the call is linked, not that it runs.
 - Generate one new VI, `lvpm Pilots.vi`, with the `labview-vi-generator` agent. It logs start and stop through HSE Logger and writes the settings through OpenSerializer.
 - Call it from the template's acquisition start and stop and its settings save, with the `labview-vi-editor` agent.
 - The editor regenerates a VI and loses its layout. If a template VI cannot survive that, the step stops and asks the user. The fallback is to add `lvpm Pilots.vi` to the build spec's Always Included list.
+- *As built:* the editor could not regenerate the template VIs without cutting their typedef links, so the user placed one call by hand, in `Main.vi` at start. One call reaches both pilots, and it runs when `Main.exe` starts.
 
 **TEST**: the "calls both pilots" scenario passes. The `@labview` scenario is run again where LabVIEW 2026 is available. Full suite green.
 **REFACTOR**: none beyond the README wording.
@@ -753,12 +754,12 @@ For each PR:
   - [x] Step 4.1: `VenvAppLauncher` runs the wrapper VI
 
 #### Wave 4
-- [ ] Slice 5: the pilot application
+- [x] Slice 5: the pilot application
   - [x] Step 5.1: copy the template, unchanged
   - [x] Step 5.2: the `@labview` build scenario
-  - [ ] Step 5.3: the template calls both pilots
-- [ ] Slice 6: application docs
-  - [ ] Step 6.1: docs
+  - [x] Step 5.3: the template calls both pilots
+- [x] Slice 6: application docs
+  - [x] Step 6.1: docs
 
 ## Plan Review Summary
 

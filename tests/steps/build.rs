@@ -1357,6 +1357,38 @@ async fn pilot_app_lock_is_current(world: &mut CliWorld) {
     assert_eq!(output.exit_code, 0, "{output:?}");
 }
 
+#[then(regex = r#"^"([^"]+)" is in tests/fixtures/pilot-app/app$"#)]
+async fn pilot_app_has_vi(_: &mut CliWorld, vi: String) {
+    let path = PathBuf::from(PILOT_APP).join("app").join(&vi);
+    assert!(path.is_file(), "{} is not a file", path.display());
+}
+
+/// A VI keeps the file names of its subVIs uncompressed in its link info, so a
+/// caller's bytes hold the callee's name.
+#[then(regex = r#"^a template VI's bytes name "([^"]+)"$"#)]
+async fn a_template_vi_names(_: &mut CliWorld, vi: String) {
+    let mut dirs = vec![PathBuf::from(PILOT_APP).join("app")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read the pilot application") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "vi")
+                && path.file_name().is_some_and(|name| name != vi.as_str())
+            {
+                let bytes = std::fs::read(&path).expect("read a template VI");
+                if bytes
+                    .windows(vi.len())
+                    .any(|window| window == vi.as_bytes())
+                {
+                    return;
+                }
+            }
+        }
+    }
+    panic!("no template VI names {vi:?}");
+}
+
 // ---- the pilot application builds, `@labview` ----
 
 /// How long Main.exe must have been running for the scenario to call it up.
