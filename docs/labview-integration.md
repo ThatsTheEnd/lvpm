@@ -27,7 +27,7 @@ A hook runs only for a package you allowed.
 
 | Where the package goes | Its install hooks run when |
 | --- | --- |
-| A LabVIEW installation, from a project (`sync`, `add`) | The package's line in the project's `lvpm.toml` has `hooks = "run"` ([manifest](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#dependencies)) |
+| A LabVIEW installation, from a project (`sync`, `add`) | The package's line in the project's `lvpm.toml` has `hooks = "run"` ([manifest](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#allowing-install-hooks)) |
 | A LabVIEW installation, outside a project (`lvpm install <name>`) | The name is in the user config `hooks.run` (`lvpm config set hooks.run <name>...`; [configuration](usage.md#configuration)) |
 | Either of those, for one command | The command has `--hooks`, which allows every package |
 | A venv | Never. A venv runs no hook, and nothing allows one |

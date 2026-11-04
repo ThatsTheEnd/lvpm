@@ -65,7 +65,7 @@ that package. The table of rules is in
 [Hooks](labview-integration.md#hooks). To allow one:
 
 - In a project, put `hooks = "run"` on the package's line in `lvpm.toml`:
-  `pilot_a = { version = "*", hooks = "run" }` ([manifest](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#dependencies)).
+  `pilot_a = { version = "*", hooks = "run" }` ([manifest](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#allowing-install-hooks)).
 - Outside a project, name it in the user config:
   `lvpm config set hooks.run pilot_a` ([Configuration](#configuration)).
 - For one command, add `--hooks`. It allows every package.
