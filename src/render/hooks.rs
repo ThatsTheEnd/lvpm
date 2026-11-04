@@ -247,7 +247,11 @@ mod tests {
             package: "alpha\nrun it now: x".into(),
             error: "denied\nwarning: forged".into(),
         });
-        assert_eq!(err.text().lines().count(), 1, "{}", err.text());
+        assert_eq!(
+            err.text(),
+            "warning: alpha run it now: x: the install record could not be updated \
+             (denied warning: forged); its uninstall hooks may run\n"
+        );
     }
 
     #[test]

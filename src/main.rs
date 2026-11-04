@@ -328,7 +328,7 @@ enum Cmd {
         /// Package whose PostInstall hook to run. Omit when using --all.
         package: Option<String>,
         /// Run the PostInstall hook of every installed package that has one,
-        /// allowed or not, and turn on their uninstall hooks.
+        /// allowed or not. Each that succeeds also turns on its uninstall hooks.
         #[arg(long, conflicts_with = "package")]
         all: bool,
         /// Seconds to wait for one hook to finish.

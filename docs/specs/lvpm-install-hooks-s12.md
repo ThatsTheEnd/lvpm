@@ -99,8 +99,9 @@ writes every hook the package declares into the record, uninstall hooks
 included. A
 record from before this slice has none listed for a global install, so its
 hooks run as before. Headless records, and records whose PostInstall failed,
-already list their install hooks, so their uninstall hooks stop running (ADR 3 §4). A skipped uninstall hook is reported with a new
-`UnrunReason::InstallHookSkipped`.
+already list their install hooks, so their uninstall hooks stop running (ADR 3 §4). Uninstall hooks held back by a skipped install hook
+are reported with a new `UnrunReason::InstallHookSkipped`; an uninstall-only
+package that was not allowed gets `UnrunReason::NotAllowedAtInstall`.
 
 | Part | Where |
 |---|---|
@@ -110,7 +111,7 @@ already list their install hooks, so their uninstall hooks stop running (ADR 3 �
 | `run-hooks` clears the skip | `crates/lvpm-core/src/ops/hooks.rs`, `install.rs` |
 | Uninstall follows the record | `crates/lvpm-core/src/ops/uninstall.rs` |
 | Rendering | `src/render/install.rs`, `src/render/uninstall.rs`, `src/render/hooks.rs`, `src/render/mod.rs` |
-| Wiring the allowlist into the env | `src/main.rs` (`HookAllow::for_command`) |
+| Wiring the allowlist into the env | `HookAllow::for_command` in `crates/lvpm-core/src/ops/install.rs`, `ops/sync.rs`, `ops/add_remove.rs` |
 | The TUI log line | `crates/lvpm-tui/src/log.rs` |
 | `add` keeps `hooks` | `crates/lvpm-core/src/manifest_edit.rs` (test only) |
 | Scenarios | `tests/features/hooks/s12-install-hooks.feature` (new), listed in `tests/acceptance.rs` `FEATURE_FILES`; a fake installation with a hook-declaring package, as `ops::testing` builds |
@@ -199,7 +200,7 @@ allow it. *(#76)*
 | Global allowlist command when the list has names | `inferable` | inference | `config set` replaces the list, so the hint lists the existing names plus the new one; pasting it never drops an allowed package. |
 | Values of `hooks` other than `run` | `inferable` | inference | Refused at read: the line format refuses unknown keys today, and a typo must not silently mean "skip". |
 | Is `hooks` a lock input | `inferable` | inference | No. It does not change what resolves or where from; `lock --check` compares resolution inputs only. |
-| What counts as "the install hook ran" for uninstall | `inferable` | inference | Neither PreInstall nor PostInstall is in `skipped_hooks`. A failed PostInstall is already recorded there, so its uninstall hooks do not run either; `run-hooks` success clears every install and uninstall entry, PreInstall included (amended at plan review: clearing only PostInstall left two-hook packages blocked). |
+| What counts as "the install hook ran" for uninstall | `inferable` | inference | No hook is listed in `skipped_hooks` (amended after review; first: neither PreInstall nor PostInstall). A failed PostInstall is already recorded there, so its uninstall hooks do not run either; `run-hooks` success clears every install and uninstall entry, PreInstall included (amended at plan review: clearing only PostInstall left two-hook packages blocked). |
 | Records written before S12 | `inferable` | inference | A global record lists no install hook as skipped, because those installs ran them; its uninstall hooks run as before. |
 | Venv reporting | `inferable` | inference | Unchanged `HooksNotRun` line: nothing can allow a hook there (ADR 3 §1), so the remedies would mislead. |
 | Dry run | `inferable` | inference | Prints the same warning for hooks it would skip: the reader learns before installing. |

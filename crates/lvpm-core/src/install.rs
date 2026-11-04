@@ -468,13 +468,18 @@ fn declared_hooks(spec: &Spec) -> Vec<String> {
         .collect()
 }
 
-/// Written beside the record and renamed over it, so a kill mid-write leaves
-/// the old record, not a truncated one that `lvpm list` silently drops.
+/// Written beside the record, synced and renamed over it, so a kill or power
+/// loss mid-write leaves the old record, not a truncated one that `lvpm list`
+/// silently drops. The tmp name is per process, so two writers never share it.
 pub(crate) fn write_manifest(roots: &Roots, m: &Manifest) -> Result<()> {
+    use std::io::Write;
     let mp = manifest_path(roots, &m.name);
     std::fs::create_dir_all(mp.parent().unwrap())?;
-    let tmp = mp.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(m)?)?;
+    let tmp = mp.with_extension(format!("json.{}.tmp", std::process::id()));
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(serde_json::to_string_pretty(m)?.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, &mp)?;
     Ok(())
 }
@@ -507,6 +512,9 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
 /// Record that the user ran the package's install hook by hand: no hook is
 /// listed as skipped any more. `ran_for` is the record the hook ran from; one
 /// written since, by a reinstall or upgrade while the hook ran, is left as it is.
+// shortcut: no lock spans the read and the write, so a reinstall landing between
+// them (or within the same second) is not caught; add a store lock if lvpm ever
+// supports two commands on one installation at once.
 pub fn clear_skipped_hooks(roots: &Roots, ran_for: &Manifest) -> Result<()> {
     let mut m = read_manifest(roots, &ran_for.name)?;
     if (m.installed_at, &m.version) != (ran_for.installed_at, &ran_for.version) {
