@@ -900,6 +900,10 @@ an SBOM. A failed build prints `{"error": "<message>"}` as its last line and exi
   by hand.
 - lvpm lists no checked-in binaries, such as a `.lvlibp`, in the SBOM, and does
   not sign it.
+- Keep the build folder's path short. A built `Main.exe` whose path is close to
+  Windows' 260-character limit (measured at 251) crashes on start with
+  0xC0000409; the same build copied to a short path runs. This is the
+  application, not lvpm.
 
 [The pilot application](https://github.com/ThatsTheEnd/lvpm/tree/main/tests/fixtures/pilot-app)
 is a working example: NI's Continuous Measurement and Logging template, changed

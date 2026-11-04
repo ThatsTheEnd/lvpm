@@ -754,8 +754,8 @@ For each PR:
 
 #### Wave 4
 - [ ] Slice 5: the pilot application
-  - [ ] Step 5.1: copy the template, unchanged
-  - [ ] Step 5.2: the `@labview` build scenario
+  - [x] Step 5.1: copy the template, unchanged
+  - [x] Step 5.2: the `@labview` build scenario
   - [ ] Step 5.3: the template calls both pilots
 - [ ] Slice 6: application docs
   - [ ] Step 6.1: docs
