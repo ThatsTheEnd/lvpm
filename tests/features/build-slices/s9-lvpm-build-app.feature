@@ -170,13 +170,12 @@ Feature: lvpm build writes an SBOM, and builds applications
     And the error says "no lvpm.lock"
     And dist holds no package
 
-  Scenario: with both tables, a refused package stops the app build
-    Given a project with [distribution] and [application], lvpm.lock current and the venv synced, so the app would otherwise build
-    And "Broken.vi" is a member of "Lib.lvlib" and the folder "Sub" is empty
+  Scenario: with both tables, an app whose LabVIEW is not installed writes no package
+    Given a project with [distribution] and [application], lvpm.lock current and a venv bound to a LabVIEW that is not installed here
     When I run "lvpm build"
     Then the exit code is non-zero
-    And stderr has the line "build refused: 1 problem(s) in library members, nothing written; fix them or pass --no-check"
-    And stderr has no line starting "building application"
+    And the error says "not installed here"
+    And dist holds no package
 
   Scenario: --app --package is the same as no flag
     Given a project with [distribution] and [application] and no lvpm.lock

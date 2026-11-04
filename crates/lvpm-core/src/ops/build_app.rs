@@ -3,7 +3,9 @@
 //!
 //! Nothing starts LabVIEW until [`check_app`] is satisfied: the manifest's
 //! `[application]`, a current lock, a venv, and a venv that holds what the
-//! lock lists. A refusal costs no LabVIEW start and writes nothing. The
+//! lock lists, in a LabVIEW that is installed here. A refusal costs no
+//! LabVIEW start and writes nothing, and a run that also builds the package
+//! refuses before it writes that. The
 //! LabVIEW itself is behind [`AppLauncher`] and [`AppSession`], which a test
 //! replaces.
 
@@ -118,6 +120,8 @@ pub struct Ready {
     pub lock: Lockfile,
     /// The project folder, with the venv in it.
     pub root: PathBuf,
+    /// The venv, bound to a LabVIEW that is installed here.
+    pub venv: Venv,
 }
 
 /// What an application build wrote.
@@ -144,7 +148,8 @@ fn wanted_in_the_venv() -> Selection {
 }
 
 /// Every precondition of an application build, in order, with no LabVIEW
-/// started and nothing written.
+/// started and nothing written: the last is that the venv's LabVIEW is
+/// installed here and of the bitness `--labview-bitness` asks for.
 pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     let (root, project) = super::project_of(env, "build")?;
     let application = application::validate(&project, &root)?;
@@ -159,24 +164,35 @@ pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     if let Some(step) = plan.steps.into_iter().next() {
         return Err(AppRefusal::VenvDiffers(step).into());
     }
+    let venv = venv::load(&root, &env.config.venv_dir, &env.targets)?;
+    env.check_bitness(&venv.target)?;
     Ok(Ready {
         application,
         lock,
         root,
+        venv,
     })
 }
 
-/// Check, then build the application in the venv's LabVIEW and write
+/// Check, then build: [`build_ready`].
+pub fn build_app(env: &OpEnv, launcher: &dyn AppLauncher) -> Result<AppBuilt, AppError> {
+    build_ready(env, check_app(env)?, launcher)
+}
+
+/// Build the application of `ready` in the venv's LabVIEW and write
 /// `bom.cdx.json` next to its first output. A build that fails writes no SBOM
 /// and leaves an earlier one as it was; LabVIEW is closed either way.
-pub fn build_app(env: &OpEnv, launcher: &dyn AppLauncher) -> Result<AppBuilt, AppError> {
+pub fn build_ready(
+    env: &OpEnv,
+    ready: Ready,
+    launcher: &dyn AppLauncher,
+) -> Result<AppBuilt, AppError> {
     let Ready {
         application,
         lock,
-        root,
-    } = check_app(env)?;
-    let venv = venv::load(&root, &env.config.venv_dir, &env.targets)?;
-    env.check_bitness(&venv.target)?;
+        venv,
+        ..
+    } = ready;
     let started = Instant::now();
     let year = venv.target.year();
     let mut session = launcher
@@ -685,6 +701,7 @@ mod tests {
             why.to_string(),
             "LabVIEW reported no output for \"Demo App\""
         );
+        assert!(!folder.builds().exists());
         assert_eq!(fake.log().closes, 1);
         folder.finish();
     }
@@ -714,6 +731,7 @@ mod tests {
             folder.builds().display()
         );
         assert!(text.starts_with(&said), "{text}");
+        assert!(text.len() > said.len(), "the cause follows: {text}");
         folder.finish();
     }
 
@@ -726,6 +744,24 @@ mod tests {
         let why = build_app(&env, &fake).unwrap_err();
         assert!(why.to_string().contains("not installed here"), "{why}");
         assert_eq!(fake.log().starts, 0);
+        folder.finish();
+    }
+
+    #[test]
+    fn a_venv_of_the_other_bitness_than_asked_for_is_refused_before_labview_starts() {
+        let folder = Folder::new("app-bitness");
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)));
+        let mut env = testing::env(&folder.root);
+        env.flags.labview_bitness = Some(32);
+        let why = build_app(&env, &fake).unwrap_err();
+        assert!(matches!(why, AppError::Other(_)), "{why:?}");
+        assert!(
+            why.to_string()
+                .contains("not the 32-bit LabVIEW --labview-bitness asks for"),
+            "{why}"
+        );
+        assert_eq!(fake.log().starts, 0);
+        assert!(!folder.builds().exists());
         folder.finish();
     }
 }

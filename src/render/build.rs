@@ -64,6 +64,9 @@ pub fn app_built(built: &AppBuilt) -> String {
 /// built too, if any. A package alone is `{"command": "build"}`, as it always was.
 pub fn result(package: Option<&Built>, app: Option<&AppBuilt>) -> Value {
     let mut result = json!({ "command": "build" });
+    let Some(app) = app else {
+        return result;
+    };
     if let Some(built) = package {
         result["package"] = json!({
             "path": built.path,
@@ -71,14 +74,12 @@ pub fn result(package: Option<&Built>, app: Option<&AppBuilt>) -> Value {
             "sbom": built.sbom == Sbom::Included,
         });
     }
-    if let Some(built) = app {
-        result["application"] = json!({
-            "build_spec": built.build_spec,
-            "outputs": built.outputs,
-            "sbom": built.sbom,
-            "took": built.took.as_secs_f64(),
-        });
-    }
+    result["application"] = json!({
+        "build_spec": app.build_spec,
+        "outputs": app.outputs,
+        "sbom": app.sbom,
+        "took": app.took.as_secs_f64(),
+    });
     result
 }
 
@@ -121,7 +122,7 @@ the venv uses LabVIEW {year}; lvpm venv create --labview-version {year} rebinds 
             "{error}
 open the LabVIEW project and run the build spec there to see details"
         ),
-        AppError::Other(other) => format!("{other:#}"),
+        AppError::Other(_) => unreachable!("run_error hands an Other on as it is"),
     }
 }
 
@@ -365,6 +366,12 @@ mod tests {
         assert!(application.get("package").is_none(), "{application}");
         assert_eq!(application["application"]["build_spec"], "Demo App");
         assert_eq!(result(None, None), json!({"command": "build"}));
+    }
+
+    #[test]
+    fn a_package_alone_is_just_the_command_in_json() {
+        let package = a_build(None, Sbom::Included);
+        assert_eq!(result(Some(&package), None), json!({"command": "build"}));
     }
 
     #[test]

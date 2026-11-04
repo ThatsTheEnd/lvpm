@@ -1236,9 +1236,9 @@ async fn both_tables_no_lock(world: &mut CliWorld) {
 }
 
 #[given(
-    "a project with [distribution] and [application], lvpm.lock current and the venv synced, so the app would otherwise build"
+    "a project with [distribution] and [application], lvpm.lock current and a venv bound to a LabVIEW that is not installed here"
 )]
-async fn both_tables_ready_to_build(world: &mut CliWorld) {
+async fn both_tables_labview_not_installed(world: &mut CliWorld) {
     world.project_with_both_tables();
     world.sandbox.setup_lvpm(&["lock"]);
 }

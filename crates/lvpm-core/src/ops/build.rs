@@ -126,9 +126,10 @@ pub fn run(
     launcher: &dyn AppLauncher,
     mut on_package: impl FnMut(&Outcome),
 ) -> Result<Vec<Outcome>, RunError> {
-    if kinds.app {
-        build_app::check_app(env)?;
-    }
+    let ready = match kinds.app {
+        true => Some(build_app::check_app(env)?),
+        false => None,
+    };
     let mut outcomes = Vec::new();
     if kinds.package {
         let package = build(env, !no_check)?;
@@ -138,8 +139,9 @@ pub fn run(
         }
         outcomes.push(package);
     }
-    if kinds.app {
-        outcomes.push(Outcome::AppBuilt(build_app::build_app(env, launcher)?));
+    if let Some(ready) = ready {
+        let built = build_app::build_ready(env, ready, launcher)?;
+        outcomes.push(Outcome::AppBuilt(built));
     }
     Ok(outcomes)
 }
@@ -585,22 +587,30 @@ gamma = \"1.0\"
         }
 
         #[test]
-        fn a_package_alone_starts_no_labview_and_an_application_alone_writes_no_package() {
-            let folder = Folder::new("run-one");
+        fn a_package_alone_starts_no_labview() {
+            let folder = Folder::new("run-package-only");
             let fake = answering(&folder);
             let package_only = Kinds {
                 package: true,
                 app: false,
             };
             let env = testing::env(&folder.root);
-            run(&env, package_only, true, &fake, |_| {}).unwrap();
+            let outcomes = run(&env, package_only, true, &fake, |_| {}).unwrap();
+            assert!(matches!(outcomes.as_slice(), [Outcome::Built(_)]));
             assert_eq!(fake.log().starts, 0);
             assert!(!folder.builds().exists());
-            std::fs::remove_dir_all(folder.dist()).unwrap();
+            folder.finish();
+        }
+
+        #[test]
+        fn an_application_alone_writes_no_package() {
+            let folder = Folder::new("run-app-only");
+            let fake = answering(&folder);
             let app_only = Kinds {
                 package: false,
                 app: true,
             };
+            let env = testing::env(&folder.root);
             let outcomes = run(&env, app_only, false, &fake, |_| {
                 panic!("no package was built")
             })
@@ -641,6 +651,19 @@ gamma = \"1.0\"
                 matches!(why, RunError::App(AppError::Refused(AppRefusal::NoLock))),
                 "{why:?}"
             );
+            assert!(!folder.dist().exists());
+            assert_eq!(fake.log().starts, 0);
+            folder.finish();
+        }
+
+        #[test]
+        fn a_venv_bound_to_a_labview_that_is_not_here_writes_no_package() {
+            let folder = Folder::new("run-not-here");
+            let fake = answering(&folder);
+            let mut env = testing::env(&folder.root);
+            env.targets.clear();
+            let why = run(&env, BOTH, true, &fake, |_| panic!("nothing was built")).unwrap_err();
+            assert!(why.to_string().contains("not installed here"), "{why}");
             assert!(!folder.dist().exists());
             assert_eq!(fake.log().starts, 0);
             folder.finish();

@@ -13,7 +13,7 @@
 //! `project.name` and `project.version`.
 
 use crate::project::{APPLICATION_KEYS, Project};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 /// A manifest checked for `lvpm build --app`.
@@ -33,7 +33,8 @@ const EXTENSION: &str = ".lvproj";
 
 /// The `build-spec` as written, for what is said before [`validate`] has run.
 pub fn build_spec_as_written(p: &Project) -> Option<&str> {
-    p.application.as_ref()?.get(APPLICATION_KEYS[1])?.as_str()
+    let [_, build_spec_key] = APPLICATION_KEYS;
+    p.application.as_ref()?.get(build_spec_key)?.as_str()
 }
 
 /// `p`'s `[application]`, checked against the project folder `root`.
@@ -70,12 +71,11 @@ fn non_empty(value: &Option<String>) -> Option<&str> {
     value.as_deref().filter(|v| !v.is_empty())
 }
 
-/// The key's value: present, a string and not empty.
+/// The key's value: present, a string and not blank.
 fn string(table: &toml::Table, key: &str, what: &str) -> Result<String> {
     match table.get(key) {
-        Some(toml::Value::String(s)) if !s.is_empty() => Ok(s.clone()),
-        None => bail!("[application] needs {key} ({what})"),
-        Some(toml::Value::String(_)) => bail!("[application] needs {key} ({what})"),
+        Some(toml::Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
+        None | Some(toml::Value::String(_)) => bail!("[application] needs {key} ({what})"),
         Some(_) => bail!("[application] {key} must be a string"),
     }
 }
@@ -86,18 +86,20 @@ fn project_file(root: &Path, rel: &str) -> Result<PathBuf> {
     if !rel.to_ascii_lowercase().ends_with(EXTENSION) {
         bail!("[application] project \"{rel}\" must end in {EXTENSION}");
     }
-    let path = root.join(rel);
+    let path = crate::lvlib::normalize(&root.join(rel));
     if !path.is_file() {
         bail!("[application] project \"{rel}\" is not a file");
     }
-    let inside = matches!(
-        (path.canonicalize(), root.canonicalize()),
-        (Ok(real), Ok(real_root)) if real.starts_with(&real_root)
-    );
-    if !inside {
+    let real = path
+        .canonicalize()
+        .with_context(|| format!("resolving {}", path.display()))?;
+    let real_root = root
+        .canonicalize()
+        .with_context(|| format!("resolving {}", root.display()))?;
+    if !real.starts_with(&real_root) {
         bail!("[application] project \"{rel}\" lies outside the folder with lvpm.toml");
     }
-    Ok(crate::lvlib::normalize(&path))
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -175,6 +177,17 @@ build-spec = "My Application"
     }
 
     #[test]
+    fn a_detour_through_a_folder_that_is_not_there_is_resolved_before_the_file_is_looked_for() {
+        let root = folder("detour-missing");
+        let text = GOOD.replace("app/Main.lvproj", "nowhere/../app/Main.lvproj");
+        assert_eq!(
+            check(&root, &text).unwrap().project,
+            root.join("app").join("Main.lvproj")
+        );
+        remove(&root);
+    }
+
+    #[test]
     fn a_manifest_without_the_table_has_none_and_validate_says_so() {
         let none = project::parse("[project]\nname = \"x\"\n").unwrap();
         assert_eq!(none.application, None);
@@ -198,6 +211,16 @@ build-spec = "My Application"
             (format!("{spec}project = \"\"\n"), needs_project.to_string()),
             (proj.to_string(), needs_spec.to_string()),
             (format!("{proj}build-spec = \"\"\n"), needs_spec.to_string()),
+            (
+                format!("{proj}build-spec = \"   \"\n"),
+                needs_spec.to_string(),
+            ),
+            (
+                format!("{spec}project = \"  \"\n"),
+                needs_project.to_string(),
+            ),
+            // Neither key: the project is asked for first.
+            (String::new(), needs_project.to_string()),
             (
                 format!("{spec}project = 5\n"),
                 "[application] project must be a string".to_string(),
@@ -286,6 +309,7 @@ build-spec = "My Application"
     }
 
     #[test]
+    #[allow(clippy::print_stderr)] // the skip notice: libtest shows it
     fn a_link_that_leads_out_of_the_folder_is_refused() {
         let root = folder("link");
         let outside = root.parent().unwrap().join("linked-to");
@@ -307,14 +331,19 @@ build-spec = "My Application"
         });
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(&outside, &link);
-        if made.is_ok() {
-            assert!(link.join("X.lvproj").is_file(), "the link leads there");
-            let said = error(&root, &GOOD.replace("app/Main.lvproj", "linked/X.lvproj"));
-            assert_eq!(
-                said,
-                "[application] project \"linked/X.lvproj\" lies outside the folder with lvpm.toml"
-            );
+        #[cfg(unix)]
+        made.as_ref().expect("a symlink can be made");
+        if made.is_err() {
+            eprintln!("skipped: neither a symlink nor a junction can be made here");
+            remove(&root);
+            return;
         }
+        assert!(link.join("X.lvproj").is_file(), "the link leads there");
+        let said = error(&root, &GOOD.replace("app/Main.lvproj", "linked/X.lvproj"));
+        assert_eq!(
+            said,
+            "[application] project \"linked/X.lvproj\" lies outside the folder with lvpm.toml"
+        );
         remove(&root);
     }
 }

@@ -1019,11 +1019,7 @@ fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) 
             .map(render::build::app_built)
             .unwrap_or_default();
     let warning = late.map(render::build::built_warning).unwrap_or_default();
-    Ok(Report::new(
-        text,
-        render::build::result(built.filter(|_| application.is_some()), application),
-    )?
-    .warning(warning))
+    Ok(Report::new(text, render::build::result(built, application))?.warning(warning))
 }
 
 fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {
