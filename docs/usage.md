@@ -7,7 +7,7 @@
 | `lvpm init`                                          | Start a project here: write an `lvpm.toml` and a `.gitignore`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
 | `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
-| `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run hooks. In a project it is `lvpm add` |
+| `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
 | `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
@@ -20,7 +20,7 @@
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
 | `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; takes no options                                                                   |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
-| `lvpm run-hooks <name>` / `--all`                    | Rerun a package's PostInstall hook, for one that failed during install                                                                       |
+| `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
@@ -48,12 +48,41 @@ changes nothing; `--no-deps` skips dependencies and `--allow-downgrade`
 permits replacing an installed package with an older version (both only for
 an install that is not a sync or an `add`: a lock always holds the full set);
 `--no-relink` skips the
-relink pass and `--relink` forces it where it is off by default; `--hooks`
-runs install hooks where they are off by default (both: a headless LabVIEW,
-see [CI in a container](ci-docker.md)). `--relink-timeout <SECS>`
+relink pass and `--relink` forces it where it is off by default (a headless
+LabVIEW, see [CI in a container](ci-docker.md)); `--hooks` runs the install
+hooks of every package for this command, where they are off by default
+(see [Install hooks](#install-hooks); a headless LabVIEW runs none without
+it). `--relink-timeout <SECS>`
 (default 900) bounds one folder's relink; `--keep-open` leaves the LabVIEW
 started for a venv relink running. `sync`, `add` and `remove` take `--dry-run`
 and the relink and hook flags as well.
+
+## Install hooks
+
+Install hooks are off by default. A hook is package code that runs inside
+LabVIEW with your rights, so lvpm runs a package's hooks only if you allowed
+that package. The table of rules is in
+[Hooks](labview-integration.md#hooks). To allow one:
+
+- In a project, put `hooks = "run"` on the package's line in `lvpm.toml`:
+  `pilot_a = { version = "*", hooks = "run" }` ([manifest](manifest.md#dependencies)).
+- Outside a project, name it in the user config:
+  `lvpm config set hooks.run pilot_a` ([Configuration](#configuration)).
+- For one command, add `--hooks`. It allows every package.
+
+An install that skips a hook still exits 0. It warns on stderr, once per
+package, with the lines to run it now and to allow it for good:
+
+```
+warning: pilot_a: skipped install hook PostInstall (hooks are off by default; see docs/labview-integration.md#hooks)
+  run it now:     lvpm run-hooks pilot_a
+  always run it:  add hooks = "run" to the pilot_a line in [dependencies] of lvpm.toml
+```
+
+The allowlist applies from the next install or upgrade. For a package that
+is already installed, run `lvpm run-hooks <pkg>`. A venv and a scratch
+`--prefix` tree run no hooks, and a headless LabVIEW runs them only with
+`--hooks`.
 
 ## Starting a project
 
@@ -933,6 +962,7 @@ empty value counts as unset. Precedence, highest first:
 | `LVPM_CONFIG_CACHE` | `%LOCALAPPDATA%\lvpm\cache` (Linux: `$XDG_CACHE_HOME/lvpm/cache`, else `~/.cache/lvpm/cache`) | Where the cache DB, feed bodies, and imported package archives live |
 | `LVPM_CONFIG_SOURCES_LOCAL` | Empty | Local package directories (`.vip`, `.ogp`, `.lvpkg`); separate paths with `;` on Windows or `:` on Linux |
 | `LVPM_CONFIG_VENV_DIR` | `.lv-venv` | Project-relative venv directory (or an absolute path) |
+| `LVPM_CONFIG_HOOKS_RUN` | Empty | Packages whose install hooks may run in an install outside a project ([Install hooks](#install-hooks)); separate names with commas or spaces |
 
 ```powershell
 lvpm config set sources.local D:\LabVIEW\Packages
@@ -940,12 +970,18 @@ lvpm config get sources.local
 lvpm config set sources.local                 # clear configured local sources
 lvpm config set venv.dir .venv
 lvpm config get venv.dir
+lvpm config set hooks.run pilot_a pilot_b     # replaces the list; no names clears it
+lvpm config get hooks.run
 # Or set LVPM_CONFIG_SOURCES_LOCAL for this shell; it overrides config.toml.
 $env:LVPM_CONFIG_SOURCES_LOCAL = 'D:\LabVIEW\Packages;E:\MorePackages'
 # Relative venv.dir values resolve from each project root; absolute paths are used as-is.
 $env:LVPM_CONFIG_VENV_DIR = '.venv'
 lvpm search caraya
 ```
+
+`LVPM_CONFIG_HOOKS_RUN` wins over the file. While it is set, the
+`lvpm config set hooks.run ...` line in an install hook warning changes the
+file but not what lvpm uses: unset the variable or edit its value.
 
 In CI, set it on the job to keep the cache on a persistent volume between
 runs.

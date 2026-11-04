@@ -124,9 +124,12 @@ struct ApplyArgs {
     /// a compile or build resolves the links itself as it loads.
     #[arg(long = "relink", conflicts_with = "no_relink")]
     force_relink: bool,
-    /// Run the packages' install hooks even where LabVIEW runs headless
-    /// (LV_RTE_HEADLESS is set), where they are otherwise skipped: most
-    /// hooks add palettes, menus or markers for an IDE nobody opens there.
+    /// Run every package's install hooks for this command. They are package
+    /// code, run inside LabVIEW with your rights, and are off by default for
+    /// any package not allowed by `hooks = "run"` in lvpm.toml or `hooks.run`
+    /// in the user config. A headless LabVIEW (LV_RTE_HEADLESS is set) runs
+    /// none without this: most hooks add palettes, menus or markers for an IDE
+    /// nobody opens there.
     #[arg(long = "hooks")]
     run_hooks: bool,
     #[command(flatten)]
@@ -313,11 +316,14 @@ enum Cmd {
         #[command(flatten)]
         relink: RelinkArgs,
     },
-    /// Re-run a package's PostInstall hook, without reinstalling it.
+    /// Run a package's PostInstall hook now, without reinstalling it.
     ///
-    /// For retrying a hook that failed during install. Hooks are not
-    /// decoration: ni_lib_advanced_http_client_api's PostInstall is the only
-    /// thing that repairs the Call Library paths its builder broke.
+    /// A hook is package code, run inside LabVIEW with your rights. Running
+    /// this command is your say-so for that package: use it for a hook that
+    /// failed during install or that install skipped (hooks are off by
+    /// default). Hooks are not decoration:
+    /// ni_lib_advanced_http_client_api's PostInstall is the only thing that
+    /// repairs the Call Library paths its builder broke.
     RunHooks {
         /// Package whose PostInstall hook to run. Omit when using --all.
         package: Option<String>,

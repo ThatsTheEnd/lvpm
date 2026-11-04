@@ -290,6 +290,32 @@ Here is what the index key does:
 `lvpm add <name> --index <NAME>` writes the line
 ([usage.md](usage.md#adding-and-removing-dependencies)).
 
+### Allowing install hooks
+
+Install hooks are off by default. To let a package's hooks run, give its line
+the `hooks` key. It takes the one value `"run"`, in `[dependencies]`,
+`[dev-dependencies]` and the groups, next to `version`, `github` and `index`:
+
+```toml
+[dependencies]
+pilot_a = { version = "*", hooks = "run" }
+```
+
+- Only the root `lvpm.toml` counts. A `hooks = "run"` in a dependency's own
+  `lvpm.toml` allows nothing. To allow a package that only another package
+  needs, list it yourself with `version = "*"`.
+- Any other value fails when the manifest is read:
+  `[dependencies] pilot_a: hooks must be "run" (delete the key to keep hooks off), got "yes"`.
+  `"Run"` is refused too.
+- `hooks` is not part of the lock: changing it leaves `lvpm.lock` current.
+  `lvpm add pilot_a@<newer>` keeps it.
+- It applies to installs into a LabVIEW installation, from `lvpm sync` and
+  `lvpm add`. A venv runs no hooks, and a headless LabVIEW runs them only
+  with `--hooks`.
+
+What a hook is, and all the rules, are in
+[labview-integration.md](labview-integration.md#hooks).
+
 ### How the manifest resolves
 
 `lvpm install` with no package name installs the selected tables
@@ -574,9 +600,6 @@ Tracked in [roadmap.md](roadmap.md#the-manifest-and-the-lockfile):
 - **More group controls**: `include-groups`, `--only-group`, `--all-groups`, a
   configurable default set (`[project] default-groups`), and groups on a global
   `lvpm install`. Groups are built ([above](#named-dependency-groups)).
-- **More per-dependency keys**: `{ version = "...", hooks = "run" }`.
-  `version` and `github` are built ([above](#a-dependency-from-github)), and
-  so is `index` ([above](#a-dependency-from-one-source)).
 - **`[venv]` overrides**: `dir`, `vi-server-port`, `bitness`.
 - **`vipm.toml` conversion, remaining fields**: `labview-bitness` is checked
   against the selected target once `[venv] bitness` exists. Writing an

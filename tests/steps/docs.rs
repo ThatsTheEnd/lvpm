@@ -217,7 +217,7 @@ const DISTRIBUTION_KEYS: &[&str] = &[
 /// The usage guide's heading for the note on moving off `[distribution.vip]`.
 const UPGRADE_HEADING: &str = "### Upgrading from [distribution.vip]";
 
-fn repo_file(path: &str) -> String {
+pub(super) fn repo_file(path: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
         .unwrap_or_else(|why| panic!("read {path}: {why}"))
         .replace("\r\n", "\n")

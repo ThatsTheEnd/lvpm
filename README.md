@@ -18,7 +18,8 @@ its own `.lvpkg`, by name. It takes them from the public package directories, yo
 indexes, or local folders. It installs them either into a LabVIEW installation
 or into a project's own venv, so two projects on one machine can use
 different versions of the same library. Then it has LabVIEW fix the installed
-VIs' links and run the packages' install hooks.
+VIs' links. Install hooks are off by default: a package's hooks run only if
+you allow them ([Hooks](docs/labview-integration.md#hooks)).
 
 Not affiliated with JKI or NI. Working, in active development; see
 [docs/roadmap.md](docs/roadmap.md) and [Known limitations](#known-limitations).
@@ -39,7 +40,7 @@ flowchart LR
 2. It unpacks them into the target: a LabVIEW installation, or a project venv
    that LabVIEW overlays onto its own tree.
 3. Over VI Server, it has LabVIEW relink the installed VIs and run the
-   packages' install hooks.
+   packages' install hooks, for the packages you allowed.
 
 In a project, `lvpm.toml` says what you depend on. `lvpm.lock` records the
 exact versions, so every machine and CI job gets the same packages, byte for
@@ -189,6 +190,10 @@ below as one book, starting with a tutorial; CONTRIBUTING.md stays in the repo.
   install outside a project still lets the first resolution of a name win, and
   a floor resolves to the newest version satisfying it.
 - No mass compile; LabVIEW recompiles installed VIs on first load.
+- Install hooks are off by default and the allowlist is by package name, not
+  by VI: allowing a package allows every hook VI it ships, and a hook runs
+  with your rights. The rules are in
+  [Hooks](docs/labview-integration.md#hooks).
 - A hook VI's own `error out` is not read back. A hook that fails internally
   but runs to completion reports as ok.
 - A failure part-way through unpacking leaves files behind with no manifest,

@@ -7,7 +7,7 @@ use crate::CliWorld;
 use crate::support::fixtures::FixturePackage;
 use crate::support::global::FIXTURE_NAME;
 use crate::support::sandbox::LABVIEW_YEAR;
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 use lvpm_core::manifest_edit::DependencyTable;
 
 const PROJECT_LABVIEW: &str = "2024";
@@ -223,4 +223,36 @@ async fn hook_fixture_installed_skipped(world: &mut CliWorld) {
 #[then("the PostInstall hook did not run")]
 async fn hook_did_not_run(world: &mut CliWorld) {
     assert_eq!(world.sandbox.hook_marker(), None, "the hook's marker");
+}
+
+// The docs scenario reads the files in its `Then` steps; these two only name it.
+#[given("the repository docs")]
+async fn the_repository_docs(_: &mut CliWorld) {}
+
+#[when("they are read")]
+async fn they_are_read(_: &mut CliWorld) {}
+
+/// `text` is a doc's `"quoted"` list as the scenario writes it, `\"` for a
+/// quote inside one: `"a", "b" and "c"`.
+fn quoted_items(list: &str) -> Vec<String> {
+    let item = regex::Regex::new(r#""((?:[^"\\]|\\.)*)""#).expect("a valid pattern");
+    item.captures_iter(list)
+        .map(|found| found[1].replace("\\\"", "\""))
+        .collect()
+}
+
+// The usage and manifest guides have a one-quote step of their own in docs.rs;
+// this one takes only the lists that step cannot read: a `\"` inside a quote.
+#[then(regex = r#"^(README\.md|docs/(?:labview-integration|cli)\.md) mentions (".+")$"#)]
+#[then(regex = r#"^(docs/(?:usage|manifest)\.md) mentions (".*\\".*")$"#)]
+async fn doc_mentions_all(_: &mut CliWorld, doc: String, list: String) {
+    // Prose wraps: compare with every run of whitespace as one space.
+    let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = squash(&super::docs::repo_file(&doc));
+    for want in quoted_items(&list) {
+        assert!(
+            text.contains(&squash(&want)),
+            "{doc} does not mention {want}"
+        );
+    }
 }

@@ -105,3 +105,13 @@ Feature: install hooks run only for allowed packages
     When I run "lvpm install lvpm_test_fixture --global"
     Then the PostInstall hook ran for "lvpm_test_fixture"
     And stderr does not say "skipped install hook"
+
+  Scenario: the docs state the new default
+    Given the repository docs
+    When they are read
+    Then README.md mentions "hooks are off by default"
+    And docs/manifest.md mentions "hooks = \"run\""
+    And docs/usage.md mentions "hooks = \"run\"", "hooks.run" and "skipped install hook"
+    And docs/labview-integration.md mentions "lvpm run-hooks", "hooks = \"run\"", "hooks.run" and "skipped install hook"
+    And docs/labview-integration.md mentions "skipped install hook PostInstall (hooks are off by default; see docs/labview-integration.md#hooks)"
+    And docs/cli.md mentions "hooks.run"
