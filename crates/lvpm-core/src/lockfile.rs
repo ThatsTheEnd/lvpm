@@ -184,7 +184,7 @@ pub struct LockedPackage {
 }
 
 impl LockedPackage {
-    /// `[dependencies]` needs it: no other table does, so `groups` is empty.
+    /// `[dependencies]` needs it. The lock then lists no groups for it, whatever other tables also need it.
     pub fn needed_by_dependencies(&self) -> bool {
         self.groups.is_empty()
     }

@@ -27,7 +27,7 @@ amendments below.
 - [ ] AC2: the SBOM lists every package in the lock's `[dependencies]` closure with its version and SHA-256, and no other package.
 - [ ] AC3: the SBOM parses as JSON with `bomFormat` "CycloneDX" and `specVersion` "1.5", and its fields match the spec's architecture section (no schema validation); two runs over the same lock give identical bytes.
 - [ ] AC4: after a successful app build, `bom.cdx.json` is in the folder of the first output path; a failed build writes none and leaves an earlier one untouched.
-- [ ] AC5: a `.lvpkg` `lvpm build` writes from a current lock (or with no `[dependencies]` and no lock) has `bom.cdx.json` at its root, listed in `RECORD`, and says `format = 2`. With no lock or a stale lock it has none and the build warns (A1). A `.lvpkg` without one still installs.
+- [ ] AC5: a `.lvpkg` `lvpm build` writes from a current lock (or with no `[dependencies]`, whatever the lock) has `bom.cdx.json` at its root, listed in `RECORD`, and says `format = 2`. With no lock, a stale lock or an unreadable lock it has none and the build warns (A1). A `.lvpkg` without one still installs.
 - [ ] AC6: with both tables, `lvpm build` builds both, `--package` only the `.lvpkg`, `--app` only the application; a flag for a missing table fails, naming it.
 - [ ] AC7: no lock, a stale lock, no venv, or a venv that differs from the lock each fail the app build before LabVIEW starts, naming `lvpm lock`, `lvpm venv create` or `lvpm sync`.
 - [ ] AC8: a build spec LabVIEW cannot build fails with exit code 1 and LabVIEW's code and message, and the spawned LabVIEW is closed.
@@ -730,9 +730,9 @@ For each PR:
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: the SBOM, and the SBOM inside the `.lvpkg`
+- [x] Slice 1: the SBOM, and the SBOM inside the `.lvpkg`
   - [x] Step 1.1: `sbom::cyclonedx`
-  - [ ] Step 1.2: the SBOM inside the `.lvpkg`
+  - [x] Step 1.2: the SBOM inside the `.lvpkg`
 - [ ] Slice 2: probe NI's build VI
   - [ ] Step 2.1: read and run `BuildTargetBuildSpecification.vi` once
 
