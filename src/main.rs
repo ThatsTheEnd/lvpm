@@ -956,7 +956,8 @@ fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyA
 /// A refused build is a result, not an error: its stdout and `--json` are
 /// `check`'s, and the exit code is 1. With both kinds, the package is shown as
 /// soon as it is written in the text output, so an application that then fails
-/// does not hide it; under `--json` a failure prints no JSON.
+/// does not hide it; under `--json` a failure prints no result object, only the
+/// error line every command ends with.
 fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) -> Result<Report> {
     let project = ops::build::project(env)?;
     let kinds = ops::build::kinds(&project, app, package, no_check)?;

@@ -156,9 +156,9 @@ fn wanted_in_the_venv() -> Selection {
 }
 
 /// Every precondition of an application build, in order, with no LabVIEW
-/// started and nothing written: the last is that the venv's LabVIEW is
-/// installed here, of the bitness `--labview-bitness` asks for, and new enough
-/// to open the build VI.
+/// started and nothing written: the last are that the venv's LabVIEW is
+/// installed here, of the bitness `--labview-bitness` asks for, new enough to
+/// open the build VI, and not already running.
 pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     let (root, project) = super::project_of(env, "build")?;
     let application = application::validate(&project, &root)?;
@@ -179,6 +179,7 @@ pub fn check_app(env: &OpEnv) -> Result<Ready, AppError> {
     if year < MIN_LABVIEW_YEAR {
         return Err(AppRefusal::LabviewTooOld { year }.into());
     }
+    launch::refuse_running(&venv)?;
     Ok(Ready {
         application,
         lock,
@@ -352,7 +353,8 @@ fn wrapper_inputs(
 }
 
 /// Set the wrapper's inputs, run it, wait for `Done`, and read its answer:
-/// the error code, the error message and the outputs, joined by newlines.
+/// the error code, the error message and the outputs string, which
+/// `wrapper_outputs` splits one path per line.
 fn run_wrapper(
     connection: &mut Connection,
     vi: VIRef,
@@ -364,7 +366,7 @@ fn run_wrapper(
     connection.ctrl_val_set(vi, DONE_INDICATOR, LvValue::Bool(false))?;
     connection.run_vi_async(vi)?;
     // No overall limit: a build runs until LabVIEW says it is done.
-    // shortcut: each poll must answer within CALL_TIMEOUT (180 s); if App Builder blocks VI Server longer, the build fails as Other. Raise or loop on timeout if slice 5's real run shows it.
+    // shortcut: each poll must answer within CALL_TIMEOUT (180 s); if App Builder blocks VI Server longer, the build fails as Other. Loop on timeout once a real App Builder run shows that happens.
     loop {
         std::thread::sleep(POLL);
         if want_bool(DONE_INDICATOR, connection.ctrl_val_get(vi, DONE_INDICATOR)?)? {
@@ -590,6 +592,7 @@ build-spec = "Demo App"
         pub watched_at_start: Vec<bool>,
     }
 
+    // double-waiver: B1 - the real AppLauncher spawns LabVIEW and opens a VI Server socket
     #[derive(Clone)]
     pub(crate) struct Fake {
         log: Arc<Mutex<Log>>,
@@ -903,6 +906,33 @@ mod tests {
         folder.install("delta", "1.0", &sha());
         let ready = check_app(&testing::env(&folder.root)).unwrap();
         assert_eq!(ready.application.build_spec, BUILD_SPEC);
+        folder.finish();
+    }
+
+    #[test]
+    fn a_labview_already_on_the_venvs_port_is_refused_before_labview_starts() {
+        let folder = Folder::new("app-running");
+        let _held = std::net::TcpListener::bind(("127.0.0.1", folder.venv.port)).unwrap();
+        let fake = Fake::answering(Answer::Builds(outputs(&folder)));
+        let why = build_app(&testing::env(&folder.root), &fake).unwrap_err();
+        assert!(matches!(&why, AppError::Other(_)), "{why:?}");
+        assert!(
+            why.to_string()
+                .starts_with("a LabVIEW is already running or starting on this venv"),
+            "{why}"
+        );
+        assert_eq!(fake.log().starts, 0);
+        folder.finish();
+    }
+
+    #[test]
+    fn a_venv_without_its_dev_and_group_packages_is_accepted() {
+        let folder = Folder::new("app-no-dev");
+        folder.write(
+            "lvpm.lock",
+            &folder.lock_text(&[("alpha", &[]), ("gamma", &["dev"]), ("delta", &["ci"])]),
+        );
+        check_app(&testing::env(&folder.root)).unwrap();
         folder.finish();
     }
 

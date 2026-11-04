@@ -1324,10 +1324,7 @@ async fn pilot_app_readme_section(_: &mut CliWorld, heading: String) {
 #[then(regex = r#"^the \.lvproj's build spec writes below the fixture's "([^"]+)" folder$"#)]
 async fn pilot_app_builds_below(_: &mut CliWorld, folder: String) {
     let lvproj = pilot_app_file("app/Continuous Measurement.lvproj");
-    let spec = format!(
-        "<Property Name=\"Bld_buildSpecName\" Type=\"Str\">{}</Property>",
-        "Continuous Measurement and Logging Application"
-    );
+    let spec = format!("<Property Name=\"Bld_buildSpecName\" Type=\"Str\">{APP_SPEC}</Property>");
     let after = lvproj.split(&spec).nth(1).expect("the build spec is there");
     let item = after.split("</Item>").next().expect("the spec's item ends");
     let path = item

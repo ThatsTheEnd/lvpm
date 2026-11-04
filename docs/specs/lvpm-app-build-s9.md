@@ -115,7 +115,7 @@ code 1 and the message `LabVIEW could not build "<build-spec>": <code> <message>
 - the build spec's destination as the template has it, which already writes
   to `builds/` inside the fixture, so a build never writes outside it;
 - an `lvpm.toml` with `[application]`, both pilots in `[dependencies]`, and
-  `labview = "2026"`;
+  `labview = ">=2026"`;
 - one call into both pilots: `Main.vi` calls a new `lvpm Pilots.vi` at
   start, which logs through HSE Logger and serializes the settings through
   OpenSerializer (as plain text: OpenSerializer 1.2.1.16 has no JSON

@@ -751,7 +751,7 @@ that VIPM accepted may now be refused.
 specification of your `.lvproj` in the venv's own LabVIEW, so the build sees
 the packages `lvpm sync` put in the venv. It then writes `bom.cdx.json`, an
 SBOM of those packages, next to the build. Name the project and the build
-specification in `[application]` ([manifest](manifest.md#application)):
+specification in `[application]` ([manifest](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#application)):
 
 ```toml
 [application]
@@ -809,13 +809,15 @@ Each message names the command that fixes it:
 
 A package in the venv that only `[dev-dependencies]` or a group needs does not
 make the venv differ. A package the lock does not list does. The errors for
-`[application]` itself are in the [manifest reference](manifest.md#application).
+`[application]` itself are in the [manifest reference](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#application).
 
 ### What happens during the build
 
 1. stderr says `building application "<build-spec>" with LabVIEW <year> ...`.
 2. lvpm starts the venv's LabVIEW, runs the build specification, and waits for
-   it to finish. There is no time limit.
+   it to finish. There is no overall time limit, but each VI Server call may
+   wait up to 180 s; one that waits longer fails the build with its
+   connection error.
 3. lvpm closes the LabVIEW it started, whether the build worked or not.
 4. lvpm writes `bom.cdx.json`.
 

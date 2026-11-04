@@ -178,7 +178,9 @@ pub fn write_ini(v: &Venv) -> Result<PathBuf> {
     );
 
     std::fs::create_dir_all(dest.parent().expect("ini path has a parent"))?;
-    std::fs::write(&dest, out).with_context(|| format!("writing {}", dest.display()))?;
+    // Atomic: the next start reads this file as its base.
+    crate::ops::build::write_atomically(&dest, out.as_bytes())
+        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(dest)
 }
 
@@ -482,15 +484,10 @@ pub fn ensure_instance(
     sink: &dyn EventSink,
 ) -> Result<Instance> {
     let v = &crate::venv::ensure_port(v, sink)?;
+    if fresh {
+        refuse_running(v)?;
+    }
     if is_running(v) {
-        if fresh {
-            bail!(
-                "a LabVIEW is already running or starting on this venv (VI Server port {}) — close it first.\n\
-                 LabVIEW reads an addon's contents when it starts, so what was just installed \
-                 is invisible to a LabVIEW that was running before.",
-                v.port
-            );
-        }
         if !is_listening(v.port) {
             sink.emit(Event::VenvLabviewStillStarting { port: v.port });
         }
@@ -513,6 +510,9 @@ pub fn ensure_instance(
         labview: v.target.label(),
         port: v.port,
     });
+    // Made here so that a folder lvpm cannot write is not taken for a LabVIEW that cannot start.
+    let temp = v.temp_dir();
+    std::fs::create_dir_all(&temp).with_context(|| format!("creating {}", temp.display()))?;
     let mut child = spawn(v, &ini, None, sink).map_err(unstartable)?;
     if let Err(why) = wait_ready(v.port, wait, headless) {
         // Left running, a LabVIEW that never answered holds the venv, and its
@@ -525,6 +525,19 @@ pub fn ensure_instance(
         port: v.port,
         child: Some(child),
     })
+}
+
+/// Fails when a LabVIEW is running or starting on `v`, for a command that
+/// needs a fresh one and checks before it writes anything.
+pub(crate) fn refuse_running(v: &Venv) -> Result<()> {
+    ensure!(
+        !is_running(v),
+        "a LabVIEW is already running or starting on this venv (VI Server port {}) — close it first.\n\
+         LabVIEW reads an addon's contents when it starts, so what was just installed \
+         is invisible to a LabVIEW that was running before.",
+        v.port
+    );
+    Ok(())
 }
 
 /// How long one VI Server call to a venv's LabVIEW may go unanswered, and how long a fresh one may take to start.

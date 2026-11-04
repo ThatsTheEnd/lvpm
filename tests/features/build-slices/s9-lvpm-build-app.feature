@@ -143,7 +143,7 @@ Feature: lvpm build writes an SBOM, and builds applications
     Given a project with [distribution] and [application], lvpm.lock current, and no venv
     When I run "lvpm build --app"
     Then the exit code is non-zero
-    And the error says "lvpm venv create"
+    And the error says "; run lvpm venv create and lvpm sync"
     And dist holds no package
 
   Scenario Outline: the app build is refused before LabVIEW starts

@@ -110,7 +110,8 @@ To build a LabVIEW application, add an `[application]` table with the
 ([Building an application](docs/usage.md#building-an-application)), then run
 `lvpm build --app`. lvpm runs the build in the venv's LabVIEW and writes
 `bom.cdx.json`, an SBOM of the locked packages, next to the build. A `.lvpkg`
-carries the same SBOM. Application builds are tested on LabVIEW 2026 only.
+carries an SBOM of its locked dependencies when `lvpm.lock` is current.
+Application builds are tested on LabVIEW 2026 only.
 
 ## Why
 
