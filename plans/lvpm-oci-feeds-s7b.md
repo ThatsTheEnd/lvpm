@@ -1023,6 +1023,20 @@ changes.
 - **Windows credential helpers:** `docker-credential-wincred` is the real route. The fake helper is a testkit `.exe`; a real helper shipped only as `.cmd` would not be found, and no Docker-shipped helper is one.
 - **ADR 4 interaction:** explicit OCI sources add to ADR 4 and change nothing in it. ADR 7 records this.
 
+## Build Notes (criteria gate, 2026-11-05)
+
+The build-time criteria check asked for these refinements. They tighten tests; scope is unchanged.
+
+- AC2: the re-pointed-tag scenario also asserts no tags-list request and no GET by tag path for `team/alpha`.
+- AC3: publish prints the "; bump the version" form of the tag-exists message.
+- AC4: the lock-side referrers on/off outline (Sigstore bundle) is the lock check; the SBOM is checked on the registry.
+- AC5: Step 4.3 adds literal message rows for "has no attestation", "does not verify", "gh is needed to check" and the foreign-subject refusal.
+- AC7: test secrets are long unique strings (for example `s1-7f3a9c-secret`), so "does not contain" checks cannot match by chance.
+- AC8: the ghcr republish assertion uses the full repository path.
+- AC9: manual. The PR carries GitLab/ACR evidence, or states it was not run and names the follow-up issue.
+- AC10: no YAML parser is a dependency and none is added. The template test finds the attest step by its `uses: actions/attest-build-provenance` line and checks the step's lines for `subject-name`, `subject-digest` (from the publish step's output) and `push-to-registry: true`.
+- AC11: docs rows also check `lvpm publish --to oci://` in usage.md and `docker login` in manifest.md.
+
 ## Build Progress
 
 ### Slices (grouped by wave)
