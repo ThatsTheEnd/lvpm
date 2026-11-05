@@ -12,3 +12,4 @@ pub mod feed;
 pub mod fixtures;
 pub mod github;
 mod http;
+pub mod oci;

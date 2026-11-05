@@ -92,6 +92,24 @@ pub(crate) fn read_request(stream: &mut TcpStream) -> std::io::Result<Request> {
     })
 }
 
+/// The most of a request body the fakes read: a package a test uploads is far smaller.
+const MAX_REQUEST_BODY: usize = 64 * 1024 * 1024;
+
+/// The body `request` announced with `Content-Length`, read from `stream` after
+/// the head. A request that announces none has an empty body.
+pub(crate) fn read_body(stream: &mut TcpStream, request: &Request) -> std::io::Result<Vec<u8>> {
+    let length: usize = request
+        .header("content-length")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    if length > MAX_REQUEST_BODY {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    let mut body = vec![0u8; length];
+    stream.read_exact(&mut body)?;
+    Ok(body)
+}
+
 /// `/a/b` as sent to an origin, or `http://host/a/b` as sent to a proxy.
 fn path_of(target: &str) -> String {
     match target.strip_prefix("http://") {
@@ -130,13 +148,28 @@ pub(crate) struct Reply {
 /// in CRLF) after `Host: test`.
 #[cfg(test)]
 pub(crate) fn get_from(addr: SocketAddr, target: &str, extra_headers: &str) -> Reply {
+    send_to(addr, "GET", target, extra_headers, b"")
+}
+
+/// `method target` with `body` to the server at `addr`, with `extra_headers`
+/// (each ending in CRLF) after `Host: test`.
+#[cfg(test)]
+pub(crate) fn send_to(
+    addr: SocketAddr,
+    method: &str,
+    target: &str,
+    extra_headers: &str,
+    body: &[u8],
+) -> Reply {
     let mut stream = TcpStream::connect(addr).unwrap();
     stream.set_read_timeout(Some(SOCKET_TIMEOUT)).unwrap();
     write!(
         stream,
-        "GET {target} HTTP/1.1\r\nHost: test\r\n{extra_headers}\r\n"
+        "{method} {target} HTTP/1.1\r\nHost: test\r\nContent-Length: {}\r\n{extra_headers}\r\n",
+        body.len()
     )
     .unwrap();
+    stream.write_all(body).unwrap();
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).unwrap();
     let split = raw
