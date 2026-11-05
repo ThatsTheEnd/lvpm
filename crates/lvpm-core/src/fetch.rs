@@ -9,6 +9,7 @@ use crate::cache::{Cache, LocalEntry};
 use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::index::{self, Entry};
+use crate::oci::{Access, Oci, Repo};
 use anyhow::{Context, Result, ensure};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -76,6 +77,41 @@ pub fn package<'a>(
     let md5 = verify_md5(entry, &bytes)?;
     let sha256 = cache.store(&bytes)?;
     cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
+    Ok(bytes)
+}
+
+/// The archive of a package an OCI source lists, `entry.url` being the OCI
+/// manifest's reference by digest: the manifest is read by that digest, and its
+/// one layer is the archive. The cache answers first, by the layer's SHA-256;
+/// otherwise the layer is fetched, its digest checked, and kept. Nothing is
+/// read by tag, so a tag that moved changes nothing here.
+///
+/// The failures are [`crate::oci::Error`], for the caller to put in words.
+pub fn oci_package(
+    cache: &Cache,
+    oci: &Oci,
+    entry: &Entry,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>> {
+    ensure_running(cancel)?;
+    let manifest_ref = index::oci_reference(entry)
+        .with_context(|| format!("{} is not an OCI manifest digest", entry.url))?;
+    let repo = Repo {
+        registry: &manifest_ref.registry,
+        name: &manifest_ref.repository,
+        access: Access::Pull,
+    };
+    let manifest = oci.get_manifest(&repo, manifest_ref.name())?;
+    let package = manifest
+        .package()
+        .with_context(|| format!("{} is not an lvpm package", entry.url))?;
+    let sha256 = package.layer.trim_start_matches("sha256:");
+    if let Some(bytes) = cache.load(sha256)? {
+        return Ok(bytes);
+    }
+    ensure_running(cancel)?;
+    let bytes = oci.get_blob(&repo, &package.layer)?;
+    cache.store(&bytes)?;
     Ok(bytes)
 }
 

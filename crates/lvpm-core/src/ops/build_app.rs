@@ -516,6 +516,7 @@ build-spec = "Demo App"
                         version: "1.0".into(),
                         sha256: sha(),
                         md5: None,
+                        digest: None,
                         source: LOCAL_SOURCE.into(),
                         requires: Vec::new(),
                         groups: groups.iter().map(|g| g.to_string()).collect(),

@@ -59,6 +59,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s1-lvpm-build.feature",
     "tests/features/build-slices/s2-lvpm-publish.feature",
     "tests/features/build-slices/s7b-oci-feeds.feature",
+    "tests/features/build-slices/s7b-oci-install.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/build-slices/s10d-unattended.feature",
@@ -129,6 +130,8 @@ pub struct CliWorld {
     pub build: steps::build::BuildState,
     /// What an `lvpm publish` scenario has set up and seen.
     pub publish: steps::publish::PublishState,
+    /// What an OCI install scenario has set up and seen.
+    pub oci: steps::oci_install::OciState,
     /// What a `.lvpkg` scenario has set up and seen.
     pub lvpkg: steps::sources::LvpkgState,
     /// What the feeds of a `min-age-days` scenario list, and when each was released.
@@ -164,6 +167,7 @@ impl CliWorld {
             pilots: Default::default(),
             build: Default::default(),
             publish: Default::default(),
+            oci: Default::default(),
             lvpkg: Default::default(),
             listings: Default::default(),
             init: Default::default(),
@@ -182,6 +186,8 @@ impl CliWorld {
             "a recorded command starts with `{PROGRAM}`: {command_line}"
         );
         let args: Vec<&str> = words.collect();
+        // The registry's log is of this command alone.
+        self.clear_registry_log();
         let output = self.sandbox.run_lvpm(&args, input);
         self.last_output = Some(self.sandbox.normalised(&output));
     }

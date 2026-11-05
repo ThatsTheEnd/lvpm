@@ -172,6 +172,9 @@ pub struct ArchiveFailure {
     pub name: String,
     pub version: String,
     pub reason: String,
+    /// `reason` is a whole sentence that names the package itself, and is
+    /// shown as it is.
+    pub in_full: bool,
 }
 
 /// Why `sync` changed nothing, or stopped part-way.
@@ -449,8 +452,9 @@ pub enum ArchiveFault {
     /// SHA-256.
     NotFound,
     /// A source lists it and could not be read or fetched from, in the cause's
-    /// own words: sync tells the user this instead of "not found".
-    Unfetched { reason: String },
+    /// own words: sync tells the user this instead of "not found". `in_full`:
+    /// the words are a whole sentence that names the package itself.
+    Unfetched { reason: String, in_full: bool },
     /// An archive of that name and version was found, and its bytes are not
     /// the locked ones: it is never installed.
     DiffersFromLock { found_sha256: String },

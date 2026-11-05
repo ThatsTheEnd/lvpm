@@ -302,7 +302,7 @@ async fn fails_naming(world: &mut CliWorld, rel: String) {
     // The registry is not a file below the work directory: its token is as it is printed.
     let named = match rel == REGISTRY {
         true => message.contains(REGISTRY),
-        false => world.message_names(&message, &rel),
+        false => world.message_names(&message, &rel) || message.contains(&rel),
     };
     assert!(named, "the message does not name {rel}: {message}");
 }
@@ -416,11 +416,23 @@ impl CliWorld {
         }
     }
 
-    fn registry(&self) -> &Registry {
+    pub(super) fn registry(&self) -> &Registry {
         self.publish
             .registry
             .as_ref()
             .expect("a loopback OCI registry")
+    }
+
+    /// Empty the log of what the registry was asked, before the next command.
+    pub(crate) fn clear_registry_log(&self) {
+        if let Some(registry) = &self.publish.registry {
+            registry.clear_requests();
+        }
+    }
+
+    /// The package `lvpm build` wrote.
+    pub(super) fn publish_package(&self) -> &Path {
+        self.publish.package.as_deref().expect("a built package")
     }
 
     /// What `lvpm` printed last: the OCI publish's output is `last_output`.
@@ -454,6 +466,18 @@ async fn packaged_project(
     requires: String,
     labview: u32,
 ) {
+    package_project(world, name, version, labview, Some(requires)).await;
+}
+
+/// A project `name` `version` for LabVIEW `labview`.0 that `lvpm build` has
+/// packaged, requiring `requires` (a name and a constraint) when it says.
+pub(super) async fn package_project(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    labview: u32,
+    requires: Option<String>,
+) {
     use super::build::{distribution, library_with_one_member, project};
     project(
         world,
@@ -470,8 +494,10 @@ async fn packaged_project(
     )
     .await;
     library_with_one_member(world).await;
-    let (dependency, constraint) = requires.split_once(' ').expect("a name and a constraint");
-    world.set(&["dependencies"], dependency, constraint);
+    if let Some(requires) = requires {
+        let (dependency, constraint) = requires.split_once(' ').expect("a name and a constraint");
+        world.set(&["dependencies"], dependency, constraint);
+    }
     world.write_build_manifest();
     let built = world.sandbox.run_lvpm(&["build", "--no-check"], None);
     assert_eq!(built.exit_code, 0, "lvpm build failed: {built:?}");

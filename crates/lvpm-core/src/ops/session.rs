@@ -17,6 +17,7 @@ use crate::cancel::CancelToken;
 use crate::fetch;
 use crate::github::{self, GitHub};
 use crate::index::{self, Entry};
+use crate::oci::{self, Oci};
 use crate::target::{LvTarget, Roots};
 use crate::venv::Venv;
 use crate::verify::Outcome;
@@ -24,6 +25,7 @@ use crate::viserver::Connection;
 use anyhow::Result;
 use reqwest::blocking::Client;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What fetching an archive needs, opened when the first archive is wanted:
 /// an uninstall never gets here. Locking has no destination and so no session;
@@ -33,6 +35,7 @@ pub(super) struct Downloads {
     cache: Cache,
     cancel: CancelToken,
     github: GitHub,
+    oci: Arc<Oci>,
 }
 
 impl Downloads {
@@ -44,13 +47,18 @@ impl Downloads {
             cache: Cache::open(&env.config.cache)?,
             cancel: env.cancel.clone(),
             github: env.github.clone(),
+            oci: env.oci.clone(),
         })
     }
 
-    /// The archive's bytes, from the cache, a local file or the entry's feed.
+    /// The archive's bytes, from the cache, a local file, the entry's feed or,
+    /// for an `oci://` entry, the registry by its manifest digest.
     /// A GitHub entry is sent the GitHub token; no other entry is. When the
     /// environment's token is cancelled, [`Cancelled`](crate::errors::Cancelled).
     pub(super) fn fetch(&self, entry: &Entry) -> Result<Vec<u8>> {
+        if entry.url.starts_with(oci::SCHEME) {
+            return fetch::oci_package(&self.cache, &self.oci, entry, &self.cancel);
+        }
         let repo = index::github_repo(entry);
         let token = || repo.and_then(|_| self.github.auth.token());
         let bytes = fetch::package(&self.cache, &self.client, entry, token, &self.cancel);

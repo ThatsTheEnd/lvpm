@@ -367,6 +367,15 @@ fn manifest_constraint(wanted: &str) -> String {
     }
 }
 
+/// An archive that could not be fetched, and why: the cause after the package,
+/// or alone when it is a whole sentence about it.
+pub(super) fn unfetched_line(name: &str, version: &str, reason: &str, in_full: bool) -> String {
+    match in_full {
+        true => reason.to_string(),
+        false => format!("{name} {version}: {reason}"),
+    }
+}
+
 fn archives_text(failures: &[ArchiveFailure], rerun: &str) -> String {
     let plural = if failures.len() == 1 { "" } else { "s" };
     let mut text = format!(
@@ -374,9 +383,12 @@ fn archives_text(failures: &[ArchiveFailure], rerun: &str) -> String {
         failures.len()
     );
     for failure in failures {
-        text.push_str(&format!(
-            "\n  {} {}: {}",
-            failure.name, failure.version, failure.reason
+        text.push_str("\n  ");
+        text.push_str(&unfetched_line(
+            &failure.name,
+            &failure.version,
+            &failure.reason,
+            failure.in_full,
         ));
     }
     text.push_str(&format!(
@@ -404,7 +416,9 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
             ArchiveFault::NotFound => format!(
                 "{name} {version}: no archive with SHA-256 {sha256} is in the cache or in any source"
             ),
-            ArchiveFault::Unfetched { reason } => format!("{name} {version}: {reason}"),
+            ArchiveFault::Unfetched { reason, in_full } => {
+                unfetched_line(name, version, reason, *in_full)
+            }
             ArchiveFault::DiffersFromLock { found_sha256 } => format!(
                 "{name} {version}: the archive has SHA-256 {found_sha256} and lvpm.lock has \
                  {sha256}, so it was not locked again"
@@ -1164,11 +1178,13 @@ mod tests {
                 name: "alpha".into(),
                 version: "2.0".into(),
                 reason: "downloading http://h/a.vip: refused".into(),
+                in_full: false,
             },
             ArchiveFailure {
                 name: "gamma".into(),
                 version: "1.5".into(),
                 reason: "reading g.vip".into(),
+                in_full: false,
             },
         ]));
         assert!(
@@ -1181,6 +1197,20 @@ mod tests {
         );
         assert!(text.contains("\n  gamma 1.5: reading g.vip\n"), "{text}");
         assert!(text.ends_with("then run `lvpm lock` again"), "{text}");
+    }
+
+    #[test]
+    fn a_whole_sentence_about_an_archive_is_shown_as_it_is() {
+        let text = error(&LockError::ArchivesUnavailable(vec![ArchiveFailure {
+            name: "alpha".into(),
+            version: "1.1.0".into(),
+            reason: "cannot fetch alpha 1.1.0 by digest from source \"team\": refused".into(),
+            in_full: true,
+        }]));
+        assert!(
+            text.contains("\n  cannot fetch alpha 1.1.0 by digest from source \"team\": refused\n"),
+            "{text}"
+        );
     }
 
     #[test]

@@ -167,7 +167,9 @@ fn archives_text(problems: &[LockedArchiveProblem]) -> String {
             ArchiveFault::NotFound => format!(
                 "{name} {version}: no archive with SHA-256 {sha256} is in the cache or in any source"
             ),
-            ArchiveFault::Unfetched { reason } => format!("{name} {version}: {reason}"),
+            ArchiveFault::Unfetched { reason, in_full } => {
+                super::lock::unfetched_line(name, version, reason, *in_full)
+            }
             ArchiveFault::DiffersFromLock { found_sha256 } => format!(
                 "the archive of {name} {version} does not match lvpm.lock: it has SHA-256 \
                  {found_sha256} and the lock has {sha256}, so it was not installed"
@@ -439,6 +441,7 @@ mod tests {
             fault: ArchiveFault::Unfetched {
                 reason: "alpha (github.com/o/r): not found. If it is private, run gh auth login"
                     .into(),
+                in_full: false,
             },
         }]));
         assert!(
@@ -446,6 +449,23 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("is in the cache or in any source"), "{text}");
+    }
+
+    #[test]
+    fn a_whole_sentence_about_an_archive_is_shown_as_it_is() {
+        let text = error(&SyncError::Archives(vec![LockedArchiveProblem {
+            name: "alpha".into(),
+            version: "1.1.0".into(),
+            sha256: "ab".repeat(32),
+            fault: ArchiveFault::Unfetched {
+                reason: "cannot fetch alpha 1.1.0 by digest from source \"team\": refused".into(),
+                in_full: true,
+            },
+        }]));
+        assert!(
+            text.contains("\n  cannot fetch alpha 1.1.0 by digest from source \"team\": refused\n"),
+            "{text}"
+        );
     }
 
     #[test]

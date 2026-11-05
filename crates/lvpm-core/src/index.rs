@@ -503,6 +503,13 @@ pub fn split_sources(
     (hosted, registries)
 }
 
+/// The OCI manifest an entry from an OCI source is fetched by, which is its
+/// `url`. `None` for an entry from any other source.
+pub fn oci_reference(entry: &Entry) -> Option<Reference> {
+    let reference = Reference::parse(&entry.url).ok()?;
+    matches!(reference.target, Target::Digest(_)).then_some(reference)
+}
+
 /// Where an entry with this `url` came from: the index URL of the feed whose
 /// folder it sits in (the longest match when folders nest), or `local` for a
 /// package folder or an imported archive.

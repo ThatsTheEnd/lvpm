@@ -23,6 +23,7 @@ use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
 use crate::install::{self, Manifest};
 use crate::lockfile::{self, LockedPackage, Lockfile};
+use crate::oci;
 use crate::project::{DEV_GROUP, is_dev_group};
 use crate::project::{Project, name_key, same_name};
 use crate::version::Version;
@@ -573,9 +574,17 @@ pub fn fetch_locked(
         // A repo is listed only for a package of its own that missed the cache.
         let asking: Vec<&mut Search> = searches
             .iter_mut()
-            .filter(|search| !search.found && source.answers_for(project, &search.locked.name))
+            .filter(|search| !search.found && source.answers_for(project, search.locked))
             .collect();
         if asking.is_empty() {
+            continue;
+        }
+        // An OCI package is fetched by the digest the lock records: the
+        // registry is never listed, and no other source is asked for it.
+        if let Source::Oci(feed) = &source {
+            for search in asking {
+                search.fetch_oci(&downloads, &feed.name)?;
+            }
             continue;
         }
         let index = match source.index(env, &downloads) {
@@ -585,7 +594,7 @@ pub fn fetch_locked(
             Err(why) => {
                 if matches!(source, Source::GitHub(..)) {
                     for search in asking {
-                        search.unfetched = Some(format!("{why:#}"));
+                        search.unfetched = Some(Unfetched::plain(format!("{why:#}")));
                     }
                 }
                 continue;
@@ -616,7 +625,41 @@ pub(super) struct Search<'a> {
     /// The SHA-256 of an archive that was found and is not the locked one.
     differs: Option<String>,
     /// Why the last entry that could not be fetched was not.
-    pub(super) unfetched: Option<String>,
+    pub(super) unfetched: Option<Unfetched>,
+}
+
+/// Why an archive that a source lists could not be fetched, in words.
+pub(super) struct Unfetched {
+    pub(super) reason: String,
+    /// `reason` is a whole sentence, which names the package itself.
+    pub(super) in_full: bool,
+}
+
+impl Unfetched {
+    /// A cause in its own words, which a report puts after the package.
+    pub(super) fn plain(reason: String) -> Unfetched {
+        Unfetched {
+            reason,
+            in_full: false,
+        }
+    }
+
+    /// Why `why` stopped `name` `version` from being fetched from the OCI
+    /// source `source`, by its manifest `manifest`.
+    pub(super) fn of_oci(
+        why: &anyhow::Error,
+        (name, version): (&str, &str),
+        source: &str,
+        manifest: &str,
+    ) -> Unfetched {
+        match oci::fetch_failure(why, name, version, source, manifest) {
+            Some(reason) => Unfetched {
+                reason,
+                in_full: true,
+            },
+            None => Unfetched::plain(format!("{why:#}")),
+        }
+    }
 }
 
 impl<'a> Search<'a> {
@@ -653,20 +696,68 @@ impl<'a> Search<'a> {
             .into_iter()
             .filter(|entry| entry.version == version)
         {
-            let bytes = match downloads.fetch(entry) {
-                Ok(bytes) => bytes,
-                Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
-                Err(why) => {
-                    self.unfetched = Some(format!("{why:#}"));
-                    continue;
-                }
-            };
-            let found = sha256_hex(&bytes);
-            if found == self.sha256() {
-                downloads.keep(&bytes)?;
-                self.found = true;
+            let fetched = downloads.fetch(entry);
+            self.consider(downloads, fetched, |why| {
+                Unfetched::plain(format!("{why:#}"))
+            })?;
+            if self.found {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Fetch the package by the manifest digest the lock records, from its OCI
+    /// source `source` (the `[sources]` name). Never by a tag.
+    pub(super) fn fetch_oci(
+        &mut self,
+        downloads: &Downloads,
+        source: &str,
+    ) -> Result<(), LockError> {
+        let Some(manifest) = self.locked.oci_reference() else {
+            return Ok(());
+        };
+        let entry = Entry {
+            name: self.locked.name.clone(),
+            version: Version::parse(&self.locked.version),
+            url: manifest.to_string(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: None,
+            source: self.locked.source.clone(),
+            released: None,
+        };
+        let (name, version) = (&self.locked.name, &self.locked.version);
+        let fetched = downloads.fetch(&entry);
+        let named = (name.as_str(), version.as_str());
+        self.consider(downloads, fetched, |why| {
+            Unfetched::of_oci(why, named, source, manifest.name())
+        })
+    }
+
+    /// What one fetched candidate comes to: the locked bytes are kept and the
+    /// archive is found; other bytes are noted and never used; a fetch that
+    /// failed is remembered, as `unfetched` words it.
+    fn consider(
+        &mut self,
+        downloads: &Downloads,
+        fetched: anyhow::Result<Vec<u8>>,
+        unfetched: impl FnOnce(&anyhow::Error) -> Unfetched,
+    ) -> Result<(), LockError> {
+        let bytes = match fetched {
+            Ok(bytes) => bytes,
+            Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
+            Err(why) => {
+                self.unfetched = Some(unfetched(&why));
                 return Ok(());
             }
+        };
+        let found = sha256_hex(&bytes);
+        if found == self.sha256() {
+            downloads.keep(&bytes)?;
+            self.found = true;
+        } else {
             self.differs = Some(found);
         }
         Ok(())
@@ -693,9 +784,10 @@ impl<'a> Search<'a> {
     /// could not be fetched, which a sync tells the user instead of "not found".
     fn reported(&self) -> Option<LockedArchiveProblem> {
         let mut problem = self.problem()?;
-        if let (ArchiveFault::NotFound, Some(reason)) = (&problem.fault, &self.unfetched) {
+        if let (ArchiveFault::NotFound, Some(why)) = (&problem.fault, &self.unfetched) {
             problem.fault = ArchiveFault::Unfetched {
-                reason: reason.clone(),
+                reason: why.reason.clone(),
+                in_full: why.in_full,
             };
         }
         Some(problem)
@@ -733,6 +825,9 @@ enum Source {
     Folder(PathBuf),
     PublicFeeds,
     Feed(String),
+    /// An OCI source: fetched by digest, never listed, and asked only for the
+    /// packages the lock records as from it.
+    Oci(index::OciFeed),
 }
 
 impl Source {
@@ -745,18 +840,22 @@ impl Source {
         if project.default_sources {
             sources.push(Source::PublicFeeds);
         }
-        // The registries are asked in a later step.
-        let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+        let (hosted, registries) =
+            index::split_sources(project.resolved_sources()?, &project.source_pins);
         sources.extend(hosted.into_iter().map(Source::Feed));
+        sources.extend(registries.into_iter().map(Source::Oci));
         Ok(sources)
     }
 
-    /// Whether this source may hold the package `name`: a package with a
-    /// `github` line is in that repo's releases and nowhere else.
-    fn answers_for(&self, project: &Project, name: &str) -> bool {
+    /// Whether this source may hold the locked package: a package with a
+    /// `github` line is in that repo's releases and nowhere else, and one with
+    /// a manifest digest is in the OCI source the lock names and nowhere else.
+    fn answers_for(&self, project: &Project, locked: &LockedPackage) -> bool {
+        let name = &locked.name;
         match self {
             Source::GitHub(own, _) => same_name(own, name),
-            _ => !project.github.keys().any(|own| same_name(own, name)),
+            Source::Oci(feed) => locked.digest.is_some() && locked.source == feed.url.to_string(),
+            _ => locked.digest.is_none() && !project.github.keys().any(|own| same_name(own, name)),
         }
     }
 
@@ -769,6 +868,12 @@ impl Source {
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
             Source::Feed(url) => (vec![url.clone()], Vec::new(), false),
+            // Fetched by digest in `fetch_locked`, which never asks for this.
+            Source::Oci(_) => {
+                return Ok(Index {
+                    entries: Vec::new(),
+                });
+            }
         };
         index::load(
             &env.config.cache,
@@ -816,6 +921,7 @@ mod tests {
             version: version.to_string(),
             sha256: format!("sha-of-{name}-{version}"),
             md5: None,
+            digest: None,
             source: LOCAL_SOURCE.to_string(),
             requires: requires.iter().map(|name| name.to_string()).collect(),
             groups: groups.iter().map(|group| group.to_string()).collect(),
@@ -1520,7 +1626,7 @@ mod tests {
         let found = problems(fetch_locked(&env, &project, &locks).unwrap_err());
         let faults: Vec<_> = found.iter().map(|problem| &problem.fault).collect();
         assert!(
-            matches!(faults[0], ArchiveFault::Unfetched { reason }
+            matches!(faults[0], ArchiveFault::Unfetched { reason, .. }
                 if reason.starts_with("alpha (github.com/o/r): cannot read the releases")),
             "{faults:?}"
         );
@@ -1543,10 +1649,31 @@ mod tests {
     fn a_repo_answers_for_its_own_package_whatever_its_case_and_no_other_source_does() {
         let (_, project) = github_project(&Scratch::new("github-answers"));
         let repo = Source::GitHub("Alpha".into(), "o/r".into());
-        assert!(repo.answers_for(&project, "alpha"));
-        assert!(!repo.answers_for(&project, "beta"));
-        assert!(Source::Imported.answers_for(&project, "beta"));
-        assert!(!Source::Imported.answers_for(&project, "ALPHA"));
+        let package = |name: &str| locked_as(name, "2.0", b"");
+        assert!(repo.answers_for(&project, &package("alpha")));
+        assert!(!repo.answers_for(&project, &package("beta")));
+        assert!(Source::Imported.answers_for(&project, &package("beta")));
+        assert!(!Source::Imported.answers_for(&project, &package("ALPHA")));
+    }
+
+    #[test]
+    fn an_oci_package_is_asked_of_its_own_source_and_of_no_other() {
+        let (_, project) = github_project(&Scratch::new("oci-answers"));
+        let team = |name: &str| index::OciFeed {
+            name: name.to_string(),
+            url: crate::oci::FeedUrl::parse(&format!("oci://r:5000/{name}")).unwrap(),
+            pinned: Vec::new(),
+        };
+        let mut alpha = locked_as("beta", "1.0", b"");
+        alpha.source = "oci://r:5000/team".to_string();
+        alpha.digest = Some(format!("sha256:{}", "ab".repeat(32)));
+        assert!(Source::Oci(team("team")).answers_for(&project, &alpha));
+        assert!(!Source::Oci(team("other")).answers_for(&project, &alpha));
+        assert!(!Source::Imported.answers_for(&project, &alpha));
+        assert!(!Source::Feed("http://f/index.vipr".into()).answers_for(&project, &alpha));
+        // A package with no digest is not the OCI source's, whatever its source says.
+        alpha.digest = None;
+        assert!(!Source::Oci(team("team")).answers_for(&project, &alpha));
     }
 
     #[test]
