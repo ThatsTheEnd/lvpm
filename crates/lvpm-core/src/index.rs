@@ -11,7 +11,10 @@ use crate::cache::{Cache, LocalEntry, SourceState};
 use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::events::{Event, EventSink, FeedOutcome};
-use crate::oci::{self, Oci};
+use crate::oci::{
+    self, Access, ListingFailure, ListingFailures, ListingFault, Oci, Package, Reference, Repo,
+    Target,
+};
 use crate::project::{Feed, same_name};
 use crate::version::{Version, split_id};
 use anyhow::{Context, Result};
@@ -663,11 +666,99 @@ fn read_each(
         }
     }
 
-    // The OCI sources are listed in the next step.
-    let _ = (oci, oci_feeds);
+    let mut failures = Vec::new();
+    for feed in *oci_feeds {
+        sources.push(feed.url.to_string());
+        read_oci(oci, feed, cancel, &mut entries, &mut failures)?;
+    }
+    // Every pin that failed is reported at once, and none is left to a source
+    // asked after it: they are one error, not a skipped source.
+    if let Some(first) = failures.first().map(|failure| failure.feed.to_string()) {
+        on_fail(&first, ListingFailures::new(failures).into())?;
+    }
 
     let index = Index { entries };
     Ok(Loaded { index, sources })
+}
+
+/// What an OCI source lists of the packages pinned to it: for each, the tags
+/// of its repository, and of each tag the OCI manifest, which is an entry when
+/// it is an lvpm package and nothing when it is any other artifact. A package
+/// the registry could not list is added to `failures`, with why.
+fn read_oci(
+    oci: &Oci,
+    feed: &OciFeed,
+    cancel: &CancelToken,
+    entries: &mut Vec<Entry>,
+    failures: &mut Vec<ListingFailure>,
+) -> Result<()> {
+    for package in &feed.pinned {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
+        match read_pinned(oci, feed, package) {
+            Ok(found) => entries.extend(found),
+            Err(fault) => failures.push(ListingFailure {
+                package: package.clone(),
+                source: feed.name.clone(),
+                feed: feed.url.clone(),
+                fault,
+            }),
+        }
+    }
+    Ok(())
+}
+
+/// The versions of `package` the OCI source lists.
+///
+/// shortcut: the manifests of the tags are read one after the other; read
+/// them together when a package has so many tags that a lock waits on them.
+fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, ListingFault> {
+    let Some(repository) = feed.url.repository(package) else {
+        // Not a name a registry can hold, so it holds none.
+        return Err(ListingFault::NotListed);
+    };
+    let repo = Repo {
+        registry: feed.url.registry(),
+        name: &repository,
+        access: Access::Pull,
+    };
+    let fault = |error: oci::Error| ListingFault::of(&error);
+    let mut found = Vec::new();
+    for tag in oci.list_tags(&repo).map_err(fault)? {
+        let manifest = oci.get_manifest(&repo, &tag).map_err(fault)?;
+        let entry = manifest
+            .package()
+            .and_then(|package| oci_entry(feed, &repository, &package));
+        found.extend(entry);
+    }
+    Ok(found)
+}
+
+/// The entry an lvpm package's OCI manifest makes: what its annotations say,
+/// and the OCI manifest's own digest as the address, which is what a lock
+/// records and a fetch asks for. `None` for a manifest that does not say what
+/// package and version it is.
+fn oci_entry(feed: &OciFeed, repository: &str, package: &Package) -> Option<Entry> {
+    let note = |key: &str| package.annotations.get(key).map(String::as_str);
+    let reference = Reference {
+        registry: feed.url.registry().to_string(),
+        repository: repository.to_string(),
+        target: Target::Digest(package.manifest.clone()),
+    };
+    Some(Entry {
+        name: note(oci::ANNOTATION_TITLE)?.to_string(),
+        version: Version::parse(note(oci::ANNOTATION_VERSION)?),
+        url: reference.to_string(),
+        md5: None,
+        display_name: None,
+        requires: note(oci::ANNOTATION_REQUIRES)
+            .map(parse_requires)
+            .unwrap_or_default(),
+        lv_min: note(oci::ANNOTATION_LABVIEW).and_then(parse_lv_gate),
+        source: feed.url.to_string(),
+        released: note(oci::ANNOTATION_CREATED).and_then(crate::released::parse_rfc3339),
+    })
 }
 
 /// `entries` in source order, cut down to one source per name. A name in

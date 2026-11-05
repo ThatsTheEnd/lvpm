@@ -311,7 +311,10 @@ fn general_conflict_text(facts: &[&Fact], rerun: &str) -> String {
             _ => None,
         })
         .collect();
-    let only_unlisted = unlisted.len() == facts.len();
+    let only_unlisted = unlisted.len()
+        == (facts.iter())
+            .filter(|fact| !matches!(fact, Fact::OciExplicit { .. }))
+            .count();
     let mut text = match only_unlisted {
         true => "cannot lock:".to_string(),
         false => "cannot lock: no set of versions satisfies lvpm.toml:".to_string(),
@@ -1105,6 +1108,29 @@ mod tests {
         );
         assert!(
             text.contains("\ncannot lock:\n  zeta is in no configured source\nnext: look for it"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_oci_note_follows_a_package_in_no_source_and_keeps_the_short_heading() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                Fact::NotListed {
+                    package: "zeta".into(),
+                },
+                Fact::OciExplicit {
+                    source: "team".into(),
+                },
+            ],
+        }));
+        assert!(
+            text.starts_with(concat!(
+                "cannot lock:\n",
+                "  zeta is in no configured source\n",
+                "  note: OCI source \"team\" is explicit; pin with index = \"team\"\n",
+                "next: look for it"
+            )),
             "{text}"
         );
     }

@@ -602,6 +602,10 @@ pub enum Fact {
         source: String,
         feed: String,
     },
+    /// The project has an OCI source, which no package is looked up in unless
+    /// the manifest pins it there. The solver never produces it: `ops::lock`
+    /// adds it to a failure that names a package no source lists.
+    OciExplicit { source: String },
 }
 
 /// What a failure says of a package pinned to one source: no other source is
@@ -631,6 +635,7 @@ impl Fact {
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
             Fact::SourcePinned { .. } => 5,
+            Fact::OciExplicit { .. } => 6,
         }
     }
 }
@@ -714,6 +719,10 @@ impl fmt::Display for Fact {
             } => write!(
                 f,
                 "{package} is pinned to \"{source}\" ({feed}); {OTHER_SOURCES_IGNORED}"
+            ),
+            Fact::OciExplicit { source } => write!(
+                f,
+                "note: OCI source \"{source}\" is explicit; pin with index = \"{source}\""
             ),
         }
     }
@@ -894,7 +903,8 @@ fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&
         | Fact::NotListed { .. }
         | Fact::AllHeldBack(_)
         | Fact::VersionHeldBack { .. }
-        | Fact::SourcePinned { .. } => false,
+        | Fact::SourcePinned { .. }
+        | Fact::OciExplicit { .. } => false,
     }
 }
 

@@ -19,7 +19,7 @@ use crate::index::{self, Entry, Index};
 use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
 use crate::manifest_edit::{self, DependencyTable};
 use crate::paths;
-use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
+use crate::project::{Constraint, Feed, PackageArg, Project, name_key, same_name};
 use crate::released;
 use crate::solve::{self, AllHeldBack, Conflict, Fact, Resolution, SolveError};
 use crate::verify::Attestation;
@@ -566,9 +566,9 @@ fn resolve(
         &env.cancel,
     )
     .map_err(|why| match why {
-        SolveError::Conflict(conflict) => LockError::Conflict(name_source_pins(
-            name_pins(conflict, project, pins),
-            &source_pins,
+        SolveError::Conflict(conflict) => LockError::Conflict(note_oci_sources(
+            name_source_pins(name_pins(conflict, project, pins), &source_pins),
+            project,
         )),
         SolveError::Cancelled => Cancelled.into(),
     })
@@ -656,6 +656,26 @@ fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
             package: pin.package.to_string(),
             source: pin.source.to_string(),
             feed: pin.feed.clone(),
+        }));
+    conflict
+}
+
+/// `conflict` with a note for each OCI source when a package is in no source:
+/// an OCI source lists only what the manifest pins to it, so it may be the one
+/// that has the package.
+fn note_oci_sources(mut conflict: Conflict, project: &Project) -> Conflict {
+    let unlisted = (conflict.facts.iter()).any(|fact| matches!(fact, Fact::NotListed { .. }));
+    if !unlisted {
+        return conflict;
+    }
+    let feeds = project.resolved_sources().unwrap_or_default();
+    let oci = feeds
+        .iter()
+        .filter(|(_, feed)| matches!(feed, Feed::Oci(_)));
+    conflict
+        .facts
+        .extend(oci.map(|(name, _)| Fact::OciExplicit {
+            source: name.clone(),
         }));
     conflict
 }
@@ -3093,6 +3113,35 @@ gamma = \"1.0\""
         )
         .unwrap();
         assert_eq!(resolution.packages["alpha"].version, Version::parse("1.0"));
+    }
+
+    #[test]
+    fn a_package_in_no_source_gets_a_note_for_each_oci_source_and_nothing_else_does() {
+        let text = concat!(
+            "[project]\nlabview = \">=2023\"\n\n",
+            "[sources]\nteam = \"oci://r:5000/org\"\nmirror = \"http://m.example/\"\n",
+            "defaults = false\n\n[dependencies]\nalpha = \"*\"\n"
+        );
+        let project = manifest(text);
+        let unlisted = Conflict {
+            facts: vec![Fact::NotListed {
+                package: "alpha".into(),
+            }],
+        };
+        let noted = note_oci_sources(unlisted.clone(), &project);
+        assert_eq!(
+            noted.facts[1..],
+            [Fact::OciExplicit {
+                source: "team".into()
+            }]
+        );
+        let other = Conflict {
+            facts: vec![Fact::Manifest {
+                package: "alpha".into(),
+                wanted: "*".into(),
+            }],
+        };
+        assert_eq!(note_oci_sources(other.clone(), &project), other);
     }
 
     #[test]

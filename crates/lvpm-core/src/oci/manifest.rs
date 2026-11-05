@@ -3,10 +3,12 @@
 
 use super::reference::valid_digest;
 use super::{
-    BLOB_TIMEOUT, Error, MANIFEST_TYPE, MAX_BLOB_BYTES, MAX_MANIFEST_BYTES, Oci, Repo, base_url,
-    digest_of, expect, location, read_limited,
+    ARTIFACT_TYPE, BLOB_TIMEOUT, Error, LAYER_TYPE, MANIFEST_TYPE, MAX_BLOB_BYTES,
+    MAX_MANIFEST_BYTES, Oci, Repo, base_url, digest_of, expect, location, read_limited,
 };
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap};
+use serde_json::Value;
+use std::collections::BTreeMap;
 
 const DIGEST_HEADER: &str = "Docker-Content-Digest";
 const OCTET_STREAM: &str = "application/octet-stream";
@@ -18,7 +20,64 @@ pub struct Manifest {
     pub bytes: Vec<u8>,
 }
 
+/// What an lvpm package's OCI manifest says: the layer that is the `.lvpkg`,
+/// and the annotations an index reads without it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Package {
+    /// The digest of the OCI manifest itself.
+    pub manifest: String,
+    /// The digest of the one layer: the archive's sha256.
+    pub layer: String,
+    pub annotations: BTreeMap<String, String>,
+}
+
+impl Manifest {
+    /// The package this manifest is, or `None` for any other artifact: a
+    /// container image, or anything else that does not have the package's
+    /// `artifactType` and its one layer.
+    pub fn package(&self) -> Option<Package> {
+        let json: Value = serde_json::from_slice(&self.bytes).ok()?;
+        if json["artifactType"] != ARTIFACT_TYPE {
+            return None;
+        }
+        let [layer] = json["layers"].as_array()?.as_slice() else {
+            return None;
+        };
+        if layer["mediaType"] != LAYER_TYPE {
+            return None;
+        }
+        let layer = layer["digest"].as_str().filter(|d| valid_digest(d))?;
+        let annotations = (json["annotations"].as_object().into_iter().flatten())
+            .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+            .collect();
+        Some(Package {
+            manifest: self.digest.clone(),
+            layer: layer.to_string(),
+            annotations,
+        })
+    }
+}
+
 impl Oci {
+    /// The tags of the repository. `404` (a repository the registry does not
+    /// know) is an error like any other status: the caller says what it means.
+    ///
+    /// shortcut: one page. A registry that pages a long list sends the rest
+    /// behind a `Link` header, which is not followed; do that when a package
+    /// has more tags than a registry's page.
+    pub fn list_tags(&self, repo: &Repo) -> Result<Vec<String>, Error> {
+        let url = format!("{}/v2/{}/tags/list", base_url(repo.registry), repo.name);
+        let request = format!("GET {} tags", repo.name);
+        let response = self.send(repo, |client| client.get(&url))?;
+        let response = expect(repo, response, &request, &[200])?;
+        let body = read_limited(repo.registry, response, MAX_MANIFEST_BYTES)?;
+        let listed: Value = serde_json::from_slice(&body)
+            .map_err(|_| Error::protocol(repo.registry, "sent a tag list that is not JSON"))?;
+        Ok((listed["tags"].as_array().into_iter().flatten())
+            .filter_map(|tag| tag.as_str().map(str::to_string))
+            .collect())
+    }
+
     /// Whether the repository has a manifest under `reference`, a tag or a
     /// digest: `404` is no, any other failure is an error.
     pub fn manifest_exists(&self, repo: &Repo, reference: &str) -> Result<bool, Error> {
@@ -153,5 +212,60 @@ fn agree(repo: &Repo, expected: &str, actual: &str) -> Result<(), Error> {
             registry: repo.registry.to_string(),
             digest: expected.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn manifest(json: Value) -> Manifest {
+        let bytes = json.to_string().into_bytes();
+        Manifest {
+            digest: digest_of(&bytes),
+            bytes,
+        }
+    }
+
+    fn package(artifact: &str, layers: Value) -> Manifest {
+        manifest(json!({
+            "artifactType": artifact,
+            "layers": layers,
+            "annotations": { "org.opencontainers.image.title": "alpha", "n": 3 },
+        }))
+    }
+
+    fn layer(media: &str) -> Value {
+        json!({ "mediaType": media, "digest": format!("sha256:{}", "ab".repeat(32)), "size": 1 })
+    }
+
+    #[test]
+    fn a_package_manifest_gives_its_layer_and_its_text_annotations() {
+        let manifest = package(ARTIFACT_TYPE, json!([layer(LAYER_TYPE)]));
+        let found = manifest.package().unwrap();
+        assert_eq!(found.manifest, manifest.digest);
+        assert_eq!(found.layer, format!("sha256:{}", "ab".repeat(32)));
+        assert_eq!(found.annotations.len(), 1);
+        assert_eq!(found.annotations["org.opencontainers.image.title"], "alpha");
+    }
+
+    #[test]
+    fn anything_else_is_not_a_package() {
+        let other = package("application/other", json!([layer(LAYER_TYPE)]));
+        assert_eq!(other.package(), None);
+        let wrong_layer = package(ARTIFACT_TYPE, json!([layer("application/zip")]));
+        assert_eq!(wrong_layer.package(), None);
+        let two = package(ARTIFACT_TYPE, json!([layer(LAYER_TYPE), layer(LAYER_TYPE)]));
+        assert_eq!(two.package(), None);
+        let none = package(ARTIFACT_TYPE, json!([]));
+        assert_eq!(none.package(), None);
+        let image = manifest(json!({ "layers": [layer(LAYER_TYPE)] }));
+        assert_eq!(image.package(), None);
+        let junk = Manifest {
+            digest: String::new(),
+            bytes: b"not json".to_vec(),
+        };
+        assert_eq!(junk.package(), None);
     }
 }

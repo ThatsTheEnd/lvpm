@@ -11,6 +11,7 @@
 //! a tag that appears while a package is uploading.
 
 use crate::http::{Request, accept, accept_loop, read_body, response, shut_down};
+use lvpm_core::oci;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -33,6 +34,15 @@ pub fn digest_of(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect();
     format!("sha256:{hex}")
+}
+
+/// The digests of a package [`Registry::seed_package`] stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seeded {
+    /// Its OCI manifest, which a lock records.
+    pub manifest: String,
+    /// Its one layer, the archive's sha256.
+    pub layer: String,
 }
 
 /// One request the fake received.
@@ -79,6 +89,11 @@ struct State {
     uploads_started: usize,
     /// The host a blob upload's `Location` names, in place of the registry's own.
     upload_host: Option<String>,
+    /// A repository the registry does not hold answers `403 DENIED`, as a
+    /// registry does that hides what a login cannot read.
+    deny_missing: bool,
+    /// After the login, a request under a repository prefix answers a status.
+    refused_under: Vec<(String, u16)>,
 }
 
 #[derive(Debug)]
@@ -147,6 +162,21 @@ impl Registry {
             .push((method.to_string(), path.to_string(), status));
     }
 
+    /// From now on a repository the registry does not hold answers `403
+    /// DENIED` instead of `404`, as ghcr.io does for what a login cannot see.
+    pub fn deny_missing(&self) {
+        lock(&self.state).deny_missing = true;
+    }
+
+    /// From now on, after the login, any request for a repository under
+    /// `prefix` (`prefix/...`) answers `status`, as a registry does that has
+    /// started to ask for a login the client does not have.
+    pub fn refuse_under(&self, prefix: &str, status: u16) {
+        lock(&self.state)
+            .refused_under
+            .push((prefix.to_string(), status));
+    }
+
     /// `tag` appears in `repo` when the first blob is uploaded, as another
     /// publisher's would.
     pub fn create_tag_after_first_blob(&self, repo: &str, tag: &str) {
@@ -182,6 +212,74 @@ impl Registry {
             tag,
             stored,
         )
+    }
+
+    /// Put `bytes` in `repo` as a blob; its digest.
+    pub fn seed_blob(&self, repo: &str, bytes: &[u8]) -> String {
+        let digest = digest_of(bytes);
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        repo.blobs.insert(digest.clone(), bytes.to_vec());
+        digest
+    }
+
+    /// An lvpm package as `lvpm publish` writes it: `layer` as the one blob,
+    /// an empty config, `annotations`, tagged `tag`. What it is made of.
+    pub fn seed_package(
+        &self,
+        repo: &str,
+        tag: &str,
+        annotations: &[(&str, &str)],
+        layer: &[u8],
+    ) -> Seeded {
+        let config = self.seed_blob(repo, oci::EMPTY_CONFIG);
+        let layer_digest = self.seed_blob(repo, layer);
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": oci::MANIFEST_TYPE,
+            "artifactType": oci::ARTIFACT_TYPE,
+            "config": {
+                "mediaType": oci::EMPTY_CONFIG_TYPE,
+                "digest": config,
+                "size": oci::EMPTY_CONFIG.len(),
+            },
+            "layers": [{
+                "mediaType": oci::LAYER_TYPE,
+                "digest": layer_digest,
+                "size": layer.len(),
+            }],
+            "annotations": annotations.iter().cloned().collect::<BTreeMap<_, _>>(),
+        });
+        let manifest = self.seed_manifest(repo, tag, manifest.to_string().as_bytes());
+        Seeded {
+            manifest,
+            layer: layer_digest,
+        }
+    }
+
+    /// A container image under `tag`, which is no lvpm package.
+    pub fn seed_image(&self, repo: &str, tag: &str) -> String {
+        let config = self.seed_blob(repo, b"{}");
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": oci::MANIFEST_TYPE,
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config,
+                "size": 2,
+            },
+            "layers": [],
+        });
+        self.seed_manifest(repo, tag, manifest.to_string().as_bytes())
+    }
+
+    /// The manifest of `repo` with this digest is gone, and the tags that
+    /// pointed at it.
+    pub fn delete_manifest(&self, repo: &str, digest: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.get_mut(repo).expect("a known repository");
+        repo.manifests.remove(digest);
+        repo.tags.retain(|_, tagged| tagged != digest);
     }
 
     /// The digest `tag` of `repo` points at.
@@ -329,6 +427,22 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     }
     if let Some(status) = wanted {
         return error_reply(status, "UNAVAILABLE", "answered on purpose");
+    }
+    let refused = state.refused_under.iter().find_map(|(prefix, status)| {
+        name.strip_prefix(prefix.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+            .then_some(*status)
+    });
+    if let Some(status) = refused {
+        return error_reply(
+            status,
+            "DENIED",
+            "requested access to the resource is denied",
+        );
+    }
+    let read = matches!(request.method.as_str(), "GET" | "HEAD");
+    if state.deny_missing && read && !state.repos.contains_key(name) {
+        return error_reply(403, "DENIED", "requested access to the resource is denied");
     }
     match route {
         Route::Tags(name) => tags(state, name),
@@ -904,6 +1018,61 @@ mod tests {
         let moved = send_to(registry.addr(), "POST", "/v2/t/a/blobs/uploads/", AUTH, b"");
         let expected = "Location: http://elsewhere.example:9/v2/t/a/blobs/uploads/2";
         assert!(moved.head.contains(expected), "{}", moved.head);
+    }
+
+    #[test]
+    fn a_seeded_package_is_what_publish_writes_and_is_read_back_by_tag_and_digest() {
+        let registry = Registry::start();
+        let seeded = registry.seed_package("t/a", "1.0.0", &[("k", "v")], b"layer");
+        assert_eq!(seeded.layer, digest_of(b"layer"));
+        assert_eq!(
+            registry.tag_digest("t/a", "1.0.0"),
+            Some(seeded.manifest.clone())
+        );
+        assert_eq!(registry.blob("t/a", &seeded.layer), Some(b"layer".to_vec()));
+        let json: Value =
+            serde_json::from_slice(&registry.manifest("t/a", &seeded.manifest).unwrap()).unwrap();
+        assert_eq!(json["artifactType"], oci::ARTIFACT_TYPE);
+        assert_eq!(json["layers"][0]["mediaType"], oci::LAYER_TYPE);
+        assert_eq!(json["annotations"]["k"], "v");
+    }
+
+    #[test]
+    fn a_seeded_image_has_no_artifact_type_and_a_deleted_manifest_takes_its_tags() {
+        let registry = Registry::start();
+        let digest = registry.seed_image("t/a", "1.0.0");
+        let json: Value =
+            serde_json::from_slice(&registry.manifest("t/a", &digest).unwrap()).unwrap();
+        assert!(json.get("artifactType").is_none());
+        registry.delete_manifest("t/a", &digest);
+        let gone = get_from(registry.addr(), "/v2/t/a/manifests/1.0.0", AUTH);
+        assert_eq!(gone.status_line, "HTTP/1.1 404 Not Found");
+        assert_eq!(registry.tag_digest("t/a", "1.0.0"), None);
+    }
+
+    #[test]
+    fn a_registry_that_denies_what_it_lacks_answers_403_for_an_unknown_repository_only() {
+        let registry = Registry::start();
+        registry.seed_manifest("t/a", "1.0.0", b"{}");
+        let before = get_from(registry.addr(), "/v2/t/b/tags/list", AUTH);
+        assert_eq!(before.status_line, "HTTP/1.1 404 Not Found");
+        registry.deny_missing();
+        let denied = get_from(registry.addr(), "/v2/t/b/tags/list", AUTH);
+        assert_eq!(denied.status_line, "HTTP/1.1 403 Forbidden");
+        let held = get_from(registry.addr(), "/v2/t/a/tags/list", AUTH);
+        assert_eq!(held.status_line, "HTTP/1.1 200 OK");
+    }
+
+    #[test]
+    fn a_prefix_that_requires_a_login_refuses_everything_under_it_after_the_token() {
+        let registry = Registry::start();
+        registry.seed_manifest("t/a", "1.0.0", b"{}");
+        registry.seed_manifest("other/a", "1.0.0", b"{}");
+        registry.refuse_under("t", 401);
+        let refused = get_from(registry.addr(), "/v2/t/a/manifests/1.0.0", AUTH);
+        assert_eq!(refused.status_line, "HTTP/1.1 401 Unauthorized");
+        let outside = get_from(registry.addr(), "/v2/other/a/manifests/1.0.0", AUTH);
+        assert_eq!(outside.status_line, "HTTP/1.1 200 OK");
     }
 
     #[test]

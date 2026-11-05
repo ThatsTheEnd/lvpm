@@ -22,7 +22,7 @@ mod auth;
 mod manifest;
 pub mod reference;
 
-pub use manifest::Manifest;
+pub use manifest::{Manifest, Package};
 pub use reference::{FeedUrl, Reference, SCHEME, Target, UrlError, valid_tag};
 
 /// The manifest's `artifactType`: what tells a package from any other artifact.
@@ -147,6 +147,125 @@ impl Error {
     pub fn is_refused(&self) -> bool {
         matches!(self.status_code(), Some(401 | 403))
     }
+}
+
+/// Why a package pinned to an OCI source could not be listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListingFault {
+    /// The registry has no repository for it.
+    NotListed,
+    /// `401` or `403`: the package is missing, or the login cannot read it. A
+    /// registry that hides what a login cannot read answers this for both.
+    Refused,
+    /// No answer, or one that is no listing; the cause in words.
+    Unreachable(String),
+}
+
+impl ListingFault {
+    /// What a failed tags list or manifest read comes to.
+    pub fn of(error: &Error) -> ListingFault {
+        match error {
+            _ if error.status_code() == Some(404) => ListingFault::NotListed,
+            _ if error.is_refused() => ListingFault::Refused,
+            Error::Unreachable { cause, .. } => ListingFault::Unreachable(cause.clone()),
+            other => ListingFault::Unreachable(other.to_string()),
+        }
+    }
+}
+
+/// One package pinned to an OCI source that the source could not list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailure {
+    pub package: String,
+    /// The `[sources]` name.
+    pub source: String,
+    /// The source's URL, `oci://registry/prefix`.
+    pub feed: FeedUrl,
+    pub fault: ListingFault,
+}
+
+impl fmt::Display for ListingFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            package,
+            source,
+            feed,
+            fault,
+        } = self;
+        let registry = feed.registry();
+        match fault {
+            ListingFault::NotListed => write!(
+                f,
+                "{package}: source \"{source}\" ({feed}) does not list it; check the name, or \
+                 publish it with lvpm publish --to {feed}"
+            ),
+            ListingFault::Refused => write!(
+                f,
+                "{package}: registry {registry} refused the lookup for source \"{source}\"; the \
+                 package is missing or your login cannot read it; run docker login {registry}"
+            ),
+            ListingFault::Unreachable(cause) => {
+                write!(
+                    f,
+                    "{package}: source \"{source}\" ({feed}) is unreachable: {cause}"
+                )
+            }
+        }
+    }
+}
+
+/// Every pinned package the OCI sources could not list, in package order: one
+/// error, so that a run reports them all and none is read as "not listed" by
+/// a source that is asked next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailures(Vec<ListingFailure>);
+
+impl ListingFailures {
+    pub fn new(mut failures: Vec<ListingFailure>) -> ListingFailures {
+        failures.sort_by(|a, b| a.package.cmp(&b.package));
+        ListingFailures(failures)
+    }
+
+    pub fn failures(&self) -> &[ListingFailure] {
+        &self.0
+    }
+}
+
+/// One line for each package.
+impl fmt::Display for ListingFailures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lines: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+        f.write_str(&lines.join("\n"))
+    }
+}
+
+impl std::error::Error for ListingFailures {}
+
+/// The words for a package that came from an OCI source by digest (`manifest`)
+/// and was not fetched: `None` when `why` is not a registry's doing.
+pub fn fetch_failure(
+    why: &anyhow::Error,
+    package: &str,
+    version: &str,
+    source: &str,
+    manifest: &str,
+) -> Option<String> {
+    let error = why.downcast_ref::<Error>()?;
+    let registry = error.registry();
+    let by_digest = format!("cannot fetch {package} {version} by digest from source \"{source}\"");
+    Some(match error {
+        Error::DigestMismatch { digest, .. } => format!(
+            "{package} {version} from source \"{source}\": registry {registry} served bytes that \
+             do not match {digest}; nothing was installed"
+        ),
+        _ if error.is_refused() => {
+            format!("{by_digest}: registry {registry} refused it; run docker login {registry}")
+        }
+        _ if error.status_code() == Some(404) => {
+            format!("{by_digest}: registry {registry} no longer holds {manifest}; run lvpm lock")
+        }
+        other => format!("{by_digest}: {other}"),
+    })
 }
 
 /// What a call may do in a repository: a push may read as well.
@@ -385,5 +504,72 @@ mod tests {
         assert_eq!(down.to_string(), "registry r:1 is unreachable: closed");
         assert!(!down.is_refused());
         assert_eq!(down.status_code(), None);
+    }
+    #[test]
+    fn a_fetch_failure_by_digest_says_what_the_registry_did_and_what_to_run() {
+        let say = |error: Error| {
+            let why = anyhow::Error::new(error);
+            fetch_failure(&why, "alpha", "1.1.0", "team", "sha256:ab")
+        };
+        let refused = say(Error::status("r:1", 403, "GET"));
+        assert_eq!(
+            refused.as_deref(),
+            Some(
+                "cannot fetch alpha 1.1.0 by digest from source \"team\": registry r:1 refused \
+                 it; run docker login r:1"
+            )
+        );
+        let gone = say(Error::status("r:1", 404, "GET"));
+        assert_eq!(
+            gone.as_deref(),
+            Some(
+                "cannot fetch alpha 1.1.0 by digest from source \"team\": registry r:1 no longer \
+                 holds sha256:ab; run lvpm lock"
+            )
+        );
+        let wrong = say(Error::DigestMismatch {
+            registry: "r:1".into(),
+            digest: "sha256:ab".into(),
+        });
+        assert_eq!(
+            wrong.as_deref(),
+            Some(
+                "alpha 1.1.0 from source \"team\": registry r:1 served bytes that do not match \
+                 sha256:ab; nothing was installed"
+            )
+        );
+        assert_eq!(
+            fetch_failure(&anyhow::anyhow!("disk full"), "a", "1", "t", "sha256:ab"),
+            None
+        );
+    }
+
+    #[test]
+    fn pinned_failures_are_one_line_each_in_package_order() {
+        let feed = FeedUrl::parse("oci://r:1/org").unwrap();
+        let failure = |package: &str, fault| ListingFailure {
+            package: package.to_string(),
+            source: "team".to_string(),
+            feed: feed.clone(),
+            fault,
+        };
+        let failures = ListingFailures::new(vec![
+            failure("zeta", ListingFault::Unreachable("closed".into())),
+            failure("alpha", ListingFault::NotListed),
+        ]);
+        assert_eq!(
+            failures.to_string(),
+            "alpha: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org\n\
+             zeta: source \"team\" (oci://r:1/org) is unreachable: closed"
+        );
+        assert_eq!(
+            ListingFault::of(&Error::status("r:1", 404, "GET")),
+            ListingFault::NotListed
+        );
+        assert_eq!(
+            ListingFault::of(&Error::status("r:1", 401, "GET")),
+            ListingFault::Refused
+        );
     }
 }
