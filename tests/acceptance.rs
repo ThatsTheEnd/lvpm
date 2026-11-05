@@ -58,6 +58,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s0-pilot-loop.feature",
     "tests/features/build-slices/s1-lvpm-build.feature",
     "tests/features/build-slices/s2-lvpm-publish.feature",
+    "tests/features/build-slices/s7b-oci-feeds.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/build-slices/s10d-unattended.feature",
@@ -173,6 +174,7 @@ impl CliWorld {
     /// Run a recorded command line such as `lvpm search a` and keep its
     /// normalised output. `input` is what its stdin carries.
     pub fn run(&mut self, command_line: &str, input: Option<&str>) {
+        let command_line = self.with_placeholders(command_line);
         let mut words = command_line.split_whitespace();
         assert_eq!(
             words.next(),

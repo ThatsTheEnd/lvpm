@@ -1,40 +1,90 @@
 //! `publish`: copy the package `lvpm build` wrote for the current manifest
-//! into a folder feed, never replacing a file there.
+//! into a folder feed, never replacing a file there; or push it to an OCI
+//! registry (see [`oci`]).
 //!
 //! The copy is staged beside the target and hard-linked to its final name,
 //! which fails if that name exists, so two publishes of one version cannot
 //! both land and a reader never sees half a package. `std::fs::rename` would
 //! replace an existing file on Windows.
 
+mod oci;
+
 use super::env::OpEnv;
+use crate::oci::{FeedUrl, Reference, UrlError};
 use crate::paths;
 use anyhow::{Context, Result, bail};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
+
+/// Where `lvpm publish --to` puts the package.
+#[derive(Debug, Clone)]
+pub enum PublishTarget {
+    Folder(PathBuf),
+    Oci(FeedUrl),
+}
+
+impl PublishTarget {
+    /// `--to` as given. A value that starts with `oci://` is an OCI feed and
+    /// is never read as a path (Windows would collapse its `//`); anything
+    /// else is a folder. An error never repeats the value: it may carry a
+    /// secret.
+    pub fn from_arg(arg: &Path) -> Result<PublishTarget> {
+        let url = arg
+            .to_str()
+            .filter(|text| text.starts_with(crate::oci::reference::SCHEME));
+        let Some(url) = url else {
+            return Ok(PublishTarget::Folder(arg.to_path_buf()));
+        };
+        match FeedUrl::parse(url) {
+            Ok(feed) => Ok(PublishTarget::Oci(feed)),
+            Err(UrlError::Credentials { registry }) => bail!(
+                "--to: credentials do not belong in the target; remove the user:password@ part \
+                 and run docker login {registry}"
+            ),
+            Err(other) => bail!("--to: {other}"),
+        }
+    }
+}
 
 /// What a publish wrote.
 #[derive(Debug)]
-pub struct Published {
-    pub path: PathBuf,
+pub enum Published {
+    Folder {
+        path: PathBuf,
+    },
+    Oci {
+        name: String,
+        version: String,
+        reference: Reference,
+        /// The digest of the OCI manifest, which a signature of the package signs.
+        digest: String,
+    },
 }
 
-pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
-    let to = paths::resolve(&env.cwd, to);
+pub fn publish(env: &OpEnv, to: &PublishTarget) -> Result<Published> {
     let (root, d, _) = super::packaged(env, "publish")?;
-    let name = d.file_name();
     let package = super::package_path(&root, &d);
     built(&package)?;
+    match to {
+        PublishTarget::Folder(to) => folder(env, to, &d.file_name(), &package),
+        PublishTarget::Oci(feed) => oci::publish(env, feed, &package),
+    }
+}
+
+fn folder(env: &OpEnv, to: &Path, name: &str, package: &Path) -> Result<Published> {
+    let to = paths::resolve(&env.cwd, to);
     if !to.is_dir() {
         bail!(
             "{} is not a folder: lvpm publish puts packages into an existing folder",
             to.display()
         );
     }
-    let target = to.join(&name);
+    let target = to.join(name);
     if target.symlink_metadata().is_ok() {
-        bail!(already_published(&target));
+        bail!(already_published(&target.display(), ""));
     }
-    Ok(Published {
-        path: stage_and_link(&package, &to, &name)?,
+    Ok(Published::Folder {
+        path: stage_and_link(package, &to, name)?,
     })
 }
 
@@ -51,11 +101,9 @@ fn built(package: &Path) -> Result<()> {
     }
 }
 
-fn already_published(target: &Path) -> String {
-    format!(
-        "{} is already published; a published version is never replaced",
-        target.display()
-    )
+/// `<what> is already published<at>; a published version is never replaced`.
+fn already_published(what: &dyn Display, at: &str) -> String {
+    format!("{what} is already published{at}; a published version is never replaced")
 }
 
 /// Copy `src` to a staged file in `dir`, then give it the name `name`. Makes
@@ -86,7 +134,9 @@ fn stage_and_link(src: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
 fn link_unless_exists(temp: &Path, dest: &Path) -> Result<()> {
     match std::fs::hard_link(temp, dest) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(already_published(dest)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!(already_published(&dest.display(), ""))
+        }
         Err(e) => bail!(
             "could not place {} in {} (its file system may not support hard links): {e}",
             dest.file_name().unwrap_or_default().to_string_lossy(),
@@ -114,6 +164,56 @@ mod tests {
             .collect();
         n.sort();
         n
+    }
+
+    #[test]
+    fn a_target_that_is_not_an_oci_url_is_a_folder_however_it_is_spelled() {
+        for arg in [
+            "feed",
+            "../feed",
+            r"C:\feeds\a",
+            "//server/share",
+            "oci:/x",
+            "OCI://h/p",
+        ] {
+            let target = PublishTarget::from_arg(Path::new(arg)).unwrap();
+            assert!(
+                matches!(&target, PublishTarget::Folder(p) if p == Path::new(arg)),
+                "{arg}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_oci_target_is_a_feed_and_keeps_its_double_slash() {
+        let target = PublishTarget::from_arg(Path::new("oci://127.0.0.1:5000/team")).unwrap();
+        let PublishTarget::Oci(feed) = target else {
+            panic!("not an OCI feed");
+        };
+        assert_eq!(feed.to_string(), "oci://127.0.0.1:5000/team");
+    }
+
+    #[test]
+    fn a_target_with_credentials_or_no_prefix_is_refused_without_repeating_it() {
+        let refused = |arg: &str| {
+            let why = PublishTarget::from_arg(Path::new(arg)).unwrap_err();
+            let why = format!("{why:#}");
+            assert!(!why.contains("7f3a9c"), "{why}");
+            why
+        };
+        assert_eq!(
+            refused("oci://u-4c1d2e:pw-7f3a9c-secret@ghcr.io/org"),
+            "--to: credentials do not belong in the target; remove the user:password@ part and \
+             run docker login ghcr.io"
+        );
+        assert_eq!(
+            refused("oci://ghcr.io"),
+            "--to: an OCI feed is oci://host/prefix"
+        );
+        assert_eq!(
+            refused("oci://pw-7f3a9c:x/y@ghcr.io/org"),
+            "--to: the registry must be host or host:port"
+        );
     }
 
     #[test]

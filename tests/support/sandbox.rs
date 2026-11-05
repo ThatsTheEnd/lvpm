@@ -258,6 +258,8 @@ struct Learned {
 pub struct Sandbox {
     dir: TempDir,
     feed: OnceLock<Feed>,
+    /// The `host:port` of the scenario's loopback OCI registry, once it has one.
+    registry: OnceLock<String>,
     learned: Mutex<Learned>,
     /// Folders configured as local sources after the sandbox's own.
     more_local_sources: Mutex<Vec<PathBuf>>,
@@ -277,6 +279,7 @@ impl Sandbox {
         let sandbox = Sandbox {
             dir,
             feed: OnceLock::new(),
+            registry: OnceLock::new(),
             learned: Mutex::new(Learned::default()),
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
@@ -436,6 +439,18 @@ impl Sandbox {
         self.more_local_sources
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Run the children against a loopback OCI registry at `origin`
+    /// (`host:port`): its address is `<registry>` in their output, and no proxy
+    /// stands between them and it.
+    pub fn set_registry(&self, origin: &str) {
+        self.registry
+            .set(origin.to_string())
+            .expect("one registry per scenario");
+        for name in NO_PROXY_ENV_VARS {
+            self.set_child_env(name, "127.0.0.1,localhost");
+        }
     }
 
     /// Empty the cache: no feed body, no archive, no import.
@@ -631,6 +646,7 @@ impl Sandbox {
         let learned = self.learned();
         let mut anchors = Anchors::new(self.root());
         anchors.feed_origin = origin.as_deref();
+        anchors.registry_origin = self.registry.get().map(String::as_str);
         anchors.labview_dir = learned
             .labview
             .as_ref()

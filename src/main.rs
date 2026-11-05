@@ -10,6 +10,7 @@ use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::build_app::VenvAppLauncher;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
+use lvpm_core::ops::publish::PublishTarget;
 use lvpm_core::ops::relink::RelinkOptions;
 use lvpm_core::ops::route::{self, InstallMode, InstallRequest};
 use lvpm_core::ops::sync::{LockFlags, SyncOptions, strictness};
@@ -438,13 +439,15 @@ enum Cmd {
         #[arg(long)]
         package: bool,
     },
-    /// Copy dist/<name>-<version>.lvpkg into a folder feed.
+    /// Copy dist/<name>-<version>.lvpkg into a folder feed, or push it to an
+    /// OCI registry.
     ///
     /// Publishes the package lvpm build wrote for the current manifest. A
-    /// published file is never replaced: publishing a version the folder
-    /// already holds fails and changes nothing.
+    /// published version is never replaced: publishing a version the folder
+    /// or the registry already holds fails and changes nothing.
     Publish {
-        /// The folder feed to copy the package into. It must exist.
+        /// The folder feed to copy the package into (it must exist), or
+        /// oci://host/prefix to push it to <prefix>/<name>:<version> there.
         #[arg(long)]
         to: PathBuf,
     },
@@ -862,7 +865,10 @@ fn run(cli: &Cli) -> Result<Report> {
             package,
         } => cmd_build(&env, *no_check, *app, *package, cli.json),
         Cmd::Publish { to } => Ok(Report::said(
-            render::publish::published(&ops::publish::publish(&env, to)?),
+            render::publish::published(&ops::publish::publish(
+                &env,
+                &PublishTarget::from_arg(to)?,
+            )?),
             "publish",
         )),
         Cmd::Check { dir } => {

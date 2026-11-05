@@ -238,3 +238,19 @@ fn an_upload_location_on_another_host_is_refused_before_any_bytes_are_sent() {
     let writes: Vec<_> = registry.writes().iter().map(|r| r.method.clone()).collect();
     assert_eq!(writes, ["POST"]);
 }
+
+#[test]
+fn a_manifest_larger_than_a_registry_allows_is_refused_not_read_to_the_end() {
+    let registry = Registry::start();
+    registry.seed_manifest(NAME, "big", &vec![b'x'; 4 * 1024 * 1024 + 1]);
+    let oci = Oci::default();
+    let why = with(&registry, Access::Pull, |repo| {
+        oci.get_manifest(repo, "big")
+    })
+    .unwrap_err();
+    assert!(matches!(why, Error::Protocol { .. }), "{why}");
+    assert!(
+        why.to_string().contains("sent more than 4194304 bytes"),
+        "{why}"
+    );
+}

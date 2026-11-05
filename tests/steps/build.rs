@@ -195,7 +195,7 @@ impl CliWorld {
 }
 
 #[given(regex = r#"^a project "([^"]+)" version "([^"]+)" with labview "([^"]+)"$"#)]
-async fn project(world: &mut CliWorld, name: String, version: String, labview: String) {
+pub(super) async fn project(world: &mut CliWorld, name: String, version: String, labview: String) {
     world.set(&["project"], "name", name);
     world.set(&["project"], "version", version);
     world.set(&["project"], "labview", labview);
@@ -204,14 +204,19 @@ async fn project(world: &mut CliWorld, name: String, version: String, labview: S
 #[given(
     regex = r#"^\[distribution\] top-level-library "([^"]+)", vendor "([^"]+)", display-name "([^"]+)"$"#
 )]
-async fn distribution(world: &mut CliWorld, library: String, vendor: String, display: String) {
+pub(super) async fn distribution(
+    world: &mut CliWorld,
+    library: String,
+    vendor: String,
+    display: String,
+) {
     world.set(&["distribution"], "top-level-library", library);
     world.set(&["distribution"], "vendor", vendor);
     world.set(&["distribution"], "display-name", display);
 }
 
 #[given(regex = r#"^library "Lib\.lvlib" holding "A\.vi"$"#)]
-async fn library_with_one_member(world: &mut CliWorld) {
+pub(super) async fn library_with_one_member(world: &mut CliWorld) {
     world.put(
         LIBRARY,
         "<?xml version='1.0' encoding='UTF-8'?>\n<Library LVVersion=\"16008000\">\n\

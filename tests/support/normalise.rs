@@ -19,6 +19,7 @@ use std::sync::LazyLock;
 
 pub const SANDBOX_TOKEN: &str = "<SANDBOX>";
 pub const FEED_TOKEN: &str = "<FEED>";
+pub const REGISTRY_TOKEN: &str = "<registry>";
 pub const LABVIEW_TOKEN: &str = "<LABVIEW>";
 pub const LABVIEW_VERSION_TOKEN: &str = "<LV_VERSION>";
 pub const PORT_TOKEN: &str = "<PORT>";
@@ -82,6 +83,8 @@ pub struct Anchors<'a> {
     pub root: &'a Path,
     /// The loopback feed's `host:port`, when the sandbox runs one.
     pub feed_origin: Option<&'a str>,
+    /// The loopback OCI registry's `host:port`, when the scenario runs one.
+    pub registry_origin: Option<&'a str>,
     /// The LabVIEW installation a venv in this sandbox is bound to.
     pub labview_dir: Option<&'a Path>,
     /// That installation's build number, e.g. `26.3`.
@@ -100,6 +103,7 @@ impl<'a> Anchors<'a> {
         Anchors {
             root,
             feed_origin: None,
+            registry_origin: None,
             labview_dir: None,
             labview_version: None,
             venv_port: None,
@@ -124,6 +128,10 @@ pub fn normalise(text: &str, anchors: &Anchors) -> String {
     if let Some(origin) = anchors.feed_origin {
         let pattern = format!("{}{BOUNDARY}", regex::escape(origin));
         text = replace(&text, &pattern, &format!("{FEED_TOKEN}${{next}}"));
+    }
+    if let Some(origin) = anchors.registry_origin {
+        let pattern = format!("{}{BOUNDARY}", regex::escape(origin));
+        text = replace(&text, &pattern, &format!("{REGISTRY_TOKEN}${{next}}"));
     }
     for (port, token) in [
         (anchors.venv_port, PORT_TOKEN),
@@ -219,6 +227,16 @@ mod tests {
         anchors.labview_port = Some(3364);
         anchors.temp_dir = Some(Path::new(r"C:\Users\me\AppData\Local\Temp"));
         normalise(text, &anchors)
+    }
+
+    #[test]
+    fn the_registry_origin_becomes_a_token_only_where_it_is_the_whole_address() {
+        let mut anchors = Anchors::new(Path::new(r"C:\Users\me\Temp\.tmpAb12"));
+        anchors.registry_origin = Some("127.0.0.1:41000");
+        assert_eq!(
+            normalise("oci://127.0.0.1:41000/team and 127.0.0.1:410001", &anchors),
+            "oci://<registry>/team and 127.0.0.1:410001"
+        );
     }
 
     #[test]

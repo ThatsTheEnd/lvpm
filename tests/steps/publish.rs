@@ -6,7 +6,10 @@ use crate::CliWorld;
 use crate::support::golden::Output;
 use crate::support::project::MANIFEST_FILE;
 use cucumber::{given, then, when};
+use lvpm_testkit::oci::Registry;
+use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// The project that depends on the published package.
 const CONSUMER: &str = "second";
@@ -22,6 +25,13 @@ pub struct PublishState {
     /// A file in the feed (or the `--to` target) as it was before publishing;
     /// `None` inside when nothing was there.
     earlier: Option<Option<Vec<u8>>>,
+    /// The scenario's loopback OCI registry.
+    registry: Option<Registry>,
+    /// The package `lvpm build` wrote, and the repository the scenario last
+    /// looked at on the registry, with its manifest.
+    package: Option<PathBuf>,
+    repository: String,
+    manifest: Option<serde_json::Value>,
 }
 
 impl CliWorld {
@@ -41,8 +51,9 @@ impl CliWorld {
         self.publish.output = Some(self.sandbox.run_lvpm_in(from, &all, None));
     }
 
+    /// What `lvpm publish` printed: the folder steps keep it; "I run" keeps the rest.
     fn published(&self) -> &Output {
-        self.publish.output.as_ref().expect("lvpm publish ran")
+        (self.publish.output.as_ref().or(self.last_output.as_ref())).expect("lvpm publish ran")
     }
 
     fn publish_failed(&self) -> String {
@@ -288,10 +299,12 @@ async fn holds_earlier(world: &mut CliWorld, feed: String, name: String) {
 #[then(regex = r#"^it fails naming "([^"]+)"$"#)]
 async fn fails_naming(world: &mut CliWorld, rel: String) {
     let message = world.publish_failed();
-    assert!(
-        world.message_names(&message, &rel),
-        "the message does not name {rel}: {message}"
-    );
+    // The registry is not a file below the work directory: its token is as it is printed.
+    let named = match rel == REGISTRY {
+        true => message.contains(REGISTRY),
+        false => world.message_names(&message, &rel),
+    };
+    assert!(named, "the message does not name {rel}: {message}");
 }
 
 #[then(regex = r#"^it fails naming "([^"]+)" and saying to run lvpm build$"#)]
@@ -369,4 +382,329 @@ async fn locked_from_local(world: &mut CliWorld, name: String, version: String) 
         "{text}"
     );
     assert_eq!(package["source"].as_str(), Some("local"), "{text}");
+}
+
+// ---- OCI registry (S7b) ----
+//
+// The scenarios run `lvpm` against a loopback fake registry. `<registry>` in a
+// command line is its `host:port`, and in what `lvpm` printed it is the same
+// token again (the sandbox normalises it), so the features read the same on
+// every run. `<folder>` is a folder feed made on first use.
+
+/// What a scenario's command line and `lvpm`'s output call the registry.
+const REGISTRY: &str = "<registry>";
+const FOLDER: &str = "<folder>";
+/// The folder `<folder>` stands for, beside the work directory.
+const FOLDER_FEED: &str = "published";
+/// The annotation that holds when the package was published.
+const CREATED: &str = "org.opencontainers.image.created";
+
+impl CliWorld {
+    /// `line` with `<registry>` and `<folder>` filled in.
+    pub(crate) fn with_placeholders(&self, line: &str) -> String {
+        let line = match &self.publish.registry {
+            Some(registry) => line.replace(REGISTRY, &registry.host()),
+            None => line.to_string(),
+        };
+        match line.contains(FOLDER) {
+            true => {
+                std::fs::create_dir_all(self.sandbox.root().join(FOLDER_FEED))
+                    .expect("create the folder feed");
+                line.replace(FOLDER, &format!("../{FOLDER_FEED}"))
+            }
+            false => line,
+        }
+    }
+
+    fn registry(&self) -> &Registry {
+        self.publish
+            .registry
+            .as_ref()
+            .expect("a loopback OCI registry")
+    }
+
+    /// What `lvpm` printed last: the OCI publish's output is `last_output`.
+    fn last_printed(&self) -> &Output {
+        self.last_output.as_ref().expect("lvpm ran")
+    }
+
+    /// The manifest of the tag the scenario last looked at, as JSON.
+    fn oci_manifest(&self) -> &serde_json::Value {
+        self.publish
+            .manifest
+            .as_ref()
+            .expect("a manifest was looked at")
+    }
+}
+
+#[given("a loopback OCI registry")]
+async fn loopback_registry(world: &mut CliWorld) {
+    let registry = Registry::start();
+    world.sandbox.set_registry(&registry.host());
+    world.publish.registry = Some(registry);
+}
+
+#[given(
+    regex = r#"^a project "([^"]+)" ([0-9.]+) that lvpm build has packaged, requiring "([^"]+)" and LabVIEW ([0-9]+)\.0$"#
+)]
+async fn packaged_project(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    requires: String,
+    labview: u32,
+) {
+    use super::build::{distribution, library_with_one_member, project};
+    project(
+        world,
+        name.clone(),
+        version.clone(),
+        format!(">={}", 2000 + labview),
+    )
+    .await;
+    distribution(
+        world,
+        "Lib.lvlib".into(),
+        "Vendor".into(),
+        "Alpha Lib".into(),
+    )
+    .await;
+    library_with_one_member(world).await;
+    let (dependency, constraint) = requires.split_once(' ').expect("a name and a constraint");
+    world.set(&["dependencies"], dependency, constraint);
+    world.write_build_manifest();
+    let built = world.sandbox.run_lvpm(&["build", "--no-check"], None);
+    assert_eq!(built.exit_code, 0, "lvpm build failed: {built:?}");
+    world.publish.package = Some(world.work("dist").join(format!("{name}-{version}.lvpkg")));
+}
+
+#[given(regex = r#"^a package "([^"]+)" whose metadata gives version (\S+)$"#)]
+async fn package_with_version(world: &mut CliWorld, name: String, version: String) {
+    let path = world.publish.package.clone().expect("a built package");
+    let meta = lvpm_core::lvpkg::Meta {
+        name,
+        version,
+        labview: ">=2021".into(),
+        vendor: "Vendor".into(),
+        display_name: "Alpha Lib".into(),
+        install_dir: "vi.lib/Vendor/Lib".into(),
+        dependencies: Vec::new(),
+    };
+    let bytes = lvpm_core::lvpkg::write(&meta, &[("A.vi".into(), b"a vi".to_vec())], None)
+        .expect("a package");
+    std::fs::write(path, bytes).expect("replace the built package");
+}
+
+#[given(regex = r#"^the registry already holds tag "([^"]+)" in repository "([^"]+)"$"#)]
+async fn registry_holds_tag(world: &mut CliWorld, tag: String, repository: String) {
+    world
+        .registry()
+        .seed_manifest(&repository, &tag, br#"{"schemaVersion":2}"#);
+}
+
+#[given(
+    regex = r#"^the registry will create tag "([^"]+)" in "([^"]+)" once the first blob is uploaded$"#
+)]
+async fn registry_creates_tag(world: &mut CliWorld, tag: String, repository: String) {
+    world
+        .registry()
+        .create_tag_after_first_blob(&repository, &tag);
+}
+
+#[given("the registry is down")]
+async fn registry_is_down(world: &mut CliWorld) {
+    world.registry().go_down();
+}
+
+/// A publish uploads the config and then the layer: two blobs.
+#[given(regex = r#"^the registry went down after the blobs of "([^"]+)" were uploaded$"#)]
+async fn registry_down_after_blobs(world: &mut CliWorld, _reference: String) {
+    world.registry().go_down_after_blob_uploads(2);
+}
+
+#[given(regex = r#"^the registry answers (\d+) to a HEAD of "([^"]+):([^":]+)"$"#)]
+async fn registry_answers_to_head(world: &mut CliWorld, status: u16, repo: String, tag: String) {
+    world
+        .registry()
+        .answer("HEAD", &format!("/v2/{repo}/manifests/{tag}"), status);
+}
+
+#[given(regex = r#"^I ran "([^"]+)" and it failed$"#)]
+async fn ran_and_failed(world: &mut CliWorld, command_line: String) {
+    world.run(&command_line, None);
+    let out = world.last_printed();
+    assert_ne!(out.exit_code, 0, "the command succeeded: {out:?}");
+}
+
+#[when(regex = r#"^the registry is back and I run "([^"]+)"$"#)]
+async fn registry_back_and_run(world: &mut CliWorld, command_line: String) {
+    world.registry().come_back();
+    world.registry().clear_requests();
+    world.run(&command_line, None);
+}
+
+#[then(regex = r#"^it fails saying "([^"]+)"$"#)]
+async fn fails_saying(world: &mut CliWorld, text: String) {
+    let message = world.publish_failed();
+    assert!(message.contains(&text), "{text:?} is not in: {message}");
+}
+
+#[then(regex = r#"^it fails saying "([^"]+)" is not a valid OCI tag$"#)]
+async fn fails_saying_not_a_tag(world: &mut CliWorld, version: String) {
+    let message = world.publish_failed();
+    let text = format!("{version} is not a valid OCI tag");
+    assert!(message.contains(&text), "{text:?} is not in: {message}");
+}
+
+#[then(regex = r#"^the output does not contain "([^"]+)"$"#)]
+async fn output_does_not_contain(world: &mut CliWorld, text: String) {
+    let out = world.last_printed();
+    assert!(
+        !out.stdout.contains(&text) && !out.stderr.contains(&text),
+        "{text:?} is in: {out:?}"
+    );
+}
+
+#[then(regex = r#"^the output gives the OCI manifest digest of "([^":]+):([^":]+)"$"#)]
+async fn output_gives_digest(world: &mut CliWorld, repository: String, tag: String) {
+    let digest = world
+        .registry()
+        .tag_digest(&repository, &tag)
+        .unwrap_or_else(|| panic!("the registry holds no {repository}:{tag}"));
+    let out = world.last_printed();
+    let line = format!("OCI manifest digest {digest}");
+    assert!(
+        out.stdout.lines().any(|l| l.trim() == line),
+        "no {line:?} in {out:?}"
+    );
+}
+
+#[then(regex = r#"^the registry holds tag "([^"]+)" in repository "([^"]+)"$"#)]
+async fn registry_has_tag(world: &mut CliWorld, tag: String, repository: String) {
+    let registry = world.registry();
+    let digest = registry
+        .tag_digest(&repository, &tag)
+        .unwrap_or_else(|| panic!("the registry holds no {repository}:{tag}"));
+    let bytes = registry
+        .manifest(&repository, &digest)
+        .expect("the manifest of the tag");
+    assert_eq!(lvpm_core::oci::digest_of(&bytes), digest);
+    world.publish.manifest = Some(serde_json::from_slice(&bytes).expect("a JSON manifest"));
+    world.publish.repository = repository;
+}
+
+#[then(regex = r#"^that OCI manifest has artifactType "([^"]+)"$"#)]
+async fn manifest_artifact_type(world: &mut CliWorld, media_type: String) {
+    assert_eq!(world.oci_manifest()["artifactType"], media_type.as_str());
+}
+
+#[then(regex = r#"^its config has media type "([^"]+)"$"#)]
+async fn manifest_config_type(world: &mut CliWorld, media_type: String) {
+    assert_eq!(
+        world.oci_manifest()["config"]["mediaType"],
+        media_type.as_str()
+    );
+}
+
+#[then(regex = r#"^its one layer has media type "([^"]+)" and the package's bytes$"#)]
+async fn manifest_layer(world: &mut CliWorld, media_type: String) {
+    let layers = world.oci_manifest()["layers"]
+        .as_array()
+        .expect("layers")
+        .clone();
+    assert_eq!(layers.len(), 1, "{layers:?}");
+    assert_eq!(layers[0]["mediaType"], media_type.as_str());
+    let package =
+        std::fs::read(world.publish.package.as_ref().expect("a package")).expect("the package");
+    let digest = lvpm_core::oci::digest_of(&package);
+    assert_eq!(layers[0]["digest"], digest.as_str());
+    assert_eq!(layers[0]["size"], package.len());
+    let held = world.registry().blob(&world.publish.repository, &digest);
+    assert!(
+        held.as_deref() == Some(package.as_slice()),
+        "the layer's blob differs from the package"
+    );
+}
+
+#[then("its annotations are:")]
+async fn manifest_annotations(world: &mut CliWorld, step: &cucumber::gherkin::Step) {
+    let table = step.table.as_ref().expect("a table of annotations");
+    let mut want: Vec<(String, String)> = table
+        .rows
+        .iter()
+        .skip(1)
+        .map(|row| (row[0].clone(), row[1].clone()))
+        .collect();
+    let mut got: Vec<(String, String)> = world.oci_manifest()["annotations"]
+        .as_object()
+        .expect("annotations")
+        .iter()
+        .filter(|(key, _)| key.as_str() != CREATED)
+        .map(|(key, value)| (key.clone(), value.as_str().expect("text").to_string()))
+        .collect();
+    want.sort();
+    got.sort();
+    assert_eq!(got, want);
+}
+
+#[then(regex = r#"^annotation "([^"]+)" is an RFC 3339 time$"#)]
+async fn annotation_is_a_time(world: &mut CliWorld, key: String) {
+    static RFC3339: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$").expect("a valid pattern")
+    });
+    let value = world.oci_manifest()["annotations"][&key]
+        .as_str()
+        .unwrap_or_default();
+    assert!(RFC3339.is_match(value), "{key} is {value:?}");
+}
+
+#[then("the registry received no blob or manifest write")]
+async fn registry_no_writes(world: &mut CliWorld) {
+    let writes = world.registry().writes();
+    assert!(writes.is_empty(), "writes: {writes:?}");
+}
+
+#[then("the registry received no manifest write")]
+async fn registry_no_manifest_write(world: &mut CliWorld) {
+    let writes = world.registry().writes();
+    assert!(
+        writes.iter().all(|w| !w.path.contains("/manifests/")),
+        "writes: {writes:?}"
+    );
+}
+
+#[then("the registry received no request")]
+async fn registry_no_request(world: &mut CliWorld) {
+    let requests = world.registry().requests();
+    assert!(requests.is_empty(), "requests: {requests:?}");
+}
+
+/// Only the rerun's own requests are in the log: it must write the manifest
+/// and nothing else.
+#[then("the registry received no second upload of a blob it already held")]
+async fn registry_no_second_upload(world: &mut CliWorld) {
+    let writes = world.registry().writes();
+    assert!(
+        writes
+            .iter()
+            .all(|w| w.method == "PUT" && w.path.contains("/manifests/")),
+        "writes: {writes:?}"
+    );
+    assert_eq!(writes.len(), 1, "writes: {writes:?}");
+}
+
+#[then("the package file is in the folder")]
+async fn package_in_folder(world: &mut CliWorld) {
+    let package = world.publish.package.clone().expect("a package");
+    let published = world
+        .sandbox
+        .root()
+        .join(FOLDER_FEED)
+        .join(package.file_name().expect("a file name"));
+    let (copy, built) = (std::fs::read(&published), std::fs::read(&package));
+    assert!(
+        copy.is_ok() && copy.ok() == built.ok(),
+        "{} is not the built package",
+        published.display()
+    );
 }
