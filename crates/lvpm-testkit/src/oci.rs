@@ -79,6 +79,8 @@ struct State {
     repos: BTreeMap<String, Repo>,
     log: Vec<LoggedRequest>,
     down: bool,
+    /// Connections a registry that is down accepted and closed unanswered.
+    turned_away: usize,
     /// The registry goes down once this many blobs have been uploaded.
     down_after_blobs: Option<usize>,
     blobs_uploaded: usize,
@@ -138,7 +140,8 @@ impl Registry {
     }
 
     /// From now on a connection is accepted and closed unanswered, as a
-    /// registry that went away does. Nothing it was asked is logged.
+    /// registry that went away does. Nothing it was asked is logged, but the
+    /// connections are counted: [`Registry::turned_away`].
     pub fn go_down(&self) {
         lock(&self.state).down = true;
     }
@@ -320,7 +323,15 @@ impl Registry {
     }
 
     pub fn clear_requests(&self) {
-        lock(&self.state).log.clear();
+        let mut state = lock(&self.state);
+        state.log.clear();
+        state.turned_away = 0;
+    }
+
+    /// How many connections the registry accepted and closed unanswered while
+    /// it was down: a client that tried it, whatever it made of the silence.
+    pub fn turned_away(&self) -> usize {
+        lock(&self.state).turned_away
     }
 }
 
@@ -344,8 +355,12 @@ fn store_tag(repo: &mut Repo, tag: &str, stored: Stored) -> String {
 }
 
 fn handle(mut stream: TcpStream, state: &Mutex<State>, addr: SocketAddr) -> std::io::Result<()> {
-    if lock(state).down {
-        return Ok(());
+    {
+        let mut state = lock(state);
+        if state.down {
+            state.turned_away += 1;
+            return Ok(());
+        }
     }
     let request = accept(&mut stream)?;
     let body = read_body(&mut stream, &request)?;
@@ -939,6 +954,7 @@ mod tests {
         registry.go_down();
         assert!(unanswered(&registry));
         assert!(registry.requests().is_empty());
+        assert_eq!(registry.turned_away(), 1);
         registry.come_back();
         let tags = get_from(registry.addr(), "/v2/t/a/tags/list", AUTH);
         assert_eq!(tags.status_line, "HTTP/1.1 404 Not Found");

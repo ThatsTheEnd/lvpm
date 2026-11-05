@@ -733,10 +733,16 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
     let fault = |error: oci::Error| ListingFault::of(&error);
     let mut found = Vec::new();
     for tag in oci.list_tags(&repo).map_err(fault)? {
+        // The registry names the tags: one that is no tag is never put in a URL.
+        if !oci::valid_tag(&tag) {
+            continue;
+        }
         let manifest = oci.get_manifest(&repo, &tag).map_err(fault)?;
-        let entry = manifest
-            .package()
-            .and_then(|package| oci_entry(feed, &repository, &package));
+        let entry = (manifest.package())
+            .and_then(|package| oci_entry(feed, &repository, &package))
+            // A manifest in this repository speaks for this package only: a
+            // lock finds it again by the name, and the source is asked for no other.
+            .filter(|entry| same_name(&entry.name, package));
         found.extend(entry);
     }
     Ok(found)

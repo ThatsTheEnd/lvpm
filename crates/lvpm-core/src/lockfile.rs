@@ -199,7 +199,7 @@ impl LockedPackage {
     /// other source.
     pub fn oci_reference(&self) -> Option<crate::oci::Reference> {
         let feed = crate::oci::FeedUrl::parse(&self.source).ok()?;
-        let digest = self.digest.clone()?;
+        let digest = (self.digest.clone()).filter(|d| crate::oci::reference::valid_digest(d))?;
         Some(crate::oci::Reference {
             registry: feed.registry().to_string(),
             repository: feed.repository(&self.name)?,
@@ -534,6 +534,11 @@ mod tests {
             format!("oci://r:5000/org/alpha@{digest}")
         );
         assert_eq!(package("alpha", "2.0").oci_reference(), None);
+        // A hand-edited digest is no address: it never reaches a request.
+        for bad in ["latest", "sha256:../x", &digest.to_uppercase()] {
+            alpha.digest = Some(bad.to_string());
+            assert_eq!(alpha.oci_reference(), None, "{bad}");
+        }
     }
 
     #[test]

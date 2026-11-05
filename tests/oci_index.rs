@@ -113,6 +113,36 @@ fn a_name_nothing_is_pinned_for_is_never_asked_and_a_source_with_no_pins_is_not_
 }
 
 #[test]
+fn a_manifest_that_names_another_package_is_not_an_entry_of_the_pinned_one() {
+    let registry = Registry::start();
+    seed(&registry, "alpha", "1.0.0");
+    // Tagged in alpha's repository, and claiming to be beta.
+    registry.seed_package(
+        "team/alpha",
+        "2.0.0",
+        &[
+            ("org.opencontainers.image.title", "beta"),
+            ("org.opencontainers.image.version", "2.0.0"),
+        ],
+        b"beta 2.0.0",
+    );
+    let loaded = load(&[feed(&registry, &["alpha"])]).unwrap();
+    let listed: Vec<_> = loaded.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(listed, ["alpha"]);
+}
+
+#[test]
+fn a_tag_that_is_no_tag_is_never_asked_for() {
+    let registry = Registry::start();
+    seed(&registry, "alpha", "1.0.0");
+    registry.seed_manifest("team/alpha", "x?y#z", b"{}");
+    let loaded = load(&[feed(&registry, &["alpha"])]).unwrap();
+    assert_eq!(loaded.entries.len(), 1);
+    let asked: Vec<String> = registry.requests().into_iter().map(|r| r.path).collect();
+    assert!(asked.iter().all(|path| !path.contains('#')), "{asked:?}");
+}
+
+#[test]
 fn a_manifest_that_is_not_a_package_is_skipped() {
     let registry = Registry::start();
     registry.seed_image("team/alpha", "1.2.0");

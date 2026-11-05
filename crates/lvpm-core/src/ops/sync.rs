@@ -715,6 +715,15 @@ impl<'a> Search<'a> {
         source: &str,
     ) -> Result<(), LockError> {
         let Some(manifest) = self.locked.oci_reference() else {
+            // Only a hand-edited lock: say so, not "not found".
+            let (name, version) = (&self.locked.name, &self.locked.version);
+            self.unfetched = Some(Unfetched {
+                reason: format!(
+                    "{name} {version}: the lock's source and digest do not name an OCI \
+                     manifest; run lvpm lock"
+                ),
+                in_full: true,
+            });
             return Ok(());
         };
         let entry = Entry {

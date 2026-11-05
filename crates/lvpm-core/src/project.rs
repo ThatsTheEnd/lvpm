@@ -273,9 +273,24 @@ fn feed_of(name: &str, url: &str) -> Result<Feed> {
         return oci_feed(name, url).map(Feed::Oci);
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        bail!("[sources] {name}: {url:?} is not an http:// or https:// index folder");
+        bail!(
+            "[sources] {name}: {:?} is not an http:// or https:// index folder",
+            without_userinfo(url)
+        );
     }
     Ok(Feed::Hosted(url.to_string()))
+}
+
+/// `url` without a `user:password@` part, for a message: a scheme written as
+/// `OCI://` is not recognised as an OCI source, and must not carry its secret
+/// into the output.
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    // The last `@`: a password may hold a slash, so the authority's end is unknown.
+    let tail = rest.rsplit_once('@').map_or(rest, |(_, tail)| tail);
+    format!("{scheme}://{tail}")
 }
 
 /// `oci://host/prefix`. A URL with `user:password@` is refused without a word
@@ -1121,6 +1136,15 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
                 "{url}"
             );
         }
+        // A scheme in capitals is no OCI source, and still keeps the secret out.
+        let why = parse(&format!(
+            "[sources]\nteam = \"OCI://{user}:{secret}/x@r:5000/team\"\n"
+        ))
+        .unwrap()
+        .resolved_sources()
+        .unwrap_err()
+        .to_string();
+        assert!(!why.contains(user) && !why.contains(secret), "{why}");
         // A tail that is no registry is not echoed either, so the message
         // cannot carry the secret.
         let why = parse(&format!(

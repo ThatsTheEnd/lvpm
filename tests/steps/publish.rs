@@ -713,6 +713,9 @@ async fn registry_no_manifest_write(world: &mut CliWorld) {
 async fn registry_no_request(world: &mut CliWorld) {
     let requests = world.registry().requests();
     assert!(requests.is_empty(), "requests: {requests:?}");
+    // A registry that is down logs nothing, so the tries are counted too.
+    let tries = world.registry().turned_away();
+    assert_eq!(tries, 0, "connections turned away while it was down");
 }
 
 /// Only the rerun's own requests are in the log: it must write the manifest

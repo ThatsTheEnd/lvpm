@@ -222,7 +222,7 @@ pub struct ListingFailures(Vec<ListingFailure>);
 
 impl ListingFailures {
     pub fn new(mut failures: Vec<ListingFailure>) -> ListingFailures {
-        failures.sort_by(|a, b| a.package.cmp(&b.package));
+        failures.sort_by_cached_key(|f| crate::project::name_key(&f.package));
         ListingFailures(failures)
     }
 
