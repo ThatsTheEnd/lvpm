@@ -204,8 +204,8 @@ Feature: lvpm build writes an SBOM, and builds applications
   @labview
   Scenario: the pilot application builds headless from its venv
     Given a copy of the pilot application and the pilots, side by side in the sandbox
-    And lvpm venv create and lvpm sync have run in it
     And LabVIEW runs headless
+    And lvpm venv create and lvpm sync have run in it
     When I run "lvpm build --app"
     Then the command succeeds
     And "builds/<the build spec's folder>/Main.exe" exists, with bom.cdx.json next to it
