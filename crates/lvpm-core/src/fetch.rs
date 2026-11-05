@@ -284,6 +284,15 @@ mod tests {
     }
 
     #[test]
+    fn an_oci_reference_is_never_read_as_a_file_and_is_not_on_hand() {
+        let (root, cache) = test_cache("oci-on-hand");
+        let reference = format!("oci://r:5000/team/alpha@sha256:{}", "ab".repeat(32));
+        assert_eq!(on_hand(&cache, &entry(reference, None)).unwrap(), None);
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn a_cancelled_token_fetches_nothing() {
         let (root, cache) = test_cache("cancelled-before");
         let token = CancelToken::new();

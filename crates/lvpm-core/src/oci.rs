@@ -23,7 +23,7 @@ mod manifest;
 pub mod reference;
 
 pub use manifest::Manifest;
-pub use reference::{FeedUrl, Reference, Target, UrlError, valid_tag};
+pub use reference::{FeedUrl, Reference, SCHEME, Target, UrlError, valid_tag};
 
 /// The manifest's `artifactType`: what tells a package from any other artifact.
 pub const ARTIFACT_TYPE: &str = "application/vnd.lvpm.package.v1";

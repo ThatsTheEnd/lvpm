@@ -420,7 +420,8 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let feeds = index::feeds(&project.resolved_sources()?, project.default_sources);
+    let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+    let feeds = index::feeds(&hosted, project.default_sources);
     let pins = source_pins(project)?;
     let hashes = hash_archives(env, index, &resolution, previous, &pins, &feeds)?;
     let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
@@ -588,9 +589,10 @@ struct SourcePin<'a> {
 /// error, not a pin left out: the manifest reader already refuses one, and
 /// ignoring it would let the package come from any source.
 fn source_pins(project: &Project) -> Result<Vec<SourcePin<'_>>, LockError> {
+    let feeds = project.resolved_sources()?;
     (project.source_pins.iter())
         .map(|(package, source)| {
-            let (_, folder) = (project.sources.iter())
+            let (_, feed) = (feeds.iter())
                 .find(|(name, _)| name == source)
                 .ok_or_else(|| {
                     anyhow::anyhow!("{package}: index = {source:?} is not a [sources] name")
@@ -598,7 +600,7 @@ fn source_pins(project: &Project) -> Result<Vec<SourcePin<'_>>, LockError> {
             Ok(SourcePin {
                 package,
                 source,
-                feed: index::feed_url(folder),
+                feed: feed.owner(),
             })
         })
         .collect()

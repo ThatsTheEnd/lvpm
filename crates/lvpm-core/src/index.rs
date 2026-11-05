@@ -11,7 +11,8 @@ use crate::cache::{Cache, LocalEntry, SourceState};
 use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::events::{Event, EventSink, FeedOutcome};
-use crate::project::same_name;
+use crate::oci::{self, Oci};
+use crate::project::{Feed, same_name};
 use crate::version::{Version, split_id};
 use anyhow::{Context, Result};
 use md5::{Digest, Md5};
@@ -235,9 +236,13 @@ pub(crate) fn md5_hex(bytes: &[u8]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An entry's download location, once resolved: a URL to fetch or a file to read.
+/// An entry's download location, once resolved: a URL to fetch or a file to
+/// read. An `oci://` reference is neither: it is fetched through the registry
+/// client.
 pub(crate) fn is_local_url(url: &str) -> bool {
-    !url.starts_with("http://") && !url.starts_with("https://")
+    !["http://", "https://", oci::SCHEME]
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
 }
 
 /// Index every `.vip` and `.lvpkg` in a local package directory from each package's spec.
@@ -447,19 +452,52 @@ pub(crate) fn feeds(extra: &[String], defaults: bool) -> Vec<(String, String)> {
 pub(crate) type Owners = HashMap<String, Option<String>>;
 
 /// The [`Owners`] of `pinned`, which is package name to source name, with
-/// `sources` as (name, folder URL) pairs. A pin naming no source in `sources`
+/// `sources` as (name, feed) pairs. A pin naming no source in `sources`
 /// has no owner, so no entry matches it and its name is listed nowhere: it
 /// fails closed. The manifest reader already refuses such a pin.
-pub(crate) fn owners(sources: &[(String, String)], pinned: &BTreeMap<String, String>) -> Owners {
+pub(crate) fn owners(sources: &[(String, Feed)], pinned: &BTreeMap<String, String>) -> Owners {
     pinned
         .iter()
         .map(|(package, source)| {
             let owner = (sources.iter())
                 .find(|(name, _)| name == source)
-                .map(|(_, folder)| feed_url(folder));
+                .map(|(_, feed)| feed.owner());
             (crate::project::name_key(package), owner)
         })
         .collect()
+}
+
+/// An OCI source and the packages pinned to it: a registry lists nothing, so
+/// these are the only names it is asked for.
+#[derive(Debug, Clone)]
+pub struct OciFeed {
+    /// The `[sources]` name.
+    pub name: String,
+    pub url: oci::FeedUrl,
+    /// The pinned packages, as the manifest writes them.
+    pub pinned: Vec<String>,
+}
+
+/// `sources` cut into what the hosted-feed reader takes (the index folders)
+/// and what the OCI reader takes (each OCI feed with its pinned packages).
+pub fn split_sources(
+    sources: Vec<(String, Feed)>,
+    pins: &BTreeMap<String, String>,
+) -> (Vec<String>, Vec<OciFeed>) {
+    let (mut hosted, mut registries) = (Vec::new(), Vec::new());
+    for (name, feed) in sources {
+        match feed {
+            Feed::Hosted(folder) => hosted.push(folder),
+            Feed::Oci(url) => {
+                let pinned = (pins.iter())
+                    .filter(|(_, source)| **source == name)
+                    .map(|(package, _)| package.clone())
+                    .collect();
+                registries.push(OciFeed { name, url, pinned });
+            }
+        }
+    }
+    (hosted, registries)
 }
 
 /// Where an entry with this `url` came from: the index URL of the feed whose
@@ -493,12 +531,19 @@ pub fn load(
     cache_dir: &Path,
     refresh: bool,
     sources: &SourceSet,
+    oci: &Oci,
     sink: &dyn EventSink,
     cancel: &CancelToken,
 ) -> Result<Index> {
-    let loaded = read_each(cache_dir, refresh, sources, sink, cancel, |_, error| {
-        Err(error)
-    })?;
+    let loaded = read_each(
+        cache_dir,
+        refresh,
+        sources,
+        oci,
+        sink,
+        cancel,
+        |_, error| Err(error),
+    )?;
     Ok(loaded.index)
 }
 
@@ -510,6 +555,9 @@ pub struct SourceSet<'a> {
     pub local: &'a [PathBuf],
     /// Whether the public indexes are read too.
     pub defaults: bool,
+    /// OCI sources, each asked only for the packages pinned to it, after
+    /// every hosted feed.
+    pub oci: &'a [OciFeed],
 }
 
 /// What [`load_each`] read, and the name of every source it was asked to.
@@ -523,16 +571,18 @@ pub struct Loaded {
 /// an `Err` back ends the load, an `Ok` skips that source. A cache error while
 /// reading a source counts as that source failing. `owners` is what [`owners`]
 /// builds; [`first_source_wins`] says what it does to the entries.
+#[allow(clippy::too_many_arguments)]
 pub fn load_each(
     cache_dir: &Path,
     refresh: bool,
     sources: &SourceSet,
     owners: &Owners,
+    oci: &Oci,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
 ) -> Result<Loaded> {
-    let read = read_each(cache_dir, refresh, sources, sink, cancel, on_fail)?;
+    let read = read_each(cache_dir, refresh, sources, oci, sink, cancel, on_fail)?;
     let index = Index {
         entries: first_source_wins(read.index.entries, owners),
     };
@@ -547,6 +597,7 @@ fn read_each(
     cache_dir: &Path,
     refresh: bool,
     source_set: &SourceSet,
+    oci: &Oci,
     sink: &dyn EventSink,
     cancel: &CancelToken,
     mut on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
@@ -555,6 +606,7 @@ fn read_each(
         extra,
         local,
         defaults,
+        oci: oci_feeds,
     } = source_set;
     let mut entries = Vec::new();
     let mut sources = Vec::new();
@@ -591,27 +643,28 @@ fn read_each(
     }
 
     let feeds = feeds(extra, *defaults);
-    if feeds.is_empty() {
-        let index = Index { entries };
-        return Ok(Loaded { index, sources });
-    }
-    let client = Client::builder()
-        .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
-        .build()?;
-    for (url, base) in &feeds {
-        if cancel.is_cancelled() {
-            return Err(Cancelled.into());
-        }
-        sources.push(url.clone());
-        match feed_body(&cache, &client, url, base, refresh, sink) {
-            Ok(body) => {
-                let start = entries.len();
-                parse_into(&body, base, &mut entries);
-                label(&mut entries[start..], url);
+    if !feeds.is_empty() {
+        let client = Client::builder()
+            .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+        for (url, base) in &feeds {
+            if cancel.is_cancelled() {
+                return Err(Cancelled.into());
             }
-            Err(error) => on_fail(url, error)?,
+            sources.push(url.clone());
+            match feed_body(&cache, &client, url, base, refresh, sink) {
+                Ok(body) => {
+                    let start = entries.len();
+                    parse_into(&body, base, &mut entries);
+                    label(&mut entries[start..], url);
+                }
+                Err(error) => on_fail(url, error)?,
+            }
         }
     }
+
+    // The OCI sources are listed in the next step.
+    let _ = (oci, oci_feeds);
 
     let index = Index { entries };
     Ok(Loaded { index, sources })
@@ -945,7 +998,9 @@ mod tests {
                 extra,
                 local: local_sources,
                 defaults,
+                oci: &[],
             },
+            &Oci::default(),
             sink,
             &CancelToken::new(),
         )
@@ -1320,8 +1375,9 @@ mod tests {
                 extra: &feeds,
                 local: &[],
                 defaults: false,
+                oci: &[],
             };
-            super::load(&root, false, &sources, sink, token)
+            super::load(&root, false, &sources, &Oci::default(), sink, token)
         };
 
         // Cancelled before the first request: no feed is asked.
@@ -1628,13 +1684,19 @@ Package.Display Name=A Thing
 
     #[test]
     fn a_source_pin_is_owned_by_the_feed_url_of_its_folder_with_or_without_a_slash() {
+        let hosted = |folder: &str| Feed::Hosted(folder.to_string());
         let sources = [
-            ("first".to_string(), "http://h/one".to_string()),
-            ("second".to_string(), "http://h/two/".to_string()),
+            ("first".to_string(), hosted("http://h/one")),
+            ("second".to_string(), hosted("http://h/two/")),
+            (
+                "team".to_string(),
+                Feed::Oci(oci::FeedUrl::parse("oci://r:5000/org").unwrap()),
+            ),
         ];
         let pinned = BTreeMap::from([
             ("Alpha".to_string(), "first".to_string()),
             ("beta".to_string(), "second".to_string()),
+            ("delta".to_string(), "team".to_string()),
             // Names no entry of `sources`: nothing owns it.
             ("gamma".to_string(), "nope".to_string()),
         ]);
@@ -1649,10 +1711,60 @@ Package.Display Name=A Thing
                     "beta".to_string(),
                     Some("http://h/two/index.vipr".to_string())
                 ),
+                ("delta".to_string(), Some("oci://r:5000/org".to_string())),
                 ("gamma".to_string(), None),
             ])
         );
         assert!(owners(&sources, &BTreeMap::new()).is_empty());
+    }
+
+    #[test]
+    fn an_oci_reference_is_neither_a_local_file_nor_a_hosted_download() {
+        let reference = format!("oci://r:5000/team/alpha@sha256:{}", "ab".repeat(32));
+        assert!(!is_local_url(&reference));
+        assert!(!is_local_url("http://h/a.vip") && !is_local_url("https://h/a.vip"));
+        assert!(is_local_url("C:/packages/a.vip") && is_local_url("cache:ab"));
+        // Not credited to a hosted feed, whatever folder it is compared with.
+        let feeds = [("http://h/index.vipr".to_string(), "http://h/".to_string())];
+        assert_eq!(source_of(&reference, &feeds), reference);
+    }
+
+    #[test]
+    fn the_sources_split_into_hosted_folders_and_oci_feeds_with_their_pins() {
+        let oci = |url: &str| Feed::Oci(oci::FeedUrl::parse(url).unwrap());
+        let sources = vec![
+            ("net".to_string(), Feed::Hosted("http://h/x".to_string())),
+            ("team".to_string(), oci("oci://r:5000/team")),
+            ("idle".to_string(), oci("oci://r:5000/idle")),
+        ];
+        let pins = BTreeMap::from([
+            ("Alpha".to_string(), "team".to_string()),
+            ("beta".to_string(), "net".to_string()),
+            ("gamma".to_string(), "team".to_string()),
+        ]);
+        let (hosted, registries) = split_sources(sources, &pins);
+        assert_eq!(hosted, ["http://h/x"]);
+        let split: Vec<(&str, String, &[String])> = registries
+            .iter()
+            .map(|feed| {
+                (
+                    feed.name.as_str(),
+                    feed.url.to_string(),
+                    feed.pinned.as_slice(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            split,
+            [
+                (
+                    "team",
+                    "oci://r:5000/team".to_string(),
+                    ["Alpha".to_string(), "gamma".to_string()].as_slice()
+                ),
+                ("idle", "oci://r:5000/idle".to_string(), [].as_slice()),
+            ]
+        );
     }
 
     #[test]
@@ -1706,7 +1818,10 @@ Package.Display Name=A Thing
     #[test]
     fn a_source_pin_naming_an_unknown_source_matches_no_entry_and_does_not_fall_back() {
         let owners = owners(
-            &[("second".to_string(), "http://h/two".to_string())],
+            &[(
+                "second".to_string(),
+                Feed::Hosted("http://h/two".to_string()),
+            )],
             &BTreeMap::from([("alpha".to_string(), "nope".to_string())]),
         );
         let listed = |name: &str, source: &str| Entry {
@@ -1750,12 +1865,14 @@ Package.Display Name=A Thing
             extra: &[],
             local: &folders,
             defaults: false,
+            oci: &[],
         };
         let resolved = load_each(
             &root,
             false,
             &sources,
             &HashMap::new(),
+            &Oci::default(),
             &NullSink,
             &CancelToken::new(),
             |_, error| Err(error),

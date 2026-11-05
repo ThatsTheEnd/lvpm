@@ -39,6 +39,13 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             Stream::Err,
             &format!("  ! ignoring {}: {error}", path.display()),
         ),
+        Event::OciSourceUnpinned { name } => r.line(
+            Stream::Err,
+            &format!(
+                "warning: OCI source \"{name}\" has no package pinned to it and is never asked; \
+                 pin a package with index = \"{name}\""
+            ),
+        ),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
 }
@@ -49,6 +56,20 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn an_oci_source_nothing_is_pinned_to_is_a_warning_naming_how_to_pin() {
+        let (mut renderer, out, err) = renderer();
+        renderer.render(&Event::OciSourceUnpinned {
+            name: "team".into(),
+        });
+        assert_eq!(
+            err.text(),
+            "warning: OCI source \"team\" has no package pinned to it and is never asked; pin a \
+             package with index = \"team\"\n"
+        );
+        assert_eq!(out.text(), "");
+    }
 
     const URL: &str = "http://feed.example/index.vipr";
 

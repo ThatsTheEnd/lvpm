@@ -9,6 +9,7 @@ use crate::support::feed::{PROJECT_FEED_DIR, index_path};
 use cucumber::{then, when};
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::events::{Event, FeedOutcome};
+use lvpm_core::oci::Oci;
 use lvpm_core::{index, project};
 
 /// What `lvpm search` does to get its index: the project's own sources, the
@@ -18,14 +19,18 @@ async fn core_loads_the_index(world: &mut CliWorld) {
     let manifest = project::find_manifest(&world.sandbox.work_dir()).expect("a project manifest");
     let project = project::read(&manifest).expect("a readable manifest");
     let sink = RecordingSink::default();
+    let feeds = project.resolved_sources().expect("the project's sources");
+    let (hosted, registries) = index::split_sources(feeds, &project.source_pins);
     index::load(
         &world.sandbox.cache_dir(),
         false,
         &index::SourceSet {
-            extra: &project.resolved_sources().expect("the project's sources"),
+            extra: &hosted,
             local: &[],
             defaults: project.default_sources,
+            oci: &registries,
         },
+        &Oci::default(),
         &sink,
         &CancelToken::new(),
     )

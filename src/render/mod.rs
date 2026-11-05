@@ -70,7 +70,8 @@ impl Renderer {
             Event::PhaseStarted { .. } => {}
             Event::FeedCheckStart { .. }
             | Event::FeedChecked { .. }
-            | Event::LocalPackageIgnored { .. } => index::render(self, event),
+            | Event::LocalPackageIgnored { .. }
+            | Event::OciSourceUnpinned { .. } => index::render(self, event),
             Event::RelinkDoneNotClearable { .. }
             | Event::RelinkProgress { .. }
             | Event::RelinkProgressUnreadable { .. }

@@ -745,7 +745,9 @@ impl Source {
         if project.default_sources {
             sources.push(Source::PublicFeeds);
         }
-        sources.extend(project.resolved_sources()?.into_iter().map(Source::Feed));
+        // The registries are asked in a later step.
+        let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+        sources.extend(hosted.into_iter().map(Source::Feed));
         Ok(sources)
     }
 
@@ -775,7 +777,9 @@ impl Source {
                 extra: &feeds,
                 local: &folders,
                 defaults,
+                oci: &[],
             },
+            &env.oci,
             env.sink,
             &env.cancel,
         )

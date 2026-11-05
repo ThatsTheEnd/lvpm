@@ -82,6 +82,45 @@ pub fn parse(text: &str) -> Option<i64> {
     Some(days * SECS_PER_DAY + clock + i64::from(second) - offset)
 }
 
+/// `2026-10-31T14:05:00Z` as Unix seconds, also with a fraction of a second
+/// (dropped) or a `+02:00` zone, as an OCI manifest's `created` annotation is
+/// written; `None` for any other shape.
+pub fn parse_rfc3339(text: &str) -> Option<i64> {
+    let (date, time) = text.split_once('T')?;
+    let mut date = date.split('-');
+    let year: u16 = date.next().filter(|y| y.len() == 4).and_then(digits)?;
+    let month: u8 = date.next().filter(|m| m.len() == 2).and_then(digits)?;
+    let day: u8 = date.next().filter(|d| d.len() == 2).and_then(digits)?;
+    let (clock, offset) = match time.strip_suffix('Z') {
+        Some(clock) => (clock, 0),
+        None => {
+            let (clock, zone) = time.split_at(time.rfind(['+', '-'])?);
+            let sign = if zone.starts_with('-') { -1 } else { 1 };
+            let (hours, minutes) = zone[1..].split_once(':')?;
+            let (hours, minutes): (i64, i64) = (digits(hours)?, digits(minutes)?);
+            (
+                clock,
+                sign * (hours * SECS_PER_HOUR + minutes * SECS_PER_MINUTE),
+            )
+        }
+    };
+    let clock = clock.split_once('.').map_or(clock, |(whole, _)| whole);
+    let mut clock = clock
+        .split(':')
+        .map(|part| Some(part).filter(|p| p.len() == 2).and_then(digits::<i64>));
+    let (hour, minute, second) = (clock.next()??, clock.next()??, clock.next()??);
+    if clock.next().is_some() || hour >= 24 || minute >= 60 || second >= 60 {
+        return None;
+    }
+    let (year, month, day) = (i64::from(year), i64::from(month), i64::from(day));
+    let days = days_from_civil(year, month, day);
+    // A day the month does not have (Feb 30) rolls into the next month.
+    if !(1..=12).contains(&month) || civil_from_days(days) != (year, month, day) {
+        return None;
+    }
+    Some(days * SECS_PER_DAY + hour * SECS_PER_HOUR + minute * SECS_PER_MINUTE + second - offset)
+}
+
 /// `text` as a number, when it is nothing but ASCII digits: `str::parse` also
 /// takes a sign, which no field of a date has.
 fn digits<T: std::str::FromStr>(text: &str) -> Option<T> {
@@ -165,6 +204,33 @@ mod tests {
             parse("Thu, 19 May 2016 15:46:24 GMT"),
             Some(LOCAL_CLOCK_AS_UTC)
         );
+    }
+
+    #[test]
+    fn an_rfc_3339_time_reads_in_utc_with_a_fraction_or_a_zone() {
+        for text in [
+            "2016-05-19T15:46:24Z",
+            "2016-05-19T15:46:24.987654Z",
+            "2016-05-19T10:46:24-05:00",
+            "2016-05-19T21:16:24+05:30",
+        ] {
+            assert_eq!(parse_rfc3339(text), Some(LOCAL_CLOCK_AS_UTC), "{text}");
+        }
+        assert_eq!(parse_rfc3339(&rfc3339(1_793_455_500)), Some(1_793_455_500));
+        for text in [
+            "",
+            "2016-05-19",
+            "2016-05-19T15:46:24",
+            "2016-05-19 15:46:24Z",
+            "2016-13-19T15:46:24Z",
+            "2016-02-30T15:46:24Z",
+            "2016-05-19T24:00:00Z",
+            "2016-05-19T15:46Z",
+            "2016-05-19T15:46:24+0530",
+            "16-05-19T15:46:24Z",
+        ] {
+            assert_eq!(parse_rfc3339(text), None, "{text:?}");
+        }
     }
 
     #[test]
