@@ -246,8 +246,8 @@ pub fn group_zero_files(archive: &Path, under: &str) -> Vec<String> {
     files
 }
 
-/// The payload of a `.lvpkg`: the raw names of its zip entries but `RECORD`
-/// and `package.toml`, each below its `install-dir`, sorted. Read without
+/// The payload of a `.lvpkg`: the raw names of its zip entries but `RECORD`,
+/// `package.toml` and the root SBOM, each below its `install-dir`, sorted. Read without
 /// `lvpkg::read`, which is the code under test.
 pub fn lvpkg_files(archive: &Path) -> Vec<String> {
     let file = std::fs::File::open(archive)
@@ -256,7 +256,7 @@ pub fn lvpkg_files(archive: &Path) -> Vec<String> {
         .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
     let mut files: Vec<String> = zip
         .file_names()
-        .filter(|name| *name != "RECORD" && *name != "package.toml")
+        .filter(|name| !["RECORD", "package.toml", lvpm_core::lvpkg::SBOM].contains(name))
         .map(String::from)
         .collect();
     files.sort();

@@ -1223,7 +1223,7 @@ mod tests {
             install_dir: "vi.lib/Vendor/Alpha".into(),
             dependencies: Vec::new(),
         };
-        let built = crate::lvpkg::write(&meta, &[("a.vi".into(), b"vi".to_vec())]).unwrap();
+        let built = crate::lvpkg::write(&meta, &[("a.vi".into(), b"vi".to_vec())], None).unwrap();
         let mut src = zip::ZipArchive::new(std::io::Cursor::new(built)).unwrap();
         let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for i in 0..src.len() {

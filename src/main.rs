@@ -4,10 +4,10 @@
 // it from `lvpm-core` only.
 #![allow(clippy::disallowed_methods)]
 
-use lvpm_core::errors::CheckError;
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::ops::build_app::VenvAppLauncher;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
 use lvpm_core::ops::relink::RelinkOptions;
@@ -412,19 +412,31 @@ enum Cmd {
     /// Import package archives into the shared cache.
     #[command(subcommand)]
     Cache(CacheCmd),
-    /// Package the project's library as dist/<name>-<version>.lvpkg.
+    /// Build what lvpm.toml describes: the library as dist/<name>-<version>.lvpkg
+    /// and the application its build specification names.
     ///
-    /// Reads lvpm.toml's [distribution] and the library's member list, and
-    /// writes the members into a .lvpkg; LabVIEW is not needed. Building the same files twice
-    /// gives the same bytes.
+    /// With no flag, builds every kind lvpm.toml declares: [distribution] and
+    /// [application]. --package and --app pick one.
     ///
-    /// First checks the library's members as `lvpm check` does, and writes
-    /// nothing when one breaks a rule. The check needs a venv; --no-check
-    /// skips it.
+    /// The package: reads [distribution] and the library's member list, and
+    /// writes the members into a .lvpkg; LabVIEW is not needed. Building the
+    /// same files twice gives the same bytes. First checks the library's
+    /// members as `lvpm check` does, and writes nothing when one breaks a
+    /// rule. The check needs a venv; --no-check skips it.
+    ///
+    /// The application: runs the build specification [application] names in
+    /// the venv's LabVIEW and writes bom.cdx.json next to the build. Needs a
+    /// current lvpm.lock and a venv synced to it.
     Build {
         /// Skip the member check; builds without a venv.
         #[arg(long)]
         no_check: bool,
+        /// Build only the application [application] names.
+        #[arg(long)]
+        app: bool,
+        /// Build only the .lvpkg [distribution] names.
+        #[arg(long)]
+        package: bool,
     },
     /// Copy dist/<name>-<version>.lvpkg into a folder feed.
     ///
@@ -844,7 +856,11 @@ fn run(cli: &Cli) -> Result<Report> {
             let text = values.iter().map(|value| format!("{value}\n")).collect();
             Report::new(text, json!({ "key": key, "values": values }))
         }
-        Cmd::Build { no_check } => cmd_build(&env, !no_check),
+        Cmd::Build {
+            no_check,
+            app,
+            package,
+        } => cmd_build(&env, *no_check, *app, *package, cli.json),
         Cmd::Publish { to } => Ok(Report::said(
             render::publish::published(&ops::publish::publish(&env, to)?),
             "publish",
@@ -938,27 +954,48 @@ fn cmd_remove(env: &OpEnv, package: &str, table: DependencyTable, apply: &ApplyA
 }
 
 /// A refused build is a result, not an error: its stdout and `--json` are
-/// `check`'s, and the exit code is 1.
-fn cmd_build(env: &OpEnv, check: bool) -> Result<Report> {
-    let outcome = ops::build::build(env, check).map_err(|why| match why {
-        CheckError::NoVenv(repo) => anyhow!(render::build::no_venv(&repo)),
-        other => other.into(),
-    })?;
-    match outcome {
-        ops::build::Outcome::Refused(library) => {
-            let checked = &library.checked;
-            Ok(Report::new(
-                render::check::listing(checked),
-                render::build::refusal_result(checked),
-            )?
-            .warning(render::build::refusal_warning(checked))
-            .failed(true))
+/// `check`'s, and the exit code is 1. With both kinds, the package is shown as
+/// soon as it is written in the text output, so an application that then fails
+/// does not hide it; under `--json` a failure prints no result object, only the
+/// error line every command ends with.
+fn cmd_build(env: &OpEnv, no_check: bool, app: bool, package: bool, json: bool) -> Result<Report> {
+    let project = ops::build::project(env)?;
+    let kinds = ops::build::kinds(&project, app, package, no_check)?;
+    let launcher = VenvAppLauncher::new(env.work_dir());
+    let shown_early = kinds.package && kinds.app && !json;
+    let show = |outcome: &ops::build::Outcome| {
+        if let (true, ops::build::Outcome::Built(built)) = (shown_early, outcome) {
+            eprint!("{}", render::build::built_warning(built));
+            print!("{}", render::build::built(built));
         }
-        ops::build::Outcome::Built(built) => {
-            let warning = render::build::built_warning(built.library.as_ref());
-            Ok(Report::said(render::build::built(&built), "build").warning(warning))
-        }
+    };
+    // shortcut: Ctrl-C skips Drop and leaves the spawned LabVIEW running, handle SIGINT in cmd_build when users report it.
+    let outcomes =
+        ops::build::run(env, kinds, no_check, &launcher, show).map_err(render::build::run_error)?;
+    if let [ops::build::Outcome::Refused(library)] = outcomes.as_slice() {
+        let checked = &library.checked;
+        return Ok(Report::new(
+            render::check::listing(checked),
+            render::build::refusal_result(checked),
+        )?
+        .warning(render::build::refusal_warning(checked))
+        .failed(true));
     }
+    let built = outcomes.iter().find_map(|outcome| match outcome {
+        ops::build::Outcome::Built(built) => Some(built),
+        _ => None,
+    });
+    let application = outcomes.iter().find_map(|outcome| match outcome {
+        ops::build::Outcome::AppBuilt(built) => Some(built),
+        _ => None,
+    });
+    let late = built.filter(|_| !shown_early);
+    let text = late.map(render::build::built).unwrap_or_default()
+        + &application
+            .map(render::build::app_built)
+            .unwrap_or_default();
+    let warning = late.map(render::build::built_warning).unwrap_or_default();
+    Ok(Report::new(text, render::build::result(built, application))?.warning(warning))
 }
 
 fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {

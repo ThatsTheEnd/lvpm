@@ -77,7 +77,7 @@ fn plan_heading(steps: &[SyncStep]) -> String {
 }
 
 /// One change, with its reason where it has one.
-fn step_line(step: &SyncStep) -> String {
+pub(super) fn step_line(step: &SyncStep) -> String {
     match step {
         SyncStep::Install { name, version } => format!("install {name} {version}"),
         SyncStep::Replace { name, from, to } => format!("replace {name} {from} -> {to}"),

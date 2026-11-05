@@ -103,7 +103,7 @@ pub(super) fn relink_in_destination(
     match venv {
         Some(v) => {
             let inst =
-                launch::ensure_instance(v, true, Duration::from_secs(180), env.headless, env.sink)?;
+                launch::ensure_instance(v, true, launch::CALL_TIMEOUT, env.headless, env.sink)?;
             let outcome = run_relink(env, store, inst.port, options, work);
             if options.keep_open {
                 env.sink

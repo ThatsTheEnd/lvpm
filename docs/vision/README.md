@@ -62,7 +62,7 @@ Each one is usable on its own. Ticks mean done.
 
 **M2 — build**
 - [ ] `lvpm check` / `tree`: linker scan without LabVIEW
-- [ ] `lvpm build`: `source` kind, `.lvpkg` format, SBOM
+- [x] `lvpm build`: `source` kind, `.lvpkg` format, SBOM
 - [ ] `ppl` kind and application builds through `.lvproj` specs
 
 **M3 — publish and trust**

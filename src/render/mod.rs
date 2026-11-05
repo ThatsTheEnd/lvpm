@@ -172,6 +172,7 @@ impl Renderer {
             | Event::InitPackageImportFailed { .. }
             | Event::InitGitignore { .. }
             | Event::InitGit { .. } => init::render(self, event),
+            Event::AppBuildStarting { .. } => build::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
         }
     }

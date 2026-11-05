@@ -1450,7 +1450,7 @@ Package.Display Name=A Thing
             install_dir: "vi.lib/Vendor/Alpha".into(),
             dependencies: Vec::new(),
         };
-        let built = crate::lvpkg::write(&meta, &[("a.vi".into(), b"vi".to_vec())]).unwrap();
+        let built = crate::lvpkg::write(&meta, &[("a.vi".into(), b"vi".to_vec())], None).unwrap();
         let entry = entry_from_bytes(Path::new("alpha-1.0.0.lvpkg"), &built).unwrap();
         assert_eq!(entry.name, "alpha");
         assert_eq!(entry.released, None);

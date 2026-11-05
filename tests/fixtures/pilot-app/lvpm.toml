@@ -1,0 +1,17 @@
+[project]
+name = "pilot-app"
+version = "0.1.0"
+labview = ">=2026"
+
+# Only the pilots folder (the per-user sources.local setting) is searched, so
+# `lvpm lock` needs no network.
+[sources]
+defaults = false
+
+[dependencies]
+hse_lib_hse_logger = "2.2.2.114"
+labview_open_source_lib_serializer = "1.2.1.16"
+
+[application]
+project = "app/Continuous Measurement.lvproj"
+build-spec = "Continuous Measurement and Logging Application"

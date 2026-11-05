@@ -5,6 +5,7 @@
 pub mod add_remove;
 mod attest;
 pub mod build;
+pub mod build_app;
 pub mod check;
 pub mod env;
 mod github_index;
@@ -34,11 +35,11 @@ pub use env::{Destination, DestinationFlags, OpEnv};
 
 use anyhow::Context;
 
-/// The project's root and its validated `[distribution]`, for `lvpm <command>`.
-pub(super) fn packaged(
+/// The project's root and the project itself, for `lvpm <command>`.
+pub(super) fn project_of(
     env: &OpEnv,
     command: &str,
-) -> anyhow::Result<(std::path::PathBuf, crate::distribution::Distribution)> {
+) -> anyhow::Result<(std::path::PathBuf, crate::project::Project)> {
     let Some((manifest, p)) = env.manifest_for(None, None)? else {
         anyhow::bail!(
             "no {} at or above {}: lvpm {command} works on a project",
@@ -47,8 +48,22 @@ pub(super) fn packaged(
         );
     };
     let root = manifest.parent().context("the manifest has no folder")?;
-    let d = crate::distribution::validate(&p, root)?;
-    Ok((root.to_path_buf(), d))
+    Ok((root.to_path_buf(), p))
+}
+
+/// The project's root, its validated `[distribution]` and the project itself,
+/// for `lvpm <command>`.
+pub(super) fn packaged(
+    env: &OpEnv,
+    command: &str,
+) -> anyhow::Result<(
+    std::path::PathBuf,
+    crate::distribution::Distribution,
+    crate::project::Project,
+)> {
+    let (root, p) = project_of(env, command)?;
+    let d = crate::distribution::validate(&p, &root)?;
+    Ok((root, d, p))
 }
 
 /// Where `lvpm build` puts, and `lvpm publish` finds, the current version's package.

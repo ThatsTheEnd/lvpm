@@ -19,7 +19,7 @@ pub struct Published {
 
 pub fn publish(env: &OpEnv, to: &Path) -> Result<Published> {
     let to = paths::resolve(&env.cwd, to);
-    let (root, d) = super::packaged(env, "publish")?;
+    let (root, d, _) = super::packaged(env, "publish")?;
     let name = d.file_name();
     let package = super::package_path(&root, &d);
     built(&package)?;
