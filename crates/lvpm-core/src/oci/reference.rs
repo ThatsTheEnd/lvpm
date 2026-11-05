@@ -53,9 +53,11 @@ impl FeedUrl {
         &self.prefix
     }
 
-    /// The repository package `name` is in.
-    pub fn repository(&self, name: &str) -> String {
-        format!("{}/{}", self.prefix, crate::project::name_key(name))
+    /// The repository package `name` is in, or `None` when the name is not an
+    /// OCI repository name (`_lib` is a package name, not a repository one).
+    pub fn repository(&self, name: &str) -> Option<String> {
+        let path = format!("{}/{}", self.prefix, crate::project::name_key(name));
+        valid_repository(&path).ok()
     }
 }
 
@@ -147,9 +149,26 @@ fn split(text: &str) -> Result<(String, &str), UrlError> {
         .strip_prefix(SCHEME)
         .ok_or(UrlError::Invalid("not an oci:// URL"))?;
     let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if let Some((_, registry)) = authority.rsplit_once('@') {
-        return Err(UrlError::Credentials {
-            registry: registry.to_string(),
+    // A password may hold a `/`, so userinfo is also looked for past the
+    // authority: an `@` followed by a path, bar the `@sha256:<hex>` a
+    // reference ends in.
+    let body = match rest.rsplit_once('@') {
+        Some((body, digest)) if valid_digest(digest) => body,
+        _ => rest,
+    };
+    let after = body
+        .rsplit_once('@')
+        .map(|(_, after)| after)
+        .filter(|after| authority.contains('@') || after.contains('/'));
+    if let Some(after) = after {
+        // Only a registry-shaped tail is echoed: anything else may be the
+        // secret's own text.
+        let registry = after.split('/').next().unwrap_or_default();
+        return Err(match valid_registry(registry) {
+            true => UrlError::Credentials {
+                registry: registry.to_string(),
+            },
+            false => UrlError::Invalid("credentials do not belong in the URL"),
         });
     }
     if !valid_registry(authority) {
@@ -233,7 +252,12 @@ mod tests {
         let feed = FeedUrl::parse("oci://127.0.0.1:5000/team/sub/").unwrap();
         assert_eq!(feed.registry(), "127.0.0.1:5000");
         assert_eq!(feed.prefix(), "team/sub");
-        assert_eq!(feed.repository("Alpha_Lib"), "team/sub/alpha_lib");
+        assert_eq!(
+            feed.repository("Alpha_Lib").as_deref(),
+            Some("team/sub/alpha_lib")
+        );
+        assert_eq!(feed.repository("_lib"), None);
+        assert_eq!(feed.repository("lib."), None);
         assert_eq!(feed.to_string(), "oci://127.0.0.1:5000/team/sub");
     }
 
@@ -243,6 +267,8 @@ mod tests {
             "oci://u-4c1d2e:pw-7f3a9c-secret@ghcr.io/org",
             "oci://pw-7f3a9c-secret@ghcr.io/org",
             "oci://u-4c1d2e:p@ss-7f3a9c@ghcr.io/org",
+            "oci://u-4c1d2e:pw-7f3a9c/with/slash@ghcr.io/org",
+            "oci://u-4c1d2e:se@cr-7f3a9c/et@ghcr.io/org",
         ] {
             let error = FeedUrl::parse(text).unwrap_err();
             assert_eq!(
@@ -269,10 +295,7 @@ mod tests {
             ("oci://ghcr.io/", "an OCI feed is oci://host/prefix"),
             ("oci:///org", "host or host:port"),
             ("oci://ghcr.io:99999x/org", "host or host:port"),
-            (
-                "oci://user-7f3a9c:pw/with/slash@ghcr.io/org",
-                "host or host:port",
-            ),
+            ("oci://user-7f3a9c:pw@x@/org", "credentials do not belong"),
             ("oci://ghcr.io/Org", "lowercase"),
             ("oci://ghcr.io/a//b", "lowercase"),
             ("oci://ghcr.io/a..b", "lowercase"),

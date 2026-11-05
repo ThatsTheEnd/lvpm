@@ -30,14 +30,17 @@ const SAFE_TO_RERUN: &str = "nothing was published, it is safe to rerun";
 const LABVIEW_GATE: &str = "LabVIEW>=";
 
 pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Published> {
-    let bytes = std::fs::read(package).with_context(|| format!("reading {}", package.display()))?;
-    let spec = lvpkg::read(&mut zip::ZipArchive::new(Cursor::new(bytes.as_slice()))?)
-        .with_context(|| format!("reading {}", package.display()))?;
+    let (bytes, spec) = read_package(package).map_err(|why| anyhow!("{why:#}; {SAFE_TO_RERUN}"))?;
     let tag = spec.version.as_str();
     if !oci::valid_tag(tag) {
         bail!("{tag} is not a valid OCI tag; publish a version without \"+\" build metadata");
     }
-    let name = feed.repository(&spec.name);
+    let Some(name) = feed.repository(&spec.name) else {
+        bail!(
+            "{} is not a valid OCI repository name; name the package with lowercase letters and              digits, separated by . _ - (nothing was published)",
+            spec.name
+        );
+    };
     let repo = Repo {
         registry: feed.registry(),
         name: &name,
@@ -74,6 +77,14 @@ pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Pub
         reference,
         digest,
     })
+}
+
+/// The package's bytes and the spec inside them.
+fn read_package(package: &Path) -> Result<(Vec<u8>, Spec)> {
+    let bytes = std::fs::read(package).with_context(|| format!("reading {}", package.display()))?;
+    let spec = lvpkg::read(&mut zip::ZipArchive::new(Cursor::new(bytes.as_slice()))?)
+        .with_context(|| format!("reading {}", package.display()))?;
+    Ok((bytes, spec))
 }
 
 /// The digest of `bytes` once the repository holds them.
@@ -153,10 +164,13 @@ fn not_published(repository: &str) -> impl Fn(oci::Error) -> anyhow::Error {
     }
 }
 
-/// A failure of the PUT itself. A registry that answered refused it, and one
-/// that did not may still have stored it.
+/// A failure of the PUT itself. A 4xx or a failed login refused it; anything
+/// else (no answer, a 5xx a proxy may have sent after the registry committed,
+/// a digest that does not match) may have stored it.
 fn at_the_put(why: oci::Error, repository: &str, reference: &Reference) -> anyhow::Error {
-    match why.status_code().is_some() {
+    let refused = why.status_code().is_some_and(|status| status < 500)
+        || matches!(why, oci::Error::Protocol { .. });
+    match refused {
         true => not_published(repository)(why),
         false => anyhow!(
             "{why}; the manifest upload did not finish, check whether {reference} exists before \
@@ -209,11 +223,24 @@ mod tests {
     }
 
     #[test]
-    fn a_put_that_got_an_answer_wrote_nothing_and_one_that_got_none_may_have() {
+    fn a_put_that_was_refused_wrote_nothing_and_one_that_may_have_been_stored_says_to_look() {
         let reference = Reference::tagged("r:1", "t/a", "1");
         assert_eq!(
-            at_the_put(status(500), "t/a", &reference).to_string(),
-            "registry r:1 answered 500 to PUT t/a:1; nothing was published, it is safe to rerun"
+            at_the_put(status(409), "t/a", &reference).to_string(),
+            "registry r:1 answered 409 to PUT t/a:1; nothing was published, it is safe to rerun"
+        );
+        assert_eq!(
+            at_the_put(status(504), "t/a", &reference).to_string(),
+            "registry r:1 answered 504 to PUT t/a:1; the manifest upload did not finish, check whether oci://r:1/t/a:1 exists before rerunning"
+        );
+        let mismatch = oci::Error::DigestMismatch {
+            registry: "r:1".into(),
+            digest: "sha256:ab".into(),
+        };
+        assert!(
+            at_the_put(mismatch, "t/a", &reference)
+                .to_string()
+                .contains("check whether")
         );
         assert_eq!(
             at_the_put(unreachable(), "t/a", &reference).to_string(),

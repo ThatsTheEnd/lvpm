@@ -129,7 +129,9 @@ impl Registry {
     }
 
     pub fn come_back(&self) {
-        lock(&self.state).down = false;
+        let mut state = lock(&self.state);
+        state.down = false;
+        state.down_after_blobs = None;
     }
 
     /// The registry goes down once `count` blobs have been uploaded in all.
@@ -826,6 +828,20 @@ mod tests {
         registry.come_back();
         let tags = get_from(registry.addr(), "/v2/t/a/tags/list", AUTH);
         assert_eq!(tags.status_line, "HTTP/1.1 404 Not Found");
+    }
+
+    #[test]
+    fn a_registry_that_comes_back_stays_up_through_later_uploads() {
+        let registry = Registry::start();
+        registry.go_down_after_blob_uploads(1);
+        upload(&registry, "t/a", b"{}");
+        assert!(unanswered(&registry));
+        registry.come_back();
+        assert_eq!(
+            upload(&registry, "t/a", b"layer").status_line,
+            "HTTP/1.1 201 Created"
+        );
+        assert!(!unanswered(&registry));
     }
 
     #[test]

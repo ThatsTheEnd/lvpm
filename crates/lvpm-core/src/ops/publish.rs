@@ -212,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             refused("oci://pw-7f3a9c:x/y@ghcr.io/org"),
-            "--to: the registry must be host or host:port"
+            "--to: credentials do not belong in the target; remove the user:password@ part and run docker login ghcr.io"
         );
     }
 

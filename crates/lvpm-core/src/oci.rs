@@ -62,6 +62,17 @@ pub fn digest_of(bytes: &[u8]) -> String {
     format!("sha256:{hex}")
 }
 
+/// `error`'s text without the ` for url (...)` reqwest appends: the URL can be
+/// a signed upload or CDN address whose query is a grant. The registry is
+/// named by the message anyway.
+fn without_url(error: &dyn std::error::Error) -> String {
+    let text = error.to_string();
+    match text.find(" for url (") {
+        Some(at) => text[..at].to_string(),
+        None => text,
+    }
+}
+
 /// What a call to a registry can come to. No variant holds a token or a
 /// credential.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -94,11 +105,11 @@ impl Error {
     }
 
     fn unreachable(registry: &str, cause: &dyn std::error::Error) -> Error {
-        let mut text = cause.to_string();
+        let mut text = without_url(cause);
         let mut source = cause.source();
         while let Some(next) = source {
             text.push_str(": ");
-            text.push_str(&next.to_string());
+            text.push_str(&without_url(next));
             source = next.source();
         }
         Error::Unreachable {
@@ -191,6 +202,7 @@ impl Oci {
             .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
+            .redirect(redirect_policy())
             .build()
             .map_err(|e| Error::unreachable(registry, &e))?;
         Ok(self.client.get_or_init(|| built))
@@ -232,6 +244,20 @@ impl Oci {
     fn tokens(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), String>> {
         self.tokens.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Redirects are followed up to reqwest's own limit, but never to plain http
+/// beyond loopback: the package or a token would cross the wire in the clear.
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let url = attempt.url();
+        match scheme_allowed(url.scheme(), url.host_str().unwrap_or_default())
+            && attempt.previous().len() < 10
+        {
+            true => attempt.follow(),
+            false => attempt.error("a redirect to plain http or too many redirects"),
+        }
+    })
 }
 
 /// `https://registry`, or `http://registry` for the loopback addresses a test
@@ -298,11 +324,13 @@ fn location(repo: &Repo, from: &str, response: &Response) -> Result<reqwest::Url
     let url = base
         .join(header)
         .map_err(|_| Error::protocol(repo.registry, "gave an upload location that is no URL"))?;
-    match url.authority() == base.authority() {
+    // The origin, not the authority: `http://` on the registry's own host
+    // would carry the token in the clear.
+    match url.origin() == base.origin() {
         true => Ok(url),
         false => Err(Error::protocol(
             repo.registry,
-            "gave an upload location on another host",
+            "gave an upload location on another host or scheme",
         )),
     }
 }
@@ -324,6 +352,15 @@ mod tests {
         assert!(scheme_allowed("http", "localhost"));
         assert!(!scheme_allowed("http", "ghcr.io"));
         assert!(!scheme_allowed("ftp", "127.0.0.1"));
+    }
+
+    #[test]
+    fn an_unreachable_cause_drops_the_url_reqwest_appends() {
+        let signed = std::io::Error::other(
+            "error sending request for url (https://cdn.example/b?X-Amz-Signature=s3cret-7f3a9c)",
+        );
+        let shown = Error::unreachable("r:1", &signed).to_string();
+        assert_eq!(shown, "registry r:1 is unreachable: error sending request");
     }
 
     #[test]

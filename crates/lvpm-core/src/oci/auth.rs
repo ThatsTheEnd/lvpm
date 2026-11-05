@@ -84,7 +84,12 @@ pub(super) fn fetch_token(
 fn realm_url(registry: &str, challenge: &Challenge, wanted: &str) -> Result<Url, Error> {
     let mut url = Url::parse(&challenge.realm)
         .map_err(|_| Error::protocol(registry, "named a token realm that is not a URL"))?;
-    if !super::scheme_allowed(url.scheme(), url.host_str().unwrap_or_default()) {
+    // A plain-http realm is for a loopback registry only: a remote registry
+    // must not point lvpm at a service on this machine.
+    let registry_host = registry.split(':').next().unwrap_or_default();
+    if !super::scheme_allowed(url.scheme(), url.host_str().unwrap_or_default())
+        || (url.scheme() == "http" && !super::is_loopback(registry_host))
+    {
         return Err(Error::protocol(
             registry,
             "named a token realm that is not https",
@@ -145,7 +150,7 @@ mod tests {
             url.as_str(),
             "https://a.example/token?service=svc&scope=s%3A1"
         );
-        let url = realm_url("r", &named("http://127.0.0.1:9/t"), "own:pull").unwrap();
+        let url = realm_url("127.0.0.1:5", &named("http://127.0.0.1:9/t"), "own:pull").unwrap();
         assert_eq!(
             url.as_str(),
             "http://127.0.0.1:9/t?service=svc&scope=own%3Apull"
@@ -153,5 +158,7 @@ mod tests {
         for bad in ["http://a.example/token", "ftp://127.0.0.1/t", "not a url"] {
             assert!(realm_url("r", &named(bad), "own").is_err(), "{bad}");
         }
+        // A remote registry cannot send lvpm to a service on this machine.
+        assert!(realm_url("ghcr.io", &named("http://127.0.0.1:9/t"), "own").is_err());
     }
 }

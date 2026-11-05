@@ -73,3 +73,4 @@ Feature: lvpm publish to an OCI registry
     When I run "lvpm publish --to <folder>"
     Then it succeeds
     And the package file is in the folder
+    And the registry received no request
