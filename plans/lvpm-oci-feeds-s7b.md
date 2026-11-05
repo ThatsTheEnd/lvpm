@@ -1037,15 +1037,17 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 - AC10: no YAML parser is a dependency and none is added. The template test finds the attest step by its `uses: actions/attest-build-provenance` line and checks the step's lines for `subject-name`, `subject-digest` (from the publish step's output) and `push-to-registry: true`.
 - AC11: docs rows also check `lvpm publish --to oci://` in usage.md and `docker login` in manifest.md.
 
+- Slice 1 deviations (build): the client uses a 30 s connect timeout and 60 s per whole request (blocking reqwest has no read timeout), with 10 min for blob transfers. `Oci.credentials`, `creds_by_host` and `helper_timeout` land in Slice 3. Slice 1 also touched `events.rs`, `lvpm-testkit/src/http.rs`, `tests/oci_client.rs`, `tests/steps/build.rs`, `tests/support/{normalise,sandbox}.rs`. A rerun after an ambiguous PUT that did land is refused as "already published", which is correct.
+
 ## Build Progress
 
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: Publish to an OCI registry
-  - [ ] Step 1.1: Fake registry in the testkit
-  - [ ] Step 1.2: OCI client and the `Oci` owner in `OpEnv`
-  - [ ] Step 1.3: `lvpm publish --to oci://…`
+- [x] Slice 1: Publish to an OCI registry
+  - [x] Step 1.1: Fake registry in the testkit
+  - [x] Step 1.2: OCI client and the `Oci` owner in `OpEnv`
+  - [x] Step 1.3: `lvpm publish --to oci://…`
 
 #### Wave 2
 - [ ] Slice 2: Install from an explicit OCI source
