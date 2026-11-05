@@ -11,6 +11,7 @@ Feature: lvpm publish to an OCI registry
     When I run "lvpm publish --to oci://<registry>/team"
     Then it succeeds
     And the output says "published alpha 1.0.0 to oci://<registry>/team/alpha:1.0.0"
+    And the output says "uploading team/alpha:1.0.0 to <registry>"
     And the output gives the OCI manifest digest of "team/alpha:1.0.0"
     And the registry holds tag "1.0.0" in repository "team/alpha"
     And that OCI manifest has artifactType "application/vnd.lvpm.package.v1"

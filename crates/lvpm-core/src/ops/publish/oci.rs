@@ -9,6 +9,7 @@
 //! create-only tag, so the docs tell teams to turn on tag immutability.
 
 use super::Published;
+use crate::events::Event;
 use crate::lvpkg;
 use crate::oci::{
     self, ANNOTATION_CREATED, ANNOTATION_LABVIEW, ANNOTATION_REQUIRES, ANNOTATION_TITLE,
@@ -55,6 +56,11 @@ pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Pub
         }
     };
     free()?;
+    env.sink.emit(Event::OciUploading {
+        repository: name.clone(),
+        tag: tag.to_string(),
+        registry: feed.registry().to_string(),
+    });
     let config = blob(env, &repo, EMPTY_CONFIG)?;
     let layer = blob(env, &repo, &bytes)?;
     free()?;

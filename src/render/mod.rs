@@ -174,6 +174,7 @@ impl Renderer {
             | Event::InitGit { .. } => init::render(self, event),
             Event::AppBuildStarting { .. } => build::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
+            Event::OciUploading { .. } => publish::render(self, event),
         }
     }
 
