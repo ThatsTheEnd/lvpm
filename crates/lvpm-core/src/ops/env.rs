@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::events::{Event, EventSink};
 use crate::github::GitHub;
 use crate::index::{self, Index};
+use crate::oci::Oci;
 use crate::paths;
 use crate::project::{self, Project};
 use crate::target::{self, LvTarget, Roots};
@@ -19,6 +20,7 @@ use crate::venv::{self, Venv};
 use anyhow::{Result, bail, ensure};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The flags that say where a command's packages live.
 #[derive(Debug, Clone, Default)]
@@ -67,6 +69,9 @@ pub struct OpEnv<'a> {
     pub machine: Option<PathBuf>,
     /// The API GitHub dependencies are read from, and the token it is told.
     pub github: GitHub,
+    /// The OCI registry client and the logins it holds. Anonymous until the
+    /// front end installs credentials.
+    pub oci: Arc<Oci>,
 }
 
 /// Where a command's packages live.
@@ -119,6 +124,7 @@ impl<'a> OpEnv<'a> {
             cancel: CancelToken::default(),
             machine: None,
             github: GitHub::default(),
+            oci: Arc::new(Oci::default()),
         }
     }
 

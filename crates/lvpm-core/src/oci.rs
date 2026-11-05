@@ -1,0 +1,352 @@
+//! A small OCI Distribution client over the blocking `reqwest` lvpm already
+//! uses: what publishing and installing a package need, and no more.
+//!
+//! `reference` parses `oci://` URLs, `auth` logs in with the registry's bearer
+//! challenge, `manifest` holds the manifest, blob and upload calls. Nothing
+//! here reads the process environment.
+//!
+//! A package version is one OCI image manifest: `artifactType`
+//! [`ARTIFACT_TYPE`], an empty config, and one layer, the `.lvpkg` bytes
+//! (media type [`LAYER_TYPE`]). Its annotations carry what an index needs.
+
+use reqwest::blocking::{Client, RequestBuilder, Response};
+use reqwest::header::LOCATION;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fmt;
+use std::io::Read;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Duration;
+
+mod auth;
+mod manifest;
+pub mod reference;
+
+pub use manifest::Manifest;
+pub use reference::{FeedUrl, Reference, Target, UrlError, valid_tag};
+
+/// The manifest's `artifactType`: what tells a package from any other artifact.
+pub const ARTIFACT_TYPE: &str = "application/vnd.lvpm.package.v1";
+/// The config's media type: OCI's empty descriptor, the two bytes `{}`.
+pub const EMPTY_CONFIG_TYPE: &str = "application/vnd.oci.empty.v1+json";
+/// The config blob of every package.
+pub const EMPTY_CONFIG: &[u8] = b"{}";
+/// The layer's media type: the `.lvpkg` bytes.
+pub const LAYER_TYPE: &str = "application/vnd.lvpm.lvpkg.v1+zip";
+/// The media type of an OCI image manifest.
+pub const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+pub const ANNOTATION_TITLE: &str = "org.opencontainers.image.title";
+pub const ANNOTATION_VERSION: &str = "org.opencontainers.image.version";
+pub const ANNOTATION_CREATED: &str = "org.opencontainers.image.created";
+pub const ANNOTATION_REQUIRES: &str = "dev.lvpm.requires";
+pub const ANNOTATION_LABVIEW: &str = "dev.lvpm.labview";
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one request may take in all. blocking `reqwest` has no timeout
+/// for a stalled read alone, so this bounds the whole exchange.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A blob is the package itself and may be large, so its transfer gets longer.
+const BLOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// A registry may refuse a manifest above 4 MiB, so none is larger.
+const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+/// The most of a blob that is read: the cap of one entry of a package.
+const MAX_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// `sha256:<hex>` of `bytes`, as an OCI digest.
+pub fn digest_of(bytes: &[u8]) -> String {
+    let hex: String = Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
+/// What a call to a registry can come to. No variant holds a token or a
+/// credential.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    /// The registry answered with a status the call does not accept.
+    #[error("registry {registry} answered {status} to {request}")]
+    Status {
+        registry: String,
+        status: u16,
+        request: String,
+    },
+    /// No answer: it could not be reached, or it stopped answering in time.
+    #[error("registry {registry} is unreachable: {cause}")]
+    Unreachable { registry: String, cause: String },
+    /// What the registry sent does not hash to the digest it was asked for.
+    #[error("registry {registry} served bytes that do not match {digest}")]
+    DigestMismatch { registry: String, digest: String },
+    /// An answer that is not what the distribution API says.
+    #[error("registry {registry} {problem}")]
+    Protocol { registry: String, problem: String },
+}
+
+impl Error {
+    fn status(registry: &str, status: u16, request: &str) -> Error {
+        Error::Status {
+            registry: registry.to_string(),
+            status,
+            request: request.to_string(),
+        }
+    }
+
+    fn unreachable(registry: &str, cause: &dyn std::error::Error) -> Error {
+        let mut text = cause.to_string();
+        let mut source = cause.source();
+        while let Some(next) = source {
+            text.push_str(": ");
+            text.push_str(&next.to_string());
+            source = next.source();
+        }
+        Error::Unreachable {
+            registry: registry.to_string(),
+            cause: text,
+        }
+    }
+
+    fn protocol(registry: &str, problem: &str) -> Error {
+        Error::Protocol {
+            registry: registry.to_string(),
+            problem: problem.to_string(),
+        }
+    }
+
+    /// The registry that failed.
+    pub fn registry(&self) -> &str {
+        match self {
+            Error::Status { registry, .. }
+            | Error::Unreachable { registry, .. }
+            | Error::DigestMismatch { registry, .. }
+            | Error::Protocol { registry, .. } => registry,
+        }
+    }
+
+    /// The status the registry answered, when it did.
+    pub fn status_code(&self) -> Option<u16> {
+        match self {
+            Error::Status { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// Whether the registry said no to who asked: `401` or `403`.
+    pub fn is_refused(&self) -> bool {
+        matches!(self.status_code(), Some(401 | 403))
+    }
+}
+
+/// What a call may do in a repository: a push may read as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Pull,
+    Push,
+}
+
+/// A repository on a registry, and what the caller wants to do there.
+#[derive(Debug, Clone, Copy)]
+pub struct Repo<'a> {
+    pub registry: &'a str,
+    pub name: &'a str,
+    pub access: Access,
+}
+
+impl Repo<'_> {
+    /// The token scope that covers `access`.
+    fn scope(&self) -> String {
+        let actions = match self.access {
+            Access::Pull => "pull",
+            Access::Push => "pull,push",
+        };
+        format!("repository:{}:{actions}", self.name)
+    }
+}
+
+/// The OCI side of an operation's environment: one HTTP client for every
+/// registry call, and the bearer tokens it has been given.
+///
+/// The front end may replace it; an `OpEnv` starts with the default.
+#[derive(Default)]
+pub struct Oci {
+    /// Built on the first call: most commands never talk to a registry.
+    client: OnceLock<Client>,
+    /// A token per registry and scope, so a run logs in once for each.
+    tokens: Mutex<HashMap<(String, String), String>>,
+}
+
+impl fmt::Debug for Oci {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Oci").finish_non_exhaustive()
+    }
+}
+
+impl Oci {
+    fn client(&self, registry: &str) -> Result<&Client, Error> {
+        if let Some(client) = self.client.get() {
+            return Ok(client);
+        }
+        let built = Client::builder()
+            .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .map_err(|e| Error::unreachable(registry, &e))?;
+        Ok(self.client.get_or_init(|| built))
+    }
+
+    /// `build`'s request, logged in: with the token held for this repository
+    /// and access, or after the registry's challenge for one. A second `401`
+    /// is returned for the caller to read.
+    fn send(
+        &self,
+        repo: &Repo,
+        build: impl Fn(&Client) -> RequestBuilder,
+    ) -> Result<Response, Error> {
+        let client = self.client(repo.registry)?;
+        let key = (repo.registry.to_string(), repo.scope());
+        let attempt = |token: Option<String>| {
+            let request = build(client);
+            let request = match token {
+                Some(token) => request.bearer_auth(token),
+                None => request,
+            };
+            request
+                .send()
+                .map_err(|e| Error::unreachable(repo.registry, &e))
+        };
+        let held = self.tokens().get(&key).cloned();
+        let first = attempt(held)?;
+        if first.status().as_u16() != 401 {
+            return Ok(first);
+        }
+        let Some(challenge) = auth::challenge(first.headers()) else {
+            return Ok(first);
+        };
+        let token = auth::fetch_token(client, repo.registry, &challenge, &key.1)?;
+        self.tokens().insert(key, token.clone());
+        attempt(Some(token))
+    }
+
+    fn tokens(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), String>> {
+        self.tokens.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// `https://registry`, or `http://registry` for the loopback addresses a test
+/// registry listens on.
+fn base_url(registry: &str) -> String {
+    let host = registry.split(':').next().unwrap_or_default();
+    let scheme = match is_loopback(host) {
+        true => "http",
+        false => "https",
+    };
+    format!("{scheme}://{registry}")
+}
+
+fn is_loopback(host: &str) -> bool {
+    host == "127.0.0.1" || host == "localhost"
+}
+
+/// Whether a URL of `scheme` to `host` may be called: `https`, and plain
+/// `http` only to loopback.
+fn scheme_allowed(scheme: &str, host: &str) -> bool {
+    scheme == "https" || (scheme == "http" && is_loopback(host))
+}
+
+/// `response` when its status is one of `accepted`; else the error naming
+/// `request`.
+fn expect(
+    repo: &Repo,
+    response: Response,
+    request: &str,
+    accepted: &[u16],
+) -> Result<Response, Error> {
+    let status = response.status().as_u16();
+    match accepted.contains(&status) {
+        true => Ok(response),
+        false => Err(Error::status(repo.registry, status, request)),
+    }
+}
+
+/// All of `response`'s body, up to `max` bytes.
+fn read_limited(registry: &str, response: Response, max: u64) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::new();
+    response
+        .take(max + 1)
+        .read_to_end(&mut body)
+        .map_err(|e| Error::unreachable(registry, &e))?;
+    match body.len() as u64 > max {
+        true => Err(Error::protocol(
+            registry,
+            &format!("sent more than {max} bytes"),
+        )),
+        false => Ok(body),
+    }
+}
+
+/// Where the response says to go on (`Location`), which may be relative, as a
+/// full URL on the registry's own host: a token is never sent anywhere else.
+fn location(repo: &Repo, from: &str, response: &Response) -> Result<reqwest::Url, Error> {
+    let header = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| Error::protocol(repo.registry, "gave no upload location"))?;
+    let base = reqwest::Url::parse(from).expect("a URL lvpm built");
+    let url = base
+        .join(header)
+        .map_err(|_| Error::protocol(repo.registry, "gave an upload location that is no URL"))?;
+    match url.authority() == base.authority() {
+        true => Ok(url),
+        false => Err(Error::protocol(
+            repo.registry,
+            "gave an upload location on another host",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_http_is_for_loopback_only() {
+        assert_eq!(base_url("127.0.0.1:5000"), "http://127.0.0.1:5000");
+        assert_eq!(base_url("localhost:5000"), "http://localhost:5000");
+        assert_eq!(base_url("ghcr.io"), "https://ghcr.io");
+        assert_eq!(
+            base_url("127.0.0.1.evil.example"),
+            "https://127.0.0.1.evil.example"
+        );
+        assert!(scheme_allowed("https", "ghcr.io"));
+        assert!(scheme_allowed("http", "localhost"));
+        assert!(!scheme_allowed("http", "ghcr.io"));
+        assert!(!scheme_allowed("ftp", "127.0.0.1"));
+    }
+
+    #[test]
+    fn a_digest_is_sha256_of_the_bytes() {
+        assert_eq!(
+            digest_of(EMPTY_CONFIG),
+            "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+        );
+    }
+
+    #[test]
+    fn an_error_names_its_registry_and_says_whether_the_login_was_refused() {
+        let refused = Error::status("r:1", 403, "HEAD t/a:1");
+        assert_eq!(
+            refused.to_string(),
+            "registry r:1 answered 403 to HEAD t/a:1"
+        );
+        assert!(refused.is_refused());
+        assert_eq!(refused.registry(), "r:1");
+        assert!(!Error::status("r", 500, "x").is_refused());
+        let down = Error::unreachable("r:1", &std::io::Error::other("closed"));
+        assert_eq!(down.to_string(), "registry r:1 is unreachable: closed");
+        assert!(!down.is_refused());
+        assert_eq!(down.status_code(), None);
+    }
+}

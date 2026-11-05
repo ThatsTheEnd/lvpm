@@ -77,6 +77,8 @@ struct State {
     /// A tag created the moment the first blob is uploaded: (repository, tag).
     tag_after_first_blob: Option<(String, String)>,
     uploads_started: usize,
+    /// The host a blob upload's `Location` names, in place of the registry's own.
+    upload_host: Option<String>,
 }
 
 #[derive(Debug)]
@@ -149,6 +151,23 @@ impl Registry {
         lock(&self.state).tag_after_first_blob = Some((repo.to_string(), tag.to_string()));
     }
 
+    /// From now on a blob upload's `Location` is on `host`, not the registry.
+    pub fn upload_location_host(&self, host: &str) {
+        lock(&self.state).upload_host = Some(host.to_string());
+    }
+
+    /// From now on the manifest or blob of `repo` that has this digest holds
+    /// `bytes`, which do not hash to it.
+    pub fn corrupt(&self, repo: &str, digest: &str, bytes: &[u8]) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.get_mut(repo).expect("a known repository");
+        match (repo.blobs.get_mut(digest), repo.manifests.get_mut(digest)) {
+            (Some(blob), _) => *blob = bytes.to_vec(),
+            (None, Some(manifest)) => manifest.bytes = bytes.to_vec(),
+            (None, None) => panic!("{digest} is not in the repository"),
+        }
+    }
+
     /// Put `bytes` in `repo` as the manifest of `tag`; its digest.
     pub fn seed_manifest(&self, repo: &str, tag: &str, bytes: &[u8]) -> String {
         let mut state = lock(&self.state);
@@ -192,10 +211,11 @@ impl Registry {
         lock(&self.state).log.clone()
     }
 
-    /// The requests that changed, or tried to change, what it holds.
+    /// The requests that changed, or tried to change, what it holds. A write
+    /// turned away at the door for want of a login is not one.
     pub fn writes(&self) -> Vec<LoggedRequest> {
         let mut all = self.requests();
-        all.retain(LoggedRequest::is_write);
+        all.retain(|request| request.is_write() && request.authorization.is_some());
         all
     }
 
@@ -286,8 +306,14 @@ fn route(path: &str) -> Route<'_> {
 fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -> Vec<u8> {
     let (path, query) = request.path.split_once('?').unwrap_or((&request.path, ""));
     let route = route(path);
+    let wanted = state.statuses.iter().find_map(|(method, on, status)| {
+        (method == &request.method && on == path).then_some(*status)
+    });
     if matches!(route, Route::Token) {
-        return json_reply("200 OK", &[], &json!({ "token": TOKEN }));
+        return match wanted {
+            Some(status) => error_reply(status, "UNAVAILABLE", "answered on purpose"),
+            None => json_reply("200 OK", &[], &json!({ "token": TOKEN })),
+        };
     }
     let name = match &route {
         Route::Tags(name)
@@ -299,9 +325,6 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     if request.header("authorization") != Some(&format!("Bearer {TOKEN}")) {
         return challenge(name, &request.method, addr);
     }
-    let wanted = state.statuses.iter().find_map(|(method, on, status)| {
-        (method == &request.method && on == path).then_some(*status)
-    });
     if let Some(status) = wanted {
         return error_reply(status, "UNAVAILABLE", "answered on purpose");
     }
@@ -436,7 +459,11 @@ fn get_blob(state: &State, name: &str, digest: &str) -> Vec<u8> {
 fn start_upload(state: &mut State, name: &str) -> Vec<u8> {
     state.uploads_started += 1;
     let id = state.uploads_started;
-    let location = format!("/v2/{name}/blobs/uploads/{id}");
+    let origin = state
+        .upload_host
+        .as_ref()
+        .map_or(String::new(), |host| format!("http://{host}"));
+    let location = format!("{origin}/v2/{name}/blobs/uploads/{id}");
     response(
         "202 Accepted",
         &[
@@ -451,7 +478,9 @@ fn finish_upload(state: &mut State, name: &str, id: &str, query: &str, body: &[u
     let digest = query
         .split('&')
         .find_map(|pair| pair.strip_prefix("digest="))
+        .map(percent_decoded)
         .unwrap_or_default();
+    let digest = digest.as_str();
     if id.is_empty() || digest != digest_of(body) {
         return error_reply(400, "DIGEST_INVALID", "the digest does not match the body");
     }
@@ -477,6 +506,30 @@ fn finish_upload(state: &mut State, name: &str, id: &str, query: &str, body: &[u
         &[("Docker-Content-Digest", digest), ("Location", &location)],
         b"",
     )
+}
+
+/// `text` with each `%XX` as the byte it stands for.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let hex = bytes
+            .get(at + 1..at + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (bytes[at], hex) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                at += 3;
+            }
+            (byte, _) => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn method_not_allowed() -> Vec<u8> {
@@ -785,6 +838,56 @@ mod tests {
             "HTTP/1.1 201 Created"
         );
         assert!(unanswered(&registry));
+    }
+
+    #[test]
+    fn a_query_value_is_read_with_its_percent_escapes_decoded() {
+        assert_eq!(percent_decoded("sha256%3Aab%2Fc"), "sha256:ab/c");
+        assert_eq!(percent_decoded("100%"), "100%");
+        assert_eq!(percent_decoded("%zz%4"), "%zz%4");
+    }
+
+    #[test]
+    fn the_token_realm_answers_a_status_set_for_it() {
+        let registry = Registry::start();
+        registry.answer("GET", "/token", 500);
+        let token = get_from(registry.addr(), "/token?scope=x", "");
+        assert_eq!(token.status_line, "HTTP/1.1 500 Internal Server Error");
+    }
+
+    #[test]
+    fn a_corrupted_blob_and_manifest_keep_their_digest_and_serve_other_bytes() {
+        let registry = Registry::start();
+        upload(&registry, "t/a", b"layer");
+        let digest = registry.seed_manifest("t/a", "1.0.0", b"{}");
+        registry.corrupt("t/a", &digest_of(b"layer"), b"other");
+        registry.corrupt("t/a", &digest, b"[]");
+        assert_eq!(
+            registry.blob("t/a", &digest_of(b"layer")),
+            Some(b"other".to_vec())
+        );
+        assert_eq!(registry.manifest("t/a", &digest), Some(b"[]".to_vec()));
+        let served = get_from(
+            registry.addr(),
+            &format!("/v2/t/a/manifests/{digest}"),
+            AUTH,
+        );
+        assert_eq!(served.body, b"[]");
+    }
+
+    #[test]
+    fn an_upload_location_names_the_host_it_is_told_to() {
+        let registry = Registry::start();
+        let relative = send_to(registry.addr(), "POST", "/v2/t/a/blobs/uploads/", AUTH, b"");
+        assert!(
+            relative.head.contains("Location: /v2/t/a/blobs/uploads/1"),
+            "{}",
+            relative.head
+        );
+        registry.upload_location_host("elsewhere.example:9");
+        let moved = send_to(registry.addr(), "POST", "/v2/t/a/blobs/uploads/", AUTH, b"");
+        let expected = "Location: http://elsewhere.example:9/v2/t/a/blobs/uploads/2";
+        assert!(moved.head.contains(expected), "{}", moved.head);
     }
 
     #[test]

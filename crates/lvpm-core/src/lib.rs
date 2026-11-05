@@ -22,6 +22,7 @@ pub mod launch;
 pub mod linker;
 pub mod lvlib;
 pub mod lvpkg;
+pub mod oci;
 mod paths;
 pub mod project;
 pub mod refresh;
