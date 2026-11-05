@@ -1038,6 +1038,7 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 - AC11: docs rows also check `lvpm publish --to oci://` in usage.md and `docker login` in manifest.md.
 
 - Slice 1 deviations (build): the client uses a 30 s connect timeout and 60 s per whole request (blocking reqwest has no read timeout), with 10 min for blob transfers. `Oci.credentials`, `creds_by_host` and `helper_timeout` land in Slice 3. Slice 1 also touched `events.rs`, `lvpm-testkit/src/http.rs`, `tests/oci_client.rs`, `tests/steps/build.rs`, `tests/support/{normalise,sandbox}.rs`. A rerun after an ambiguous PUT that did land is refused as "already published", which is correct.
+- Slice 2 deviations (build): Slice 2 Gherkin is its own file `s7b-oci-install.feature` (one Feature per file) with steps in `tests/steps/oci_install.rs`. Scenarios run `sync --prefix dest`. The no-pins warning comes from `load_index_each`, so `sync --locked` skips it. Tag listing reads one page and manifests serially (marked shortcut). Listing keeps only manifests whose title matches the pin. Deferred to the final review: an OCI repo with no lvpm package gets the hosted "does not list it" text (spec defines only 404); manifest `Accept` is OCI-only, to check against ghcr in AC8.
 
 ## Build Progress
 
@@ -1050,10 +1051,10 @@ The build-time criteria check asked for these refinements. They tighten tests; s
   - [x] Step 1.3: `lvpm publish --to oci://…`
 
 #### Wave 2
-- [ ] Slice 2: Install from an explicit OCI source
-  - [ ] Step 2.1: `oci://` in `[sources]` and one owner rule
-  - [ ] Step 2.2: List pinned names from an OCI source
-  - [ ] Step 2.3: Fetch by digest and lock the digest
+- [x] Slice 2: Install from an explicit OCI source
+  - [x] Step 2.1: `oci://` in `[sources]` and one owner rule
+  - [x] Step 2.2: List pinned names from an OCI source
+  - [x] Step 2.3: Fetch by digest and lock the digest
 
 #### Wave 3
 - [ ] Slice 3: Credentials from the Docker credential store
