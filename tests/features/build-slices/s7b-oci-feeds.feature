@@ -43,6 +43,12 @@ Feature: lvpm publish to an OCI registry
     Then it fails naming "<registry>"
     And the output says "nothing was published, it is safe to rerun"
 
+  Scenario: A refused upload says how to log in and that nothing was published
+    Given the registry answers 403 to a POST of "/v2/team/alpha/blobs/uploads/"
+    When I run "lvpm publish --to oci://<registry>/team"
+    Then it fails saying "registry <registry> refused the upload to team/alpha; run docker login <registry> with a token that can write packages; nothing was published, it is safe to rerun"
+    And the registry received no manifest write
+
   Scenario: A rerun after an aborted publish succeeds
     Given the registry went down after the blobs of "team/alpha:1.0.0" were uploaded
     And I ran "lvpm publish --to oci://<registry>/team" and it failed

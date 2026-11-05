@@ -529,6 +529,16 @@ async fn registry_answers_to_head(world: &mut CliWorld, status: u16, repo: Strin
         .answer("HEAD", &format!("/v2/{repo}/manifests/{tag}"), status);
 }
 
+#[given(regex = r#"^the registry answers (\d+) to a (POST|PUT) of "([^"]+)"$"#)]
+async fn registry_answers_to_write(
+    world: &mut CliWorld,
+    status: u16,
+    method: String,
+    path: String,
+) {
+    world.registry().answer(&method, &path, status);
+}
+
 #[given(regex = r#"^I ran "([^"]+)" and it failed$"#)]
 async fn ran_and_failed(world: &mut CliWorld, command_line: String) {
     world.run(&command_line, None);
