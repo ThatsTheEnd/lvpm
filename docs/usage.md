@@ -687,7 +687,7 @@ bytes. `lvpm install` does not install the file. stdout says
 - `--no-check` keeps the SBOM.
 - A package with an SBOM says `format = 2` in its `package.toml`; one without
   stays `format = 1`. **These packages need an lvpm release that includes this change.** lvpm
-  0.23 and older stop on them with
+  0.24 and older stop on them with
   `package.toml format = 2 was written by a newer lvpm; update lvpm`. Update
   lvpm where the package is installed. A package without an SBOM, and every
   package built before, installs with any version.
