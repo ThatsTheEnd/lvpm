@@ -53,15 +53,19 @@ pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
 /// A source that cannot be read is named in `failed` and the others are still
 /// listed; when every source fails and nothing is imported, so does this.
 pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
-    catalog_asking(env, query, &[])
+    catalog_asking(env, query, None)
 }
 
-/// [`catalog`], with the community indexes asked for `wanted` and what those
-/// require; they are asked for nothing by [`catalog`], having no catalogue.
-fn catalog_asking(env: &OpEnv, query: Option<&str>, wanted: &[String]) -> Result<Catalog> {
+/// [`catalog`], with the community indexes asked for the manifest's
+/// dependencies and `own`, and what those require; `None` asks for nothing, as
+/// [`catalog`] does, the indexes having no catalogue.
+fn catalog_asking(env: &OpEnv, query: Option<&str>, own: Option<&[String]>) -> Result<Catalog> {
     let manifest = env.manifest_for(None, None)?;
+    let wanted = own.map_or_else(Vec::new, |own| {
+        super::env::wanted_names(manifest.as_ref().map(|(_, project)| project), own)
+    });
     let mut failed = Vec::new();
-    let loaded = env.load_index_each(manifest.as_ref(), wanted, |source, error| {
+    let loaded = env.load_index_each(manifest.as_ref(), &wanted, |source, error| {
         match error.downcast_ref::<ListingFailures>() {
             // Every OCI feed fails in one error; each is a source of its own.
             Some(listing) => {
@@ -132,7 +136,7 @@ pub struct Catalog {
 pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
     let arg = PackageArg::parse(package)?;
     let constraint = arg.read_constraint()?;
-    let catalog = catalog_asking(env, Some(&arg.name), std::slice::from_ref(&arg.name))?;
+    let catalog = catalog_asking(env, Some(&arg.name), Some(std::slice::from_ref(&arg.name)))?;
     let versions: Vec<Entry> = catalog
         .entries
         .into_iter()

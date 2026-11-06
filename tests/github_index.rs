@@ -8,7 +8,7 @@ use lvpm_core::cancel::CancelToken;
 use lvpm_core::community;
 use lvpm_core::config::Config;
 use lvpm_core::github::{GitHub, GitHubAuth, contents_cached};
-use lvpm_core::index::{self, Entry, IndexFeed, SourceSet};
+use lvpm_core::index::{self, Entry, IndexFeed, OciFeed, SourceSet};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::oci::Oci;
 use lvpm_core::ops::install::InstallOptions;
@@ -16,6 +16,7 @@ use lvpm_core::ops::{OpEnv, add_remove, install, lock, query};
 use lvpm_testkit::events::RecordingSink;
 use lvpm_testkit::feed::Feed;
 use lvpm_testkit::github::GitHubFake;
+use lvpm_testkit::oci::Registry;
 use reqwest::blocking::Client;
 use std::path::Path;
 
@@ -201,6 +202,7 @@ struct Setup<'a> {
     fake: &'a GitHubFake,
     cache: &'a Path,
     hosted: Vec<String>,
+    oci: Vec<OciFeed>,
     refresh: bool,
     limit: u64,
 }
@@ -211,6 +213,7 @@ impl<'a> Setup<'a> {
             fake,
             cache,
             hosted: Vec::new(),
+            oci: Vec::new(),
             refresh: false,
             limit: LIMIT,
         }
@@ -235,6 +238,15 @@ impl<'a> Setup<'a> {
                 self.limit,
             )
         };
+        self.read_with(wanted, &fetch)
+    }
+
+    /// [`Self::read`], with `fetch` answering for the index.
+    fn read_with(
+        &self,
+        wanted: &[&str],
+        fetch: &dyn Fn(&IndexFeed, &str) -> anyhow::Result<Option<String>>,
+    ) -> Read {
         let wanted: Vec<String> = wanted.iter().map(|name| name.to_string()).collect();
         let indexes = [IndexFeed {
             owner: "o".into(),
@@ -246,9 +258,10 @@ impl<'a> Setup<'a> {
             self.refresh,
             &SourceSet {
                 extra: &self.hosted,
+                oci: &self.oci,
                 index: &indexes,
                 wanted: &wanted,
-                index_fetch: &fetch,
+                index_fetch: fetch,
                 index_parse: community::read_entries,
                 ..SourceSet::default()
             },
@@ -382,10 +395,15 @@ fn an_index_that_fails_is_a_listing_failure_of_that_source() {
 #[test]
 fn an_entry_that_does_not_parse_is_a_listing_failure_naming_its_file_and_the_key() {
     let fake = index_with(&[]);
-    fake.add_file(REPO, "packages/foo.toml", "name = \"foo\"\nown = 1\n");
-    fake.add_file(REPO, "packages/bar.toml", &entry_file("bar", &[]));
+    fake.add_file(
+        REPO,
+        "packages/foo.toml",
+        "name = \"foo\"
+own = 1
+",
+    );
     let dir = tempfile::tempdir().unwrap();
-    let read = Setup::new(&fake, dir.path()).read(&["foo", "bar"]);
+    let read = Setup::new(&fake, dir.path()).read(&["foo"]);
     assert_eq!(
         read.failed,
         [(
@@ -393,8 +411,7 @@ fn an_entry_that_does_not_parse_is_a_listing_failure_naming_its_file_and_the_key
             "packages/foo.toml in github:o/r does not parse: own: unknown key".to_string()
         )]
     );
-    // One bad file does not stop the next name.
-    assert_eq!(read.names(), ["bar"]);
+    assert_eq!(read.names(), Vec::<String>::new());
 }
 
 #[test]
@@ -524,7 +541,7 @@ fn a_name_passed_to_install_is_asked_with_the_manifests_dependencies() {
 }
 
 #[test]
-fn a_name_passed_to_info_is_asked() {
+fn a_name_passed_to_info_is_asked_with_the_manifests_dependencies() {
     let fake = index_with(&[]);
     let dir = project(
         "bar = \"*\"
@@ -532,5 +549,66 @@ fn a_name_passed_to_info_is_asked() {
     );
     let sink = RecordingSink::default();
     let _ = query::info(&env(dir.path(), &sink, &fake), "foo");
-    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+    assert_eq!(asked(&fake), ["packages/bar.toml", "packages/foo.toml"]);
+}
+
+#[test]
+fn requires_of_an_oci_entry_of_a_wanted_name_are_followed() {
+    let fake = index_with(&[("beta", &[])]);
+    let registry = Registry::start();
+    registry.seed_package(
+        "team/alpha",
+        "1.0.0",
+        &[
+            ("org.opencontainers.image.title", "alpha"),
+            ("org.opencontainers.image.version", "1.0.0"),
+            ("dev.lvpm.requires", "beta >=1.0"),
+        ],
+        b"alpha 1.0.0",
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.oci = vec![OciFeed {
+        name: "team".to_string(),
+        url: lvpm_core::oci::FeedUrl::parse(&format!("oci://{}/team", registry.host())).unwrap(),
+        pinned: vec!["alpha".to_string()],
+    }];
+    let read = setup.read(&["alpha"]);
+    assert_eq!(asked(&fake), ["packages/alpha.toml", "packages/beta.toml"]);
+    assert_eq!(read.names(), ["alpha", "beta"]);
+}
+
+#[test]
+fn an_index_that_fails_after_listing_a_name_contributes_no_entries() {
+    let fake = index_with(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let fetch = |_: &IndexFeed, key: &str| match key {
+        "foo" => Ok(Some(entry_file("foo", &[]))),
+        _ => Err(anyhow::anyhow!("HTTP 500")),
+    };
+    let read = Setup::new(&fake, dir.path()).read_with(&["foo", "bar"], &fetch);
+    assert_eq!(
+        read.failed,
+        [("github-index:o/r".to_string(), "HTTP 500".to_string())]
+    );
+    assert_eq!(read.names(), Vec::<String>::new());
+}
+
+#[test]
+fn two_files_that_do_not_parse_are_one_failure_of_the_index_and_the_first_is_the_one_told() {
+    let fake = index_with(&[]);
+    fake.add_file(REPO, "packages/foo.toml", "name = \"foo\"\nown = 1\n");
+    fake.add_file(REPO, "packages/bar.toml", "name = \"bar\"\nmine = 1\n");
+    fake.add_file(REPO, "packages/baz.toml", &entry_file("baz", &[]));
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&["foo", "bar", "baz"]);
+    assert_eq!(
+        read.failed,
+        [(
+            "github-index:o/r".to_string(),
+            "packages/foo.toml in github:o/r does not parse: own: unknown key".to_string()
+        )]
+    );
+    // A failed index contributes nothing, so the good file is not used either.
+    assert_eq!(read.names(), Vec::<String>::new());
 }

@@ -740,18 +740,20 @@ fn read_each(
         }
     }
 
-    let ask = IndexAsk {
-        feeds: index_feeds,
-        fetch: *index_fetch,
-        parse: *index_parse,
-    };
-    ask.read(wanted, cancel, &mut entries, &mut sources, &mut on_fail)?;
-
+    sources.extend(index_feeds.iter().map(IndexFeed::source));
     let mut failures = Vec::new();
     for feed in *oci_feeds {
         sources.push(feed.url.to_string());
         read_oci(oci, feed, cancel, &mut entries, &mut failures)?;
     }
+    // After every other source is read, so the names their entries require are
+    // asked of the indexes too.
+    let ask = IndexAsk {
+        feeds: index_feeds,
+        fetch: *index_fetch,
+        parse: *index_parse,
+    };
+    ask.read(wanted, cancel, &mut entries, &mut on_fail)?;
     // Every pin that failed is reported at once, and none is left to a source
     // asked after it: they are one error, not a skipped source.
     if let Some(first) = failures.first().map(|failure| failure.feed.to_string()) {
@@ -775,16 +777,15 @@ impl IndexAsk<'_> {
     /// entries of a name already asked for (from any source, the indexes' own
     /// as they come) require, until no new name turns up. A name is asked once,
     /// so a cycle ends, and what a name nobody asked for requires is never
-    /// read. An index whose request failed is not asked again.
+    /// read. An index that failed, to answer or to parse, is told once, is not
+    /// asked again, and gives none of its entries.
     fn read(
         &self,
         wanted: &[String],
         cancel: &CancelToken,
         entries: &mut Vec<Entry>,
-        sources: &mut Vec<String>,
         on_fail: &mut impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
-        sources.extend(self.feeds.iter().map(IndexFeed::source));
         let mut seen = HashSet::new();
         let mut queue = VecDeque::new();
         let mut enqueue = |name: &str, queue: &mut VecDeque<String>| {
@@ -806,23 +807,12 @@ impl IndexAsk<'_> {
                     return Err(Cancelled.into());
                 }
                 let source = feed.source();
-                match (self.fetch)(feed, &key) {
-                    Ok(None) => {}
-                    Ok(Some(text)) => match (self.parse)(&key, &text) {
-                        Ok(mut found) => {
-                            label(&mut found, &source);
-                            entries.extend(found);
-                        }
-                        Err(error) => {
-                            let file = format!(
-                                "packages/{key}.toml in {GITHUB_SCHEME}{}/{}",
-                                feed.owner, feed.repo
-                            );
-                            on_fail(&source, anyhow::anyhow!("{file} does not parse: {error:#}"))?;
-                        }
-                    },
+                match self.entries_of(feed, &key, &source) {
+                    Ok(found) => entries.extend(found),
                     Err(error) => {
+                        // A source that failed gives nothing, as a local folder does.
                         *down = true;
+                        entries.retain(|entry| entry.source != source);
                         on_fail(&source, error)?;
                     }
                 }
@@ -836,6 +826,22 @@ impl IndexAsk<'_> {
             }
         }
         Ok(())
+    }
+
+    /// What `feed` lists under `key`: nothing when it has no such file.
+    fn entries_of(&self, feed: &IndexFeed, key: &str, source: &str) -> Result<Vec<Entry>> {
+        let Some(text) = (self.fetch)(feed, key)? else {
+            return Ok(Vec::new());
+        };
+        let mut found = (self.parse)(key, &text).map_err(|error| {
+            anyhow::anyhow!(
+                "packages/{key}.toml in {GITHUB_SCHEME}{}/{} does not parse: {error:#}",
+                feed.owner,
+                feed.repo
+            )
+        })?;
+        label(&mut found, source);
+        Ok(found)
     }
 }
 
