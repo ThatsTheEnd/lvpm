@@ -325,32 +325,31 @@ impl<'a> OpEnv<'a> {
         wanted: &[String],
         on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<index::Loaded> {
-        let mut repos: Vec<String> = Vec::new();
+        let mut remotes = Vec::new();
         let mut registries = Vec::new();
-        let mut indexes = Vec::new();
         let mut defaults = true;
         let mut owners = HashMap::new();
         if let Some((_, proj)) = manifest {
             let feeds = proj.resolved_sources()?;
             owners = index::owners(&feeds, &proj.source_pins);
-            (repos, registries, indexes) = index::split_sources(feeds, &proj.source_pins);
+            (remotes, registries) = index::split_sources(feeds, &proj.source_pins);
             defaults = proj.default_sources;
             self.warn_unpinned(&registries);
         }
         // Opened for a project that has a community index, and for no other.
-        let downloads = (!indexes.is_empty())
-            .then(|| Downloads::open(self))
-            .transpose()?;
+        let has_index = remotes
+            .iter()
+            .any(|remote| matches!(remote, index::Remote::Index(_)));
+        let downloads = has_index.then(|| Downloads::open(self)).transpose()?;
         let fetch = |feed: &index::IndexFeed, key: &str| match &downloads {
             Some(downloads) => downloads.index_file(feed, key, self.refresh),
             None => Ok(None),
         };
         let sources = index::SourceSet {
-            extra: &repos,
+            extra: &remotes,
             local: &self.local_sources(),
             defaults,
             oci: &registries,
-            index: &indexes,
             wanted,
             index_fetch: &fetch,
             index_parse: crate::community::read_entries,

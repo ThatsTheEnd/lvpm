@@ -500,18 +500,44 @@ impl IndexFeed {
     }
 }
 
-/// `sources` cut into what the hosted-feed reader takes (the index folders),
-/// what the OCI reader takes (each OCI feed with its pinned packages) and the
-/// community index repos, each in `[sources]` order.
+/// A remote source that [`SourceSet::extra`] lists: where it sits in the list
+/// is how it ranks against the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remote {
+    /// A hosted index folder, as its `[sources]` line writes it.
+    Hosted(String),
+    /// A community index repo.
+    Index(IndexFeed),
+}
+
+impl Remote {
+    /// The folder of a hosted source.
+    pub fn folder(&self) -> Option<&str> {
+        match self {
+            Remote::Hosted(folder) => Some(folder),
+            Remote::Index(_) => None,
+        }
+    }
+}
+
+/// The folders of the hosted sources in `remotes`, in order.
+pub fn folders(remotes: &[Remote]) -> Vec<String> {
+    let hosted = remotes.iter().filter_map(Remote::folder);
+    hosted.map(str::to_string).collect()
+}
+
+/// `sources` cut into the hosted folders and community index repos, in
+/// `[sources]` order, and what the OCI reader takes (each OCI feed with its
+/// pinned packages).
 pub fn split_sources(
     sources: Vec<(String, Feed)>,
     pins: &BTreeMap<String, String>,
-) -> (Vec<String>, Vec<OciFeed>, Vec<IndexFeed>) {
-    let (mut hosted, mut registries, mut indexes) = (Vec::new(), Vec::new(), Vec::new());
+) -> (Vec<Remote>, Vec<OciFeed>) {
+    let (mut remotes, mut registries) = (Vec::new(), Vec::new());
     for (name, feed) in sources {
         match feed {
-            Feed::Hosted(folder) => hosted.push(folder),
-            Feed::Index { owner, repo } => indexes.push(IndexFeed { owner, repo }),
+            Feed::Hosted(folder) => remotes.push(Remote::Hosted(folder)),
+            Feed::Index { owner, repo } => remotes.push(Remote::Index(IndexFeed { owner, repo })),
             Feed::Oci(url) => {
                 let pinned = (pins.iter())
                     .filter(|(_, source)| **source == name)
@@ -521,7 +547,7 @@ pub fn split_sources(
             }
         }
     }
-    (hosted, registries, indexes)
+    (remotes, registries)
 }
 
 /// The OCI manifest an entry from an OCI source is fetched by, which is its
@@ -586,8 +612,10 @@ pub fn load(
 
 /// Where [`load`] looks, besides the cache's imported archives.
 pub struct SourceSet<'a> {
-    /// Hosted index folders, read before the public ones.
-    pub extra: &'a [String],
+    /// Hosted index folders and community index repos, in the order of their
+    /// `[sources]` lines: an earlier one wins a name, and all of them before
+    /// the public indexes.
+    pub extra: &'a [Remote],
     /// Local package folders.
     pub local: &'a [PathBuf],
     /// Whether the public indexes are read too.
@@ -595,10 +623,9 @@ pub struct SourceSet<'a> {
     /// OCI sources, each asked only for the packages pinned to it, after
     /// every hosted feed.
     pub oci: &'a [OciFeed],
-    /// Community index repos, each asked one `packages/<key>.toml` per name in
-    /// `wanted` and per name those entries, or any other source's, require.
-    pub index: &'a [IndexFeed],
-    /// The names the community indexes are asked for. None: no request.
+    /// The names the community indexes in `extra` are asked for, each one
+    /// `packages/<key>.toml`, and per name those entries, or any other
+    /// source's, require. None: no request.
     pub wanted: &'a [String],
     /// The text of an index repo's `packages/<key>.toml`; `None` when it has no
     /// such file. Which request that is, and how it is cached, is the caller's.
@@ -625,7 +652,6 @@ impl Default for SourceSet<'_> {
             local: &[],
             defaults: false,
             oci: &[],
-            index: &[],
             wanted: &[],
             index_fetch: &nothing_listed,
             index_parse: no_entries,
@@ -680,71 +706,89 @@ fn read_each(
         local,
         defaults,
         oci: oci_feeds,
-        index: index_feeds,
         wanted,
         index_fetch,
         index_parse,
     } = source_set;
-    let mut entries = Vec::new();
+    // The rank of what a source lists: the cache and the local folders first,
+    // then each `extra` by its line, then the public indexes, then OCI. The
+    // entries are sorted by it (stably) once every source is read.
+    let (defaults_rank, oci_rank) = (extra.len() + 1, extra.len() + 2);
+    let mut entries: Vec<(usize, Entry)> = Vec::new();
     let mut sources = Vec::new();
     let cache = Cache::open(cache_dir)?;
     for package in cache.imported_packages()? {
-        entries.push(Entry {
+        let entry = Entry {
             source: CACHE_SOURCE.to_string(),
             ..local_entry(
                 package.entry,
                 format!("cache:{}", package.sha256),
                 Some(package.md5),
             )
-        });
+        };
+        entries.push((LOCAL_RANK, entry));
     }
 
     for dir in *local {
         let name = dir.to_string_lossy().into_owned();
-        let start = entries.len();
+        let mut found = Vec::new();
         let scanned = match dir.is_dir() {
             false => Err(anyhow::anyhow!(
                 "local source {} is not a directory",
                 dir.display()
             )),
-            true => scan_local_repo(&cache, dir, refresh, &mut entries, sink),
+            true => scan_local_repo(&cache, dir, refresh, &mut found, sink),
         };
         match scanned {
-            Ok(()) => label(&mut entries[start..], &name),
-            Err(error) => {
-                entries.truncate(start);
-                on_fail(&name, error)?;
+            Ok(()) => {
+                label(&mut found, &name);
+                entries.extend(at_rank(LOCAL_RANK, found));
             }
+            Err(error) => on_fail(&name, error)?,
         }
         sources.push(name);
     }
 
-    let feeds = feeds(extra, *defaults);
+    let hosted: Vec<(usize, String)> = (extra.iter().enumerate())
+        .filter_map(|(line, remote)| Some((line + 1, remote.folder()?.to_string())))
+        .collect();
+    let folders: Vec<String> = hosted.iter().map(|(_, folder)| folder.clone()).collect();
+    let feed_ranks = (hosted.iter().map(|(rank, _)| *rank)).chain(std::iter::repeat(defaults_rank));
+    let feeds = feeds(&folders, *defaults);
     if !feeds.is_empty() {
         let client = Client::builder()
             .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        for (url, base) in &feeds {
+        for ((url, base), rank) in feeds.iter().zip(feed_ranks) {
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
             sources.push(url.clone());
             match feed_body(&cache, &client, url, base, refresh, sink) {
                 Ok(body) => {
-                    let start = entries.len();
-                    parse_into(&body, base, &mut entries);
-                    label(&mut entries[start..], url);
+                    let mut found = Vec::new();
+                    parse_into(&body, base, &mut found);
+                    label(&mut found, url);
+                    entries.extend(at_rank(rank, found));
                 }
                 Err(error) => on_fail(url, error)?,
             }
         }
     }
 
-    sources.extend(index_feeds.iter().map(IndexFeed::source));
+    let index_feeds: Vec<(usize, &IndexFeed)> = (extra.iter().enumerate())
+        .filter_map(|(line, remote)| match remote {
+            Remote::Index(feed) => Some((line + 1, feed)),
+            Remote::Hosted(_) => None,
+        })
+        .collect();
+    sources.extend(index_feeds.iter().map(|(_, feed)| feed.source()));
     let mut failures = Vec::new();
     for feed in *oci_feeds {
         sources.push(feed.url.to_string());
-        read_oci(oci, feed, cancel, &mut entries, &mut failures)?;
+        let mut found = Vec::new();
+        read_oci(oci, feed, cancel, &mut found, &mut failures)?;
+        entries.extend(at_rank(oci_rank, found));
     }
     // After every other source is read, so the names their entries require are
     // asked of the indexes too.
@@ -754,20 +798,32 @@ fn read_each(
         parse: *index_parse,
     };
     ask.read(wanted, cancel, &mut entries, &mut on_fail)?;
+
     // Every pin that failed is reported at once, and none is left to a source
     // asked after it: they are one error, not a skipped source.
     if let Some(first) = failures.first().map(|failure| failure.feed.to_string()) {
         on_fail(&first, ListingFailures::new(failures).into())?;
     }
 
-    let index = Index { entries };
+    entries.sort_by_key(|(rank, _)| *rank);
+    let index = Index {
+        entries: entries.into_iter().map(|(_, entry)| entry).collect(),
+    };
     Ok(Loaded { index, sources })
 }
 
-/// The community index repos and how to read them: [`SourceSet::index`],
+/// The rank of the cache and the local folders: before every remote source.
+const LOCAL_RANK: usize = 0;
+
+fn at_rank(rank: usize, found: Vec<Entry>) -> impl Iterator<Item = (usize, Entry)> {
+    found.into_iter().map(move |entry| (rank, entry))
+}
+
+/// The community index repos of [`SourceSet::extra`] and how to read them:
 /// [`SourceSet::index_fetch`] and [`SourceSet::index_parse`].
 struct IndexAsk<'a> {
-    feeds: &'a [IndexFeed],
+    /// Each index repo with the rank of its `[sources]` line.
+    feeds: Vec<(usize, &'a IndexFeed)>,
     fetch: &'a dyn Fn(&IndexFeed, &str) -> Result<Option<String>>,
     parse: fn(&str, &str) -> Result<Vec<Entry>>,
 }
@@ -783,7 +839,7 @@ impl IndexAsk<'_> {
         &self,
         wanted: &[String],
         cancel: &CancelToken,
-        entries: &mut Vec<Entry>,
+        entries: &mut Vec<(usize, Entry)>,
         on_fail: &mut impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
         let mut seen = HashSet::new();
@@ -799,7 +855,7 @@ impl IndexAsk<'_> {
         }
         let mut down = vec![false; self.feeds.len()];
         while let Some(key) = queue.pop_front() {
-            for (feed, down) in self.feeds.iter().zip(&mut down) {
+            for (&(rank, feed), down) in self.feeds.iter().zip(&mut down) {
                 if *down {
                     continue;
                 }
@@ -808,17 +864,18 @@ impl IndexAsk<'_> {
                 }
                 let source = feed.source();
                 match self.entries_of(feed, &key, &source) {
-                    Ok(found) => entries.extend(found),
+                    Ok(found) => entries.extend(at_rank(rank, found)),
                     Err(error) => {
                         // A source that failed gives nothing, as a local folder does.
                         *down = true;
-                        entries.retain(|entry| entry.source != source);
+                        entries.retain(|(_, entry)| entry.source != source);
                         on_fail(&source, error)?;
                     }
                 }
             }
-            let of_key = |e: &&Entry| crate::project::name_key(&e.name) == key;
+            let of_key = |(_, e): &&(usize, Entry)| crate::project::name_key(&e.name) == key;
             let required: Vec<String> = (entries.iter().filter(of_key))
+                .map(|(_, entry)| entry)
                 .flat_map(|entry| entry.requires.iter().map(|r| r.name.clone()))
                 .collect();
             for name in required {
@@ -1280,11 +1337,12 @@ mod tests {
         defaults: bool,
         sink: &dyn EventSink,
     ) -> Result<Index> {
+        let extra: Vec<Remote> = extra.iter().cloned().map(Remote::Hosted).collect();
         super::load(
             cache_dir,
             refresh,
             &SourceSet {
-                extra,
+                extra: &extra,
                 local: local_sources,
                 defaults,
                 ..SourceSet::default()
@@ -1657,7 +1715,7 @@ mod tests {
     #[test]
     fn a_cancel_ends_the_load_before_the_next_feed_is_asked() {
         let (first, second) = (stub(&[OK]), stub(&[OK]));
-        let feeds = [first.url.clone(), second.url.clone()];
+        let feeds = [first.url.clone(), second.url.clone()].map(Remote::Hosted);
         let (root, _cache) = test_cache("cancel-between-feeds");
         let load_with = |token: &CancelToken, sink: &dyn EventSink| {
             let sources = SourceSet {
@@ -1933,6 +1991,95 @@ Package.Display Name=A Thing
         assert_eq!(defaults, sources);
     }
 
+    /// The entries of an index file that is `<name> <version>`.
+    fn parse_listed(_key: &str, text: &str) -> Result<Vec<Entry>> {
+        let (name, version) = text.split_once(' ').unwrap();
+        let listed = LocalEntry {
+            name: name.to_string(),
+            version: version.to_string(),
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: None,
+        };
+        Ok(vec![local_entry(listed, String::new(), None)])
+    }
+
+    /// Makes the next read of `url` answer `body` from the cache, with no request.
+    fn seed_feed(cache: &Cache, url: &str, body: &str) {
+        let sha256 = Some(cache.store(body.as_bytes()).unwrap());
+        let state = SourceState {
+            sha256,
+            ..SourceState::default()
+        };
+        cache.record(url, "remote", url, &state).unwrap();
+    }
+
+    #[test]
+    fn an_earlier_sources_line_wins_a_name_over_the_index_and_the_index_over_the_public_indexes() {
+        let (root, cache) = test_cache("rank-sources-lines");
+        seed_feed(
+            &cache,
+            "http://h/first/index.vipr",
+            "[Package foo-1.0]
+Package.URL=foo-1.0.vip
+",
+        );
+        seed_feed(
+            &cache,
+            SOURCES[0].0,
+            "[Package bar-3.0]
+Package.URL=bar-3.0.vip
+",
+        );
+        seed_feed(&cache, SOURCES[1].0, "");
+        let listed = IndexFeed {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        };
+        let fetch = |_: &IndexFeed, key: &str| {
+            Ok(match key {
+                "foo" => Some("foo 2.0".to_string()),
+                "bar" => Some("bar 1.0".to_string()),
+                _ => None,
+            })
+        };
+        let extra = [
+            Remote::Hosted("http://h/first".to_string()),
+            Remote::Index(listed),
+        ];
+        let wanted = ["foo".to_string(), "bar".to_string()];
+        let sources = SourceSet {
+            extra: &extra,
+            defaults: true,
+            wanted: &wanted,
+            index_fetch: &fetch,
+            index_parse: parse_listed,
+            ..SourceSet::default()
+        };
+        let loaded = load_each(
+            &root,
+            false,
+            &sources,
+            &HashMap::new(),
+            &Oci::default(),
+            &NullSink,
+            &CancelToken::new(),
+            |_, error| Err(error),
+        )
+        .unwrap();
+        let from: Vec<(&str, &str)> = (loaded.index.entries.iter())
+            .map(|e| (e.name.as_str(), e.source.as_str()))
+            .collect();
+        assert_eq!(
+            from,
+            [
+                ("foo", "http://h/first/index.vipr"),
+                ("bar", "github-index:o/r")
+            ]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn a_name_comes_only_from_the_first_source_that_lists_it() {
         let listed = |name: &str, version: &str, source: &str| Entry {
@@ -2032,14 +2179,23 @@ Package.Display Name=A Thing
             ("net".to_string(), Feed::Hosted("http://h/x".to_string())),
             ("two".to_string(), index("o", "s")),
         ];
-        let (hosted, registries, indexes) = split_sources(sources, &BTreeMap::new());
-        assert_eq!(hosted, ["http://h/x"]);
+        let (remotes, registries) = split_sources(sources, &BTreeMap::new());
         assert!(registries.is_empty());
-        let feed = |owner: &str, repo: &str| IndexFeed {
-            owner: owner.to_string(),
-            repo: repo.to_string(),
+        let feed = |owner: &str, repo: &str| {
+            Remote::Index(IndexFeed {
+                owner: owner.to_string(),
+                repo: repo.to_string(),
+            })
         };
-        assert_eq!(indexes, [feed("o", "r"), feed("o", "s")]);
+        assert_eq!(
+            remotes,
+            [
+                feed("o", "r"),
+                Remote::Hosted("http://h/x".to_string()),
+                feed("o", "s")
+            ]
+        );
+        assert_eq!(folders(&remotes), ["http://h/x"]);
     }
 
     #[test]
@@ -2066,8 +2222,8 @@ Package.Display Name=A Thing
             ("beta".to_string(), "net".to_string()),
             ("gamma".to_string(), "team".to_string()),
         ]);
-        let (hosted, registries, _) = split_sources(sources, &pins);
-        assert_eq!(hosted, ["http://h/x"]);
+        let (remotes, registries) = split_sources(sources, &pins);
+        assert_eq!(folders(&remotes), ["http://h/x"]);
         let split: Vec<(&str, String, &[String])> = registries
             .iter()
             .map(|feed| {

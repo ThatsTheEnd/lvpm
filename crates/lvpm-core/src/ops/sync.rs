@@ -851,9 +851,9 @@ impl Source {
         if project.default_sources {
             sources.push(Source::PublicFeeds);
         }
-        let (hosted, registries, _) =
+        let (remotes, registries) =
             index::split_sources(project.resolved_sources()?, &project.source_pins);
-        sources.extend(hosted.into_iter().map(Source::Feed));
+        sources.extend(index::folders(&remotes).into_iter().map(Source::Feed));
         sources.extend(registries.into_iter().map(Source::Oci));
         Ok(sources)
     }
@@ -878,7 +878,7 @@ impl Source {
             Source::Imported => (Vec::new(), Vec::new(), false),
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
-            Source::Feed(url) => (vec![url.clone()], Vec::new(), false),
+            Source::Feed(url) => (vec![index::Remote::Hosted(url.clone())], Vec::new(), false),
             // Fetched by digest in `fetch_locked`, which never asks for this.
             Source::Oci(_) => {
                 return Ok(Index {

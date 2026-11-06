@@ -8,7 +8,7 @@ use lvpm_core::cancel::CancelToken;
 use lvpm_core::community;
 use lvpm_core::config::Config;
 use lvpm_core::github::{GitHub, GitHubAuth, contents_cached};
-use lvpm_core::index::{self, Entry, IndexFeed, OciFeed, SourceSet};
+use lvpm_core::index::{self, Entry, IndexFeed, OciFeed, Remote, SourceSet};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::oci::Oci;
 use lvpm_core::ops::install::InstallOptions;
@@ -18,7 +18,7 @@ use lvpm_testkit::feed::Feed;
 use lvpm_testkit::github::GitHubFake;
 use lvpm_testkit::oci::Registry;
 use reqwest::blocking::Client;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const REPO: &str = "o/r";
 const LIMIT: u64 = 1024 * 1024;
@@ -196,15 +196,25 @@ impl Read {
     }
 }
 
-/// How a read is set up; the rest is what a project with one community
-/// index at `o/r` and the given hosted folders would have.
+/// How a read is set up: the `[sources]` lines, which are the community index
+/// at `o/r` alone unless a test lists others, and the rest of a project that
+/// has one.
 struct Setup<'a> {
     fake: &'a GitHubFake,
     cache: &'a Path,
-    hosted: Vec<String>,
+    remotes: Vec<Remote>,
+    local: Vec<PathBuf>,
     oci: Vec<OciFeed>,
     refresh: bool,
     limit: u64,
+}
+
+/// The community index repo of the fake.
+fn index_feed() -> IndexFeed {
+    IndexFeed {
+        owner: "o".into(),
+        repo: "r".into(),
+    }
 }
 
 impl<'a> Setup<'a> {
@@ -212,7 +222,8 @@ impl<'a> Setup<'a> {
         Setup {
             fake,
             cache,
-            hosted: Vec::new(),
+            remotes: vec![Remote::Index(index_feed())],
+            local: Vec::new(),
             oci: Vec::new(),
             refresh: false,
             limit: LIMIT,
@@ -248,18 +259,14 @@ impl<'a> Setup<'a> {
         fetch: &dyn Fn(&IndexFeed, &str) -> anyhow::Result<Option<String>>,
     ) -> Read {
         let wanted: Vec<String> = wanted.iter().map(|name| name.to_string()).collect();
-        let indexes = [IndexFeed {
-            owner: "o".into(),
-            repo: "r".into(),
-        }];
         let mut read = Read::default();
         let loaded = index::load_each(
             self.cache,
             self.refresh,
             &SourceSet {
-                extra: &self.hosted,
+                extra: &self.remotes,
+                local: &self.local,
                 oci: &self.oci,
-                index: &indexes,
                 wanted: &wanted,
                 index_fetch: fetch,
                 index_parse: community::read_entries,
@@ -327,7 +334,7 @@ fn requires_of_a_name_nobody_wanted_are_not_followed() {
     let (_feed, url) = hosted_listing("qux", "zap>=1.0");
     let dir = tempfile::tempdir().unwrap();
     let mut setup = Setup::new(&fake, dir.path());
-    setup.hosted = vec![url];
+    setup.remotes.insert(0, Remote::Hosted(url));
     setup.read(&["foo"]);
     assert_eq!(asked(&fake), ["packages/foo.toml"]);
 }
@@ -338,7 +345,7 @@ fn requires_of_a_hosted_entry_of_a_wanted_name_are_followed() {
     let (_feed, url) = hosted_listing("foo", "bar>=1.0");
     let dir = tempfile::tempdir().unwrap();
     let mut setup = Setup::new(&fake, dir.path());
-    setup.hosted = vec![url];
+    setup.remotes.insert(0, Remote::Hosted(url));
     let read = setup.read(&["foo"]);
     assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
     assert_eq!(read.names(), ["foo", "bar"]);
@@ -575,7 +582,8 @@ fn requires_of_an_oci_entry_of_a_wanted_name_are_followed() {
     }];
     let read = setup.read(&["alpha"]);
     assert_eq!(asked(&fake), ["packages/alpha.toml", "packages/beta.toml"]);
-    assert_eq!(read.names(), ["alpha", "beta"]);
+    // The index, a remote source, ranks before OCI.
+    assert_eq!(read.names(), ["beta", "alpha"]);
 }
 
 #[test]
@@ -611,4 +619,95 @@ fn two_files_that_do_not_parse_are_one_failure_of_the_index_and_the_first_is_the
     );
     // A failed index contributes nothing, so the good file is not used either.
     assert_eq!(read.names(), Vec::<String>::new());
+}
+
+/// A package folder with `name` `version` in it, as an archive.
+fn local_folder(name: &str, version: &str) -> tempfile::TempDir {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    zip.start_file("spec", options).unwrap();
+    let spec = format!("[Package]\nName={name}\nVersion={version}\n");
+    zip.write_all(spec.as_bytes()).unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
+    std::fs::write(dir.path().join(format!("{name}-{version}.vip")), bytes).unwrap();
+    dir
+}
+
+/// Where `read` says each name comes from.
+fn sources_of(read: &Read) -> Vec<(String, String)> {
+    let each = read.entries.iter();
+    each.map(|e| (e.name.clone(), e.source.clone())).collect()
+}
+
+fn pair(name: &str, source: &str) -> (String, String) {
+    (name.to_string(), source.to_string())
+}
+
+#[test]
+fn a_local_folder_ranks_before_the_index_and_oci_after_it() {
+    let fake = index_with(&[("baz", &[]), ("qux", &[])]);
+    let registry = Registry::start();
+    let notes = [
+        ("org.opencontainers.image.title", "qux"),
+        ("org.opencontainers.image.version", "2.0.0"),
+    ];
+    registry.seed_package("team/qux", "2.0.0", &notes, b"qux 2.0.0");
+    let folder = local_folder("baz", "1.0.0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.local = vec![folder.path().to_path_buf()];
+    let url = format!("oci://{}/team", registry.host());
+    setup.oci = vec![OciFeed {
+        name: "team".to_string(),
+        url: lvpm_core::oci::FeedUrl::parse(&url).unwrap(),
+        pinned: vec!["qux".to_string()],
+    }];
+    let read = setup.read(&["baz", "qux"]);
+    assert_eq!(read.failed, []);
+    assert_eq!(
+        sources_of(&read),
+        [
+            pair("baz", &folder.path().to_string_lossy()),
+            pair("qux", "github-index:o/r")
+        ]
+    );
+}
+
+#[test]
+fn the_index_ranks_among_hosted_folders_by_its_line_in_sources() {
+    let fake = index_with(&[("foo", &[])]);
+    let (_first, a) = hosted_listing("foo", "");
+    let (_second, c) = hosted_listing("foo", "");
+    let feed_url = |folder: &str| format!("{}/index.vipr", folder.trim_end_matches('/'));
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    let index = Remote::Index(index_feed());
+
+    setup.remotes = vec![
+        Remote::Hosted(a.clone()),
+        index.clone(),
+        Remote::Hosted(c.clone()),
+    ];
+    assert_eq!(
+        sources_of(&setup.read(&["foo"])),
+        [pair("foo", &feed_url(&a))]
+    );
+
+    setup.remotes = vec![
+        Remote::Hosted(c.clone()),
+        index.clone(),
+        Remote::Hosted(a.clone()),
+    ];
+    assert_eq!(
+        sources_of(&setup.read(&["foo"])),
+        [pair("foo", &feed_url(&c))]
+    );
+
+    setup.remotes = vec![index, Remote::Hosted(a)];
+    assert_eq!(
+        sources_of(&setup.read(&["foo"])),
+        [pair("foo", "github-index:o/r")]
+    );
 }
