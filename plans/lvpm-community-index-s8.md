@@ -755,8 +755,8 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 ### Slices (grouped by wave)
 
 #### Wave 1
-- [ ] Slice 1: `github:owner/repo` in `[sources]`
-  - [ ] Step 1.1: parse `github:` into `Feed::Index`
+- [x] Slice 1: `github:owner/repo` in `[sources]`
+  - [x] Step 1.1: parse `github:` into `Feed::Index`
 
 #### Wave 2
 - [ ] Slice 2: reading entry files
