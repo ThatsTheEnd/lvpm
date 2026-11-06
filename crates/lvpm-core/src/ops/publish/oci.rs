@@ -169,7 +169,8 @@ fn not_published(repository: &str) -> impl Fn(oci::Error) -> anyhow::Error {
 /// a digest that does not match) may have stored it.
 fn at_the_put(why: oci::Error, repository: &str, reference: &Reference) -> anyhow::Error {
     let refused = why.status_code().is_some_and(|status| status < 500)
-        || matches!(why, oci::Error::Protocol { .. });
+        || matches!(why, oci::Error::Protocol { .. })
+        || why.is_host_level();
     match refused {
         true => not_published(repository)(why),
         false => anyhow!(
@@ -241,6 +242,15 @@ mod tests {
             at_the_put(mismatch, "t/a", &reference)
                 .to_string()
                 .contains("check whether")
+        );
+        let login = oci::Error::LoginRefused {
+            registry: "r:1".into(),
+            origin: "auths".into(),
+        };
+        assert_eq!(
+            at_the_put(login, "t/a", &reference).to_string(),
+            "registry r:1 refused the login from auths; run docker login r:1; nothing was \
+             published, it is safe to rerun"
         );
         assert_eq!(
             at_the_put(unreachable(), "t/a", &reference).to_string(),

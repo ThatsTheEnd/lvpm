@@ -24,6 +24,7 @@ pub mod lvlib;
 pub mod lvpkg;
 pub mod oci;
 mod paths;
+pub mod process;
 pub mod project;
 pub mod refresh;
 pub mod released;

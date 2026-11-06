@@ -316,6 +316,8 @@ fn run_feature(
 const RUNNER_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() {
+    // A copy of this program under the name of a credential helper is one.
+    lvpm_testkit::helper::run_if_helper();
     let runner = std::thread::Builder::new()
         .name("cucumber".to_string())
         .stack_size(RUNNER_STACK_BYTES)

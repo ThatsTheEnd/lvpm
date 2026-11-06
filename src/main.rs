@@ -7,6 +7,7 @@
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::oci::{Oci, logins};
 use lvpm_core::ops::build_app::VenvAppLauncher;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
@@ -23,7 +24,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::builder::TypedValueParser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
+use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -583,7 +587,38 @@ fn op_env<'a>(cli: &Cli, sink: &'a dyn EventSink) -> Result<OpEnv<'a>> {
     env.headless = std::env::var_os("LV_RTE_HEADLESS").is_some();
     env.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token)
         .with_gh_runner(gh::real_runner());
+    if let Some(config_dir) = docker_config_dir(|name| std::env::var_os(name)) {
+        let timeout = helper_timeout(std::env::var(HELPER_TIMEOUT_VAR).ok().as_deref())?;
+        let store = logins::docker_store(config_dir, timeout, logins::real_helper_runner());
+        env.oci = Arc::new(Oci::with_credentials(store));
+    }
     Ok(env)
+}
+
+/// How many seconds a Docker credential helper may take, to override 30.
+const HELPER_TIMEOUT_VAR: &str = "LVPM_OCI_HELPER_TIMEOUT_SECS";
+
+/// Where Docker keeps its config: `DOCKER_CONFIG`, else `.docker` in the home
+/// directory. `None` when neither is known: no login is looked for.
+fn docker_config_dir(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = var("DOCKER_CONFIG").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    var(home)
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(".docker"))
+}
+
+/// `LVPM_OCI_HELPER_TIMEOUT_SECS`: a whole number of seconds, one or more.
+fn helper_timeout(value: Option<&str>) -> Result<Duration> {
+    let Some(text) = value else {
+        return Ok(logins::DEFAULT_HELPER_TIMEOUT);
+    };
+    match text.trim().parse::<u64>() {
+        Ok(secs) if secs > 0 => Ok(Duration::from_secs(secs)),
+        _ => bail!("{HELPER_TIMEOUT_VAR} must be a whole number of seconds, 1 or more"),
+    }
 }
 
 impl Cmd {
@@ -1408,6 +1443,39 @@ fn cmd_vi_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_docker_config_is_docker_config_else_dot_docker_in_the_home() {
+        let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let vars = |set: Vec<(&'static str, &'static str)>| {
+            move |name: &str| {
+                set.iter()
+                    .find(|(have, _)| *have == name)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+        let both = vec![("DOCKER_CONFIG", "/d"), (home, "/h")];
+        assert_eq!(docker_config_dir(vars(both)), Some(PathBuf::from("/d")));
+        let blank = vec![("DOCKER_CONFIG", ""), (home, "/h")];
+        assert_eq!(
+            docker_config_dir(vars(blank)),
+            Some(PathBuf::from("/h").join(".docker"))
+        );
+        assert_eq!(docker_config_dir(vars(Vec::new())), None);
+    }
+
+    #[test]
+    fn the_helper_timeout_is_thirty_seconds_unless_a_positive_number_says_otherwise() {
+        assert_eq!(helper_timeout(None).unwrap(), Duration::from_secs(30));
+        assert_eq!(helper_timeout(Some(" 1 ")).unwrap(), Duration::from_secs(1));
+        for bad in ["0", "", "soon", "-3", "1.5"] {
+            let error = helper_timeout(Some(bad)).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "LVPM_OCI_HELPER_TIMEOUT_SECS must be a whole number of seconds, 1 or more"
+            );
+        }
+    }
 
     #[test]
     fn lvpm_tui_refuses_every_global_option() {

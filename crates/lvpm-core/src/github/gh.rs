@@ -4,13 +4,12 @@
 //! [`GitHub`](super::GitHub). What the run came to is a [`GhRun`]; what that
 //! means for the release is `attestation`'s to say.
 
+use crate::process::{self, Ran};
 use crate::verify::NotChecked;
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long `gh attestation verify` may take: it asks GitHub and sigstore.
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -42,11 +41,13 @@ pub(super) fn missing() -> Runner {
 /// token handed over as `GH_TOKEN`.
 pub fn real_runner() -> Runner {
     Arc::new(|archive, repo, token| {
-        run(
+        process::run(
             &mut verify_command(archive, repo, token),
+            None,
             GH_TIMEOUT,
             MAX_OUTPUT_BYTES,
         )
+        .into()
     })
 }
 
@@ -60,138 +61,65 @@ fn verify_command(archive: &Path, repo: &str, token: &str) -> Command {
     command
 }
 
-/// `command` run to its end within `limit`, keeping at most `cap` bytes of each
-/// output. Not `auth.rs`'s `run`: that one drops stderr, and a failed
-/// verification is told in stderr.
-fn run(command: &mut Command, limit: Duration, cap: u64) -> GhRun {
-    let mut child = match command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return GhRun::NotRunnable(NotChecked::GhMissing);
-        }
-        Err(error) => return failed(&error),
-    };
-    let stdout = read_capped(child.stdout.take().expect("piped above"), cap);
-    let stderr = read_capped(child.stderr.take().expect("piped above"), cap);
-    let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // One grace covers both readers seeing EOF. Output that has not
-                // come by then (a grandchild holding a pipe open) is not gh's
-                // answer; shortcut: that reader thread is left behind, kill
-                // gh's process tree if it is ever seen.
-                let grace = Instant::now() + Duration::from_secs(1);
-                let left = || grace.saturating_duration_since(Instant::now());
-                let (Ok(stdout), Ok(stderr)) =
-                    (stdout.recv_timeout(left()), stderr.recv_timeout(left()))
-                else {
-                    return GhRun::NotRunnable(NotChecked::GhInterrupted);
-                };
-                return GhRun::Spawned {
-                    status: status.code(),
-                    stdout,
-                    stderr,
-                };
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                child.kill().ok();
-                child.wait().ok();
-                return failed(&error);
-            }
+impl From<Ran> for GhRun {
+    fn from(ran: Ran) -> GhRun {
+        match ran {
+            Ran::Exited {
+                status,
+                stdout,
+                stderr,
+            } => GhRun::Spawned {
+                status,
+                stdout,
+                stderr,
+            },
+            Ran::NotFound => GhRun::NotRunnable(NotChecked::GhMissing),
+            Ran::TimedOut => GhRun::NotRunnable(NotChecked::GhTimedOut),
+            Ran::Interrupted => GhRun::NotRunnable(NotChecked::GhInterrupted),
+            Ran::Failed(error) => GhRun::NotRunnable(NotChecked::GhFailed {
+                error: error.to_string(),
+            }),
         }
     }
-    child.kill().ok();
-    child.wait().ok();
-    GhRun::NotRunnable(NotChecked::GhTimedOut)
-}
-
-fn failed(error: &std::io::Error) -> GhRun {
-    GhRun::NotRunnable(NotChecked::GhFailed {
-        error: error.to_string(),
-    })
-}
-
-/// What `pipe` yields, the first `cap` bytes of it, once it ends. Read as it is
-/// written and drained past the cap, so output past the pipe's buffer cannot
-/// stall the child.
-fn read_capped(mut pipe: impl Read + Send + 'static, cap: u64) -> Receiver<Vec<u8>> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        pipe.by_ref().take(cap).read_to_end(&mut bytes).ok();
-        std::io::copy(&mut pipe, &mut std::io::sink()).ok();
-        sender.send(bytes).ok();
-    });
-    receiver
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const LONG: Duration = Duration::from_secs(60);
-
-    fn cargo(args: &[&str]) -> Command {
-        let mut command = Command::new("cargo");
-        command.args(args);
-        command
-    }
-
     #[test]
-    fn a_run_keeps_stdout_and_the_status() {
-        let GhRun::Spawned {
-            status,
-            stdout,
-            stderr,
-        } = run(&mut cargo(&["--version"]), LONG, MAX_OUTPUT_BYTES)
-        else {
-            panic!("cargo runs");
-        };
-        assert_eq!(status, Some(0));
-        assert!(stdout.starts_with(b"cargo "));
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn a_failing_run_keeps_stderr() {
-        let failed = run(
-            &mut cargo(&["no-such-subcommand-lvpm"]),
-            LONG,
-            MAX_OUTPUT_BYTES,
+    fn what_a_run_came_to_is_what_gh_did_or_why_it_could_not_say() {
+        let exited = GhRun::from(Ran::Exited {
+            status: Some(1),
+            stdout: b"out".to_vec(),
+            stderr: b"err".to_vec(),
+        });
+        assert_eq!(
+            exited,
+            GhRun::Spawned {
+                status: Some(1),
+                stdout: b"out".to_vec(),
+                stderr: b"err".to_vec()
+            }
         );
-        let GhRun::Spawned { status, stderr, .. } = failed else {
-            panic!("cargo runs");
-        };
-        assert!(status.is_some_and(|code| code != 0));
-        assert!(!stderr.is_empty(), "stderr is kept");
-    }
-
-    #[test]
-    fn a_missing_program_is_gh_missing_and_a_slow_one_timed_out() {
-        let missing = run(
-            &mut Command::new("no-such-program-lvpm"),
-            LONG,
-            MAX_OUTPUT_BYTES,
+        assert_eq!(
+            GhRun::from(Ran::NotFound),
+            GhRun::NotRunnable(NotChecked::GhMissing)
         );
-        assert_eq!(missing, GhRun::NotRunnable(NotChecked::GhMissing));
-
-        let slow = run(&mut cargo(&["--version"]), Duration::ZERO, MAX_OUTPUT_BYTES);
-        assert_eq!(slow, GhRun::NotRunnable(NotChecked::GhTimedOut));
-    }
-
-    #[test]
-    fn output_past_the_cap_is_dropped_not_stalled_on() {
-        let GhRun::Spawned { stdout, .. } = run(&mut cargo(&["--version"]), LONG, 5) else {
-            panic!("cargo runs");
-        };
-        assert_eq!(stdout, b"cargo");
+        assert_eq!(
+            GhRun::from(Ran::TimedOut),
+            GhRun::NotRunnable(NotChecked::GhTimedOut)
+        );
+        assert_eq!(
+            GhRun::from(Ran::Interrupted),
+            GhRun::NotRunnable(NotChecked::GhInterrupted)
+        );
+        assert_eq!(
+            GhRun::from(Ran::Failed(std::io::Error::other("denied"))),
+            GhRun::NotRunnable(NotChecked::GhFailed {
+                error: "denied".into()
+            })
+        );
     }
 
     #[test]

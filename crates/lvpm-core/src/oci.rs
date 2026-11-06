@@ -2,8 +2,9 @@
 //! uses: what publishing and installing a package need, and no more.
 //!
 //! `reference` parses `oci://` URLs, `auth` logs in with the registry's bearer
-//! challenge, `manifest` holds the manifest, blob and upload calls. Nothing
-//! here reads the process environment.
+//! challenge, `logins` finds the login in the Docker config, `manifest` holds
+//! the manifest, blob and upload calls. Nothing here reads the process
+//! environment.
 //!
 //! A package version is one OCI image manifest: `artifactType`
 //! [`ARTIFACT_TYPE`], an empty config, and one layer, the `.lvpkg` bytes
@@ -19,9 +20,11 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 mod auth;
+pub mod logins;
 mod manifest;
 pub mod reference;
 
+pub use logins::{Credential, Credentials};
 pub use manifest::{Manifest, Package};
 pub use reference::{FeedUrl, Reference, SCHEME, Target, UrlError, valid_tag};
 
@@ -93,6 +96,13 @@ pub enum Error {
     /// An answer that is not what the distribution API says.
     #[error("registry {registry} {problem}")]
     Protocol { registry: String, problem: String },
+    /// The registry's token service said no to the login the Docker config
+    /// gave; `origin` says which entry that was.
+    #[error("registry {registry} refused the login from {origin}; run docker login {registry}")]
+    LoginRefused { registry: String, origin: String },
+    /// No login could be had from the Docker config.
+    #[error(transparent)]
+    Login(#[from] logins::Error),
 }
 
 impl Error {
@@ -131,8 +141,16 @@ impl Error {
             Error::Status { registry, .. }
             | Error::Unreachable { registry, .. }
             | Error::DigestMismatch { registry, .. }
-            | Error::Protocol { registry, .. } => registry,
+            | Error::Protocol { registry, .. }
+            | Error::LoginRefused { registry, .. } => registry,
+            Error::Login(why) => why.registry(),
         }
+    }
+
+    /// Whether the fault is the registry host's, not one package's: the login
+    /// could not be had, or was refused. Every package on that host shares it.
+    pub fn is_host_level(&self) -> bool {
+        matches!(self, Error::LoginRefused { .. } | Error::Login(_))
     }
 
     /// The status the registry answered, when it did.
@@ -159,6 +177,9 @@ pub enum ListingFault {
     Refused,
     /// No answer, or one that is no listing; the cause in words.
     Unreachable(String),
+    /// The login could not be had or was refused: one fault for the whole
+    /// registry host, in words, and the same for every package on it.
+    Host(String),
 }
 
 impl ListingFault {
@@ -167,6 +188,7 @@ impl ListingFault {
         match error {
             _ if error.status_code() == Some(404) => ListingFault::NotListed,
             _ if error.is_refused() => ListingFault::Refused,
+            _ if error.is_host_level() => ListingFault::Host(error.to_string()),
             Error::Unreachable { cause, .. } => ListingFault::Unreachable(cause.clone()),
             other => ListingFault::Unreachable(other.to_string()),
         }
@@ -210,6 +232,7 @@ impl fmt::Display for ListingFailure {
                     "{package}: source \"{source}\" ({feed}) is unreachable: {cause}"
                 )
             }
+            ListingFault::Host(said) => write!(f, "{package}: {said}"),
         }
     }
 }
@@ -231,10 +254,20 @@ impl ListingFailures {
     }
 }
 
-/// One line for each package.
+/// One line for each registry whose login failed, ahead of one line for each
+/// other package.
 impl fmt::Display for ListingFailures {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let lines: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+        let mut lines: Vec<String> = Vec::new();
+        for failure in &self.0 {
+            if let ListingFault::Host(said) = &failure.fault
+                && !lines.contains(said)
+            {
+                lines.push(said.clone());
+            }
+        }
+        let per_package = (self.0.iter()).filter(|f| !matches!(f.fault, ListingFault::Host(_)));
+        lines.extend(per_package.map(ToString::to_string));
         f.write_str(&lines.join("\n"))
     }
 }
@@ -295,15 +328,26 @@ impl Repo<'_> {
 }
 
 /// The OCI side of an operation's environment: one HTTP client for every
-/// registry call, and the bearer tokens it has been given.
+/// registry call, the logins it may use, and the bearer tokens it has been
+/// given.
 ///
-/// The front end may replace it; an `OpEnv` starts with the default.
-#[derive(Default)]
+/// The front end may replace it; an `OpEnv` starts with the default, which is
+/// anonymous.
 pub struct Oci {
     /// Built on the first call: most commands never talk to a registry.
     client: OnceLock<Client>,
     /// A token per registry and scope, so a run logs in once for each.
     tokens: Mutex<HashMap<(String, String), String>>,
+    credentials: Credentials,
+    /// What `credentials` said of each registry, so a run asks once for each:
+    /// a helper may unlock a keyring or fail slowly.
+    logins: Mutex<HashMap<String, Result<Option<Credential>, logins::Error>>>,
+}
+
+impl Default for Oci {
+    fn default() -> Oci {
+        Oci::with_credentials(logins::anonymous())
+    }
 }
 
 impl fmt::Debug for Oci {
@@ -313,6 +357,26 @@ impl fmt::Debug for Oci {
 }
 
 impl Oci {
+    /// An `Oci` that logs in with what `credentials` gives.
+    pub fn with_credentials(credentials: Credentials) -> Oci {
+        Oci {
+            client: OnceLock::new(),
+            tokens: Mutex::default(),
+            credentials,
+            logins: Mutex::default(),
+        }
+    }
+
+    /// The login for `registry`, from `credentials` on the first ask and from
+    /// memory after that, a failure included.
+    pub fn login_for(&self, registry: &str) -> Result<Option<Credential>, logins::Error> {
+        let mut known = self.logins.lock().unwrap_or_else(PoisonError::into_inner);
+        let found = known
+            .entry(registry.to_string())
+            .or_insert_with(|| (self.credentials)(registry));
+        found.clone()
+    }
+
     fn client(&self, registry: &str) -> Result<&Client, Error> {
         if let Some(client) = self.client.get() {
             return Ok(client);
@@ -571,5 +635,64 @@ mod tests {
             ListingFault::of(&Error::status("r:1", 401, "GET")),
             ListingFault::Refused
         );
+    }
+
+    #[test]
+    fn a_registry_whose_login_failed_is_one_line_ahead_of_the_other_packages() {
+        let feed = FeedUrl::parse("oci://r:1/org").unwrap();
+        let login = Error::LoginRefused {
+            registry: "r:1".into(),
+            origin: "auths".into(),
+        };
+        assert!(login.is_host_level());
+        assert!(!Error::status("r:1", 401, "GET").is_host_level());
+        let host = ListingFault::of(&login);
+        let failure = |package: &str, fault| ListingFailure {
+            package: package.to_string(),
+            source: "team".to_string(),
+            feed: feed.clone(),
+            fault,
+        };
+        let failures = ListingFailures::new(vec![
+            failure("zeta", host.clone()),
+            failure("beta", ListingFault::NotListed),
+            failure("alpha", host),
+        ]);
+        assert_eq!(
+            failures.to_string(),
+            "registry r:1 refused the login from auths; run docker login r:1\n\
+             beta: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org"
+        );
+    }
+
+    #[test]
+    fn the_login_of_a_registry_is_asked_once_and_a_failure_is_remembered_too() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let asked = Arc::new(AtomicUsize::new(0));
+        let credentials: Credentials = {
+            let asked = asked.clone();
+            Arc::new(move |registry| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                match registry {
+                    "a:1" => Ok(Some(Credential::basic(logins::Origin::Auths, "u", "p"))),
+                    _ => Err(logins::Error::HelperNotFound {
+                        helper: "docker-credential-x".into(),
+                        registry: registry.into(),
+                    }),
+                }
+            })
+        };
+        let oci = Oci::with_credentials(credentials);
+        for _ in 0..3 {
+            assert!(oci.login_for("a:1").unwrap().is_some());
+            assert!(oci.login_for("b:1").is_err());
+        }
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "once for each registry");
+        assert_eq!(Oci::default().login_for("a:1"), Ok(None), "anonymous");
+        let error = Error::from(oci.login_for("b:1").unwrap_err());
+        assert!(error.is_host_level());
+        assert_eq!(error.registry(), "b:1");
     }
 }
