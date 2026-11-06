@@ -89,7 +89,7 @@ async fn a_fake_github_with_an_index(world: &mut CliWorld, index: String, publis
 }
 
 #[given(
-    regex = r#"^(\S+)'s release serves pilot B's file and its dependency data_manipulation is in the project's hosted folder$"#
+    regex = r#"^(\S+)'s release serves pilot B's file and its dependency data_manipulation is in the project's local folder$"#
 )]
 async fn the_release_serves_pilot_b(world: &mut CliWorld, publisher: String) {
     assert_eq!(publisher, world.community.publisher);
@@ -231,7 +231,9 @@ async fn the_lock_has_pilot_b_unsigned(world: &mut CliWorld) {
     }
 }
 
-#[then("data_manipulation is locked from the hosted folder")]
+// Local folders rank before every [sources] line, so source order across [sources]
+// is covered by tests/github_index.rs, not by this scenario.
+#[then("data_manipulation is locked from the local folder")]
 async fn data_manipulation_is_locked_from_the_folder(world: &mut CliWorld) {
     assert_eq!(world.output().exit_code, 0, "{}", world.printed());
     let package = world.locked_package(DATA_MANIPULATION);
@@ -281,7 +283,7 @@ async fn fails_naming_data_manipulation(world: &mut CliWorld, said: String) {
     }
 }
 
-#[then("data_manipulation is not taken from the hosted folder")]
+#[then("data_manipulation is not taken from the local folder")]
 async fn data_manipulation_is_not_taken(world: &mut CliWorld) {
     assert!(world.lock_bytes().is_none(), "a lock was written");
 }

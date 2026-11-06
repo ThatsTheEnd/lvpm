@@ -6,7 +6,7 @@ Feature: S8: installing from the community index
 
   Background:
     Given a fake GitHub whose index labview-package-manager/package-index lists pilot B, published by "someone/Serializer"
-    And someone/Serializer's release serves pilot B's file and its dependency data_manipulation is in the project's hosted folder
+    And someone/Serializer's release serves pilot B's file and its dependency data_manipulation is in the project's local folder
 
   Scenario: a project installs pilot B by name through the index
     Given pilot B's release is attested by someone/Serializer
@@ -55,10 +55,10 @@ Feature: S8: installing from the community index
     Given the index lists nothing
     And the project with community = "github:labview-package-manager/package-index" in [sources] and data_manipulation as a plain dependency
     When I run "lvpm lock"
-    Then data_manipulation is locked from the hosted folder
+    Then data_manipulation is locked from the local folder
 
   Scenario: a dependency pinned to the index that it does not list fails
     Given data_manipulation is pinned with index = "community" and the index does not list it
     When I run "lvpm lock"
     Then the command fails naming data_manipulation and "searched github:labview-package-manager/package-index"
-    And data_manipulation is not taken from the hosted folder
+    And data_manipulation is not taken from the local folder
