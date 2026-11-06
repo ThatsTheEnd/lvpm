@@ -1258,9 +1258,14 @@ fails the fetch, the message says what to do:
 - `cannot fetch <package> <version> by digest from source "<source>": registry <host> no longer holds sha256:<hex>; run lvpm lock`
 - `<package> <version> from source "<source>": registry <host> served bytes that do not match sha256:<hex>; nothing was installed`
 
-`lvpm lock` hashes the archive again when a tag has been moved since the lock
-was written, and records the new digest. A version's age for `min-age-days` is
-the time in the OCI manifest's `org.opencontainers.image.created` annotation.
+A moved tag is never taken silently. When a plain `lvpm lock` (or any command
+that locks again because the manifest changed) finds a locked version at a
+different OCI manifest digest, it fails, names the package, the version, the
+digest in `lvpm.lock` and the digest the registry has now, and writes nothing.
+`lvpm lock --upgrade`, or `lvpm lock --upgrade-package <package>@<version>` for
+one package without moving the others, accepts the new digest and records it
+with the new archive's `sha256`. A version's age for `min-age-days` is the time
+in the OCI manifest's `org.opencontainers.image.created` annotation.
 
 ### Signatures on OCI packages
 

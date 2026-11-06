@@ -16,7 +16,8 @@ use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 use lvpm_core::lvpkg::{self, Meta};
 use lvpm_core::oci::{
-    ANNOTATION_CREATED, ANNOTATION_LABVIEW, ANNOTATION_TITLE, ANNOTATION_VERSION,
+    ANNOTATION_CREATED, ANNOTATION_LABVIEW, ANNOTATION_REQUIRES, ANNOTATION_TITLE,
+    ANNOTATION_VERSION,
 };
 use lvpm_core::released::SECS_PER_DAY;
 use lvpm_core::timefmt::rfc3339;
@@ -102,8 +103,9 @@ impl CliWorld {
     }
 
     /// Put `name` `version` in the registry as `lvpm publish` would, created at
-    /// `created` (Unix seconds) and needing `labview`; `marker` tells two
-    /// packages of one name and version apart.
+    /// `created` (Unix seconds), needing `labview` and requiring `requires`
+    /// (name, constraint); `marker` tells two packages of one name and version
+    /// apart.
     pub(super) fn seed(
         &mut self,
         name: &str,
@@ -111,7 +113,12 @@ impl CliWorld {
         created: i64,
         labview: &str,
         marker: &str,
+        requires: &[(&str, &str)],
     ) {
+        let needs: Vec<String> = (requires.iter())
+            .map(|(name, constraint)| format!("{name}{constraint}"))
+            .collect();
+        let needs = needs.join(", ");
         let meta = Meta {
             name: name.to_string(),
             version: version.to_string(),
@@ -119,22 +126,26 @@ impl CliWorld {
             vendor: "Vendor".to_string(),
             display_name: name.to_string(),
             install_dir: format!("vi.lib/Vendor/{name}"),
-            dependencies: Vec::new(),
+            dependencies: (requires.iter())
+                .map(|(name, constraint)| (name.to_string(), constraint.to_string()))
+                .collect(),
         };
         let member = format!("{name} {version} {marker}").into_bytes();
         let layer = lvpkg::write(&meta, &[("A.vi".to_string(), member)], None).expect("a package");
         let repository = format!("{TEAM}/{name}");
-        let seeded = self.registry().seed_package(
-            &repository,
-            version,
-            &[
-                (ANNOTATION_TITLE, name),
-                (ANNOTATION_VERSION, version),
-                (ANNOTATION_CREATED, &rfc3339(created)),
-                (ANNOTATION_LABVIEW, labview),
-            ],
-            &layer,
-        );
+        let created = rfc3339(created);
+        let mut annotations = vec![
+            (ANNOTATION_TITLE, name),
+            (ANNOTATION_VERSION, version),
+            (ANNOTATION_CREATED, created.as_str()),
+            (ANNOTATION_LABVIEW, labview),
+        ];
+        if !needs.is_empty() {
+            annotations.push((ANNOTATION_REQUIRES, &needs));
+        }
+        let seeded = self
+            .registry()
+            .seed_package(&repository, version, &annotations, &layer);
         self.oci
             .seeded
             .insert((repository, version.to_string()), seeded);
@@ -311,6 +322,7 @@ async fn registry_holds(
             now() - days * SECS_PER_DAY,
             OLD_ENOUGH,
             "published",
+            &[],
         );
     }
     if !wrong.is_empty() {
@@ -321,14 +333,41 @@ async fn registry_holds(
     }
 }
 
+/// `requiring "beta>=1.0"`: the package asks for `beta`, as `lvpm publish` writes it.
+#[given(regex = r#"^the registry holds "([^"]+)" (\S+) under "team" requiring "([^"]+)"$"#)]
+async fn registry_holds_requiring(
+    world: &mut CliWorld,
+    name: String,
+    version: String,
+    requirement: String,
+) {
+    let at = requirement
+        .find(['<', '>', '='])
+        .unwrap_or(requirement.len());
+    let (required, constraint) = requirement.split_at(at);
+    let constraint = if constraint.is_empty() {
+        "*"
+    } else {
+        constraint
+    };
+    world.seed(
+        &name,
+        &version,
+        now(),
+        OLD_ENOUGH,
+        "published",
+        &[(required, constraint)],
+    );
+}
+
 #[given(regex = r#"^"([^"]+)" (\S+) needs a newer LabVIEW than the project's$"#)]
 async fn needs_newer_labview(world: &mut CliWorld, name: String, version: String) {
-    world.seed(&name, &version, now(), TOO_NEW, "published");
+    world.seed(&name, &version, now(), TOO_NEW, "published", &[]);
 }
 
 #[given(regex = r#"^tag "([^"]+)" in "team/([^"]+)" now points at other bytes$"#)]
 async fn tag_moved(world: &mut CliWorld, version: String, name: String) {
-    world.seed(&name, &version, now(), OLD_ENOUGH, "moved");
+    world.seed(&name, &version, now(), OLD_ENOUGH, "moved", &[]);
 }
 
 #[given(regex = r#"^tag "([^"]+)" in "([^"]+)" holds a container image, not an lvpm package$"#)]
@@ -396,6 +435,7 @@ async fn project_is_locked(world: &mut CliWorld, name: String, version: String, 
         world.oci_depend_on(&name, "*", Some(TEAM));
     }
     world.sandbox.setup_lvpm(&["lock"]);
+    world.lock.before = world.lock_bytes();
     assert_eq!(world.lock_text("version", &name), version);
     if !synced.is_empty() {
         world
@@ -476,6 +516,16 @@ async fn lock_sha_is_installed_sha(world: &mut CliWorld, name: String) {
     );
 }
 
+#[then(regex = r#"^the lock's sha256 for (\w+) is the sha256 of the hosted feed's archive$"#)]
+async fn lock_sha_is_hosted_sha(world: &mut CliWorld, name: String) {
+    let hosted = (world.oci.hosted.iter().find(|package| package.name == name))
+        .unwrap_or_else(|| panic!("the hosted feed lists no {name}"));
+    assert_eq!(
+        world.lock_text("sha256", &name),
+        sha256_hex(&hosted.build_vip())
+    );
+}
+
 #[then(regex = r#"^the locked bytes of (\w+) are installed$"#)]
 async fn locked_bytes_installed(world: &mut CliWorld, name: String) {
     lock_sha_is_installed_sha(world, name).await;
@@ -491,6 +541,36 @@ async fn lock_describes_the_new_bytes(world: &mut CliWorld, name: String) {
     );
 }
 
+#[then("the lock is unchanged")]
+async fn lock_is_unchanged(world: &mut CliWorld) {
+    assert_eq!(world.lock_bytes(), world.lock.before, "the lock changed");
+}
+
+#[then(
+    regex = r#"^the output names the digest lvpm.lock holds and the digest the registry now has for (\w+)$"#
+)]
+async fn output_names_both_digests(world: &mut CliWorld, name: String) {
+    let before = world.lock.before.clone().expect("a lock was noted");
+    let locked: toml::Table = String::from_utf8(before)
+        .expect("a text lock")
+        .parse()
+        .expect("a lock");
+    let locked = (locked["package"].as_array().expect("packages").iter())
+        .find(|package| package["name"].as_str() == Some(name.as_str()))
+        .and_then(|package| package["digest"].as_str())
+        .unwrap_or_else(|| panic!("the lock held no digest for {name}"))
+        .to_string();
+    let now = world.seeded(&name, "1.1.0").manifest.clone();
+    assert_ne!(locked, now, "the tag did not move");
+    let failure = world.failure();
+    for digest in [&locked, &now] {
+        assert!(
+            failure.contains(digest.as_str()),
+            "{digest} is not in: {failure}"
+        );
+    }
+}
+
 #[then(regex = r#"^(\w+) (\S+) is locked$"#)]
 async fn is_locked(world: &mut CliWorld, name: String, version: String) {
     assert_eq!(
@@ -499,6 +579,23 @@ async fn is_locked(world: &mut CliWorld, name: String, version: String) {
         "{}",
         world.printed()
     );
+}
+
+#[then(regex = r#"^the lock lists (\w+) among the packages (\w+) requires$"#)]
+async fn lock_lists_requirement(world: &mut CliWorld, required: String, name: String) {
+    let package = world.locked_package(&name);
+    let requires = package.get("requires").and_then(toml::Value::as_array);
+    let listed = requires.is_some_and(|all| all.iter().any(|one| one.as_str() == Some(&required)));
+    assert!(listed, "{name} requires {requires:?}");
+}
+
+#[then(regex = r#"^the lock records (\w+) as unresolved$"#)]
+async fn lock_records_unresolved(world: &mut CliWorld, name: String) {
+    let table = world.lock_table();
+    let unresolved = table.get("unresolved").and_then(toml::Value::as_array);
+    let listed =
+        unresolved.is_some_and(|all| all.iter().any(|one| one["name"].as_str() == Some(&name)));
+    assert!(listed, "{name} is not unresolved in: {unresolved:?}");
 }
 
 #[then(regex = r#"^no version of (\w+) is locked$"#)]
@@ -513,13 +610,21 @@ async fn none_locked(world: &mut CliWorld, name: String) {
     );
 }
 
-#[then(regex = r#"^beta comes from the hosted feed$"#)]
-async fn beta_from_hosted(world: &mut CliWorld) {
+#[then(regex = r#"^(\w+) comes from the hosted feed$"#)]
+async fn comes_from_hosted(world: &mut CliWorld, name: String) {
     let feed = world.sandbox.feed().source_url(HOSTED_DIR);
     assert_eq!(
-        world.lock_text("source", "beta"),
-        format!("{feed}/index.vipr")
+        world.lock_text("source", &name),
+        format!("{feed}/index.vipr"),
+        "{}",
+        world.printed()
     );
+}
+
+#[then(regex = r#"^the lock records no OCI digest for (\w+)$"#)]
+async fn lock_has_no_digest(world: &mut CliWorld, name: String) {
+    let package = world.locked_package(&name);
+    assert!(!package.contains_key("digest"), "{package:?}");
 }
 
 // ---- what the registry was asked ----

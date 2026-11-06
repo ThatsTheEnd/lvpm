@@ -13,7 +13,7 @@ use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
 use super::sync::{Search, Unfetched};
 use crate::cache::{now, sha256_hex};
-use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError};
+use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError, MovedTag};
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
 use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
@@ -423,7 +423,7 @@ fn relock_in(
     let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
     let feeds = index::feeds(&hosted, project.default_sources);
     let pins = source_pins(project)?;
-    let hashes = hash_archives(env, index, &resolution, previous, &pins, &feeds)?;
+    let hashes = hash_archives(env, index, &resolution, previous, moving, &pins, &feeds)?;
     let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let lock = build(
         project,
@@ -727,11 +727,16 @@ fn wanted_by(constraint: &Constraint) -> String {
 /// same version listed by another source may be other bytes, which are then
 /// fetched fresh. The source is compared as [`build`] writes it, so
 /// nested `[sources]` folders compare the same way on both sides.
+///
+/// An OCI version `previous` locks that its source now lists at another
+/// manifest digest is an error too, unless `moving` lets that package move: only
+/// an upgrade accepts the new digest.
 fn hash_archives(
     env: &OpEnv,
     index: &Index,
     resolution: &Resolution,
     previous: Option<&Lockfile>,
+    moving: &Moving,
     pins: &[SourcePin],
     feeds: &[(String, String)],
 ) -> Result<HashMap<String, String>, LockError> {
@@ -744,6 +749,7 @@ fn hash_archives(
     let mut hashes = HashMap::new();
     let mut failures = Vec::new();
     let mut not_as_locked = Vec::new();
+    let mut moved = Vec::new();
     let pin_of = |entry: &Entry| pins.iter().find(|pin| same_name(pin.package, &entry.name));
     for (position, (key, entry)) in resolution.packages.iter().enumerate() {
         if env.cancel.is_cancelled() {
@@ -759,6 +765,12 @@ fn hash_archives(
             !pins.iter().any(|pin| same_name(pin.package, &locked.name))
                 || locked.source == entry_source(entry, feeds)
         };
+        if !moving.moves(&entry.name)
+            && let Some(tag) = moved_tag(previous, key, entry)
+        {
+            moved.push(tag);
+            continue;
+        }
         if let Some(locked) = kept_of(previous, key, entry).filter(|l| from_pinned_feed(l)) {
             let mut search = Search::in_cache(&downloads, locked);
             if !search.found {
@@ -808,11 +820,38 @@ fn hash_archives(
             }
         }
     }
-    match (not_as_locked.is_empty(), failures.is_empty()) {
-        (false, _) => Err(LockError::LockedArchives(not_as_locked)),
-        (true, false) => Err(LockError::ArchivesUnavailable(failures)),
-        (true, true) => Ok(hashes),
+    match (
+        moved.is_empty(),
+        not_as_locked.is_empty(),
+        failures.is_empty(),
+    ) {
+        (false, _, _) => Err(LockError::TagMoved(moved)),
+        (true, false, _) => Err(LockError::LockedArchives(not_as_locked)),
+        (true, true, false) => Err(LockError::ArchivesUnavailable(failures)),
+        (true, true, true) => Ok(hashes),
     }
+}
+
+/// The OCI version `previous` locks from `entry`'s source at a manifest digest
+/// other than `entry`'s: its tag moved. A version locked from another source
+/// is not this: that is a package changing source.
+fn moved_tag(previous: Option<&Lockfile>, key: &str, entry: &Entry) -> Option<MovedTag> {
+    let found = index::oci_reference(entry)?;
+    let locked = previous?.packages.iter().find(|package| {
+        name_key(&package.name) == key
+            && Version::parse(&package.version) == entry.version
+            && package.source == entry.source
+    })?;
+    let was = locked
+        .digest
+        .as_deref()
+        .filter(|digest| *digest != found.name())?;
+    Some(MovedTag {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        locked: was.to_string(),
+        found: found.name().to_string(),
+    })
 }
 
 /// The `source` the lock records for a package from `entry`'s feed: an OCI
@@ -825,9 +864,10 @@ fn entry_source(entry: &Entry, feeds: &[(String, String)]) -> String {
 }
 
 /// The package `previous` locks that `entry` (named `key`) stands for: the same
-/// version, for a GitHub entry the same repo, and for an OCI entry the same
-/// manifest digest: a tag that moved is other bytes under the same version. A package kept keeps the
-/// SHA-256, and the signer, it was locked with.
+/// version, for a GitHub entry the same repo, and the same OCI manifest digest
+/// or none on both sides: a tag that moved is other bytes under the same
+/// version, and a package whose pin was removed is not the OCI row it was. A
+/// package kept keeps the SHA-256, and the signer, it was locked with.
 pub(super) fn kept_of<'a>(
     previous: Option<&'a Lockfile>,
     key: &str,
@@ -837,8 +877,8 @@ pub(super) fn kept_of<'a>(
         name_key(&package.name) == key
             && Version::parse(&package.version) == entry.version
             && from_same_repo(package, entry)
-            && index::oci_reference(entry)
-                .is_none_or(|manifest| package.digest.as_deref() == Some(manifest.name()))
+            && index::oci_reference(entry).as_ref().map(|oci| oci.name())
+                == package.digest.as_deref()
     })
 }
 
@@ -1147,9 +1187,41 @@ mod tests {
         let moved = oci_entry('b');
         assert!(kept_of(Some(&previous('a')), "alpha", &moved).is_none());
         assert!(kept_of(Some(&previous('b')), "alpha", &moved).is_some());
-        // A hosted entry is told apart by its source, not by a digest it has none of.
+    }
+
+    #[test]
+    fn a_locked_oci_package_does_not_stand_for_a_hosted_entry_and_the_reverse() {
         let hosted = entry("alpha", "1.0", &[], "http://feed/alpha-1.0.vip");
-        assert!(kept_of(Some(&previous('a')), "alpha", &hosted).is_some());
+        let mut oci_row = lock_of(&[("alpha", "1.0")]);
+        oci_row.packages[0].digest = Some(format!("sha256:{}", "a".repeat(64)));
+        // The pin was removed: the hosted entry may not reuse the OCI row's hashes.
+        assert!(kept_of(Some(&oci_row), "alpha", &hosted).is_none());
+        let hosted_row = lock_of(&[("alpha", "1.0")]);
+        assert!(kept_of(Some(&hosted_row), "alpha", &hosted).is_some());
+        assert!(kept_of(Some(&hosted_row), "alpha", &oci_entry('a')).is_none());
+    }
+
+    #[test]
+    fn a_moved_tag_is_the_same_version_of_the_same_source_at_another_manifest() {
+        let previous = |source: &str, digest: char| {
+            let mut lock = lock_of(&[("alpha", "1.0")]);
+            lock.packages[0].source = source.to_string();
+            lock.packages[0].digest = Some(format!("sha256:{}", digest.to_string().repeat(64)));
+            lock
+        };
+        let moved = moved_tag(
+            Some(&previous("oci://r:5000/org", 'a')),
+            "alpha",
+            &oci_entry('b'),
+        );
+        let moved = moved.expect("a moved tag");
+        assert_eq!(moved.locked, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(moved.found, format!("sha256:{}", "b".repeat(64)));
+        let same = previous("oci://r:5000/org", 'b');
+        assert!(moved_tag(Some(&same), "alpha", &oci_entry('b')).is_none());
+        let other_source = previous("oci://r:5000/other", 'a');
+        assert!(moved_tag(Some(&other_source), "alpha", &oci_entry('b')).is_none());
+        assert!(moved_tag(None, "alpha", &oci_entry('b')).is_none());
     }
 
     fn resolution(entries: Vec<Entry>, unresolved: Vec<Unresolved>) -> Resolution {
@@ -3277,6 +3349,7 @@ gamma = \"1.0\""
             },
             &resolution,
             Some(&previous),
+            &Moving::Nothing,
             &source_pins(&project).unwrap(),
             &[],
         )

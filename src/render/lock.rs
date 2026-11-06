@@ -4,8 +4,8 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem, Origin,
-    SignatureLookupFailure,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem, MovedTag,
+    Origin, SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -185,6 +185,7 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
         LockError::Conflict(conflict) => conflict_text(conflict, rerun),
         LockError::ArchivesUnavailable(failures) => archives_text(failures, rerun),
         LockError::LockedArchives(problems) => locked_archives_text(problems, rerun),
+        LockError::TagMoved(moved) => moved_tags_text(moved, rerun),
         LockError::Refused {
             refusals,
             trusted_publishers,
@@ -434,6 +435,38 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
     text
 }
 
+/// Every locked OCI version whose tag now names another manifest. Only an
+/// upgrade accepts it, and the hint says which one.
+fn moved_tags_text(moved: &[MovedTag], rerun: &str) -> String {
+    let plural = if moved.len() == 1 { "" } else { "s" };
+    let mut text = format!(
+        "cannot lock: {} locked OCI version{plural} now {} another manifest, and nothing was written:",
+        moved.len(),
+        if moved.len() == 1 { "has" } else { "have" }
+    );
+    for MovedTag {
+        name,
+        version,
+        locked,
+        found,
+    } in moved
+    {
+        text.push_str(&format!(
+            "\n  {name} {version}: lvpm.lock has manifest {locked}, the registry now has {found}"
+        ));
+    }
+    let accept: Vec<String> = (moved.iter())
+        .map(|tag| format!("--upgrade-package {}@{}", tag.name, tag.version))
+        .collect();
+    text.push_str(&format!(
+        "\nnext: if the tags moved on purpose, accept the new manifests with `lvpm lock {}` (or \
+         `lvpm lock --upgrade` for every package); otherwise ask the publisher to put them back, \
+         then run {rerun} again",
+        accept.join(" ")
+    ));
+    text
+}
+
 /// Every package the policy refuses, each with what to do about it. No hint
 /// says to turn the policy off.
 fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) -> String {
@@ -616,6 +649,34 @@ mod tests {
              locked again\n\
              next: add the archive lvpm.lock was made from with `lvpm cache add <file>`, or \
              delete lvpm.lock to lock the archives as they are now, then run `lvpm lock` again"
+        );
+    }
+
+    #[test]
+    fn a_moved_tag_names_both_digests_and_the_upgrade_that_accepts_it() {
+        let moved = |name: &str| MovedTag {
+            name: name.into(),
+            version: "1.1.0".into(),
+            locked: "sha256:aaa".into(),
+            found: "sha256:bbb".into(),
+        };
+        assert_eq!(
+            error(&LockError::TagMoved(vec![moved("alpha")])),
+            "cannot lock: 1 locked OCI version now has another manifest, and nothing was \
+             written:\n\
+             \x20 alpha 1.1.0: lvpm.lock has manifest sha256:aaa, the registry now has sha256:bbb\n\
+             next: if the tags moved on purpose, accept the new manifests with `lvpm lock \
+             --upgrade-package alpha@1.1.0` (or `lvpm lock --upgrade` for every package); \
+             otherwise ask the publisher to put them back, then run `lvpm lock` again"
+        );
+        let both = error(&LockError::TagMoved(vec![moved("alpha"), moved("beta")]));
+        assert!(
+            both.contains("2 locked OCI versions now have another manifest"),
+            "{both}"
+        );
+        assert!(
+            both.contains("--upgrade-package alpha@1.1.0 --upgrade-package beta@1.1.0"),
+            "{both}"
         );
     }
 

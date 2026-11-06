@@ -71,9 +71,15 @@ Decisions every slice relies on. They answer the design and strategic critics.
   loop. It builds the `Entry` from the locked `source` + `digest` and never
   calls `Source::index()`, which would list tags. `answers_for` gives it only
   names whose locked `source` equals its URL.
-- **Re-lock.** `kept_of`/`from_same_repo` keep a previous OCI row only when
-  its `digest` equals the entry's digest; otherwise the archive is re-hashed.
-  This covers a tag moved on a registry without immutability. Unit test.
+- **Re-lock.** `kept_of`/`from_same_repo` keep a previous row only when its
+  `digest` equals the entry's digest, or both have none: a hosted entry never
+  reuses an OCI row after its pin is removed. A tag moved on a registry
+  without immutability is not re-hashed silently: `hash_archives` finds a
+  locked version of the same source at another manifest digest (`moved_tag`)
+  and, unless `--upgrade` or `--upgrade-package` lets that package move, fails
+  with `LockError::TagMoved`, worded in `src/render/lock.rs`, naming the
+  package, version, locked digest and the registry's digest; nothing is
+  written. An upgrade accepts the new digest. Unit tests and scenarios.
 
 ### Core reads no environment
 
@@ -487,12 +493,23 @@ Feature: Installing from an explicit OCI source
     Then it fails saying 'alpha 1.1.0 from source "team": registry <registry> served bytes that do not match'
     And alpha is not installed
 
-  Scenario: A re-lock after a tag moved records the new bytes
+  Scenario: A plain lock refuses a version whose tag moved
     Given the registry holds "alpha" 1.1.0 under "team"
     And the project is locked with alpha 1.1.0
     And tag "1.1.0" in "team/alpha" now points at other bytes
-    When I run "lvpm lock --upgrade"
+    And the project also depends on a public package "beta" listed by a hosted feed
+    When I run "lvpm lock"
+    Then it fails saying 'alpha 1.1.0: lvpm.lock has manifest'
+    And the lock is unchanged
+
+  Scenario Outline: An upgrade accepts a version whose tag moved
+    Given the registry holds "alpha" 1.1.0 under "team"
+    And the project is locked with alpha 1.1.0
+    And tag "1.1.0" in "team/alpha" now points at other bytes
+    When I run "<command>"
     Then the lock's digest and sha256 for alpha both describe the new bytes
+
+    Examples: `lvpm lock --upgrade` and `lvpm lock --upgrade-package alpha@1.1.0`.
 
   Scenario: An OCI manifest that is not an lvpm package is skipped
     Given tag "1.2.0" in "team/alpha" holds a container image, not an lvpm package

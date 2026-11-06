@@ -101,6 +101,10 @@ pub enum LockError {
     /// other bytes under it are never pinned in its place.
     #[error("{} locked archive(s) could not be had", .0.len())]
     LockedArchives(Vec<LockedArchiveProblem>),
+    /// Locked OCI versions whose tag now names another manifest, all of them.
+    /// Only an upgrade accepts the new manifest; nothing was written.
+    #[error("{} locked OCI version(s) now have another manifest", .0.len())]
+    TagMoved(Vec<MovedTag>),
     /// There is no lock where it should be.
     #[error("there is no lvpm.lock at {}", .path.display())]
     NoLock { path: PathBuf },
@@ -178,6 +182,17 @@ pub struct AttestationRefusal {
     pub version: String,
     pub origin: Origin,
     pub kind: Refusal,
+}
+
+/// A locked OCI version that its source now lists at another manifest digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedTag {
+    pub name: String,
+    pub version: String,
+    /// The manifest digest the lock records.
+    pub locked: String,
+    /// The manifest digest the source lists now.
+    pub found: String,
 }
 
 /// One OCI package whose signature the registry could not be asked about.

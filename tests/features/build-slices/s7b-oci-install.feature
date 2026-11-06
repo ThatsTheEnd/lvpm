@@ -131,12 +131,38 @@ Feature: Installing from an explicit OCI source
     Then it fails saying 'alpha 1.1.0 from source "team": registry <registry> served bytes that do not match'
     And alpha is not installed
 
-  Scenario: A re-lock after a tag moved records the new bytes
+  Scenario: A plain lock refuses a version whose tag moved
     Given the registry holds "alpha" 1.1.0 under "team"
     And the project is locked with alpha 1.1.0
     And tag "1.1.0" in "team/alpha" now points at other bytes
-    When I run "lvpm lock --upgrade"
+    And the project also depends on a public package "beta" listed by a hosted feed
+    When I run "lvpm lock"
+    Then it fails saying 'alpha 1.1.0: lvpm.lock has manifest'
+    And the output names the digest lvpm.lock holds and the digest the registry now has for alpha
+    And the output says "lvpm lock --upgrade-package alpha@1.1.0"
+    And the lock is unchanged
+
+  Scenario Outline: An upgrade accepts a version whose tag moved
+    Given the registry holds "alpha" 1.1.0 under "team"
+    And the project is locked with alpha 1.1.0
+    And tag "1.1.0" in "team/alpha" now points at other bytes
+    When I run "<command>"
     Then the lock's digest and sha256 for alpha both describe the new bytes
+
+    Examples:
+      | command                                 |
+      | lvpm lock --upgrade                     |
+      | lvpm lock --upgrade-package alpha@1.1.0 |
+
+  Scenario: A package whose pin is removed is fetched again from its new source
+    Given the registry holds "alpha" 1.0 under "team"
+    And the project is locked with alpha 1.0
+    And a hosted feed also lists "alpha"
+    And the project depends on alpha = "*" without an index
+    When I run "lvpm sync --prefix dest"
+    Then alpha comes from the hosted feed
+    And the lock records no OCI digest for alpha
+    And the lock's sha256 for alpha is the sha256 of the hosted feed's archive
 
   Scenario: An OCI manifest that is not an lvpm package is skipped
     Given tag "1.2.0" in "team/alpha" holds a container image, not an lvpm package
@@ -144,6 +170,26 @@ Feature: Installing from an explicit OCI source
     And the project depends on alpha = { version = "*", index = "team" }
     When I run "lvpm lock"
     Then alpha 1.1.0 is locked
+
+  Scenario: A dependency of an OCI package that is pinned to the source is locked too
+    Given the registry holds "alpha" 1.0.0 under "team" requiring "beta>=1.0"
+    And the registry holds "beta" 1.0.0 under "team"
+    And the project depends on alpha = { version = "*", index = "team" }
+    And the project depends on beta = { version = "*", index = "team" }
+    When I run "lvpm lock"
+    Then alpha 1.0.0 is locked
+    And beta 1.0.0 is locked
+    And the lock lists beta among the packages alpha requires
+
+  Scenario: A dependency of an OCI package that is not pinned is reported and not locked
+    Given the registry holds "alpha" 1.0.0 under "team" requiring "beta>=1.0"
+    And the registry holds "beta" 1.0.0 under "team"
+    And the project depends on alpha = { version = "*", index = "team" }
+    When I run "lvpm lock"
+    Then alpha 1.0.0 is locked
+    And the output warns 'beta, required by alpha, is in no source'
+    And the lock records beta as unresolved
+    And the registry received no request for "team/beta"
 
   Scenario: A version newer than the project's LabVIEW is not chosen
     Given the registry holds "alpha" 1.1.0 and 1.2.0 under "team"

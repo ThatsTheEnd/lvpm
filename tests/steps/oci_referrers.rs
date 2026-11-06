@@ -169,7 +169,7 @@ impl CliWorld {
         let (repository, tag) = split_reference(reference);
         if self.registry().tag_digest(repository, tag).is_none() {
             let name = repository.strip_prefix("team/").expect("a package of team");
-            self.seed(name, tag, now(), OLD_ENOUGH, "published");
+            self.seed(name, tag, now(), OLD_ENOUGH, "published", &[]);
         }
         self.tag_of(repository, tag)
     }
@@ -299,6 +299,7 @@ async fn project_locked_signed(world: &mut CliWorld, name: String, _signed: Stri
         locked.contains_key("signer"),
         "{name} has no signer: {locked:?}"
     );
+    world.lock.before = world.lock_bytes();
     gh::clear_runs(&world.sandbox.gh_dir());
 }
 
