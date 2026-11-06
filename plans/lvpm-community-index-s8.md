@@ -788,7 +788,7 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 4.1: the add op, event, render and CLI
 
 #### Wave 5
-- [ ] Slice 5: `lvpm index check`, the bot
+- [x] Slice 5: `lvpm index check`, the bot
   - [x] Step 5.1: the pure rules (R1–R3b)
   - [x] Step 5.2: the network rules (R5–R6b), the render and the CLI
 
