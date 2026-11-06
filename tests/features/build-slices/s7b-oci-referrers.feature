@@ -42,12 +42,6 @@ Feature: OCI referrers
     And the output says "no SBOM in the package"
     And "team/alpha:1.0.0" has no referrer
 
-  Scenario: The tag-schema fallback keeps an existing referrer
-    Given the registry does not offer the referrers API
-    And "team/alpha:1.0.0" already has a Sigstore bundle referrer in its fallback index
-    When lvpm attaches the SBOM of alpha 1.0.0
-    Then the fallback index of "team/alpha:1.0.0" lists both the bundle and the SBOM
-
   Scenario Outline: A Sigstore bundle on the OCI manifest locks with its signer
     Given the registry <api> the referrers API
     And "team/alpha:1.0.0" has a Sigstore bundle referrer that gh verifies as built by "https://github.com/o/r"

@@ -12,6 +12,7 @@ use crate::CliWorld;
 use crate::support::pilots::copy_tree;
 use crate::support::selection::GHCR_ENV_VAR;
 use cucumber::{given, then};
+use lvpm_core::lvpkg;
 use lvpm_core::oci::{Access, Manifest, Oci, Repo, SBOM_TYPE};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,6 +22,8 @@ const GHCR: &str = "ghcr.io";
 const PREFIX: &str = "thatstheend/lvpm-oci-test";
 /// The `[sources]` name of the test repo.
 const SOURCE: &str = TEAM;
+/// The repository whose workflow publishes and attests the fixture.
+const BUILT_BY: &str = "https://github.com/ThatsTheEnd/lvpm-oci-test";
 /// Where the fixture package is, below the package root.
 const FIXTURE: &str = "tests/fixtures/ghcr-alpha";
 
@@ -114,7 +117,11 @@ async fn installed_with_digest_and_signer(world: &mut CliWorld, name: String) {
     let held = public_manifest(&version);
     assert_eq!(digest, held.digest, "the lock's digest is not the tag's");
     let signer = world.lock_text("signer", &name);
-    assert!(!signer.is_empty(), "{name} has an empty signer");
+    assert!(
+        signer.starts_with(&format!("{BUILT_BY}/")),
+        "{name}'s signer is {signer}, not a workflow of {BUILT_BY}"
+    );
+    assert_eq!(world.lock_text("subject", &name), BUILT_BY);
 }
 
 #[then(regex = r#"^alpha ([0-9.]+) has an SBOM referrer on the registry$"#)]
@@ -136,9 +143,56 @@ async fn has_sbom_referrer(_: &mut CliWorld, version: String) {
     );
 }
 
-#[then(regex = r#"^(\w+) is locked$"#)]
-async fn locked_at_all(world: &mut CliWorld, name: String) {
+#[then("that referrer holds the bom.cdx.json of the published package")]
+async fn referrer_holds_the_sbom(_: &mut CliWorld) {
+    let manifest = public_manifest("1.0.0");
+    let package = manifest.package().expect("alpha 1.0.0 is a package");
+    let repository = format!("{PREFIX}/alpha");
+    let repo = Repo {
+        registry: GHCR,
+        name: &repository,
+        access: Access::Pull,
+    };
+    let oci = Oci::default();
+    let referrers = oci
+        .referrers(&repo, &manifest.digest, SBOM_TYPE)
+        .expect("the referrers of alpha");
+    let referrer = oci
+        .get_manifest(&repo, &referrers[0].digest)
+        .expect("the referrer's manifest");
+    let referrer: serde_json::Value = serde_json::from_slice(&referrer.bytes).expect("JSON");
+    let layer = referrer["layers"][0]["digest"].as_str().expect("a layer");
+    let held = oci.get_blob(&repo, layer).expect("the referrer's layer");
+    let archive = oci.get_blob(&repo, &package.layer).expect("the package");
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).expect("a zip");
+    let mut sbom = Vec::new();
+    let mut entry = zip.by_name(lvpkg::SBOM).expect("an SBOM in the package");
+    std::io::Read::read_to_end(&mut entry, &mut sbom).expect("read the SBOM");
+    assert!(
+        held == sbom,
+        "the referrer's layer is not the package's SBOM"
+    );
+}
+
+#[then("internal is installed and locked")]
+async fn installed_and_locked(world: &mut CliWorld) {
     let output = world.output();
     assert_eq!(output.exit_code, 0, "{}", world.printed());
-    assert!(!world.lock_text("digest", &name).is_empty());
+    assert!(world.is_installed("internal"), "{}", world.printed());
+    assert!(!world.lock_text("digest", "internal").is_empty());
+}
+
+#[given(regex = r#"^the digest of the tag alpha:([0-9.]+) is noted$"#)]
+async fn note_digest(world: &mut CliWorld, tag: String) {
+    world.publish.noted_digest = Some(public_manifest(&tag).digest);
+}
+
+#[then(regex = r#"^the tag alpha:([0-9.]+) still has the noted digest$"#)]
+async fn digest_unchanged(world: &mut CliWorld, tag: String) {
+    let noted = world.publish.noted_digest.clone().expect("a noted digest");
+    let now = public_manifest(&tag).digest;
+    assert_eq!(
+        now, noted,
+        "THE TAG alpha:{tag} MOVED: a republish was not refused"
+    );
 }

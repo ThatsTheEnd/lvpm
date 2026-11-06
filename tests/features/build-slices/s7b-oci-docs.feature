@@ -9,16 +9,19 @@ Feature: OCI template and docs
     And that step's "with" has "subject-name", "subject-digest" and "push-to-registry: true"
     And a job runs "lvpm publish --to oci://"
 
-  Scenario Outline: The docs describe OCI sources
+  Scenario Outline: The OCI section of a doc describes OCI sources
     When I read "<doc>"
-    Then it contains "oci://" and "<phrase>"
+    Then its "<section>" section contains "oci://" and "<phrase>"
 
     Examples:
-      | doc                                       | phrase                                     |
-      | docs/manifest.md                          | index =                                    |
-      | docs/manifest.md                          | docker login                               |
-      | docs/usage.md                             | lvpm publish --to oci://                   |
-      | docs/usage.md                             | docker login                               |
-      | docs/usage.md                             | tag immutability                           |
-      | docs/usage.md                             | identity, not an endorsement               |
-      | docs/adr/0007-oci-sources-are-explicit.md | is not an http:// or https:// index folder |
+      | doc              | section                     | phrase                       |
+      | docs/manifest.md | An OCI registry as a source | index =                      |
+      | docs/manifest.md | An OCI registry as a source | docker login                 |
+      | docs/usage.md    | OCI registries              | lvpm publish --to oci://     |
+      | docs/usage.md    | OCI registries              | docker login                 |
+      | docs/usage.md    | OCI registries              | tag immutability             |
+      | docs/usage.md    | OCI registries              | identity, not an endorsement |
+
+  Scenario: ADR 7 says an OCI source is no index folder
+    When I read "docs/adr/0007-oci-sources-are-explicit.md"
+    Then it contains "oci://" and "is not an http:// or https:// index folder"

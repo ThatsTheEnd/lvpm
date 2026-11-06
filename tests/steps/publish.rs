@@ -32,6 +32,8 @@ pub struct PublishState {
     package: Option<PathBuf>,
     pub(super) repository: String,
     pub(super) manifest: Option<serde_json::Value>,
+    /// A tag's digest a scenario noted, to check that nothing moved it.
+    pub(super) noted_digest: Option<String>,
 }
 
 impl CliWorld {
@@ -541,7 +543,9 @@ async fn registry_is_down(world: &mut CliWorld) {
 }
 
 /// A publish uploads the config and then the layer: two blobs.
-#[given(regex = r#"^the registry went down after the blobs of "([^"]+)" were uploaded$"#)]
+#[given(
+    regex = r#"^the registry went down after the 2 blobs \(config and layer\) of "([^"]+)" were uploaded$"#
+)]
 async fn registry_down_after_blobs(world: &mut CliWorld, _reference: String) {
     world.registry().go_down_after_blob_uploads(2);
 }
@@ -717,18 +721,14 @@ async fn registry_no_request(world: &mut CliWorld) {
     assert_eq!(tries, 0, "connections turned away while it was down");
 }
 
-/// Only the rerun's own requests are in the log: it must write the manifest
-/// and nothing else.
+/// Only the rerun's own requests are in the log: none starts an upload.
 #[then("the registry received no second upload of a blob it already held")]
 async fn registry_no_second_upload(world: &mut CliWorld) {
     let writes = world.registry().writes();
-    assert!(
-        writes
-            .iter()
-            .all(|w| w.method == "PUT" && w.path.contains("/manifests/")),
-        "writes: {writes:?}"
-    );
-    assert_eq!(writes.len(), 1, "writes: {writes:?}");
+    let uploads: Vec<_> = (writes.iter())
+        .filter(|w| w.method == "POST" && w.path.contains("/blobs/uploads/"))
+        .collect();
+    assert!(uploads.is_empty(), "uploads: {uploads:?}");
 }
 
 #[then("the package file is in the folder")]

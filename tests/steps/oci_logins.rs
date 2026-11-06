@@ -86,8 +86,12 @@ impl CliWorld {
 // ---- the registry ----
 
 #[given(regex = r#"^the registry lets anyone read "([^"]+)"$"#)]
-async fn registry_lets_anyone_read(_world: &mut CliWorld, _prefix: String) {
-    // What the fake does until it is told otherwise.
+async fn registry_lets_anyone_read(world: &mut CliWorld, prefix: String) {
+    // What the fake does until it is told otherwise: check that it was not.
+    assert!(
+        !world.registry().requires_login_to_read(&prefix),
+        "the registry wants a login to read {prefix}"
+    );
 }
 
 #[given(regex = r#"^the registry requires a login for "([^"]+)"$"#)]

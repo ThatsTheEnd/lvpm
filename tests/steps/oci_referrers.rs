@@ -7,9 +7,9 @@
 
 use super::oci_install::{OLD_ENOUGH, TEAM, now};
 use crate::CliWorld;
-use cucumber::{given, then, when};
+use cucumber::{given, then};
 use lvpm_core::lvpkg::{self, Meta};
-use lvpm_core::oci::{Access, BUNDLE_TYPE, Oci, Repo, SBOM_TYPE};
+use lvpm_core::oci::BUNDLE_TYPE;
 use lvpm_testkit::gh::{self, Behavior};
 use std::io::{Cursor, Read};
 
@@ -77,35 +77,6 @@ async fn refuses_referrer_writes(world: &mut CliWorld, repository: String) {
     world.registry().refuse_referrer_writes(&repository);
 }
 
-/// The package is put in the registry as `lvpm publish` would, and the bundle
-/// listed as attached to it by a client of a registry without the API.
-#[given(regex = r#"^"([^"]+)" already has a Sigstore bundle referrer in its fallback index$"#)]
-async fn has_bundle_in_fallback(world: &mut CliWorld, reference: String) {
-    let (repository, tag) = split_reference(&reference);
-    let seeded = world
-        .registry()
-        .seed_package(repository, tag, &[], b"the package");
-    world
-        .registry()
-        .seed_referrer(repository, &seeded.manifest, BUNDLE_TYPE, b"a bundle");
-    world.publish.repository = repository.to_string();
-}
-
-#[when(regex = r#"^lvpm attaches the SBOM of ([a-z]+) ([0-9.]+)$"#)]
-async fn attaches_sbom(world: &mut CliWorld, _name: String, version: String) {
-    let repository = world.publish.repository.clone();
-    let registry = world.registry().host();
-    let repo = Repo {
-        registry: &registry,
-        name: &repository,
-        access: Access::Push,
-    };
-    let oci = Oci::default();
-    let subject = oci.get_manifest(&repo, &version).expect("the package");
-    oci.push_referrer(&repo, &subject, SBOM_TYPE, b"{\"bomFormat\":\"CycloneDX\"}")
-        .expect("attach the SBOM");
-}
-
 #[then(regex = r#"^"([^"]+)" has a referrer of artifactType "([^"]+)"$"#)]
 async fn has_referrer(world: &mut CliWorld, reference: String, artifact_type: String) {
     let (repository, tag) = split_reference(&reference);
@@ -147,17 +118,6 @@ async fn has_no_referrer(world: &mut CliWorld, reference: String) {
     let subject = world.tag_of(repository, tag);
     let found = world.registry().referrers(repository, &subject);
     assert!(found.is_empty(), "referrers of {reference}: {found:?}");
-}
-
-#[then(regex = r#"^the fallback index of "([^"]+)" lists both the bundle and the SBOM$"#)]
-async fn fallback_lists_both(world: &mut CliWorld, reference: String) {
-    let (repository, tag) = split_reference(&reference);
-    let subject = world.tag_of(repository, tag);
-    let mut types: Vec<String> = (world.registry().referrers(repository, &subject).into_iter())
-        .map(|(_, artifact_type)| artifact_type)
-        .collect();
-    types.sort();
-    assert_eq!(types, [SBOM_TYPE, BUNDLE_TYPE]);
 }
 
 // ---- the Sigstore bundle of a package ----

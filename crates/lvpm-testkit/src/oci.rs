@@ -493,6 +493,22 @@ impl Registry {
         repo.tags.retain(|_, tagged| tagged != digest);
     }
 
+    /// The tags of `repo`, none for a repository the registry does not hold.
+    pub fn tags(&self, repo: &str) -> Vec<String> {
+        let state = lock(&self.state);
+        let repo = state.repos.get(repo);
+        repo.map_or_else(Vec::new, |repo| repo.tags.keys().cloned().collect())
+    }
+
+    /// Whether a pull of a repository under `prefix` needs a login, by a
+    /// [`Registry::require_login`] for `prefix` or above it. A login required
+    /// only to write does not count.
+    pub fn requires_login_to_read(&self, prefix: &str) -> bool {
+        let repo = format!("{prefix}/any");
+        let state = lock(&self.state);
+        (state.login_required.iter()).any(|(on, push_only)| !push_only && is_below(&repo, on))
+    }
+
     /// The digest `tag` of `repo` points at.
     pub fn tag_digest(&self, repo: &str, tag: &str) -> Option<String> {
         lock(&self.state).repos.get(repo)?.tags.get(tag).cloned()
@@ -641,7 +657,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
             return response("307 Temporary Redirect", &[("Location", location)], b"");
         }
         return match wanted {
-            Some(status) => error_reply(status, "UNAVAILABLE", "answered on purpose"),
+            Some(status) => answered_on_purpose(status),
             None => token(state, request, query, body),
         };
     }
@@ -657,7 +673,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
         return challenge(name, &request.method, addr);
     }
     if let Some(status) = wanted {
-        return error_reply(status, "UNAVAILABLE", "answered on purpose");
+        return answered_on_purpose(status);
     }
     let write = !matches!(request.method.as_str(), "GET" | "HEAD");
     let refused = state
@@ -1046,6 +1062,17 @@ fn not_found(code: &str, message: &str) -> Vec<u8> {
     error_reply(404, code, message)
 }
 
+/// What [`Registry::answer`] sends: a `403` says `DENIED`, as ghcr.io does, a
+/// `401` `UNAUTHORIZED`, any other status `UNAVAILABLE`.
+fn answered_on_purpose(status: u16) -> Vec<u8> {
+    let code = match status {
+        403 => "DENIED",
+        401 => "UNAUTHORIZED",
+        _ => "UNAVAILABLE",
+    };
+    error_reply(status, code, "answered on purpose")
+}
+
 fn error_reply(status: u16, code: &str, message: &str) -> Vec<u8> {
     json_reply(&status_line(status), &[], &errors(code, message))
 }
@@ -1080,6 +1107,7 @@ fn json_reply(status: &str, headers: &[(&str, &str)], body: &Value) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::http::{Reply, SOCKET_TIMEOUT, get_from, send_to};
+    use std::sync::atomic::Ordering;
 
     const AUTH: &str = "Authorization: Bearer fake-registry-token\r\n";
 
@@ -1522,6 +1550,16 @@ mod tests {
     }
 
     #[test]
+    fn a_403_set_for_a_path_says_denied_as_ghcr_does_and_a_500_says_unavailable() {
+        let registry = Registry::start();
+        registry.answer("GET", "/v2/t/a/tags/list", 403);
+        registry.answer("GET", "/v2/t/b/tags/list", 500);
+        let body = |path: &str| get_from(registry.addr(), path, AUTH).body;
+        assert!(String::from_utf8_lossy(&body("/v2/t/a/tags/list")).contains("DENIED"));
+        assert!(String::from_utf8_lossy(&body("/v2/t/b/tags/list")).contains("UNAVAILABLE"));
+    }
+
+    #[test]
     fn a_login_required_to_write_leaves_a_pull_anonymous() {
         let registry = Registry::start();
         registry.require_login_to_write("team");
@@ -1673,9 +1711,12 @@ mod tests {
 
     #[test]
     fn dropping_the_registry_stops_its_thread() {
+        // Not a connect to the freed port: another process may hold it by now.
+        // The thread owns a clone of the state until it ends, and drop joins it.
         let registry = Registry::start();
-        let addr = registry.addr();
+        let (state, stop) = (registry.state.clone(), registry.stop.clone());
         drop(registry);
-        assert!(TcpStream::connect_timeout(&addr, SOCKET_TIMEOUT).is_err());
+        assert!(stop.load(Ordering::SeqCst), "the stop flag is raised");
+        assert_eq!(Arc::strong_count(&state), 1, "the thread still holds it");
     }
 }

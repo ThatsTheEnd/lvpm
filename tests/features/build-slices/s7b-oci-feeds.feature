@@ -50,7 +50,7 @@ Feature: lvpm publish to an OCI registry
     And the registry received no manifest write
 
   Scenario: A rerun after an aborted publish succeeds
-    Given the registry went down after the blobs of "team/alpha:1.0.0" were uploaded
+    Given the registry went down after the 2 blobs (config and layer) of "team/alpha:1.0.0" were uploaded
     And I ran "lvpm publish --to oci://<registry>/team" and it failed
     When the registry is back and I run "lvpm publish --to oci://<registry>/team"
     Then it succeeds

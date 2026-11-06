@@ -211,16 +211,16 @@ fn bytes_that_miss_their_digest_are_refused_for_a_blob_a_digest_and_a_tag() {
     registry.corrupt(NAME, &layer, b"other layer");
     registry.corrupt(NAME, &manifest, b"[]");
     with(&registry, Access::Pull, |repo| {
-        for refused in [
-            oci.get_blob(repo, &layer).unwrap_err(),
-            oci.get_manifest(repo, &manifest).unwrap_err(),
-            oci.get_manifest(repo, "1.0.0").unwrap_err(),
+        for (refused, expected) in [
+            (oci.get_blob(repo, &layer).unwrap_err(), &layer),
+            (oci.get_manifest(repo, &manifest).unwrap_err(), &manifest),
+            (oci.get_manifest(repo, "1.0.0").unwrap_err(), &manifest),
         ] {
             let digest = match &refused {
                 Error::DigestMismatch { digest, .. } => digest.clone(),
                 other => panic!("not a digest mismatch: {other}"),
             };
-            assert!(digest == layer || digest == manifest, "{refused}");
+            assert_eq!(&digest, expected, "{refused}");
             assert!(
                 refused
                     .to_string()

@@ -844,6 +844,20 @@ async fn it_contains(world: &mut CliWorld, a: String, b: String) {
     }
 }
 
+#[then(regex = r#"^its "([^"]+)" section contains "([^"]+)" and "([^"]+)"$"#)]
+async fn its_section_contains(world: &mut CliWorld, title: String, a: String, b: String) {
+    let (path, text) = &world.docs.read;
+    // Prose wraps, as in "it contains".
+    let section = section_of(text, &title);
+    let section = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    for wanted in [a, b] {
+        assert!(
+            section.contains(&wanted),
+            "the {title:?} section of {path} does not contain {wanted:?}"
+        );
+    }
+}
+
 #[then(regex = r#"^its attest step uses "([^"]+)"$"#)]
 async fn its_attest_step_uses(world: &mut CliWorld, action: String) {
     let (path, text) = &world.docs.read;

@@ -16,12 +16,15 @@ Feature: ghcr.io
     When I run "lvpm sync --prefix dest"
     Then alpha is installed and the lock records its digest and signer
     And alpha 1.0.0 has an SBOM referrer on the registry
+    And that referrer holds the bom.cdx.json of the published package
 
   Scenario: Republishing the fixed tag is refused
     Given the Docker config of the test runner
     And the fixture package alpha 1.0.0 from tests/fixtures
+    And the digest of the tag alpha:1.0.0 is noted
     When I run "lvpm publish --to oci://ghcr.io/thatstheend/lvpm-oci-test"
-    Then it fails saying "lvpm-oci-test/alpha:1.0.0 is already published"
+    Then it fails saying "thatstheend/lvpm-oci-test/alpha:1.0.0 is already published"
+    And the tag alpha:1.0.0 still has the noted digest
 
   Scenario: The private package is refused without credentials
     Given a project pinned to internal from "oci://ghcr.io/thatstheend/lvpm-oci-test"
@@ -32,5 +35,5 @@ Feature: ghcr.io
   Scenario: The private package locks with the runner's credentials
     Given a project pinned to internal from "oci://ghcr.io/thatstheend/lvpm-oci-test"
     And the Docker config of the test runner
-    When I run "lvpm lock"
-    Then internal is locked
+    When I run "lvpm sync --prefix dest"
+    Then internal is installed and locked

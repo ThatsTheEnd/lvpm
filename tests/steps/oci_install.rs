@@ -380,7 +380,10 @@ async fn tag_is_an_image(world: &mut CliWorld, tag: String, repository: String) 
 )]
 async fn registry_fails_for(world: &mut CliWorld, how: String, repository: String) {
     match how.as_str() {
-        "holds nothing" => {}
+        "holds nothing" => {
+            let tags = world.registry().tags(&repository);
+            assert!(tags.is_empty(), "{repository} holds the tags {tags:?}");
+        }
         "is down" => world.registry().go_down(),
         _ => world
             .registry()
