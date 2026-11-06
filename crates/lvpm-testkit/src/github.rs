@@ -280,9 +280,33 @@ impl GitHubFake {
         repo.attested.insert(sha256.to_ascii_lowercase());
     }
 
+    /// From now on the attestations API lists none for the file with this
+    /// digest in `repo`: undoes [`add_attestation`](GitHubFake::add_attestation).
+    pub fn remove_attestation(&self, repo: &str, sha256: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        assert!(
+            repo.attested.remove(&sha256.to_ascii_lowercase()),
+            "{sha256} has no attestation"
+        );
+    }
+
     /// Add `release` to `repo`, after the releases it has (newest first).
     pub fn add_release(&self, repo: &str, release: FakeRelease) {
         lock(&self.state).add_release(repo, release);
+    }
+
+    /// Remove the file `name` from every release of `repo`: its download is a
+    /// 404 from now on, and the releases stay.
+    pub fn remove_asset(&self, repo: &str, name: &str) {
+        let mut state = lock(&self.state);
+        let releases = &mut state.repos.get_mut(repo).expect("a known repo").releases;
+        let before: usize = releases.iter().map(|r| r.assets.len()).sum();
+        releases
+            .iter_mut()
+            .for_each(|release| release.assets.retain(|asset| asset.name != name));
+        let after: usize = releases.iter().map(|r| r.assets.len()).sum();
+        assert!(after < before, "{repo} has no file {name}");
     }
 
     /// Replace the bytes of the file `name` in `repo`, keeping its asset id,
@@ -770,6 +794,25 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_attestation_is_a_404_again() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        let sha = "ab".repeat(32);
+        let path = format!("/repos/o/r/attestations/sha256:{sha}");
+        fake.add_attestation("o/r", &sha);
+        assert_eq!(
+            get_from(fake.addr, &path, "").status_line,
+            "HTTP/1.1 200 OK"
+        );
+
+        fake.remove_attestation("o/r", &sha.to_ascii_uppercase());
+
+        assert_eq!(
+            get_from(fake.addr, &path, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+    }
+
+    #[test]
     fn a_file_is_served_raw_a_file_not_registered_is_404_and_each_request_is_recorded() {
         let fake = GitHubFake::start(&[("o/r", vec![])]);
         fake.add_file("o/r", "packages/foo.toml", "name = \"foo\"\n");
@@ -949,6 +992,27 @@ mod tests {
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["tag_name"], "0.9");
         assert_eq!(download(&fake, id).status_line, "HTTP/1.1 404 Not Found");
+    }
+
+    #[test]
+    fn a_removed_asset_is_a_404_for_its_file_and_its_release_stays() {
+        let fake = GitHubFake::start(&[("o/r", vec![pkg_release("1.0"), pkg_release("0.9")])]);
+        let file = "/o/r/releases/download/1.0/pkg-1.0.lvpkg";
+        let other = "/o/r/releases/download/0.9/pkg-0.9.lvpkg";
+        assert_eq!(get_from(fake.addr, file, "").status_line, "HTTP/1.1 200 OK");
+
+        fake.remove_asset("o/r", "pkg-1.0.lvpkg");
+
+        assert_eq!(
+            get_from(fake.addr, file, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+        assert_eq!(
+            get_from(fake.addr, other, "").status_line,
+            "HTTP/1.1 200 OK"
+        );
+        let listed = json_of(&get_from(fake.addr, "/repos/o/r/releases", ""));
+        assert_eq!(listed.as_array().unwrap().len(), 2);
     }
 
     #[test]

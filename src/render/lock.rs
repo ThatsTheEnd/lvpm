@@ -646,7 +646,7 @@ fn strip_ansi(text: &str) -> String {
 /// What lvpm says of a reason it could not check an attestation, and what to
 /// do about it. `repo` is the repository the package is from, when it is one
 /// package that is asked about.
-fn not_checked(reason: &NotChecked, repo: Option<&str>) -> (String, String) {
+pub(super) fn not_checked(reason: &NotChecked, repo: Option<&str>) -> (String, String) {
     const AUTH: &str = "run `gh auth login` or set GH_TOKEN";
     const LATER: &str = "try again later";
     let (said, hint) = match reason {

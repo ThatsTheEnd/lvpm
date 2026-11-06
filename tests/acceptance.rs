@@ -76,6 +76,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s6-attestations.feature",
     "tests/features/build-slices/s8-index-install.feature",
     "tests/features/build-slices/s8-index-add.feature",
+    "tests/features/build-slices/s8-index-check.feature",
     "tests/features/build-slices/s5-lvpm-check.feature",
     "tests/features/build-slices/s5b-lvpm-build-check.feature",
     "tests/features/build-slices/s9-lvpm-build-app.feature",

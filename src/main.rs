@@ -574,6 +574,24 @@ enum IndexCmd {
         #[arg(long)]
         url: String,
     },
+    /// The index bot's verdict on a PR: checks the PR's checkout HEAD against
+    /// BASE, a checkout of the index it targets.
+    ///
+    /// Prints `accepted <name> <version>` for each new version that passes
+    /// every rule, and a `refused ...` line with a fix for each rule it
+    /// breaks; exits 1 if there is any. Reads the checkouts as data, runs
+    /// nothing of the PR, and downloads each new version from its owner's
+    /// releases, with no token, to check its hash, its metadata and its
+    /// attestation (which needs `gh` and a GitHub token). With --json the
+    /// result carries the comment to leave on a refused PR.
+    Check {
+        /// A checkout of the index the PR targets.
+        #[arg(long, value_name = "DIR")]
+        base: PathBuf,
+        /// A checkout of the PR.
+        #[arg(long, value_name = "DIR")]
+        head: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -892,6 +910,11 @@ fn run(cli: &Cli) -> Result<Report> {
             ops::community::add(&env, entries_dir, package, github, url)
                 .map_err(render::community::add_error)?;
             Ok(Report::done("index-add"))
+        }
+        Cmd::Index(IndexCmd::Check { base, head }) => {
+            let checked = ops::community::check(&env, base, head)?;
+            Report::new(String::new(), render::community::check_result(&checked))
+                .map(|report| report.failed(!checked.refused.is_empty()))
         }
         Cmd::Config(ConfigCmd::Set { key, values }) => {
             ops::query::config_set(&env, key, values)?;

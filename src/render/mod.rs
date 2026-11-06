@@ -177,7 +177,10 @@ impl Renderer {
             Event::AppBuildStarting { .. } => build::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
             Event::OciUploading { .. } => publish::render(self, event),
-            Event::IndexEntryAdded { .. } => community::render(self, event),
+            Event::IndexEntryAdded { .. }
+            | Event::IndexVersionAccepted { .. }
+            | Event::IndexRefused { .. }
+            | Event::IndexNothingToCheck => community::render(self, event),
         }
     }
 

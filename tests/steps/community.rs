@@ -8,6 +8,7 @@ use super::github::{
 };
 use super::lock::sha256_hex;
 use crate::CliWorld;
+use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::pilots::{check_checksums, pilots_dir};
 use crate::support::project::MANIFEST_FILE;
 use crate::support::sandbox::LOCAL_PACKAGES_DIR;
@@ -33,6 +34,8 @@ pub struct CommunityState {
     other_bytes: Option<Vec<u8>>,
     /// What the packages folder held before `lvpm index add` ran, by file name.
     packages_before: Vec<(String, Vec<u8>)>,
+    /// What an `lvpm index check` scenario has set up.
+    check: CheckState,
 }
 
 fn pilot_b_vip() -> Vec<u8> {
@@ -87,8 +90,7 @@ async fn a_fake_github_with_an_index(world: &mut CliWorld, index: String, publis
     world.community = CommunityState {
         index,
         publisher,
-        other_bytes: None,
-        packages_before: Vec::new(),
+        ..CommunityState::default()
     };
 }
 
@@ -437,6 +439,7 @@ async fn succeeds_printing(world: &mut CliWorld, line: String) {
 /// comes after it.
 #[then(regex = r#"^the command fails with exit code 1 printing "([^"]+)"$"#)]
 async fn fails_printing(world: &mut CliWorld, line: String) {
+    let line = world.with_check_values(&line);
     assert_eq!(world.output().exit_code, 1, "{}", world.printed());
     let report = world.printed();
     let said = |printed: &str| match line.split_once("<error>") {
@@ -495,4 +498,318 @@ async fn the_file_lists_both_versions(world: &mut CliWorld) {
 async fn the_file_keeps_its_github(world: &mut CliWorld, github: String) {
     assert_eq!(world.output().exit_code, 0, "{}", world.printed());
     assert_eq!(world.written_entry_file().github, github);
+}
+
+// ---- lvpm index check ----
+
+/// The owner foo belongs to, in the index the checks run against.
+const FOO_OWNER: &str = "a/x";
+/// What foo's package needs and what bar's does, as the packages say it.
+const FOO_NEEDS: &[(&str, &str)] = &[("bar", "2.0")];
+const BAR_NEEDS: &[(&str, &str)] = &[("baz", "2.0")];
+/// What an entry says of those needs, and of the LabVIEW minimum every package here has.
+const FOO_LISTED_REQUIRES: &str = "bar >=2.0";
+const BAR_LISTED_REQUIRES: &str = "baz >=2.0";
+const PACKAGE_LISTED_LABVIEW: &str = ">=20.0";
+/// The two checkouts, in the working directory.
+const BASE_DIR: &str = "base";
+const HEAD_DIR: &str = "head";
+
+/// What an `lvpm index check` scenario has set up.
+#[derive(Debug, Default)]
+pub struct CheckState {
+    /// The SHA-256 of the file the release of foo 1.1.0 serves.
+    file_sha256: String,
+    /// The SHA-256 the head's entry for foo 1.1.0 says.
+    entry_sha256: String,
+    /// The two SHA-256 values of the step that changes foo 1.0.0's.
+    old_sha256: String,
+    new_sha256: String,
+}
+
+/// A package `name` at `version` needing `needs`, as a `.vip`.
+fn vip(
+    name: &'static str,
+    version: &'static str,
+    needs: &'static [(&'static str, &'static str)],
+) -> Vec<u8> {
+    FixturePackage {
+        name,
+        version,
+        display_name: name,
+        requires: needs,
+        lv_min: "20.0",
+        payload: Payload::Text,
+        post_install_hook: None,
+    }
+    .build_vip()
+}
+
+fn release_file(name: &str, version: &str) -> String {
+    format!("{name}-{version}.vip")
+}
+
+impl CliWorld {
+    /// `line` with the values a check scenario's steps set put in for its
+    /// placeholders.
+    pub(crate) fn with_check_values(&self, line: &str) -> String {
+        let check = &self.community.check;
+        line.replace("<file-sha256>", &check.file_sha256)
+            .replace("<entry-sha256>", &check.entry_sha256)
+            .replace("<old>", &check.old_sha256)
+            .replace("<new>", &check.new_sha256)
+    }
+
+    /// The version of `name` that a release of `github` holds, as the index
+    /// lists it: the file's url on the fake, and what the package says of itself.
+    fn listed_version(
+        &mut self,
+        github: &str,
+        name: &str,
+        version: &str,
+        sha256: &str,
+        requires: &str,
+    ) -> FileVersion {
+        let web = self.github_fake().api_url();
+        let file = release_file(name, version);
+        FileVersion {
+            version: version.to_string(),
+            url: format!("{web}/{github}/releases/download/{version}/{file}"),
+            sha256: sha256.to_string(),
+            labview: Some(PACKAGE_LISTED_LABVIEW.to_string()),
+            requires: vec![requires.to_string()],
+        }
+    }
+
+    /// `path` in the checkout `checkout`, whose folder exists.
+    fn checkout_file(&self, checkout: &str, path: &str) -> std::path::PathBuf {
+        let path = self.sandbox.work_dir().join(checkout).join(path);
+        std::fs::create_dir_all(path.parent().expect("a file in a folder")).expect("create it");
+        path
+    }
+
+    /// foo's entry file in the head, as the head has it now.
+    fn head_foo(&self) -> EntryFile {
+        let path = self.checkout_file(HEAD_DIR, "packages/foo.toml");
+        let text = std::fs::read_to_string(path).expect("the head's foo.toml");
+        EntryFile::parse("foo", &text).expect("an entry file that reads")
+    }
+
+    fn write_head_foo(&self, file: &EntryFile) {
+        let path = self.checkout_file(HEAD_DIR, "packages/foo.toml");
+        std::fs::write(path, file.write()).expect("write the head's foo.toml");
+    }
+
+    /// The release of foo 1.1.0 serves `bytes` from now on, and the API lists
+    /// an attestation for them.
+    fn serve_other_foo_file(&mut self, bytes: &[u8]) {
+        let sha256 = sha256_hex(bytes);
+        let fake = self.github_fake();
+        fake.replace_bytes(FOO_OWNER, &release_file("foo", "1.1.0"), bytes);
+        fake.add_attestation(FOO_OWNER, &sha256);
+        self.community.check.file_sha256 = sha256;
+    }
+
+    /// The fake `gh` of this scenario acts as `behavior`.
+    fn gh_acts(&self, behavior: &Behavior) {
+        self.sandbox.use_fake_gh();
+        gh::install(&self.sandbox.gh_dir(), behavior).expect("install the fake gh");
+    }
+}
+
+#[given(
+    regex = r#"^a base index where packages/foo\.toml is owned by "([^"]+)" with version 1\.0\.0$"#
+)]
+async fn a_base_index(world: &mut CliWorld, owner: String) {
+    let sha256 = sha256_hex(&vip("foo", "1.0.0", FOO_NEEDS));
+    let version = world.listed_version(&owner, "foo", "1.0.0", &sha256, FOO_LISTED_REQUIRES);
+    let file = EntryFile {
+        name: "foo".into(),
+        github: owner,
+        versions: vec![version],
+    };
+    for checkout in [BASE_DIR, HEAD_DIR] {
+        let path = world.checkout_file(checkout, "packages/foo.toml");
+        std::fs::write(path, file.write()).expect("write the entry file");
+    }
+}
+
+#[given(
+    regex = r"^a fake GitHub where (\S+)'s releases hold foo 1\.0\.0 and foo 1\.1\.0, attested by (\S+)$"
+)]
+async fn a_fake_github_with_foo(world: &mut CliWorld, repo: String, built_by: String) {
+    for (version, bytes) in [
+        ("1.0.0", vip("foo", "1.0.0", FOO_NEEDS)),
+        ("1.1.0", vip("foo", "1.1.0", FOO_NEEDS)),
+    ] {
+        let file = release_file("foo", version);
+        world.serve(&repo, version, &[(&file, bytes.clone())], false);
+        let sha256 = sha256_hex(&bytes);
+        world.github_fake().add_attestation(&repo, &sha256);
+        world.community.check.file_sha256 = sha256;
+    }
+    world.gh_acts(&Behavior::Verifies {
+        repository: format!("https://github.com/{built_by}"),
+    });
+}
+
+// What a row of the outline replaces of the Background.
+
+#[given("the Background")]
+async fn the_background(_: &mut CliWorld) {}
+
+#[given("the release file of foo 1.1.0 answers 404")]
+async fn the_release_file_answers_404(world: &mut CliWorld) {
+    let file = release_file("foo", "1.1.0");
+    world.github_fake().remove_asset(FOO_OWNER, &file);
+}
+
+#[given("foo 1.1.0's release has no attestation")]
+async fn foo_has_no_attestation(world: &mut CliWorld) {
+    let sha256 = world.community.check.file_sha256.clone();
+    world.github_fake().remove_attestation(FOO_OWNER, &sha256);
+}
+
+#[given("gh cannot run")]
+async fn gh_cannot_run(world: &mut CliWorld) {
+    world.sandbox.use_fake_gh();
+    std::fs::remove_dir_all(world.sandbox.gh_dir()).expect("remove the fake gh");
+    world.sandbox.use_fake_gh();
+}
+
+#[given("foo 1.1.0's attestation does not verify")]
+async fn foo_does_not_verify(world: &mut CliWorld) {
+    world.gh_acts(&Behavior::Rejects {
+        stderr: "verification failed".into(),
+    });
+}
+
+/// gh vouches for the file whichever repo it is asked about, and names `built_by`.
+#[given(regex = r"^foo 1\.1\.0 is attested by (\S+)$")]
+async fn foo_is_attested_by(world: &mut CliWorld, built_by: String) {
+    world.gh_acts(&Behavior::VerifiesAnyRepo {
+        repository: format!("https://github.com/{built_by}"),
+    });
+}
+
+// What the head changes.
+
+#[given(regex = r"^the head adds foo 1\.1\.0 (.+)$")]
+async fn the_head_adds_foo(world: &mut CliWorld, entry: String) {
+    let file_sha256 = world.community.check.file_sha256.clone();
+    let mut version =
+        world.listed_version(FOO_OWNER, "foo", "1.1.0", &file_sha256, FOO_LISTED_REQUIRES);
+    match entry.as_str() {
+        "with the release's url and sha256" => {}
+        "with a url on example.com" => {
+            version.url = "https://example.com/a/x/releases/download/1.1.0/foo-1.1.0.vip".into();
+        }
+        "with another sha256" => version.sha256 = sha256_hex(b"another file"),
+        "whose requires differ from the package" => version.requires = vec!["bar >=3.0".into()],
+        "whose labview differs from the package" => version.labview = Some(">=21.0".into()),
+        "named foo but the package says bar" => {
+            world.serve_other_foo_file(&vip("bar", "1.1.0", FOO_NEEDS));
+            version.sha256 = world.community.check.file_sha256.clone();
+        }
+        "whose version differs from the package" => {
+            world.serve_other_foo_file(&vip("foo", "1.1.1", FOO_NEEDS));
+            version.sha256 = world.community.check.file_sha256.clone();
+        }
+        other => panic!("no step knows what the head adds {other:?}"),
+    }
+    world.community.check.entry_sha256 = version.sha256.clone();
+    let mut file = world.head_foo();
+    file.versions.push(version);
+    world.write_head_foo(&file);
+}
+
+#[given(
+    regex = r#"^the head adds packages/bar\.toml owned by "([^"]+)", whose release is attested by (\S+)$"#
+)]
+async fn the_head_adds_bar(world: &mut CliWorld, owner: String, built_by: String) {
+    let bytes = vip("bar", "1.0.0", BAR_NEEDS);
+    let sha256 = sha256_hex(&bytes);
+    let file = release_file("bar", "1.0.0");
+    world.serve(&owner, "1.0.0", &[(&file, bytes)], false);
+    world.github_fake().add_attestation(&owner, &sha256);
+    world.gh_acts(&Behavior::Verifies {
+        repository: format!("https://github.com/{built_by}"),
+    });
+    let version = world.listed_version(&owner, "bar", "1.0.0", &sha256, BAR_LISTED_REQUIRES);
+    let entry = EntryFile {
+        name: "bar".into(),
+        github: owner,
+        versions: vec![version],
+    };
+    let path = world.checkout_file(HEAD_DIR, "packages/bar.toml");
+    std::fs::write(path, entry.write()).expect("write the entry file");
+}
+
+#[given("the head adds packages/bar.toml that is not TOML")]
+async fn the_head_adds_a_file_that_is_not_toml(world: &mut CliWorld) {
+    let path = world.checkout_file(HEAD_DIR, "packages/bar.toml");
+    std::fs::write(path, "name = [").expect("write the file");
+}
+
+#[given("the head adds packages/big.toml of 2 MiB")]
+async fn the_head_adds_a_big_file(world: &mut CliWorld) {
+    let path = world.checkout_file(HEAD_DIR, "packages/big.toml");
+    std::fs::write(path, vec![b' '; 2 * 1024 * 1024]).expect("write the file");
+}
+
+/// Changes foo 1.0.0's sha256 in the head, and keeps what it was and what it is.
+fn change_foo_sha256(world: &mut CliWorld) {
+    let mut file = world.head_foo();
+    let listed = &mut file.versions[0];
+    let check = &mut world.community.check;
+    check.old_sha256 = listed.sha256.clone();
+    check.new_sha256 = sha256_hex(b"changed");
+    listed.sha256 = check.new_sha256.clone();
+    world.write_head_foo(&file);
+}
+
+#[given("the head changes foo 1.0.0's sha256 from <old> to <new>")]
+async fn the_head_changes_the_hash(world: &mut CliWorld) {
+    change_foo_sha256(world);
+}
+
+#[given("the head changes foo 1.0.0's sha256 and adds notes.md")]
+async fn the_head_changes_the_hash_and_adds_notes(world: &mut CliWorld) {
+    change_foo_sha256(world);
+    let path = world.checkout_file(HEAD_DIR, "notes.md");
+    std::fs::write(path, "notes").expect("write the file");
+}
+
+#[given("the head equals the base")]
+async fn the_head_equals_the_base(_: &mut CliWorld) {}
+
+#[then("the release file of foo 1.1.0 was downloaded without a token")]
+async fn the_release_file_was_downloaded_without_a_token(world: &mut CliWorld) {
+    let path = format!(
+        "/{FOO_OWNER}/releases/download/1.1.0/{}",
+        release_file("foo", "1.1.0")
+    );
+    let downloads: Vec<_> = (world.github_fake().requests().into_iter())
+        .filter(|request| request.path == path)
+        .collect();
+    assert!(!downloads.is_empty(), "no request for {path}");
+    for download in downloads {
+        assert_eq!(download.authorization, None, "{download:?}");
+    }
+}
+
+#[then("the output is the notes.md line, then the foo line, and the exit code is 1")]
+async fn the_lines_are_sorted(world: &mut CliWorld) {
+    let check = &world.community.check;
+    let lines = [
+        "refused notes.md: only .toml files directly under packages/ may change. fix: remove this change".to_string(),
+        format!(
+            "refused foo 1.0.0: already listed with sha256 {}, now {}. fix: listed versions cannot change; publish a new version",
+            check.old_sha256, check.new_sha256
+        ),
+    ];
+    let output = world.output();
+    assert_eq!(output.exit_code, 1, "{}", world.printed());
+    assert_eq!(output.stdout, "", "{}", world.printed());
+    assert_eq!(output.stderr.lines().collect::<Vec<_>>(), lines);
 }

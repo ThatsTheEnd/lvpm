@@ -12,8 +12,10 @@ use crate::fetch::check_index_url;
 use crate::github::MAX_ENTRY_BYTES;
 use crate::index::{Entry, IndexPin, Requirement, is_file_key, parse_lv_gate, parse_requires};
 use crate::project::{name_key, split_owner_repo};
+use crate::verify::NotChecked;
 use crate::version::Version;
 use anyhow::Context;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -289,10 +291,12 @@ fn parse_requirement(item: &str) -> Option<Requirement> {
         .then_some(requirement)
 }
 
-/// What `lvpm index check` finds wrong with a PR without any network: one per
-/// refusal, with the rule it breaks. The wording is the front end's; every
-/// finding names its entry file's `path` (`packages/<key>.toml`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What `lvpm index check` finds wrong with a PR: one per refusal, with the
+/// rule it breaks. The wording is the front end's; every finding names its
+/// entry file's `path` (`packages/<key>.toml`). R1 to R4 and the unreadable
+/// file need no network; the rest are found by reading the version's file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "rule", rename_all = "snake_case")]
 pub enum Finding {
     /// R1: a file that is not `packages/<name>.toml` was added, changed,
     /// removed or replaced by a link.
@@ -333,6 +337,105 @@ pub enum Finding {
     /// The file is too big, is not UTF-8, or does not read as an entry file.
     /// `error` never quotes the file.
     Unreadable { path: String, error: String },
+    /// R5: the file at the version's `url` has SHA-256 `actual`, not `entry`.
+    FileDiffers {
+        path: String,
+        name: String,
+        version: String,
+        actual: String,
+        entry: String,
+    },
+    /// R5: the file at the version's `url` could not be downloaded.
+    NotDownloaded {
+        path: String,
+        name: String,
+        version: String,
+        error: String,
+    },
+    /// The file the entry lists is not a package lvpm reads.
+    NotAPackage {
+        path: String,
+        name: String,
+        version: String,
+        error: String,
+    },
+    /// R5b: the package says another `field` (`name`, `version`, `requires` or
+    /// `labview`, the first that differs) than the entry; both as text.
+    PackageDiffers {
+        path: String,
+        name: String,
+        version: String,
+        field: &'static str,
+        actual: String,
+        entry: String,
+    },
+    /// R6: nobody vouches that the publisher built the file.
+    NotAttested {
+        path: String,
+        name: String,
+        version: String,
+        reason: NotAttested,
+    },
+    /// R6b: the file is attested by the repo at `subject`, not by `github`.
+    AttestedByOther {
+        path: String,
+        name: String,
+        version: String,
+        subject: String,
+        github: String,
+    },
+}
+
+/// Why a file is not attested (R6). Every reason refuses: the bot fails closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotAttested {
+    /// GitHub holds no attestation for the file.
+    Missing,
+    /// lvpm could not find out, for this reason.
+    Unchecked(NotChecked),
+    /// An attestation exists and does not verify.
+    DoesNotVerify,
+}
+
+impl Finding {
+    /// The entry file the finding is about.
+    pub fn path(&self) -> &str {
+        match self {
+            Finding::OutsideEntries { path }
+            | Finding::WrongFileName { path, .. }
+            | Finding::OwnerChanged { path, .. }
+            | Finding::VersionChanged { path, .. }
+            | Finding::VersionRemoved { path, .. }
+            | Finding::UrlNotReleaseFile { path, .. }
+            | Finding::Unreadable { path, .. }
+            | Finding::FileDiffers { path, .. }
+            | Finding::NotDownloaded { path, .. }
+            | Finding::NotAPackage { path, .. }
+            | Finding::PackageDiffers { path, .. }
+            | Finding::NotAttested { path, .. }
+            | Finding::AttestedByOther { path, .. } => path,
+        }
+    }
+
+    /// The version it is about, when it is about one.
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Finding::OutsideEntries { .. }
+            | Finding::WrongFileName { .. }
+            | Finding::OwnerChanged { .. }
+            | Finding::Unreadable { .. } => None,
+            Finding::VersionChanged { version, .. }
+            | Finding::VersionRemoved { version, .. }
+            | Finding::UrlNotReleaseFile { version, .. }
+            | Finding::FileDiffers { version, .. }
+            | Finding::NotDownloaded { version, .. }
+            | Finding::NotAPackage { version, .. }
+            | Finding::PackageDiffers { version, .. }
+            | Finding::NotAttested { version, .. }
+            | Finding::AttestedByOther { version, .. } => Some(version),
+        }
+    }
 }
 
 /// A version the head lists and the base does not, whose file passed the rules
@@ -577,15 +680,30 @@ fn read_file(path: &Path, keep: bool) -> std::io::Result<Node> {
 }
 
 impl NewVersion {
-    /// R4: the version's `url` must be a release file of its `github` on the
-    /// site at `web`.
-    pub fn url_finding(&self, web: &str) -> Option<Finding> {
+    /// The entry a consumer would read for this version, listed by no source.
+    pub fn entry(&self) -> Entry {
         let file = EntryFile {
             name: self.name.clone(),
             github: self.github.clone(),
             versions: Vec::new(),
         };
-        check_index_url(&file.entry(&self.version, ""), web)
+        file.entry(&self.version, "")
+    }
+
+    /// What a finding about this version names: its entry file, the package and
+    /// the version as the entry file spells it.
+    fn at(&self) -> (String, String, String) {
+        (
+            self.path.clone(),
+            self.name.clone(),
+            self.version.version.clone(),
+        )
+    }
+
+    /// R4: the version's `url` must be a release file of its `github` on the
+    /// site at `web`.
+    pub fn url_finding(&self, web: &str) -> Option<Finding> {
+        check_index_url(&self.entry(), web)
             .err()
             .map(|_| Finding::UrlNotReleaseFile {
                 path: self.path.clone(),
@@ -594,6 +712,119 @@ impl NewVersion {
                 url: self.version.url.clone(),
                 github: self.github.clone(),
             })
+    }
+
+    /// R5: the file at the version's `url` has SHA-256 `actual`.
+    pub fn file_differs(&self, actual: &str) -> Finding {
+        let (path, name, version) = self.at();
+        Finding::FileDiffers {
+            path,
+            name,
+            version,
+            actual: actual.to_string(),
+            entry: self.version.sha256.clone(),
+        }
+    }
+
+    /// R5: the file could not be downloaded, for `error`.
+    pub fn not_downloaded(&self, error: String) -> Finding {
+        let (path, name, version) = self.at();
+        Finding::NotDownloaded {
+            path,
+            name,
+            version,
+            error,
+        }
+    }
+
+    /// The file is no package lvpm reads, for `error`.
+    pub fn not_a_package(&self, error: String) -> Finding {
+        let (path, name, version) = self.at();
+        Finding::NotAPackage {
+            path,
+            name,
+            version,
+            error,
+        }
+    }
+
+    /// R5b: the first of name, version, requires and labview that `package`
+    /// (the file, as lvpm reads it) says differently from the entry. Versions
+    /// are compared as lvpm reads them, requirements in any order, and the
+    /// gate as the number it is.
+    pub fn package_finding(&self, package: &Entry) -> Option<Finding> {
+        let entry = self.entry();
+        let said = FileVersion::of_package(package, &self.version.url, &self.version.sha256);
+        let none = || "none".to_string();
+        let joined = |list: &[String]| match list.is_empty() {
+            true => none(),
+            false => list.join(", "),
+        };
+        let sorted = |requirements: &[Requirement]| {
+            let mut texts: Vec<String> = requirements.iter().map(requirement_text).collect();
+            texts.sort();
+            texts
+        };
+        let (field, actual, listed) = [
+            (
+                entry.name != package.name,
+                "name",
+                package.name.clone(),
+                entry.name.clone(),
+            ),
+            (
+                entry.version != package.version,
+                "version",
+                said.version.clone(),
+                self.version.version.clone(),
+            ),
+            (
+                sorted(&entry.requires) != sorted(&package.requires),
+                "requires",
+                joined(&said.requires),
+                joined(&self.version.requires),
+            ),
+            (
+                entry.lv_min != package.lv_min,
+                "labview",
+                said.labview.clone().unwrap_or_else(none),
+                self.version.labview.clone().unwrap_or_else(none),
+            ),
+        ]
+        .into_iter()
+        .find_map(|(differs, field, actual, listed)| differs.then_some((field, actual, listed)))?;
+        let (path, name, version) = self.at();
+        Some(Finding::PackageDiffers {
+            path,
+            name,
+            version,
+            field,
+            actual,
+            entry: listed,
+        })
+    }
+
+    /// R6: the file is not attested, for `reason`.
+    pub fn not_attested(&self, reason: NotAttested) -> Finding {
+        let (path, name, version) = self.at();
+        Finding::NotAttested {
+            path,
+            name,
+            version,
+            reason,
+        }
+    }
+
+    /// R6b: the file is attested by the repo at `subject`.
+    pub fn attested_by_other(&self, subject: String) -> Finding {
+        let (path, name, version) = self.at();
+        Finding::AttestedByOther {
+            path,
+            name,
+            version,
+            subject,
+            github: self.github.clone(),
+        }
     }
 }
 
@@ -1128,6 +1359,7 @@ github = \"a/x\"
             Finding::VersionRemoved { name, version, .. } => format!("R3b {name} {version}"),
             Finding::UrlNotReleaseFile { name, version, .. } => format!("R4 {name} {version}"),
             Finding::Unreadable { path, .. } => format!("parse {path}"),
+            other => panic!("a rule that needs the network: {other:?}"),
         }
     }
 
@@ -1434,6 +1666,92 @@ github = \"a/x\"
                 );
             }
         }
+    }
+
+    /// The new version `1.1.0` of foo, listed with `requires` and `labview`.
+    fn listed(version: &str, labview: Option<&str>, requires: &[&str]) -> NewVersion {
+        NewVersion {
+            path: "packages/foo.toml".into(),
+            name: "foo".into(),
+            github: "a/x".into(),
+            version: FileVersion {
+                version: version.into(),
+                url: format!("{WEB}/a/x/releases/download/{version}/foo.lvpkg"),
+                sha256: SHA_A.into(),
+                labview: labview.map(str::to_string),
+                requires: requires.iter().map(|r| r.to_string()).collect(),
+            },
+        }
+    }
+
+    /// What the file says of itself.
+    fn package(name: &str, version: &str, labview: Option<&str>, requires: &str) -> Entry {
+        Entry {
+            name: name.into(),
+            version: Version::parse(version),
+            requires: parse_requires(requires),
+            lv_min: labview.and_then(parse_lv_gate),
+            ..Entry::default()
+        }
+    }
+
+    #[test]
+    fn a_package_that_says_what_the_entry_says_is_accepted_however_it_is_spelled() {
+        let new = listed("1.1.0", Some(">=20.0"), &["baz >1.5", "bar >=2"]);
+        // The version as lvpm reads it, the requirements in another order, and the gate as a number.
+        let same = package("foo", "1.1.0.0", Some("LabVIEW>=20"), "bar>=2,baz>1.5");
+
+        assert_eq!(new.package_finding(&same), None);
+    }
+
+    #[test]
+    fn a_package_that_says_another_field_is_refused_naming_both_texts() {
+        let new = listed("1.1.0", Some(">=20.0"), &["bar >=2"]);
+        let said = |name, version, labview, requires| {
+            let found = new.package_finding(&package(name, version, labview, requires));
+            let Some(Finding::PackageDiffers {
+                field,
+                actual,
+                entry,
+                ..
+            }) = found
+            else {
+                panic!("{found:?}");
+            };
+            (field, actual, entry)
+        };
+        let row = |field, actual: &str, entry: &str| (field, actual.to_string(), entry.to_string());
+
+        let ok = ("foo", "1.1.0", Some("LabVIEW>=20.0"), "bar>=2");
+        assert_eq!(said("bar", ok.1, ok.2, ok.3), row("name", "bar", "foo"));
+        assert_eq!(
+            said(ok.0, "1.1.1", ok.2, ok.3),
+            row("version", "1.1.1", "1.1.0")
+        );
+        assert_eq!(
+            said(ok.0, ok.1, ok.2, "bar>=3,qux"),
+            row("requires", "bar >=3, qux", "bar >=2")
+        );
+        assert_eq!(
+            said(ok.0, ok.1, None, ok.3),
+            row("labview", "none", ">=20.0")
+        );
+        assert_eq!(
+            said(ok.0, ok.1, Some("LabVIEW>=21.0"), ok.3),
+            row("labview", ">=21.0", ">=20.0")
+        );
+    }
+
+    #[test]
+    fn the_first_field_that_differs_is_the_one_named() {
+        let new = listed("1.1.0", None, &[]);
+
+        let found = new.package_finding(&package("bar", "9", Some("LabVIEW>=21"), "x"));
+
+        assert!(
+            matches!(found, Some(Finding::PackageDiffers { field: "name", .. })),
+            "{found:?}"
+        );
     }
 
     /// Whether the platform let the test make a link (Windows needs a
