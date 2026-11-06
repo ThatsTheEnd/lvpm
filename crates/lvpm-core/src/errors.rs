@@ -215,6 +215,22 @@ pub struct IndexHashMismatch {
     pub actual: String,
 }
 
+/// A community index entry whose `url` is not a file of its publisher's
+/// releases, so nothing was read from it. The url is not kept: it is the
+/// index's, and unchecked.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the file of {name} {version} from {index} is not in the releases of {publisher};      fix: the index must list a url under github.com/{publisher}/releases/download/"
+)]
+pub struct IndexUrlRefused {
+    pub name: String,
+    pub version: String,
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// The `owner/repo` the entry file names as the package's owner.
+    pub publisher: String,
+}
+
 /// A locked OCI version that its source now lists at another manifest digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovedTag {

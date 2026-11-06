@@ -7,7 +7,7 @@
 
 use crate::cache::{Cache, LocalEntry, sha256_hex};
 use crate::cancel::CancelToken;
-use crate::errors::{Cancelled, IndexHashMismatch};
+use crate::errors::{Cancelled, IndexHashMismatch, IndexUrlRefused};
 use crate::index::{self, Entry};
 use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
@@ -37,6 +37,46 @@ impl std::fmt::Display for Rejected {
 }
 
 impl std::error::Error for Rejected {}
+
+/// Refuse a community index entry whose `url` is not a file of its publisher's
+/// releases on the site at `web` (see [`crate::github::GitHub::web_base`]); any
+/// other entry passes. The url is the index's, so it is checked before anything
+/// is read from it: no UNC path, `cache:` or local path, `oci://` reference or
+/// other host is ever opened for an index entry.
+pub fn check_index_url(entry: &Entry, web: &str) -> Result<(), IndexUrlRefused> {
+    let Some(pin) = &entry.index_pin else {
+        return Ok(());
+    };
+    if is_release_file(&entry.url, web, &pin.publisher) {
+        return Ok(());
+    }
+    Err(IndexUrlRefused {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        index: entry.source.clone(),
+        publisher: pin.publisher.clone(),
+    })
+}
+
+/// Whether `url` is a file below `<web>/<publisher>/releases/download/`, the
+/// owner and repo compared ignoring ASCII case. The parsed form is the one
+/// compared, so `..` and `%2e%2e` cannot climb out; a url with userinfo, a query
+/// or a fragment, or one with a control character (which a parser would strip),
+/// is no release file.
+fn is_release_file(url: &str, web: &str, publisher: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let prefix = format!("{web}/{publisher}/releases/download/");
+    let head = parsed.as_str().get(..prefix.len());
+    !url.chars().any(char::is_control)
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.as_str().len() > prefix.len()
+        && head.is_some_and(|head| head.eq_ignore_ascii_case(&prefix))
+}
 
 /// Return archive bytes, checking SHA-256 on cache reads and MD5 when advertised.
 ///
@@ -94,9 +134,14 @@ fn download(
     cancel: &CancelToken,
     index_limit: u64,
 ) -> Result<Vec<u8>> {
+    // An index's url is its own to write: name the package, not the url.
+    let what = match entry.index_pin {
+        Some(_) => format!("{} {}", entry.name, entry.version),
+        None => entry.url.clone(),
+    };
     let response = request(client, entry, auth)
         .send()
-        .with_context(|| format!("downloading {}", entry.url))?;
+        .with_context(|| format!("downloading {what}"))?;
     if index::github_repo(entry).is_some() && !response.status().is_success() {
         return Err(Rejected {
             status: response.status(),
@@ -163,16 +208,16 @@ fn request(client: &Client, entry: &Entry, auth: Option<&str>) -> RequestBuilder
 /// The archive's bytes when [`package`] would not download them: from the
 /// cache or a local file. `None` when only the feed has them.
 pub fn on_hand(cache: &Cache, entry: &Entry) -> Result<Option<Vec<u8>>> {
+    // An index entry is on hand only by the SHA-256 it pins: its url never
+    // names a cache blob or a local file.
+    if let Some(pin) = &entry.index_pin {
+        return cache.load(&pin.sha256.to_ascii_lowercase());
+    }
     if let Some(sha256) = entry.url.strip_prefix("cache:") {
         let bytes = cache.load(sha256)?.with_context(|| format!(
             "cached archive for {} is missing or corrupt; run cache add again with the original package", entry.name,
         ))?;
         verify_md5(entry, &bytes)?;
-        return Ok(Some(bytes));
-    }
-    if let Some(pin) = &entry.index_pin
-        && let Some(bytes) = cache.load(&pin.sha256.to_ascii_lowercase())?
-    {
         return Ok(Some(bytes));
     }
     if index::is_local_url(&entry.url) {
@@ -753,6 +798,119 @@ mod tests {
         assert_eq!(package(&cache, &Client::new(), &no_md5).unwrap(), bytes);
         thread.join().unwrap();
         assert!(package(&cache, &Client::new(), &no_md5).is_err());
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// An entry a community index lists at `url`, its publisher `someone/Serializer`.
+    fn listed_at(url: &str) -> Entry {
+        let mut listed = pinned(url.into(), b"package bytes");
+        listed.source = "github-index:o/r".into();
+        listed
+    }
+
+    #[test]
+    fn an_index_url_is_accepted_only_under_its_publishers_releases_on_the_web_base() {
+        const WEB: &str = "https://github.com";
+        let under = "https://github.com/someone/Serializer/releases/download/1.0.0/pkg.lvpkg";
+        assert_eq!(check_index_url(&listed_at(under), WEB), Ok(()));
+        // The owner and the repo are compared ignoring ASCII case.
+        let cased = "https://github.com/SOMEONE/serializer/releases/download/1.0.0/pkg.lvpkg";
+        assert_eq!(check_index_url(&listed_at(cased), WEB), Ok(()));
+        // A test's web base is its loopback server.
+        let loopback = "http://127.0.0.1:9/someone/Serializer/releases/download/1/p.lvpkg";
+        assert_eq!(
+            check_index_url(&listed_at(loopback), "http://127.0.0.1:9"),
+            Ok(())
+        );
+
+        let refused = [
+            r"\\attacker\share\p.lvpkg",
+            "//attacker/share/p.lvpkg",
+            "cache:abcd",
+            "C:/packages/p.lvpkg",
+            "relative/p.lvpkg",
+            "oci://x",
+            "http://evil.example/someone/Serializer/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/other/Serializer/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/someone/Other/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/",
+            "https://github.com/someone/Serializer/releases/download/../../../evil/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/%2e%2e/%2e%2e/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p.lvpkg?x=1",
+            "https://github.com/someone/Serializer/releases/download/1/p.lvpkg#frag",
+            "https://user@github.com/someone/Serializer/releases/download/1/p.lvpkg",
+            "https://github.com@evil.example/someone/Serializer/releases/download/1/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p\n.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p\t.lvpkg",
+        ];
+        for url in refused {
+            let why = check_index_url(&listed_at(url), WEB).expect_err(url);
+            let text = why.to_string();
+            assert_eq!(
+                (&*why.name, &*why.version, &*why.index, &*why.publisher),
+                (
+                    "test_package",
+                    "1.0.0",
+                    "github-index:o/r",
+                    "someone/Serializer"
+                )
+            );
+            assert!(
+                text.contains("test_package 1.0.0") && text.contains("fix:"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("attacker") && !text.contains("evil"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_no_index_lists_is_never_refused_for_its_url() {
+        assert_eq!(
+            check_index_url(&entry("C:/p.vip".into(), None), "https://github.com"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_index_entry_is_never_read_from_the_cache_by_url_or_from_a_local_file() {
+        let (root, cache) = test_cache("index-not-local");
+        let file = root.join("local.lvpkg");
+        std::fs::write(&file, b"package bytes").unwrap();
+        let sha256 = cache.store(b"other bytes").unwrap();
+        for url in [
+            file.to_string_lossy().into_owned(),
+            format!("cache:{sha256}"),
+        ] {
+            let wanted = listed_at(&url);
+            assert_eq!(on_hand(&cache, &wanted).unwrap(), None, "{url}");
+        }
+        // What the index pins is on hand by that SHA-256, whatever its url says.
+        let pinned_sha = cache.store(b"package bytes").unwrap();
+        let wanted = listed_at("cache:0000");
+        assert_eq!(wanted.index_pin.as_ref().unwrap().sha256, pinned_sha);
+        assert_eq!(on_hand(&cache, &wanted).unwrap().unwrap(), b"package bytes");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_failed_index_download_names_the_package_and_not_the_url() {
+        let (root, cache) = test_cache("index-download-words");
+        let url = "http://127.0.0.1:1/someone/Serializer/releases/download/1.0.0/p.lvpkg";
+        let fetch = |entry: &Entry| {
+            super::download(&cache, &Client::new(), entry, None, &CancelToken::new(), 4)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(fetch(&listed_at(url)), "downloading test_package 1.0.0");
+        assert_eq!(
+            fetch(&entry(url.into(), None)),
+            format!("downloading {url}")
+        );
         drop(cache);
         std::fs::remove_dir_all(root).ok();
     }

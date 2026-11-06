@@ -848,7 +848,7 @@ fn hash_archives(
                         pin.source,
                         digest,
                     ),
-                    _ => Unfetched::plain(format!("{why:#}")),
+                    _ => Unfetched::of_download(&why),
                 };
                 failures.push(ArchiveFailure {
                     name: entry.name.clone(),
@@ -939,7 +939,7 @@ pub(super) fn github_lock_source(repo: &str) -> String {
 /// the feed's source here when that bites.
 fn from_same_repo(package: &LockedPackage, entry: &Entry) -> bool {
     if index::index_repo(&entry.source).is_some() {
-        return package.source == entry.source;
+        return package.source.eq_ignore_ascii_case(&entry.source);
     }
     index::github_repo(entry).is_none_or(|repo| {
         package
@@ -1229,6 +1229,8 @@ mod tests {
         assert!(!from_same_repo(&locked("http://feed/index.vipr"), &listed));
         assert!(!from_same_repo(&locked("local"), &listed));
         assert!(!from_same_repo(&locked("github-index:o/other"), &listed));
+        // GitHub spells repos in any case; so does a manifest's index line.
+        assert!(from_same_repo(&locked("github-index:O/IDX"), &listed));
     }
 
     /// `alpha` 1.0 as an OCI source lists it, by this manifest digest.

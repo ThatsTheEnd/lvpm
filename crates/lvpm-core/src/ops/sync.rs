@@ -19,7 +19,8 @@ use super::session::{Downloads, InstallSession};
 use super::uninstall::uninstall_one;
 use crate::cache::{Stored, sha256_hex};
 use crate::errors::{
-    ArchiveFault, Cancelled, IndexHashMismatch, LockError, LockedArchiveProblem, SyncError,
+    ArchiveFault, Cancelled, IndexHashMismatch, IndexUrlRefused, LockError, LockedArchiveProblem,
+    SyncError,
 };
 use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
@@ -648,12 +649,18 @@ impl Unfetched {
     }
 
     /// Why `why` stopped a download from an index or a feed: a file the index
-    /// lists by another SHA-256 is a whole sentence, any other cause is
-    /// worded after the package.
+    /// lists by another SHA-256, or at a url that is not its publisher's, is a
+    /// whole sentence; any other cause is worded after the package.
     pub(super) fn of_download(why: &anyhow::Error) -> Unfetched {
-        match why.downcast_ref::<IndexHashMismatch>() {
-            Some(mismatch) => Unfetched {
-                reason: mismatch.to_string(),
+        let in_full = if let Some(mismatch) = why.downcast_ref::<IndexHashMismatch>() {
+            Some(mismatch.to_string())
+        } else {
+            why.downcast_ref::<IndexUrlRefused>()
+                .map(ToString::to_string)
+        };
+        match in_full {
+            Some(reason) => Unfetched {
+                reason,
                 in_full: true,
             },
             None => Unfetched::plain(format!("{why:#}")),
@@ -887,7 +894,7 @@ impl Source {
         match self {
             Source::GitHub(own, _) => same_name(own, name),
             Source::Oci(feed) => locked.digest.is_some() && locked.source == feed.url.to_string(),
-            Source::Index(feed) => locked.source == feed.source(),
+            Source::Index(feed) => locked.source.eq_ignore_ascii_case(&feed.source()),
             _ => {
                 locked.digest.is_none()
                     && index::index_repo(&locked.source).is_none()
@@ -1719,6 +1726,36 @@ mod tests {
         assert!(!repo.answers_for(&project, &package("beta")));
         assert!(Source::Imported.answers_for(&project, &package("beta")));
         assert!(!Source::Imported.answers_for(&project, &package("ALPHA")));
+    }
+
+    #[test]
+    fn an_index_answers_for_its_locked_package_whatever_the_case_of_its_manifest_line() {
+        let (_, project) = github_project(&Scratch::new("index-answers"));
+        let index = |owner: &str, repo: &str| {
+            Source::Index(index::IndexFeed {
+                owner: owner.into(),
+                repo: repo.into(),
+            })
+        };
+        let mut alpha = locked_as("alpha", "2.0", b"");
+        alpha.source = "github-index:o/idx".to_string();
+        assert!(index("o", "idx").answers_for(&project, &alpha));
+        assert!(index("O", "IDX").answers_for(&project, &alpha));
+        assert!(!index("o", "other").answers_for(&project, &alpha));
+    }
+
+    #[test]
+    fn a_refused_index_url_is_worded_in_full_and_any_other_failure_after_the_package() {
+        let refused = IndexUrlRefused {
+            name: "alpha".into(),
+            version: "1.0".into(),
+            index: "github-index:o/r".into(),
+            publisher: "a/x".into(),
+        };
+        let said = Unfetched::of_download(&refused.clone().into());
+        assert_eq!((said.reason, said.in_full), (refused.to_string(), true));
+        let said = Unfetched::of_download(&anyhow::anyhow!("HTTP 500"));
+        assert_eq!((said.reason, said.in_full), ("HTTP 500".to_string(), false));
     }
 
     #[test]

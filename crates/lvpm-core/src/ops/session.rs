@@ -55,7 +55,12 @@ impl Downloads {
     /// for an `oci://` entry, the registry by its manifest digest.
     /// A GitHub entry is sent the GitHub token; no other entry is. When the
     /// environment's token is cancelled, [`Cancelled`](crate::errors::Cancelled).
+    ///
+    /// An index entry's url is checked first, before any read or request, and
+    /// refused with [`IndexUrlRefused`](crate::errors::IndexUrlRefused) unless it
+    /// is a file of its publisher's releases.
     pub(super) fn fetch(&self, entry: &Entry) -> Result<Vec<u8>> {
+        fetch::check_index_url(entry, &self.github.web_base())?;
         if entry.url.starts_with(oci::SCHEME) {
             return fetch::oci_package(&self.cache, &self.oci, entry, &self.cancel);
         }
@@ -430,6 +435,55 @@ mod tests {
             server.join().unwrap();
             assert!(!format!("{why:#}").contains("github.com"), "{why:#}");
         }
+        std::fs::remove_dir_all(cache).ok();
+    }
+
+    #[test]
+    fn an_index_entry_is_fetched_only_from_its_publishers_releases_and_never_with_a_token() {
+        use crate::errors::IndexUrlRefused;
+
+        let cache = std::env::temp_dir().join(format!("lvpm-session-index-{}", std::process::id()));
+        let local = cache.join("local.lvpkg");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(&local, b"bytes").unwrap();
+        let config = crate::config::Config {
+            cache: cache.clone(),
+            hooks_run: Vec::new(),
+            local_sources: Vec::new(),
+            venv_dir: "venv".into(),
+        };
+        let mut env = OpEnv::new(&NullSink, config, Vec::new(), PathBuf::from("."));
+        let (url, server) = serve_once("200 OK", b"bytes");
+        let web = url.trim_end_matches("/package.vip").to_string();
+        env.github.api = web.clone();
+        env.github.auth = GitHubAuth::new(
+            |name| (name == "GH_TOKEN").then(|| "tok".to_string()),
+            || None,
+        );
+        let downloads = Downloads::open(&env).unwrap();
+        let listed = |url: String| {
+            let mut listed = entry(url, "github-index:o/r".into());
+            listed.index_pin = Some(index::IndexPin {
+                sha256: crate::cache::sha256_hex(b"bytes"),
+                publisher: "someone/Serializer".into(),
+            });
+            listed
+        };
+
+        let local_path = local.to_string_lossy().into_owned();
+        let elsewhere = format!("{web}/other/Serializer/releases/download/1/p.lvpkg");
+        for url in [local_path, r"\attacker\share\p.lvpkg".into(), elsewhere] {
+            let why = downloads.fetch(&listed(url.clone())).unwrap_err();
+            assert!(why.is::<IndexUrlRefused>(), "{url}: {why:#}");
+        }
+        let oci = format!("oci://r:5000/team/alpha@sha256:{}", "ab".repeat(32));
+        let why = downloads.fetch(&listed(oci)).unwrap_err();
+        assert!(why.is::<IndexUrlRefused>(), "{why:#}");
+
+        let own = format!("{web}/someone/Serializer/releases/download/1/p.lvpkg");
+        assert_eq!(downloads.fetch(&listed(own)).unwrap(), b"bytes");
+        let head = server.join().unwrap();
+        assert!(!head.contains("authorization"), "{head}");
         std::fs::remove_dir_all(cache).ok();
     }
 }

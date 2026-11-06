@@ -186,6 +186,8 @@ pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
 /// The archive of `entry`, downloaded into the cache unless it is on hand;
 /// a download says so first.
 fn archive_bytes(env: &OpEnv, entry: &Entry) -> Result<Vec<u8>> {
+    // Before the cache or a local file is read: an index's url is its own to write.
+    fetch::check_index_url(entry, &env.github.web_base())?;
     // No HTTP client is built when the cache already has it.
     if let Some(bytes) = fetch::on_hand(&Cache::open(&env.config.cache)?, entry)? {
         return Ok(bytes);
@@ -598,5 +600,32 @@ mod tests {
         let why = info(&env, "alpha@").unwrap_err().to_string();
         assert_eq!(why, "a constraint is expected after \"@\" in \"alpha@\"");
         let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_reads_nothing_from_an_index_entry_whose_url_is_not_its_publishers_release() {
+        let scratch = std::env::temp_dir().join(format!("lvpm-query-index-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let file = scratch.join("local.lvpkg");
+        std::fs::write(&file, b"bytes").unwrap();
+        let env = env_with(
+            &scratch.join("cache").to_string_lossy(),
+            ".lv-venv",
+            Vec::new(),
+        );
+        let mut listed = Entry {
+            name: "alpha".into(),
+            version: crate::version::Version::parse("1.0"),
+            url: file.to_string_lossy().into_owned(),
+            source: "github-index:o/r".into(),
+            ..Entry::default()
+        };
+        listed.index_pin = Some(index::IndexPin {
+            sha256: crate::cache::sha256_hex(b"bytes"),
+            publisher: "someone/alpha".into(),
+        });
+        let why = archive_bytes(&env, &listed).unwrap_err();
+        assert!(why.is::<crate::errors::IndexUrlRefused>(), "{why:#}");
+        std::fs::remove_dir_all(scratch).ok();
     }
 }
