@@ -13,3 +13,10 @@ Feature: S8: publishing to the community index
     And "register" writes to GITHUB_STEP_SUMMARY the pinned success line and each pinned "register failed:" line
     And the jobs "publish" and "publish-oci" do not mention LVPM_INDEX_TOKEN
     And the template's header comment documents "register"
+
+  Scenario: usage.md tells a publisher and a consumer what to do
+    Then docs/usage.md has a section "Publish to the community index" with four numbered steps naming lvpm.toml, lvpm-release.yml, LVPM_INDEX_TOKEN and a tag
+    And the section names the token type "classic" with "public_repo", and says who closes a refused PR
+    And it shows community = "github:labview-package-manager/package-index" and says source order matters
+    And the command table lists "lvpm index add" and "lvpm index check"
+    And the section "GitHub dependencies" links to "Publish to the community index"

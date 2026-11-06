@@ -29,8 +29,8 @@
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
-| `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, or `<package>` is not a package |
-| `lvpm index check --base <dir> --head <dir>` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the comment to leave on a refused PR |
+| `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, or `<package>` is not a package; the `register` job of the release template runs it ([Publish to the community index](#publish-to-the-community-index)) |
+| `lvpm index check --base <dir> --head <dir>` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the comment to leave on a refused PR ([Publish to the community index](#publish-to-the-community-index)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -433,6 +433,73 @@ tag is pushed again. The template names the lvpm release it builds with in
 there is no venv to check the library against: the template skips the check and
 prints a `::warning::` that the build is unchecked. Run `lvpm build` on your own
 machine to check. Projects depend on the package under its `[project]` `name`.
+To give the package a name that projects find without knowing the repo, see
+[Publish to the community index](#publish-to-the-community-index).
+
+## Publish to the community index
+
+The community index is the repository
+[`labview-package-manager/package-index`](https://github.com/labview-package-manager/package-index):
+one file per package name, which says where each version's `.lvpkg` is. The
+files themselves stay on your GitHub Releases. A project that lists the index
+as a source ([A github: source](#a-github-source-is-a-community-index))
+installs the package by its name alone.
+
+To register a package, do these four steps once. Every later tag adds a version
+with no further step:
+
+1. Give the repository an `lvpm.toml` with `[project]` and `[distribution]`, as
+   `lvpm build` needs ([Building a package](#building-a-package)). The
+   `[project]` `name` is the package's name in the index.
+2. Copy
+   [`lvpm-release.yml`](https://github.com/ThatsTheEnd/lvpm/blob/main/.github/workflow-templates/lvpm-release.yml)
+   into `.github/workflows/` of the repository ([GitHub dependencies](#github-dependencies)).
+3. Save a GitHub token as the repository's Actions secret `LVPM_INDEX_TOKEN`.
+   Use a **classic** personal access token with the `public_repo` scope. The
+   `register` job forks the index and opens a pull request from your account;
+   a fine-grained token cannot open a pull request on another owner's
+   repository.
+4. Push a tag.
+
+The template's `register` job then runs `lvpm index add` on the package that
+the `publish` job attached to the tag's release, pushes the entry to your fork
+of the index, and opens a pull request. Its summary shows the pull request's
+link. "Listed" below means present in the index. Without the secret, the job
+does nothing and its summary says `not registered in the community index:
+LVPM_INDEX_TOKEN is not set`, so a repository that copied the template before
+this step existed sees no change. The `LVPM_VERSION` of the template must be
+an lvpm release that has `lvpm index add`; raise it if the job fails there. To
+register in another index, set the repository variable `LVPM_INDEX_REPO` to
+its `owner/repo`.
+
+**What the bot decides.** A bot in the index repository checks each pull
+request, reading it as data: the name, the file's SHA-256 and the attestation
+that the template's `publish` job made ([`[policy]`](#policy)). It merges a pull request that passes every rule. It
+comments the reasons on one it refuses, and leaves it open. The first
+repository to register a name owns it; only that repository's attested
+releases add versions, and a listed version never changes. One pull request
+adds at most 20 versions and 20 entry files, and a name lvpm cannot install is
+refused.
+
+**Who closes a refused PR.** The publisher closes it and replaces it by
+pushing a new tag: the fix is a new version, which opens a new pull request on
+its own branch, `lvpm/<name>-<version>`. A maintainer of the index can close a
+stale one.
+
+When the job fails, its summary says why in a line that starts `register
+failed:` and ends with what to do: save a classic token with `public_repo`,
+push a new tag for a version that is already listed, publish from the
+repository that owns the name, or read the job log.
+
+A consumer adds two lines and nothing else:
+
+```toml
+[sources]
+community = "github:labview-package-manager/package-index"
+
+[dependencies]
+labview_open_source_lib_serializer = ">=1.2"
+```
 
 ## [policy]
 
@@ -1053,8 +1120,9 @@ Both are OGPM's Package Directory format, `[Package <name>-<version>]`
 sections with a `Package.URL`, unchanged since `openg.ogpd` in 2004; `.vipr`
 adds an MD5 per entry. Anything they lack can come from an index folder of
 your own, named in the manifest's `[sources]`. A `[sources]` entry is an
-`http://` or `https://` folder holding an `index.vipr`, or an `oci://` registry
-([OCI registries](#oci-registries)). Local directories of
+`http://` or `https://` folder holding an `index.vipr`, an `oci://` registry
+([OCI registries](#oci-registries)), or a `github:` community index
+([below](#a-github-source-is-a-community-index)). Local directories of
 `.vip`, `.ogp` and `.lvpkg` files are configured globally with `lvpm config set sources.local`
 instead; lvpm reads their specs and package files directly. These local
 directories reuse cached spec metadata when file size and modification time
@@ -1136,6 +1204,32 @@ Packages without a feed MD5 are stored but downloaded again on later installs:
 name/version alone does not identify their bytes. `--refresh` refreshes feeds,
 not already verified package blobs. Dry runs may populate the cache without
 writing package files into the target.
+
+### A github: source is a community index
+
+A `[sources]` entry `github:<owner>/<repo>` is a community index: a GitHub
+repository with one `packages/<name>.toml` per package name, which lists where
+each version's file is. lvpm reads only the files of the names it resolves, not
+the whole index.
+
+```toml
+[sources]
+community = "github:labview-package-manager/package-index"
+```
+
+Source order matters, because the first source that lists a name wins (see
+above). A name listed by an earlier `[sources]` entry comes from that entry,
+not from the index. A name the index lists comes from it before the public NI
+and JKI indexes, which are read last. A name the index does not list is looked
+up in the next source. A dependency pinned with `index = "community"` is taken
+from the index or fails with `searched github:labview-package-manager/package-index`.
+
+The package file comes from its owner's GitHub Releases. lvpm checks the file
+against the SHA-256 the index lists, and the lock records the source as
+`github-index:<owner>/<repo>` with that `sha256`. `[policy]` applies as it does
+to a GitHub dependency: with `require-signature = true`, a package with no
+attestation is refused. To get a package into the index, see
+[Publish to the community index](#publish-to-the-community-index).
 
 Remote feeds, downloads, and imported packages are recorded in `%LOCALAPPDATA%\lvpm\cache`, in a
 SQLite index (`lvpm-cache.db`) over a content-addressed store of the bodies

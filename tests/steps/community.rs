@@ -1009,3 +1009,94 @@ async fn the_header_comment_documents(_: &mut CliWorld, job: String) {
         );
     }
 }
+
+// ---- docs/usage.md on the community index (S8 slice 6) ----
+
+/// The section of docs/usage.md whose heading holds `title`, with every run of
+/// whitespace as one space, so a wrapped sentence reads as one line.
+fn usage_section(title: &str) -> String {
+    let section = super::docs::section_of(&super::docs::repo_file("docs/usage.md"), title);
+    section.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The numbered items of `section`, each with its continuation lines.
+fn numbered_items(section: &str) -> Vec<String> {
+    let mut items: Vec<String> = Vec::new();
+    for line in section.lines() {
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && line[digits..].starts_with(". ") {
+            items.push(line.to_string());
+        } else if line.starts_with("   ")
+            && let Some(item) = items.last_mut()
+        {
+            item.push(' ');
+            item.push_str(line.trim());
+        }
+    }
+    items
+}
+
+#[then(
+    regex = r#"^docs/usage\.md has a section "([^"]+)" with four numbered steps naming lvpm\.toml, lvpm-release\.yml, LVPM_INDEX_TOKEN and a tag$"#
+)]
+async fn usage_has_the_four_steps(_: &mut CliWorld, title: String) {
+    let section = super::docs::section_of(&super::docs::repo_file("docs/usage.md"), &title);
+    let items = numbered_items(&section);
+    assert_eq!(
+        items.len(),
+        4,
+        "the {title} section's numbered steps: {items:?}"
+    );
+    for (item, name) in
+        items
+            .iter()
+            .zip(["lvpm.toml", "lvpm-release.yml", "LVPM_INDEX_TOKEN", "tag"])
+    {
+        assert!(item.contains(name), "step {item:?} does not name {name}");
+    }
+}
+
+#[then(
+    regex = r#"^the section names the token type "([^"]+)" with "([^"]+)", and says who closes a refused PR$"#
+)]
+async fn the_section_names_the_token_and_who_closes(_: &mut CliWorld, kind: String, scope: String) {
+    let section = usage_section("Publish to the community index");
+    for wanted in [kind.as_str(), scope.as_str(), "The publisher closes it"] {
+        assert!(
+            section.contains(wanted),
+            "the section does not say {wanted:?}"
+        );
+    }
+}
+
+#[then(regex = r#"^it shows (community = "[^"]+") and says source order matters$"#)]
+async fn usage_shows_the_source_and_its_order(_: &mut CliWorld, line: String) {
+    assert!(usage_section("Publish to the community index").contains(&line));
+    let sources = usage_section("A github: source");
+    for wanted in [line.as_str(), "Source order matters"] {
+        assert!(
+            sources.contains(wanted),
+            "the github: source section does not say {wanted:?}"
+        );
+    }
+}
+
+#[then(regex = r#"^the command table lists "([^"]+)" and "([^"]+)"$"#)]
+async fn the_command_table_lists_the_index_commands(_: &mut CliWorld, a: String, b: String) {
+    let commands = super::docs::section_of(&super::docs::repo_file("docs/usage.md"), "Commands");
+    for command in [a, b] {
+        let rows = (commands.lines())
+            .filter(|line| line.starts_with(&format!("| `{command} ")))
+            .count();
+        assert_eq!(rows, 1, "rows of the command table for {command}");
+    }
+}
+
+#[then(regex = r#"^the section "([^"]+)" links to "([^"]+)"$"#)]
+async fn the_section_links_to(_: &mut CliWorld, from: String, to: String) {
+    let anchor = format!("](#{})", to.to_lowercase().replace(' ', "-"));
+    assert!(
+        usage_section(&from).contains(&anchor),
+        "{from} has no link {anchor}"
+    );
+}
