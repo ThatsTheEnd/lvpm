@@ -314,6 +314,12 @@ async fn token_endpoint_got_refresh_grant(world: &mut CliWorld, token: String) {
     );
 }
 
+#[then(regex = r#"^the output has the text "([^"]+)" once$"#)]
+async fn output_has_text_once(world: &mut CliWorld, text: String) {
+    let printed = world.printed();
+    assert_eq!(printed.matches(&text).count(), 1, "{text:?} in: {printed}");
+}
+
 #[then("the helper ran once")]
 async fn helper_ran_once(world: &mut CliWorld) {
     let ran = helper::runs(&world.sandbox.helper_dir(), HELPER);

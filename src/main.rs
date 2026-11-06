@@ -717,7 +717,8 @@ fn main() -> std::process::ExitCode {
         // As `main() -> Result` would print it, but a feed's text in an error
         // cannot drive the terminal.
         (Err(error), false) => {
-            eprintln!("Error: {}", render::printable(format!("{error:?}")));
+            let text = render::lock::listing_error(&error).unwrap_or_else(|| format!("{error:?}"));
+            eprintln!("Error: {}", render::printable(text));
             ExitCode::FAILURE
         }
         (Err(error), true) => {

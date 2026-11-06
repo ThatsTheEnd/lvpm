@@ -4,8 +4,8 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, ListingFailure, ListingFault, LockError,
-    LockedArchiveProblem, MovedTag, Origin, SignatureLookupFailure,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, ListingFailure, ListingFailures,
+    ListingFault, LockError, LockedArchiveProblem, MovedTag, Origin, SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -545,6 +545,13 @@ fn signature_lookups_text(failures: &[SignatureLookupFailure]) -> String {
         })
         .collect();
     lines.join("\n")
+}
+
+/// An index load that failed on OCI listings, worded as `lvpm lock` words it,
+/// for the commands that end in a plain error (install, search).
+pub fn listing_error(error: &anyhow::Error) -> Option<String> {
+    let failures = error.downcast_ref::<ListingFailures>()?;
+    Some(listing_failures_text(failures.failures()))
 }
 
 /// Every pinned package an OCI source could not list: one line for each

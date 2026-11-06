@@ -96,6 +96,13 @@ Feature: Installing from an explicit OCI source
       | delta: source "team" (oci://<registry>/team) does not list it; check the name, or publish it with lvpm publish --to oci://<registry>/team |
       | gamma: registry <registry> refused the lookup for source "team"; the package is missing or your login cannot read it; run docker login <registry> |
 
+  Scenario: install words a name the OCI source does not list as lock does
+    Given the registry holds nothing for "team/gamma"
+    And the project depends on gamma = { version = "*", index = "team" }
+    When I run "lvpm install gamma --prefix dest"
+    Then it fails saying 'gamma: source "team" (oci://<registry>/team) does not list it; check the name, or publish it with lvpm publish --to oci://<registry>/team'
+    And gamma is not installed
+
   Scenario: A locked digest the registry no longer holds says to re-lock
     Given the registry holds "alpha" 1.1.0 under "team"
     And the project is locked with alpha 1.1.0

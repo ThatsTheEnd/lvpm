@@ -90,6 +90,15 @@ Feature: OCI registry credentials
       | credsStore "lvpmtest"        | credsStore docker-credential-lvpmtest  | <registry> |
       | auths entry                  | auths                                  | <registry> |
 
+  Scenario: install says a refused login once for the registry, not once for each package
+    Given the registry requires a login for "team" and refuses "u9"
+    And the registry holds "beta" 1.0.0 under "team"
+    And the project depends on beta = { version = "*", index = "team" }
+    And a Docker config whose auths entry gives user "u9" and secret "wrong-5d2e7a-secret" for "<registry>"
+    When I run "lvpm install alpha --prefix dest"
+    Then it fails saying "registry <registry> refused the login from auths; run docker login <registry>"
+    And the output has the text "registry <registry> refused the login from auths; run docker login <registry>" once
+
   Scenario: A helper that exits with an error is reported without its output
     Given a Docker config whose credHelpers names "lvpmtest" for "<registry>"
     And a docker-credential-lvpmtest that exits 3 printing "token s7-a41e9d-locked" on stderr

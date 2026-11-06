@@ -22,7 +22,8 @@ pub fn result(result: &serde_json::Value) -> String {
 
 /// The line a command that failed ends with: the error and its causes.
 pub fn error(error: &anyhow::Error) -> String {
-    to_line(serde_json::json!({ "error": format!("{error:#}") }))
+    let text = super::lock::listing_error(error).unwrap_or_else(|| format!("{error:#}"));
+    to_line(serde_json::json!({ "error": text }))
 }
 
 /// One line on stdout, written under one lock so no other write splits it. A
