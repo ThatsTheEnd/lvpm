@@ -396,8 +396,6 @@ const REGISTRY: &str = "<registry>";
 const FOLDER: &str = "<folder>";
 /// The folder `<folder>` stands for, beside the work directory.
 const FOLDER_FEED: &str = "published";
-/// The annotation that holds when the package was published.
-const CREATED: &str = "org.opencontainers.image.created";
 
 impl CliWorld {
     /// `line` with `<registry>` and `<folder>` filled in.
@@ -676,7 +674,7 @@ async fn manifest_annotations(world: &mut CliWorld, step: &cucumber::gherkin::St
         .as_object()
         .expect("annotations")
         .iter()
-        .filter(|(key, _)| key.as_str() != CREATED)
+        .filter(|(key, _)| key.as_str() != lvpm_core::oci::ANNOTATION_CREATED)
         .map(|(key, value)| (key.clone(), value.as_str().expect("text").to_string()))
         .collect();
     want.sort();

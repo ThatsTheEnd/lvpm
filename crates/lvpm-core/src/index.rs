@@ -12,7 +12,7 @@ use crate::cancel::CancelToken;
 use crate::errors::{Cancelled, ListingFailure, ListingFailures, ListingFault};
 use crate::events::{Event, EventSink, FeedOutcome};
 use crate::oci::{self, Access, Oci, Package, Reference, Repo, Target};
-use crate::project::{Feed, same_name};
+use crate::project::{Feed, feed_url, folder_base, same_name};
 use crate::version::{Version, split_id};
 use anyhow::{Context, Result};
 use md5::{Digest, Md5};
@@ -418,21 +418,6 @@ fn import_bytes(
     })
 }
 
-/// A source folder's URL with the trailing slash that `Package.URL` is
-/// relative to.
-fn folder_base(folder: &str) -> String {
-    match folder.ends_with('/') {
-        true => folder.to_string(),
-        false => format!("{folder}/"),
-    }
-}
-
-/// The index URL of the hosted source at `folder`, which is what `Entry.source`
-/// holds for its entries.
-pub(crate) fn feed_url(folder: &str) -> String {
-    format!("{}index.vipr", folder_base(folder))
-}
-
 /// The feeds `load` reads, in the order a name is looked for: each hosted
 /// index folder in `extra`, then the public ones unless `defaults` is off, as
 /// (index URL, base URL that `Package.URL` is relative to).
@@ -505,6 +490,12 @@ pub fn split_sources(
 pub fn oci_reference(entry: &Entry) -> Option<Reference> {
     let reference = Reference::parse(&entry.url).ok()?;
     matches!(reference.target, Target::Digest(_)).then_some(reference)
+}
+
+/// [`oci_reference`] for a caller that has an OCI entry and no other kind: an
+/// error naming the entry's `url` when it is not one.
+pub fn manifest_reference(entry: &Entry) -> Result<Reference> {
+    oci_reference(entry).with_context(|| format!("{} is not an OCI manifest digest", entry.url))
 }
 
 /// Where an entry with this `url` came from: the index URL of the feed whose
@@ -772,11 +763,7 @@ fn fault_of(error: &oci::Error) -> ListingFault {
 /// package and version it is.
 fn oci_entry(feed: &OciFeed, repository: &str, package: &Package) -> Option<Entry> {
     let note = |key: &str| package.annotations.get(key).map(String::as_str);
-    let reference = Reference {
-        registry: feed.url.registry().to_string(),
-        repository: repository.to_string(),
-        target: Target::Digest(package.manifest.clone()),
-    };
+    let reference = Reference::by_digest(feed.url.registry(), repository, &package.manifest);
     Some(Entry {
         name: note(oci::ANNOTATION_TITLE)?.to_string(),
         version: Version::parse(note(oci::ANNOTATION_VERSION)?),

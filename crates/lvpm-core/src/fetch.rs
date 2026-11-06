@@ -9,7 +9,7 @@ use crate::cache::{Cache, LocalEntry};
 use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::index::{self, Entry};
-use crate::oci::{Access, Oci, Repo};
+use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -51,6 +51,9 @@ impl std::error::Error for Rejected {}
 /// A cancelled `cancel` ends the fetch with [`Cancelled`] before it starts and
 /// between the chunks of a download, so nothing of a cancelled download is
 /// cached.
+///
+/// It handles no `oci://` entry: the dispatch is in `Downloads::fetch`
+/// (`ops/session.rs`), which sends one to [`oci_package`].
 pub fn package<'a>(
     cache: &Cache,
     client: &Client,
@@ -94,13 +97,8 @@ pub fn oci_package(
     cancel: &CancelToken,
 ) -> Result<Vec<u8>> {
     ensure_running(cancel)?;
-    let manifest_ref = index::oci_reference(entry)
-        .with_context(|| format!("{} is not an OCI manifest digest", entry.url))?;
-    let repo = Repo {
-        registry: &manifest_ref.registry,
-        name: &manifest_ref.repository,
-        access: Access::Pull,
-    };
+    let manifest_ref = index::manifest_reference(entry)?;
+    let repo = manifest_ref.repo(Access::Pull);
     let manifest = oci.get_manifest(&repo, manifest_ref.name())?;
     let package = manifest
         .package()

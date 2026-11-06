@@ -5,6 +5,7 @@
 //! part of the URL but the registry host: a secret in a URL must not reach
 //! output.
 
+use super::{Access, Repo};
 use std::fmt;
 
 /// What an `oci://` URL starts with.
@@ -22,7 +23,7 @@ pub enum UrlError {
     Invalid(&'static str),
 }
 
-/// The registry and repository prefix of an OCI feed. Package `X` lives in
+/// The registry and repository prefix of an OCI source. Package `X` lives in
 /// repository `<prefix>/<name_key(X)>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FeedUrl {
@@ -36,7 +37,7 @@ impl FeedUrl {
         let (registry, path) = split(text)?;
         let prefix = path.trim_end_matches('/');
         if prefix.is_empty() {
-            return Err(UrlError::Invalid("an OCI feed is oci://host/prefix"));
+            return Err(UrlError::Invalid("an OCI source is oci://host/prefix"));
         }
         Ok(FeedUrl {
             registry,
@@ -92,6 +93,15 @@ impl Reference {
         }
     }
 
+    /// The manifest `digest` (`sha256:<64 hex>`, not checked here) of `repository`.
+    pub fn by_digest(registry: &str, repository: &str, digest: &str) -> Reference {
+        Reference {
+            registry: registry.to_string(),
+            repository: repository.to_string(),
+            target: Target::Digest(digest.to_string()),
+        }
+    }
+
     /// `oci://host/repo:tag` or `oci://host/repo@sha256:<hex>`.
     pub fn parse(text: &str) -> Result<Reference, UrlError> {
         let (registry, path) = split(text)?;
@@ -123,6 +133,23 @@ impl Reference {
     pub fn name(&self) -> &str {
         match &self.target {
             Target::Tag(name) | Target::Digest(name) => name,
+        }
+    }
+
+    /// The digest, when the reference names one: `None` for a tag.
+    pub fn digest(&self) -> Option<&str> {
+        match &self.target {
+            Target::Digest(digest) => Some(digest),
+            Target::Tag(_) => None,
+        }
+    }
+
+    /// The repository this reference is in, for a call that wants `access` there.
+    pub fn repo(&self, access: Access) -> Repo<'_> {
+        Repo {
+            registry: &self.registry,
+            name: &self.repository,
+            access,
         }
     }
 }
@@ -291,8 +318,8 @@ mod tests {
     fn a_url_that_is_not_a_feed_is_refused_without_echoing_it() {
         for (text, why) in [
             ("https://ghcr.io/org", "not an oci:// URL"),
-            ("oci://ghcr.io", "an OCI feed is oci://host/prefix"),
-            ("oci://ghcr.io/", "an OCI feed is oci://host/prefix"),
+            ("oci://ghcr.io", "an OCI source is oci://host/prefix"),
+            ("oci://ghcr.io/", "an OCI source is oci://host/prefix"),
             ("oci:///org", "host or host:port"),
             ("oci://ghcr.io:99999x/org", "host or host:port"),
             ("oci://user-7f3a9c:pw@x@/org", "credentials do not belong"),
@@ -332,6 +359,25 @@ mod tests {
         assert_eq!(tagged.name(), "1.0.0");
         let by_digest = Reference::parse(&format!("oci://h/t/a@{DIGEST}")).unwrap();
         assert_eq!(by_digest.target, Target::Digest(DIGEST.into()));
+    }
+
+    #[test]
+    fn a_reference_by_digest_says_its_digest_and_a_tag_says_none() {
+        let by_digest = Reference::by_digest("h:1", "t/a", DIGEST);
+        assert_eq!(
+            by_digest,
+            Reference::parse(&format!("oci://h:1/t/a@{DIGEST}")).unwrap()
+        );
+        assert_eq!(by_digest.digest(), Some(DIGEST));
+        assert_eq!(Reference::tagged("h:1", "t/a", "1.0.0").digest(), None);
+    }
+
+    #[test]
+    fn a_reference_names_its_repository_and_what_the_caller_wants_to_do_there() {
+        let reference = Reference::by_digest("h:1", "t/a", DIGEST);
+        let repo = reference.repo(Access::Push);
+        assert_eq!((repo.registry, repo.name), ("h:1", "t/a"));
+        assert_eq!(repo.access, Access::Push);
     }
 
     #[test]

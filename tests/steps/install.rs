@@ -4,6 +4,7 @@
 //! destination and the working directory; nothing here changes this process's
 //! environment or working directory.
 
+use super::lock::sha256_hex;
 use crate::CliWorld;
 use crate::support::events::RecordingSink;
 use crate::support::fixtures::FixturePackage;
@@ -18,7 +19,6 @@ use lvpm_core::ops::session::InstallSession;
 use lvpm_core::ops::{self, OpEnv};
 use lvpm_core::target::Roots;
 use lvpm_core::version::Version;
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 /// The venv directory the config names; no scenario here has a venv.
@@ -67,13 +67,6 @@ pub(super) fn scratch_env_at<'s>(
     let mut env = OpEnv::new(sink, config, Vec::new(), work_dir);
     env.flags.prefix = Some(dest);
     env
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 /// A phase as events spell it, e.g. `resolve`.

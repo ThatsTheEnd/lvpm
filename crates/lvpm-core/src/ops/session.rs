@@ -17,12 +17,12 @@ use crate::cancel::CancelToken;
 use crate::fetch;
 use crate::github::{self, GitHub};
 use crate::index::{self, Entry};
-use crate::oci::{self, Access, Oci, Repo};
+use crate::oci::{self, Access, Oci};
 use crate::target::{LvTarget, Roots};
 use crate::venv::Venv;
 use crate::verify::{Invalid, Outcome};
 use crate::viserver::Connection;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::blocking::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -100,13 +100,8 @@ impl Downloads {
     /// [`oci::Error`]: never "unsigned". A bundle whose certificate names no
     /// repository is [`Invalid::NoSourceRepository`], and gh is not run.
     pub(super) fn oci_attestation(&self, entry: &Entry) -> Result<Outcome> {
-        let manifest_ref = index::oci_reference(entry)
-            .with_context(|| format!("{} is not an OCI manifest digest", entry.url))?;
-        let repo = Repo {
-            registry: &manifest_ref.registry,
-            name: &manifest_ref.repository,
-            access: Access::Pull,
-        };
+        let manifest_ref = index::manifest_reference(entry)?;
+        let repo = manifest_ref.repo(Access::Pull);
         let digest = manifest_ref.name();
         let Some(bundle) = self.oci.sigstore_bundle(&repo, digest)? else {
             return Ok(Outcome::Unattested);

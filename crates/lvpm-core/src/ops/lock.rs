@@ -20,6 +20,7 @@ use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
 use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
 use crate::manifest_edit::{self, DependencyTable};
+use crate::oci::Reference;
 use crate::paths;
 use crate::project::{Constraint, Feed, PackageArg, Project, name_key, same_name};
 use crate::released;
@@ -807,12 +808,14 @@ fn hash_archives(
             }
             Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
             Err(why) => {
-                let unfetched = match (index::oci_reference(entry), pin_of(entry)) {
-                    (Some(manifest), Some(pin)) => Unfetched::of_oci(
+                let oci_manifest = index::oci_reference(entry);
+                let digest = oci_manifest.as_ref().and_then(Reference::digest);
+                let unfetched = match (digest, pin_of(entry)) {
+                    (Some(digest), Some(pin)) => Unfetched::of_oci(
                         &why,
                         (&entry.name, &entry.version.to_string()),
                         pin.source,
-                        manifest.name(),
+                        digest,
                     ),
                     _ => Unfetched::plain(format!("{why:#}")),
                 };
@@ -841,21 +844,19 @@ fn hash_archives(
 /// other than `entry`'s: its tag moved. A version locked from another source
 /// is not this: that is a package changing source.
 fn moved_tag(previous: Option<&Lockfile>, key: &str, entry: &Entry) -> Option<MovedTag> {
-    let found = index::oci_reference(entry)?;
+    let oci_manifest = index::oci_reference(entry)?;
+    let found = oci_manifest.digest()?;
     let locked = previous?.packages.iter().find(|package| {
         name_key(&package.name) == key
             && Version::parse(&package.version) == entry.version
             && package.source == entry.source
     })?;
-    let was = locked
-        .digest
-        .as_deref()
-        .filter(|digest| *digest != found.name())?;
+    let was = locked.digest.as_deref().filter(|digest| *digest != found)?;
     Some(MovedTag {
         name: entry.name.clone(),
         version: entry.version.to_string(),
         locked: was.to_string(),
-        found: found.name().to_string(),
+        found: found.to_string(),
     })
 }
 
@@ -882,7 +883,9 @@ pub(super) fn kept_of<'a>(
         name_key(&package.name) == key
             && Version::parse(&package.version) == entry.version
             && from_same_repo(package, entry)
-            && index::oci_reference(entry).as_ref().map(|oci| oci.name())
+            && index::oci_reference(entry)
+                .as_ref()
+                .and_then(Reference::digest)
                 == package.digest.as_deref()
     })
 }
@@ -930,7 +933,9 @@ fn build(
             version: entry.version.to_string(),
             sha256: hashes[key].clone(),
             md5: entry.md5.clone(),
-            digest: index::oci_reference(entry).map(|manifest| manifest.name().to_string()),
+            digest: (index::oci_reference(entry).as_ref())
+                .and_then(Reference::digest)
+                .map(str::to_string),
             source: match index::github_repo(entry) {
                 Some(repo) => github_lock_source(repo),
                 None => entry_source(entry, feeds),

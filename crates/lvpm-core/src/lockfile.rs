@@ -200,11 +200,12 @@ impl LockedPackage {
     pub fn oci_reference(&self) -> Option<crate::oci::Reference> {
         let feed = crate::oci::FeedUrl::parse(&self.source).ok()?;
         let digest = (self.digest.clone()).filter(|d| crate::oci::reference::valid_digest(d))?;
-        Some(crate::oci::Reference {
-            registry: feed.registry().to_string(),
-            repository: feed.repository(&self.name)?,
-            target: crate::oci::Target::Digest(digest),
-        })
+        let repository = feed.repository(&self.name)?;
+        Some(crate::oci::Reference::by_digest(
+            feed.registry(),
+            &repository,
+            &digest,
+        ))
     }
 
     /// The attestation the lock records, when it records one.

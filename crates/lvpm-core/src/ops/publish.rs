@@ -24,7 +24,7 @@ pub enum PublishTarget {
 }
 
 impl PublishTarget {
-    /// `--to` as given. A value that starts with `oci://` is an OCI feed and
+    /// `--to` as given. A value that starts with `oci://` is an OCI source and
     /// is never read as a path (Windows would collapse its `//`); anything
     /// else is a folder. An error never repeats the value: it may carry a
     /// secret.
@@ -220,7 +220,7 @@ mod tests {
         );
         assert_eq!(
             refused("oci://ghcr.io"),
-            "--to: an OCI feed is oci://host/prefix"
+            "--to: an OCI source is oci://host/prefix"
         );
         assert_eq!(
             refused("oci://pw-7f3a9c:x/y@ghcr.io/org"),

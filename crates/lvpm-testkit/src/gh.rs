@@ -15,9 +15,8 @@
 //! it, or it exits 1 with the message gh gives.
 
 use base64::Engine as _;
-use lvpm_core::oci::BUNDLE_TYPE;
+use lvpm_core::oci::{BUNDLE_TYPE, digest_of};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -206,11 +205,7 @@ pub fn clear_runs(dir: &Path) {
 
 fn sha256_of(path: &str) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
-    let hex: String = Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    Some(hex)
+    Some(digest_of(&bytes).trim_start_matches("sha256:").to_string())
 }
 
 /// Call first thing in `main`: when this program was started as `gh`, be it,

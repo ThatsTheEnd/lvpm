@@ -139,7 +139,7 @@ out of scope. Existing folder publish unchanged.
 
 | Term | Definition | Status | Source |
 |------|------------|--------|--------|
-| OCI feed | A `[sources]` entry whose value starts with `oci://`: a registry host plus a repository prefix | `verified` | user answer 2026-11-05 |
+| OCI source | A `[sources]` entry whose value starts with `oci://`: a registry host plus a repository prefix | `verified` | user answer 2026-11-05 |
 | Package manifest | The OCI image manifest of one package version, tagged with the version | `unverified` | this spec |
 | Referrer | An OCI manifest whose `subject` is the package manifest (SBOM, signature bundle) | `unverified` | OCI distribution spec 1.1 |
 | Digest | `sha256:<hex>` of the package manifest bytes | `unverified` | OCI spec |

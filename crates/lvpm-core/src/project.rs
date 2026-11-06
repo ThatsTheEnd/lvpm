@@ -261,10 +261,25 @@ impl Feed {
     /// `oci://` URL of a registry prefix.
     pub fn owner(&self) -> String {
         match self {
-            Feed::Hosted(folder) => crate::index::feed_url(folder),
+            Feed::Hosted(folder) => feed_url(folder),
             Feed::Oci(url) => url.to_string(),
         }
     }
+}
+
+/// A source folder's URL with the trailing slash that `Package.URL` is
+/// relative to.
+pub(crate) fn folder_base(folder: &str) -> String {
+    match folder.ends_with('/') {
+        true => folder.to_string(),
+        false => format!("{folder}/"),
+    }
+}
+
+/// The index URL of the hosted source at `folder`, which is what `Entry.source`
+/// holds for its entries.
+pub(crate) fn feed_url(folder: &str) -> String {
+    format!("{}index.vipr", folder_base(folder))
 }
 
 /// The feed `url` names, for the `[sources]` entry `name`.

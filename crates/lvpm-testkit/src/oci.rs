@@ -24,9 +24,8 @@
 
 use crate::http::{Request, accept, accept_loop, read_body, response, shut_down};
 use base64::Engine as _;
-use lvpm_core::oci;
+use lvpm_core::oci::{self, digest_of};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -39,15 +38,6 @@ pub const TOKEN: &str = "fake-registry-token";
 const SERVICE: &str = "fake-registry";
 /// What a manifest PUT without a `Content-Type` is taken to be.
 const IMAGE_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
-
-/// `sha256:<hex>` of `bytes`, as an OCI digest.
-pub fn digest_of(bytes: &[u8]) -> String {
-    let hex: String = Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    format!("sha256:{hex}")
-}
 
 /// The digests of a package [`Registry::seed_package`] stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
