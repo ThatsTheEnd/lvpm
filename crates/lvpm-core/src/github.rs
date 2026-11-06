@@ -77,6 +77,17 @@ impl GitHub {
         }
     }
 
+    /// The site's address, where release files are served: `github.com` for
+    /// the public API, the host of a GitHub Enterprise `/api/v3`, and any other
+    /// API (a test's) itself.
+    pub fn web_base(&self) -> String {
+        let api = self.api.trim_end_matches('/');
+        if api == DEFAULT_API {
+            return "https://github.com".to_string();
+        }
+        api.strip_suffix("/api/v3").unwrap_or(api).to_string()
+    }
+
     /// This, with `runner` running `gh attestation verify`.
     pub fn with_gh_runner(mut self, runner: gh::Runner) -> GitHub {
         self.runner = runner;
@@ -102,6 +113,21 @@ mod tests {
         assert_eq!(api(Some("  ")), DEFAULT_API);
         assert_eq!(api(Some(" http://127.0.0.1:1 ")), "http://127.0.0.1:1");
         assert_eq!(GitHub::default().api, DEFAULT_API);
+    }
+
+    #[test]
+    fn the_web_base_follows_the_api() {
+        let web = |api: &str| {
+            GitHub {
+                api: api.to_string(),
+                ..GitHub::default()
+            }
+            .web_base()
+        };
+        assert_eq!(web("https://api.github.com"), "https://github.com");
+        assert_eq!(web("https://ghe.corp/api/v3"), "https://ghe.corp");
+        assert_eq!(web("https://ghe.corp/api/v3/"), "https://ghe.corp");
+        assert_eq!(web("http://127.0.0.1:5000"), "http://127.0.0.1:5000");
     }
 
     #[test]

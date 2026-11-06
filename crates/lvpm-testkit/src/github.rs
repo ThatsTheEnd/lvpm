@@ -8,7 +8,8 @@
 //! `Accept: application/octet-stream`: then it redirects to
 //! `http://localhost:{port}/download/{id}`, the same server under another host
 //! *name*, so a client's redirect policy sees a cross-host hop. `/download/{id}`
-//! serves the bytes.
+//! serves the bytes. `GET /{owner}/{repo}/releases/download/{tag}/{file}` serves
+//! a release file the way the web site does, for a public repo.
 //!
 //! Each failure GitHub can answer with is a mode a test switches on, and every
 //! request is logged, so a test can say what was asked and with which token.
@@ -430,6 +431,20 @@ fn answer(
                 _ => not_found(),
             }
         }
+        [owner, repo, "releases", "download", tag, file] => {
+            // The web site's address for a release file: public, no token read.
+            let slug = format!("{owner}/{repo}");
+            let asset = state
+                .repos
+                .get(&slug)
+                .filter(|repo| !repo.private)
+                .and_then(|repo| repo.releases.iter().find(|release| release.tag == *tag))
+                .and_then(|release| release.assets.iter().find(|asset| asset.name == *file));
+            match asset {
+                Some(asset) => response("200 OK", &[("Content-Type", OCTET_STREAM)], &asset.bytes),
+                None => not_found(),
+            }
+        }
         ["download", id] => {
             let found = state.repos.values().find_map(|repo| asset_in(repo, id));
             match found {
@@ -665,6 +680,28 @@ mod tests {
 
         let download = get_from(fake.addr, &format!("/download/{id}"), "");
         assert_eq!(download.body, b"bytes");
+    }
+
+    #[test]
+    fn a_release_file_is_served_at_its_web_address_and_only_when_public() {
+        let fake = GitHubFake::start(&[("o/r", vec![pkg_release("1.0")])]);
+        let url = "/o/r/releases/download/1.0/pkg-1.0.lvpkg";
+        let served = get_from(fake.addr, url, "");
+        assert_eq!(served.status_line, "HTTP/1.1 200 OK");
+        assert_eq!(served.body, b"bytes");
+        for missing in [
+            "/o/r/releases/download/2.0/pkg-1.0.lvpkg",
+            "/o/r/releases/download/1.0/other.lvpkg",
+            "/x/y/releases/download/1.0/pkg-1.0.lvpkg",
+        ] {
+            let reply = get_from(fake.addr, missing, "");
+            assert_eq!(reply.status_line, "HTTP/1.1 404 Not Found", "{missing}");
+        }
+        fake.make_private("o/r");
+        assert_eq!(
+            get_from(fake.addr, url, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
     }
 
     #[test]
