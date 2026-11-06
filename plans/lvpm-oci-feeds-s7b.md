@@ -3,7 +3,7 @@
 **Created**: 2026-11-05
 **Revised**: 2026-11-05, after plan review round 1 (UX, strategic, acceptance, design blockers)
 **Branch**: claude/dev-team-ship-45aef4, off `main` at 2db838e
-**Status**: approved
+**Status**: implemented
 **Gherkin persistence**: plan-file-only (the builder writes `tests/features/build-slices/s7b-oci-feeds.feature` and `s7b-ghcr.feature` by hand and adds them to `FEATURE_FILES`, as S9 and S12 did)
 **Spec**: [docs/specs/lvpm-oci-feeds-s7b.md](../docs/specs/lvpm-oci-feeds-s7b.md)
 **Issue**: [#68](https://github.com/ThatsTheEnd/lvpm/issues/68). The PR says `Closes #68`.
@@ -1044,6 +1044,7 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 - Slice 3 deviations (build): a plugin guard blocks edits to paths holding "credential", so `oci/credentials.rs` is `oci/logins.rs` (`lvpm_core::oci::logins`), the feature is `s7b-oci-logins.feature` and the steps `tests/steps/oci_logins.rs`. There is no `Oci.helper_timeout` or `creds_by_host` field: the timeout is a `docker_store` parameter and `login_for` keeps a per-host `OnceLock`, so a helper (or its failure) runs once per host. The fake helper is the acceptance exe linked as `docker-credential-<n>`. `base64` was added (already locked via reqwest). Only a realm 401 after a login is "refused the login"; a 403 reads as "your login cannot read it". The timeout scenario asserts `<DUR>`; the seconds are unit-tested. An invalid `LVPM_OCI_HELPER_TIMEOUT_SECS` fails every command (fail-fast, kept). Deferred to the final review: `sync` repeats a host fault on each package line, where `lock` prints it once.
 - Step 4.0 spike (2026-11-06, gh 2.100.0, public image `ghcr.io/astral-sh/uv:latest`, index digest `sha256:96f40d39…b490`): `gh attestation verify oci://ghcr.io/astral-sh/uv:latest --repo astral-sh/uv --format json` passes; the subject is `ghcr.io/astral-sh/uv` with that digest, predicate `https://slsa.dev/provenance/v1`, bundle mediaType `application/vnd.dev.sigstore.bundle.v0.3+json`, signer SAN `https://github.com/astral-sh/uv/.github/workflows/publish-docker-image.yml@refs/heads/main`. The Step 4.3 path works: with the manifest bytes saved to a file (sha256 equals the subject digest) and the bundle from `gh attestation download`, `gh attestation verify manifest.json --bundle <bundle> --repo astral-sh/uv --format json` exits 0 offline of the registry, and `--repo astral-sh/ruff` exits 1 with `verifying with issuer "sigstore.dev"`. The bundle must be written byte for byte: re-decoding it as cp1252 corrupts the Rekor checkpoint's em dash and verification fails with the same message. uv does not use `push-to-registry`, so ghcr returned 404 for both `/referrers/<digest>` and the `sha256-<hex>` tag; whether ghcr serves the referrers API stays open until the user's test repo (AC8). gh also has `--bundle-from-oci`, which reads the bundle from the registry.
 - Slice 4 deviations (build): Slice 4 Gherkin is `s7b-oci-referrers.feature` with steps in `tests/steps/oci_referrers.rs`. The client detects the referrers API from the `OCI-Subject` header on the manifest PUT; without it, it writes the `sha256-<hex>` fallback index, then reads it back and errors if the entry was lost (a read-modify-write with no lock, marked shortcut). A referrers answer with no `manifests` array, or a paged one (`Link` header), is an error, never "unsigned"; whether ghcr pages is checked in AC8. The SBOM is read with a 32 MiB cap. If the SBOM push fails after the package is live, the success lines and then a warning go to stderr and lvpm exits 1. New module `oci/sigstore.rs` holds the DER scan; it refuses a repo starting with `-` or made only of dots. gh needs `--bundle` to end in `.json`/`.jsonl`, so the cached bundle is linked as `<cache>/tmp/<sha>.json`. Only the first bundle referrer is used (fails closed, marked shortcut). A bundle with no readable source repository is Invalid under every policy. Scenarios fake gh with the acceptance exe linked as `gh` (`Sandbox::use_fake_gh`). Refusals reuse S6 wording.
+- Slice 5 deviations (build): Gherkin is `s7b-ghcr.feature` (steps in `tests/steps/oci_ghcr.rs`) and `s7b-oci-docs.feature`. The `@ghcr` tag sits on the Feature line; the first version of the filter read only scenario tags, so the four scenarios ran once against the real ghcr.io (all 403, nothing written). The filter now merges Feature tags and the Background asserts `LVPM_TEST_GHCR=1`. The ghcr Background bypasses the sandbox proxy (`NO_PROXY=*`) and passes the runner's gh token to children. Scenarios use `lvpm sync --prefix dest`. The release template gets a separate `publish-oci` job gated on `vars.LVPM_OCI_PREFIX`; it rebuilds the package, so its bytes differ from the release asset. The test-repo workflow (`docs/oci-test-repo-workflow.yml`) builds lvpm from `main` by default. Neither workflow has been parsed by a YAML tool or run.
 
 ## Build Progress
 
@@ -1074,9 +1075,9 @@ The build-time criteria check asked for these refinements. They tighten tests; s
   - [x] Step 4.3: Verify the Sigstore bundle against the OCI manifest digest
 
 #### Wave 5
-- [ ] Slice 5: ghcr.io, template and docs
-  - [ ] Step 5.1: `@ghcr` tag and scenarios
-  - [ ] Step 5.2: Release template, docs, ADR 7
+- [x] Slice 5: ghcr.io, template and docs
+  - [x] Step 5.1: `@ghcr` tag and scenarios
+  - [x] Step 5.2: Release template, docs, ADR 7
 
 ## Plan Review Summary
 
