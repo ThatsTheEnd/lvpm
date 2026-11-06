@@ -745,6 +745,7 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 - **One PR** (user, 2026-11-06). Slices 1–3 (consumer) and 4–7 (publisher and bot) land together, closing #69.
 - **Token type for `LVPM_INDEX_TOKEN`.** Expected: a classic token with `public_repo`. Step 7.2 settles it, and the docs name only what worked.
 - **Rate limit.** One API request per asked name per index on a cold cache, 404s included (the closure walks every version's `requires`, so a deep vipm.io tree can ask dozens of names); 60/h without a token. Both answers are cached, so a warm run makes none; `--refresh` without a token on a large tree can hit the limit, and S4's rate-limit error says so.
+- **A missing or private index repo reads as empty.** GitHub answers 404 for a misspelled `github:o/typo` or a private repo without a token, the same as for an unlisted name, so every name is cached as not listed with no error until `--refresh`. Accepted for S8 (found in the Step 2.2 review); telling the two apart costs one extra request per index.
 - **`pull_request_target` safety.** The bot checks out the PR as data, reads only regular files under `packages/` with size caps, never follows links, and never runs PR code. The review confirms no step executes a file from the head checkout.
 - **Public assets only** (shortcut in the design): a private index with private release assets cannot download.
 - **Older lvpm and a new lock.** An lvpm before S8 refuses `sync --locked` on a `github-index:` entry with its not-found error. Accepted; no format bump.
@@ -760,9 +761,9 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 
 #### Wave 2
 - [ ] Slice 2: reading entry files
-  - [ ] Step 2.1: the entry file in `community.rs`
-  - [ ] Step 2.2: fetch per name, with the name closure and the cache
-  - [ ] Step 2.3: `[sources]` order across hosted folders and indexes
+  - [x] Step 2.1: the entry file in `community.rs`
+  - [x] Step 2.2: fetch per name, with the name closure and the cache
+  - [x] Step 2.3: `[sources]` order across hosted folders and indexes
 
 #### Wave 3
 - [ ] Slice 3: installing from the index
