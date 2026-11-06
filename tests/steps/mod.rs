@@ -19,6 +19,7 @@ pub mod installation;
 pub mod json;
 pub mod lock;
 pub mod manifest;
+pub mod oci_ghcr;
 pub mod oci_install;
 pub mod oci_logins;
 pub mod oci_referrers;

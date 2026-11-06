@@ -28,6 +28,11 @@ pub const PILOT_A_ENV_VAR: &str = "LVPM_TEST_PILOT_A";
 pub const PILOT_B_SOURCE_TAG: &str = "pilot-b-source";
 /// A checkout of pilot B at its pinned commit, for the `@pilot-b-source` scenarios.
 pub const PILOT_B_ENV_VAR: &str = "LVPM_TEST_PILOT_B";
+/// A scenario that depends on state outside this repository: the test repo
+/// `ThatsTheEnd/lvpm-oci-test` on ghcr.io and a login in the runner's Docker
+/// credential store. It runs only when `LVPM_TEST_GHCR=1`.
+pub const GHCR_TAG: &str = "ghcr";
+pub const GHCR_ENV_VAR: &str = "LVPM_TEST_GHCR";
 
 /// Whether a scenario runs, and if not, why.
 #[derive(Debug, PartialEq, Eq)]
@@ -48,6 +53,8 @@ pub enum Selection {
     NeedsPilotSource,
     /// A `@pilot-b-source` scenario without `LVPM_TEST_PILOT_B`.
     NeedsPilotBSource,
+    /// A `@ghcr` scenario without `LVPM_TEST_GHCR=1`.
+    NeedsGhcr,
 }
 
 /// What the environment of a run allows.
@@ -65,6 +72,8 @@ pub struct Env {
     pub pilot_a: bool,
     /// `LVPM_TEST_PILOT_B` is set.
     pub pilot_b: bool,
+    /// `LVPM_TEST_GHCR=1`.
+    pub ghcr: bool,
 }
 
 pub fn select(tags: &[String], env: &Env) -> Selection {
@@ -75,6 +84,7 @@ pub fn select(tags: &[String], env: &Env) -> Selection {
         _ if has(LABVIEW_TAG) && !env.test_labview => Selection::NeedsLabview,
         _ if has(PILOT_SOURCE_TAG) && !env.pilot_a => Selection::NeedsPilotSource,
         _ if has(PILOT_B_SOURCE_TAG) && !env.pilot_b => Selection::NeedsPilotBSource,
+        _ if has(GHCR_TAG) && !env.ghcr => Selection::NeedsGhcr,
         _ if has(INTERACTIVE_TAG) && env.headless_labview => Selection::Interactive,
         _ if has(GLOBAL_TAG) && env.global_busy => Selection::GlobalBusy,
         _ if !has(LABVIEW_TAG) && env.only_labview => Selection::NotLabview,
@@ -195,6 +205,18 @@ mod tests {
             select(&tags(&["pilot-source"]), &env),
             Selection::NeedsPilotSource
         );
+    }
+
+    #[test]
+    fn a_ghcr_scenario_needs_the_flag_and_nothing_else_does() {
+        let ghcr = tags(&["ghcr"]);
+        assert_eq!(select(&ghcr, &Env::default()), Selection::NeedsGhcr);
+        let env = Env {
+            ghcr: true,
+            ..Env::default()
+        };
+        assert_eq!(select(&ghcr, &env), Selection::Run);
+        assert_eq!(select(&tags(&[]), &Env::default()), Selection::Run);
     }
 
     #[test]

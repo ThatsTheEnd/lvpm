@@ -1,0 +1,9 @@
+[project]
+name = "alpha"
+version = "1.0.0"
+labview = ">=2021"
+
+[distribution]
+top-level-library = "Lib.lvlib"
+vendor = "Vendor"
+display-name = "Alpha Lib"

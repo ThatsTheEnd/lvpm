@@ -5,8 +5,10 @@
 //! `cargo test --test acceptance`; capture recordings with `LVPM_RECORD=1`
 //! (`LVPM_RECORD=force` replaces existing ones). `@labview` scenarios need a
 //! real LabVIEW and run only with `LVPM_TEST_LABVIEW=1`; `LVPM_TEST_ONLY_LABVIEW=1`
-//! runs nothing else, as CI's LabVIEW container does. A failed step fails
-//! the run, and so does a skipped one: every step has a definition.
+//! runs nothing else, as CI's LabVIEW container does. `@ghcr` scenarios need
+//! the test repo on ghcr.io and a login, and run only with `LVPM_TEST_GHCR=1`.
+//! A failed step fails the run, and so does a skipped one: every step has a
+//! definition.
 
 // Test code builds sandboxes and reads the test process's environment; the
 // workspace-wide `clippy.toml` bars that from `lvpm-core` only.
@@ -28,8 +30,8 @@ use support::global::GlobalRun;
 use support::golden::{Mode, Output};
 use support::sandbox::{LABVIEW_YEAR, Sandbox};
 use support::selection::{
-    Env, GLOBAL_TAG, INTERACTIVE_TAG, LABVIEW_TAG, PENDING_TAG_PREFIX, PILOT_A_ENV_VAR,
-    PILOT_B_ENV_VAR, PILOT_B_SOURCE_TAG, PILOT_SOURCE_TAG, Selection, UNSAFE_TAG,
+    Env, GHCR_ENV_VAR, GHCR_TAG, GLOBAL_TAG, INTERACTIVE_TAG, LABVIEW_TAG, PENDING_TAG_PREFIX,
+    PILOT_A_ENV_VAR, PILOT_B_ENV_VAR, PILOT_B_SOURCE_TAG, PILOT_SOURCE_TAG, Selection, UNSAFE_TAG,
     pilot_not_run_line, select,
 };
 
@@ -62,6 +64,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s7b-oci-install.feature",
     "tests/features/build-slices/s7b-oci-logins.feature",
     "tests/features/build-slices/s7b-oci-referrers.feature",
+    "tests/features/build-slices/s7b-ghcr.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/build-slices/s10d-unattended.feature",
@@ -217,6 +220,7 @@ struct ScenarioCounts {
     interactive_not_run: usize,
     pilot_source_not_run: usize,
     pilot_b_source_not_run: usize,
+    ghcr_not_run: usize,
 }
 
 /// Whatever a scenario started on its venv is stopped, whether it passed or not.
@@ -256,6 +260,8 @@ fn run_feature(
     let counted_pilot_source = pilot_source_not_run.clone();
     let pilot_b_source_not_run = Arc::new(AtomicUsize::new(0));
     let counted_pilot_b_source = pilot_b_source_not_run.clone();
+    let ghcr_not_run = Arc::new(AtomicUsize::new(0));
+    let counted_ghcr = ghcr_not_run.clone();
     let env = Env {
         test_labview: env_flag(TEST_LABVIEW_ENV_VAR),
         only_labview: env_flag(ONLY_LABVIEW_ENV_VAR),
@@ -263,6 +269,7 @@ fn run_feature(
         global_busy,
         pilot_a: std::env::var_os(PILOT_A_ENV_VAR).is_some(),
         pilot_b: std::env::var_os(PILOT_B_ENV_VAR).is_some(),
+        ghcr: env_flag(GHCR_ENV_VAR),
     };
     let writer = futures::executor::block_on(
         CliWorld::cucumber()
@@ -279,8 +286,12 @@ fn run_feature(
             })
             .after(after_scenario)
             .fail_on_skipped()
-            .filter_run(path, move |_, _, scenario| {
-                let (counter, runs) = match select(&scenario.tags, &env) {
+            .filter_run(path, move |feature, _, scenario| {
+                // A tag on the Feature line (`@ghcr`) counts for each of its scenarios.
+                let tags: Vec<String> = (feature.tags.iter().chain(&scenario.tags))
+                    .cloned()
+                    .collect();
+                let (counter, runs) = match select(&tags, &env) {
                     Selection::Run if has_labview_tag(scenario) => (&counted_labview_ran, true),
                     Selection::Run => return true,
                     Selection::NotLabview | Selection::GlobalBusy => return false,
@@ -290,6 +301,7 @@ fn run_feature(
                     Selection::Interactive => (&counted_interactive, false),
                     Selection::NeedsPilotSource => (&counted_pilot_source, false),
                     Selection::NeedsPilotBSource => (&counted_pilot_b_source, false),
+                    Selection::NeedsGhcr => (&counted_ghcr, false),
                 };
                 counter.fetch_add(1, Ordering::SeqCst);
                 runs
@@ -312,6 +324,7 @@ fn run_feature(
         interactive_not_run: interactive_not_run.load(Ordering::SeqCst),
         pilot_source_not_run: pilot_source_not_run.load(Ordering::SeqCst),
         pilot_b_source_not_run: pilot_b_source_not_run.load(Ordering::SeqCst),
+        ghcr_not_run: ghcr_not_run.load(Ordering::SeqCst),
     };
     (counts, outcome)
 }
@@ -356,7 +369,7 @@ fn run_features() {
     let mut failures = Vec::new();
     let (mut labview_not_run, mut unsafe_not_run, mut pending_not_run) = (0, 0, 0);
     let (mut labview_ran, mut interactive_not_run, mut pilot_source_not_run) = (0, 0, 0);
-    let mut pilot_b_source_not_run = 0;
+    let (mut pilot_b_source_not_run, mut ghcr_not_run) = (0, 0);
     for feature in FEATURE_FILES {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(feature);
         let (counts, outcome) = run_feature(path, mode, global_busy.is_some());
@@ -367,6 +380,7 @@ fn run_features() {
         interactive_not_run += counts.interactive_not_run;
         pilot_source_not_run += counts.pilot_source_not_run;
         pilot_b_source_not_run += counts.pilot_b_source_not_run;
+        ghcr_not_run += counts.ghcr_not_run;
         if let Err(why) = outcome {
             failures.push(format!("{feature}: {why}"));
         }
@@ -408,6 +422,9 @@ fn run_features() {
                 "B"
             )
         );
+    }
+    if ghcr_not_run > 0 {
+        println!("{ghcr_not_run} @{GHCR_TAG} scenarios not run (set {GHCR_ENV_VAR}=1)");
     }
     if pending_not_run > 0 {
         println!(
