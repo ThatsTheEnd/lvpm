@@ -521,6 +521,24 @@ format version goes up.
 
 ### Slice S7b: OCI feeds
 
+**Landed.** It differs from the text below in these ways. An `oci://` source is
+explicit: it is asked only for the packages pinned to it with `index`, and a
+pinned package the registry cannot serve never falls through
+([ADR 7](../adr/0007-oci-sources-are-explicit.md)). The signature is checked
+against the OCI manifest digest with `gh attestation verify <file> --bundle`,
+and the repository comes from the bundle's own certificate, so
+`require-signature` without `trusted-publishers` accepts any GitHub-built
+bundle. Credentials come only from the Docker credential store
+(`LVPM_OCI_HELPER_TIMEOUT_SECS` sets the helper timeout, 30 s by default). A
+tag listing reads one page and the manifests are read one by one. The referrers
+API is found from the `OCI-Subject` header of the manifest PUT, the fallback
+index is updated without a lock, and a paged referrers answer is an error,
+never "unsigned". A failed SBOM push after the package is live exits 1. The
+GitLab and ACR runs are manual, and the `@ghcr` scenarios run only with
+`LVPM_TEST_GHCR=1` against `ThatsTheEnd/lvpm-oci-test` (its setup is the
+comment in `docs/oci-test-repo-workflow.yml`). The text below is the slice as it
+was planned.
+
 **Depends-on:** S7a, S6, S7c
 **Files:** `crates/lvpm-core/src/oci.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/ops/publish.rs`
 

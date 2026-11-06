@@ -12,3 +12,4 @@ it.
 | [4](0004-sources-first-wins-and-pinning.md) | Sources: the first one wins, a dependency can pin one | Accepted |
 | [5](0005-core-and-cli-split.md) | Core does the work, the CLI does the terminal | Accepted |
 | [6](0006-lvpkg-only-vip-read-only.md) | lvpm writes `.lvpkg` only; `.vip` is read, never written | Accepted |
+| [7](0007-oci-sources-are-explicit.md) | OCI sources are explicit: asked only for the packages pinned to them | Accepted |

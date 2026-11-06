@@ -8,6 +8,13 @@ name: Publish the package
 # depends on it with
 #   <name> = { github = "owner/repo", version = ">=1.0" }
 # The repository needs an lvpm.toml with [project] and [distribution].
+#
+# Optional second job, publish-oci: also pushes the package to an OCI registry
+# (docs/usage.md, "OCI registries"). It runs only when the repository variable
+# LVPM_OCI_PREFIX is set, e.g. ghcr.io/acme/lv (lower case); delete the job if
+# you do not use one. Another project then lists
+#   team = "oci://ghcr.io/acme/lv"
+# under [sources] and pins the package with index = "team".
 on:
   push:
     tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
@@ -65,3 +72,62 @@ jobs:
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
           # --clobber: pushing the tag again replaces the file instead of failing.
           gh release upload "$TAG" dist/*.lvpkg --clobber
+
+  publish-oci:
+    if: ${{ vars.LVPM_OCI_PREFIX != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Pushing needs packages: write (on ghcr.io). The attestation needs an OIDC
+    # token (id-token) to sign with and attestations: write to store the result.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      OCI_PREFIX: ${{ vars.LVPM_OCI_PREFIX }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install lvpm
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
+          base="https://github.com/ThatsTheEnd/lvpm/releases/download/v${LVPM_VERSION}"
+          curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
+          grep -F "  $archive" SHA256SUMS | sha256sum --check
+          mkdir lvpm-bin
+          tar -xzf "$archive" -C lvpm-bin lvpm
+          echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
+      - name: Build the package
+        run: |
+          # This runner has no LabVIEW, so no venv to check the library against.
+          echo "::warning::unchecked build (no LabVIEW on this runner; run lvpm build locally to check)"
+          lvpm build --no-check
+      - name: Log in to the registry
+        # lvpm reads the login docker login leaves. For a registry other than
+        # ghcr.io, log in with that registry's own step instead.
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login "${OCI_PREFIX%%/*}" --username "$ACTOR" --password-stdin
+      - name: Publish to the registry
+        id: publish
+        run: |
+          set -o pipefail
+          lvpm publish --to oci://${OCI_PREFIX} | tee publish.log
+          # "published <name> <version> to oci://<host>/<repo>:<tag>", then the digest.
+          reference=$(awk '/^published/ {print $5}' publish.log)
+          repository=${reference#oci://}
+          echo "name=${repository%:*}" >> "$GITHUB_OUTPUT"
+          echo "digest=$(awk '/OCI manifest digest/ {print $4}' publish.log)" >> "$GITHUB_OUTPUT"
+      - name: Attest the OCI manifest
+        # The signature is of the OCI manifest digest that lvpm publish printed,
+        # not of the .lvpkg. push-to-registry attaches it to the package, where
+        # lvpm lock finds it.
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true

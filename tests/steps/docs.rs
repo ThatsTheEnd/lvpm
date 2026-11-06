@@ -36,6 +36,11 @@ pub struct DocsState {
     readme_section: String,
     /// Where the release template's attest step sits among its lines.
     attest_step: usize,
+    /// The file the scenario read and its text.
+    read: (String, String),
+    /// The steps of that file that use the action a scenario asked about, each as
+    /// its trimmed lines.
+    steps_using: Vec<Vec<String>>,
 }
 
 /// Names, each with whether the page says anything about it.
@@ -791,5 +796,96 @@ async fn template_has_no_line(_: &mut CliWorld, command: String) {
     assert!(
         !template_lines().contains(&command),
         "{RELEASE_TEMPLATE} has a line `{command}`"
+    );
+}
+
+// ---- the OCI template and docs (S7b) ----
+
+/// The steps of the workflow `text` whose `uses:` is `action` (at any version),
+/// comments left out, each as its trimmed lines. A step is a `- ` item and
+/// holds the lines indented below it.
+fn steps_using(text: &str, action: &str) -> Vec<Vec<String>> {
+    let lines: Vec<&str> = (text.lines())
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .collect();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    let uses = format!("uses: {action}");
+    let mut found = Vec::new();
+    for (at, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("- ") {
+            continue;
+        }
+        let end = (lines[at + 1..].iter())
+            .position(|next| indent(next) <= indent(line))
+            .map_or(lines.len(), |n| at + 1 + n);
+        let step: Vec<String> = (lines[at..end].iter())
+            .map(|line| line.trim().trim_start_matches("- ").to_string())
+            .collect();
+        if step.iter().any(|line| line.starts_with(&uses)) {
+            found.push(step);
+        }
+    }
+    found
+}
+
+#[when(regex = r#"^I read "([^"]+)"$"#)]
+async fn read_a_file(world: &mut CliWorld, path: String) {
+    let text = repo_file(&path);
+    world.docs.read = (path, text);
+}
+
+#[then(regex = r#"^it contains "([^"]+)" and "([^"]+)"$"#)]
+async fn it_contains(world: &mut CliWorld, a: String, b: String) {
+    let (path, text) = &world.docs.read;
+    // Prose wraps: compare with every run of whitespace as one space.
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for wanted in [a, b] {
+        assert!(text.contains(&wanted), "{path} does not contain {wanted:?}");
+    }
+}
+
+#[then(regex = r#"^its attest step uses "([^"]+)"$"#)]
+async fn its_attest_step_uses(world: &mut CliWorld, action: String) {
+    let (path, text) = &world.docs.read;
+    let steps = steps_using(text, &action);
+    assert!(!steps.is_empty(), "{path} has no step that uses {action}");
+    world.docs.steps_using = steps;
+}
+
+/// An OCI attestation signs the OCI manifest digest, which `lvpm publish`
+/// prints, so `subject-digest` must come from the publish step's output.
+#[then(regex = r#"^that step's "with" has "([^"]+)", "([^"]+)" and "([^"]+)"$"#)]
+async fn that_steps_with_has(world: &mut CliWorld, a: String, b: String, c: String) {
+    let wanted = [a, b, c];
+    let holds = |step: &Vec<String>, item: &String| {
+        let value = |key: &str| {
+            step.iter()
+                .find_map(|line| line.strip_prefix(&format!("{key}:")))
+        };
+        match item.contains(':') {
+            true => step.contains(item),
+            false if item == "subject-digest" => {
+                value(item).is_some_and(|v| v.contains("steps.") && v.contains(".outputs."))
+            }
+            false => value(item).is_some(),
+        }
+    };
+    let steps = &world.docs.steps_using;
+    assert!(
+        steps
+            .iter()
+            .any(|step| wanted.iter().all(|item| holds(step, item))),
+        "no attest step has {wanted:?} (subject-digest from a step's output): {steps:?}"
+    );
+}
+
+#[then(regex = r#"^a job runs "([^"]+)"$"#)]
+async fn a_job_runs(world: &mut CliWorld, command: String) {
+    let (path, text) = &world.docs.read;
+    let jobs = text.lines().skip_while(|line| line.trim_end() != "jobs:");
+    assert!(
+        jobs.filter(|line| !line.trim_start().starts_with('#'))
+            .any(|line| line.contains(&command)),
+        "no job of {path} runs {command}"
     );
 }

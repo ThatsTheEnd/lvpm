@@ -100,11 +100,12 @@ the manifest's `labview`.
 ## `[sources]`
 
 Hosted package indexes added to the search, in file order, ahead of the
-public defaults.
+public defaults, and OCI registries that a dependency pins with `index`
+([below](#an-oci-registry-as-a-source)).
 
 | Key        | Type    | Meaning                                                                           |
 | ---------- | ------- | --------------------------------------------------------------------------------- |
-| `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`. The name is a label, and what `index` names. |
+| `<name>`   | string  | An `http://` or `https://` folder holding an `index.vipr`, or an `oci://host[:port]/prefix` registry. The name is a label, and what `index` names. |
 | `defaults` | boolean | `true` (default): also use the public indexes. `false`: only the sources listed. |
 | `min-age-days` | integer | Skip versions released fewer than this many days ago. `0` (default) is off. A negative value, a non-integer, or a value larger than 4294967295 is an error. See [A minimum release age](#a-minimum-release-age). |
 
@@ -117,6 +118,51 @@ nothing: local `.vip` directories are a per-user setting
 (`lvpm config set sources.local`) and imported packages live in the shared
 cache (`lvpm cache add`), because a filesystem path rarely means the same
 thing on a teammate's machine or a CI runner.
+
+### An OCI registry as a source
+
+A source whose value starts with `oci://` is a container registry: ghcr.io,
+GitLab, Azure Container Registry or any other that speaks the OCI distribution
+API. `lvpm publish --to oci://host/prefix` puts a package there
+([usage](usage.md#oci-registries)).
+
+```toml
+[sources]
+team = "oci://ghcr.io/acme/lv"
+
+[dependencies]
+acme_lib = { version = ">=1.0", index = "team" }
+```
+
+The package `acme_lib` lives in the repository `ghcr.io/acme/lv/acme_lib` (the
+name in lower case), one tag per version.
+
+**An OCI source is explicit.** It is asked only for the packages that pin it
+with `index = "team"`, and a package without that pin never comes from it. It
+takes no part in the first-source-wins order of
+[ADR 4](adr/0004-sources-first-wins-and-pinning.md): a registry has no list of
+its packages to read, so asking it for every name would send one request per
+public package, and ghcr.io answers `403` for a repository that does not exist.
+[ADR 7](adr/0007-oci-sources-are-explicit.md) has the reasoning. A package's own
+dependencies are not pinned by that: list each one that lives in the registry
+as a direct dependency with `version = "*"` and its own `index`.
+
+- A pinned package the registry cannot serve never falls through to another
+  source. `lvpm lock` fails when the registry does not list it, refuses the
+  lookup (`401` or `403`) or cannot be reached, and says which package, source
+  and registry. It reports every failing package together, one line each.
+- An OCI source with no package pinned to it prints a warning, once:
+  `OCI source "team" has no package pinned to it and is never asked; pin a package with index = "team"`.
+  When no source lists a name, the error ends with
+  `note: OCI source "team" is explicit; pin with index = "team"`.
+- The URL is `oci://host[:port]/prefix`. lvpm talks `https` to it, and plain
+  `http` only to `127.0.0.1` and `localhost`.
+- A URL with `user:password@` is refused when the manifest is read:
+  `[sources] team: credentials do not belong in lvpm.toml; remove the user:password@ part and run docker login ghcr.io`.
+  Credentials come from the Docker credential store only: run `docker login`
+  (see [OCI registries](usage.md#oci-registries)).
+- The lock records the package's `source` (the `oci://` URL) and the `digest`
+  of its OCI manifest. Changing an `oci://` source makes the lock out of date.
 
 ### A minimum release age
 
@@ -259,7 +305,7 @@ hexagon_lib_motion = { version = ">=2.0", index = "internal" }
 | Key       | Meaning                                                                                                |
 | --------- | ------------------------------------------------------------------------------------------------------ |
 | `version` | Required. The same constraint as the string form.                                                       |
-| `index`   | The name of a `[sources]` entry that holds an `index.vipr`. The package comes from that source only.   |
+| `index`   | The name of a `[sources]` entry: an `index.vipr` folder or an `oci://` registry. The package comes from that source only.   |
 
 Here is what the index key does:
 
@@ -413,7 +459,9 @@ NIPM. Values may be a version string or a table; neither is interpreted yet.
 ## `[policy]`
 
 What a GitHub release's attestation must say before lvpm locks it. Both keys
-are optional, and with neither lvpm trusts a release on first use.
+are optional, and with neither lvpm trusts a release on first use. A package
+from an OCI registry is checked the same way, with one difference
+([usage](usage.md#signatures-on-oci-packages)).
 
 ```toml
 [policy]
