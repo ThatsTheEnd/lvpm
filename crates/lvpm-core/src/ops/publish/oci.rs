@@ -14,7 +14,7 @@ use crate::lvpkg;
 use crate::oci::{
     self, ANNOTATION_CREATED, ANNOTATION_LABVIEW, ANNOTATION_REQUIRES, ANNOTATION_TITLE,
     ANNOTATION_VERSION, ARTIFACT_TYPE, Access, EMPTY_CONFIG, EMPTY_CONFIG_TYPE, FeedUrl,
-    LAYER_TYPE, MANIFEST_TYPE, Reference, Repo, digest_of,
+    LAYER_TYPE, MANIFEST_TYPE, Reference, Repo,
 };
 use crate::ops::OpEnv;
 use crate::spec::Spec;
@@ -89,12 +89,7 @@ fn read_package(package: &Path) -> Result<(Vec<u8>, Spec)> {
 
 /// The digest of `bytes` once the repository holds them.
 fn blob(env: &OpEnv, repo: &Repo, bytes: &[u8]) -> Result<String> {
-    let digest = digest_of(bytes);
-    let failed = not_published(repo.name);
-    if !env.oci.blob_exists(repo, &digest).map_err(&failed)? {
-        env.oci.upload_blob(repo, bytes).map_err(&failed)?;
-    }
-    Ok(digest)
+    (env.oci.ensure_blob(repo, bytes)).map_err(not_published(repo.name))
 }
 
 /// The image manifest of a package: an empty config, the archive as the one
@@ -120,16 +115,8 @@ fn manifest(spec: &Spec, config: &str, layer: &str, layer_size: usize) -> Vec<u8
         "schemaVersion": 2,
         "mediaType": MANIFEST_TYPE,
         "artifactType": ARTIFACT_TYPE,
-        "config": {
-            "mediaType": EMPTY_CONFIG_TYPE,
-            "digest": config,
-            "size": EMPTY_CONFIG.len(),
-        },
-        "layers": [{
-            "mediaType": LAYER_TYPE,
-            "digest": layer,
-            "size": layer_size,
-        }],
+        "config": oci::descriptor(EMPTY_CONFIG_TYPE, config, EMPTY_CONFIG.len()),
+        "layers": [oci::descriptor(LAYER_TYPE, layer, layer_size)],
         "annotations": annotations,
     })
     .to_string()

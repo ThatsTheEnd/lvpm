@@ -11,6 +11,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 const DIGEST_HEADER: &str = "Docker-Content-Digest";
+/// What a registry that supports referrers answers a manifest PUT that has a
+/// `subject` with: the subject's digest.
+const SUBJECT_HEADER: &str = "OCI-Subject";
 const OCTET_STREAM: &str = "application/octet-stream";
 
 /// A manifest read from a registry: its bytes, which hash to its digest.
@@ -29,6 +32,13 @@ pub struct Package {
     /// The digest of the one layer: the archive's sha256.
     pub layer: String,
     pub annotations: BTreeMap<String, String>,
+}
+
+/// What a manifest PUT came to: the manifest's digest, and the `OCI-Subject` the
+/// registry answered with.
+pub(super) struct Put {
+    pub digest: String,
+    pub subject: Option<String>,
 }
 
 impl Manifest {
@@ -95,11 +105,20 @@ impl Oci {
     /// The manifest under `reference`, its bytes checked against the digest
     /// (the reference's own, when it is one, and the header's).
     pub fn get_manifest(&self, repo: &Repo, reference: &str) -> Result<Manifest, Error> {
+        self.read_manifest(repo, reference, MANIFEST_TYPE)
+    }
+
+    /// [`Oci::get_manifest`] for a manifest of the media type `accept`: an
+    /// index is not served to a client that asks for an image manifest only.
+    pub(super) fn read_manifest(
+        &self,
+        repo: &Repo,
+        reference: &str,
+        accept: &str,
+    ) -> Result<Manifest, Error> {
         let url = manifest_url(repo, reference);
         let request = format!("GET {}:{reference}", repo.name);
-        let response = self.send(repo, |client| {
-            client.get(&url).header(ACCEPT, MANIFEST_TYPE)
-        })?;
+        let response = self.send(repo, |client| client.get(&url).header(ACCEPT, accept))?;
         let response = expect(repo, response, &request, &[200])?;
         let announced = announced_digest(response.headers());
         let bytes = read_limited(repo.registry, response, MAX_MANIFEST_BYTES)?;
@@ -118,12 +137,25 @@ impl Oci {
         reference: &str,
         bytes: &[u8],
     ) -> Result<String, Error> {
+        let put = self.put(repo, reference, MANIFEST_TYPE, bytes)?;
+        Ok(put.digest)
+    }
+
+    /// [`Oci::put_manifest`] for a manifest of the media type `media_type`, and
+    /// what the registry said of its `subject`.
+    pub(super) fn put(
+        &self,
+        repo: &Repo,
+        reference: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> Result<Put, Error> {
         let url = manifest_url(repo, reference);
         let request = format!("PUT {}:{reference}", repo.name);
         let response = self.send(repo, |client| {
             client
                 .put(&url)
-                .header(CONTENT_TYPE, MANIFEST_TYPE)
+                .header(CONTENT_TYPE, media_type)
                 .body(bytes.to_vec())
         })?;
         let response = expect(repo, response, &request, &[200, 201])?;
@@ -131,7 +163,10 @@ impl Oci {
         if let Some(announced) = announced_digest(response.headers()) {
             agree(repo, &announced, &digest)?;
         }
-        Ok(digest)
+        let subject = (response.headers().get(SUBJECT_HEADER))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        Ok(Put { digest, subject })
     }
 
     /// Whether the repository holds the blob: `404` is no.
@@ -143,6 +178,16 @@ impl Oci {
             404 => Ok(false),
             _ => expect(repo, response, &request, &[200]).map(|_| true),
         }
+    }
+
+    /// The digest of `bytes` once the repository holds them: uploaded unless it
+    /// already does.
+    pub fn ensure_blob(&self, repo: &Repo, bytes: &[u8]) -> Result<String, Error> {
+        let digest = digest_of(bytes);
+        if !self.blob_exists(repo, &digest)? {
+            self.upload_blob(repo, bytes)?;
+        }
+        Ok(digest)
     }
 
     /// Upload `bytes` as one blob, in one POST and one PUT; its digest.

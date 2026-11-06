@@ -10,6 +10,13 @@
 //! something a test switches on: `go_down`, a status for one method and path,
 //! a tag that appears while a package is uploading.
 //!
+//! Referrers: a manifest PUT with a `subject` is listed by the referrers API
+//! (`/v2/<name>/referrers/<digest>`, with `artifactType` filtering) and
+//! answered with `OCI-Subject`, unless [`Registry::offer_referrers_api`] turned
+//! the API off: then the route is a `404` and no `OCI-Subject` is sent, as with a
+//! registry that predates it, and a client keeps the list under the tag
+//! `sha256-<hex>` itself.
+//!
 //! The `/token` realm gives its one token to anyone, unless a login is
 //! required for a repository prefix ([`Registry::require_login`]): then Basic
 //! auth, or a refresh-token grant, is asked for, per repository and access, and
@@ -153,6 +160,11 @@ struct State {
     /// A login by this user name is refused at the token realm.
     refused_users: Vec<String>,
     token_requests: Vec<TokenRequest>,
+    /// Set by `offer_referrers_api(false)`.
+    referrers_api_off: bool,
+    /// Repositories that refuse a manifest with a `subject` and any `sha256-`
+    /// tag: the writes of a referrer.
+    refused_referrer_writes: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -271,6 +283,22 @@ impl Registry {
         lock(&self.state).token_requests.clone()
     }
 
+    /// Whether the registry serves the referrers API (it does until this says
+    /// it does not). Without it, `/referrers/` is a `404` and a manifest with a
+    /// `subject` is answered with no `OCI-Subject`.
+    pub fn offer_referrers_api(&self, offered: bool) {
+        lock(&self.state).referrers_api_off = !offered;
+    }
+
+    /// From now on a write of a referrer to `repo` (a manifest with a `subject`,
+    /// or a `sha256-<hex>` tag) answers `403`, as a registry does that lets
+    /// a login push packages and nothing else.
+    pub fn refuse_referrer_writes(&self, repo: &str) {
+        lock(&self.state)
+            .refused_referrer_writes
+            .push(repo.to_string());
+    }
+
     /// `tag` appears in `repo` when the first blob is uploaded, as another
     /// publisher's would.
     pub fn create_tag_after_first_blob(&self, repo: &str, tag: &str) {
@@ -349,6 +377,68 @@ impl Registry {
             manifest,
             layer: layer_digest,
         }
+    }
+
+    /// A referrer of `subject` in `repo`: `payload` as its one layer, an empty
+    /// config and `artifact_type`; its digest. With the referrers API off it is
+    /// listed in the fallback index too, as the client that attached it would
+    /// have done.
+    pub fn seed_referrer(
+        &self,
+        repo: &str,
+        subject: &str,
+        artifact_type: &str,
+        payload: &[u8],
+    ) -> String {
+        let config = self.seed_blob(repo, oci::EMPTY_CONFIG);
+        let layer = self.seed_blob(repo, payload);
+        let manifest = json!({
+            "schemaVersion": 2,
+            "mediaType": oci::MANIFEST_TYPE,
+            "artifactType": artifact_type,
+            "config": oci::descriptor(oci::EMPTY_CONFIG_TYPE, &config, oci::EMPTY_CONFIG.len()),
+            "layers": [oci::descriptor(artifact_type, &layer, payload.len())],
+            "subject": { "mediaType": oci::MANIFEST_TYPE, "digest": subject, "size": 0 },
+        })
+        .to_string()
+        .into_bytes();
+        let digest = digest_of(&manifest);
+        let mut state = lock(&self.state);
+        let off = state.referrers_api_off;
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        let stored = Stored {
+            media_type: IMAGE_MANIFEST.to_string(),
+            bytes: manifest,
+        };
+        repo.manifests.insert(digest.clone(), stored);
+        if off {
+            let mut listed = fallback_manifests(repo, subject);
+            listed.push(descriptor_of(&digest, repo));
+            let stored = Stored {
+                media_type: oci::INDEX_TYPE.to_string(),
+                bytes: fallback_index(&listed),
+            };
+            store_tag(repo, &fallback_tag(subject), stored);
+        }
+        digest
+    }
+
+    /// What a client sees as referrers of `subject` in `repo`, of any
+    /// artifact type: `(digest, artifact type)`. From the referrers API, or
+    /// from the fallback index when the API is off.
+    pub fn referrers(&self, repo: &str, subject: &str) -> Vec<(String, String)> {
+        let state = lock(&self.state);
+        let Some(repo) = state.repos.get(repo) else {
+            return Vec::new();
+        };
+        let listed = match state.referrers_api_off {
+            true => fallback_manifests(repo, subject),
+            false => referrer_descriptors(repo, subject),
+        };
+        let text = |d: &Value, key: &str| d[key].as_str().unwrap_or_default().to_string();
+        let all = listed.iter();
+        all.map(|d| (text(d, "digest"), text(d, "artifactType")))
+            .collect()
     }
 
     /// A container image under `tag`, which is no lvpm package.
@@ -484,6 +574,7 @@ enum Route<'a> {
     Token,
     Tags(&'a str),
     Manifest(&'a str, &'a str),
+    Referrers(&'a str, &'a str),
     Blob(&'a str, &'a str),
     /// Where a blob upload starts (`""`) or goes on (its id).
     Upload(&'a str, &'a str),
@@ -503,6 +594,8 @@ fn route(path: &str) -> Route<'_> {
         Route::Upload(name, id)
     } else if let Some((name, digest)) = rest.split_once("/blobs/") {
         Route::Blob(name, digest)
+    } else if let Some((name, digest)) = rest.split_once("/referrers/") {
+        Route::Referrers(name, digest)
     } else if let Some((name, reference)) = rest.split_once("/manifests/") {
         Route::Manifest(name, reference)
     } else {
@@ -525,6 +618,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     let name = match &route {
         Route::Tags(name)
         | Route::Manifest(name, _)
+        | Route::Referrers(name, _)
         | Route::Blob(name, _)
         | Route::Upload(name, _) => *name,
         Route::Token | Route::Other => return not_found("UNSUPPORTED", "no such route"),
@@ -560,6 +654,13 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
             "PUT" => put_manifest(state, request, name, reference, body),
             _ => method_not_allowed(),
         },
+        Route::Referrers(name, digest) => {
+            match (request.method.as_str(), state.referrers_api_off) {
+                ("GET", false) => referrers(state, name, digest, query),
+                ("GET", true) => not_found("UNSUPPORTED", "no such route"),
+                _ => method_not_allowed(),
+            }
+        }
         Route::Blob(name, digest) => match request.method.as_str() {
             "GET" | "HEAD" => get_blob(state, name, digest),
             _ => method_not_allowed(),
@@ -670,6 +771,12 @@ fn put_manifest(
     if reference.starts_with("sha256:") && reference != digest {
         return error_reply(400, "DIGEST_INVALID", "the digest does not match the body");
     }
+    let subject = subject_of(body);
+    let referrer_write = subject.is_some() || reference.starts_with("sha256-");
+    if referrer_write && state.refused_referrer_writes.iter().any(|r| r == name) {
+        return error_reply(403, "DENIED", "requested access to the resource is denied");
+    }
+    let indexed = subject.is_some() && !state.referrers_api_off;
     let repo = state.repos.entry(name.to_string()).or_default();
     if let Some(missing) = unknown_blob(repo, body) {
         return error_reply(
@@ -690,11 +797,84 @@ fn put_manifest(
         false => drop(store_tag(repo, reference, stored)),
     }
     let location = format!("/v2/{name}/manifests/{digest}");
-    response(
-        "201 Created",
-        &[("Docker-Content-Digest", &digest), ("Location", &location)],
-        b"",
-    )
+    let mut headers = vec![
+        ("Docker-Content-Digest", digest.as_str()),
+        ("Location", &location),
+    ];
+    if let (true, Some(subject)) = (indexed, subject.as_deref()) {
+        headers.push(("OCI-Subject", subject));
+    }
+    response("201 Created", &headers, b"")
+}
+
+/// The digest a manifest names as its `subject`.
+fn subject_of(manifest: &[u8]) -> Option<String> {
+    let json: Value = serde_json::from_slice(manifest).ok()?;
+    Some(json["subject"]["digest"].as_str()?.to_string())
+}
+
+/// `sha256-<hex>`: where a client keeps the referrers of a registry that has
+/// no API.
+fn fallback_tag(subject: &str) -> String {
+    subject.replacen(':', "-", 1)
+}
+
+/// The descriptor of the stored manifest `digest`, as an index lists it.
+fn descriptor_of(digest: &str, repo: &Repo) -> Value {
+    let stored = &repo.manifests[digest];
+    let json: Value = serde_json::from_slice(&stored.bytes).unwrap_or_default();
+    // A registry gives a manifest with no `artifactType` its config's type.
+    let artifact_type = (json["artifactType"].as_str())
+        .or_else(|| json["config"]["mediaType"].as_str())
+        .unwrap_or_default();
+    json!({
+        "mediaType": stored.media_type,
+        "digest": digest,
+        "size": stored.bytes.len(),
+        "artifactType": artifact_type,
+    })
+}
+
+/// The manifests of `repo` whose subject is `subject`, as descriptors.
+fn referrer_descriptors(repo: &Repo, subject: &str) -> Vec<Value> {
+    let mut found: Vec<&String> = (repo.manifests.iter())
+        .filter(|(_, stored)| subject_of(&stored.bytes).as_deref() == Some(subject))
+        .map(|(digest, _)| digest)
+        .collect();
+    found.sort();
+    found.into_iter().map(|d| descriptor_of(d, repo)).collect()
+}
+
+/// What the fallback index of `subject` lists.
+fn fallback_manifests(repo: &Repo, subject: &str) -> Vec<Value> {
+    let tagged = repo.tags.get(&fallback_tag(subject));
+    let index = tagged.and_then(|digest| repo.manifests.get(digest));
+    let json: Value = index
+        .and_then(|stored| serde_json::from_slice(&stored.bytes).ok())
+        .unwrap_or_default();
+    json["manifests"].as_array().cloned().unwrap_or_default()
+}
+
+fn fallback_index(manifests: &[Value]) -> Vec<u8> {
+    json!({ "schemaVersion": 2, "mediaType": oci::INDEX_TYPE, "manifests": manifests })
+        .to_string()
+        .into_bytes()
+}
+
+/// The referrers API's answer: an index of the manifests that have `digest` as
+/// their subject, those of the `artifactType` in `query` when it has one.
+fn referrers(state: &State, name: &str, digest: &str, query: &str) -> Vec<u8> {
+    let Some(repo) = state.repos.get(name) else {
+        return not_found("NAME_UNKNOWN", "repository name not known to registry");
+    };
+    let asked = form_pairs(query).remove("artifactType");
+    let mut manifests = referrer_descriptors(repo, digest);
+    let mut headers = vec![("Content-Type", oci::INDEX_TYPE)];
+    if let Some(asked) = &asked {
+        manifests.retain(|d| d["artifactType"].as_str() == Some(asked.as_str()));
+        headers.push(("OCI-Filters-Applied", "artifactType"));
+    }
+    response("200 OK", &headers, &fallback_index(&manifests))
 }
 
 /// The first blob a manifest's config or layers name that `repo` lacks.
@@ -1306,6 +1486,108 @@ mod tests {
         assert_eq!(read.status_line, "HTTP/1.1 200 OK");
         let write = send_to(registry.addr(), "POST", "/v2/t/a/blobs/uploads/", AUTH, b"");
         assert_eq!(write.status_line, "HTTP/1.1 403 Forbidden");
+    }
+
+    /// A manifest with `subject` and the artifact type `artifact`, its blobs uploaded.
+    fn referrer_body(registry: &Registry, subject: &str, artifact: &str) -> Vec<u8> {
+        upload(registry, "t/a", b"{}");
+        upload(registry, "t/a", artifact.as_bytes());
+        json!({
+            "schemaVersion": 2,
+            "artifactType": artifact,
+            "config": { "digest": digest_of(b"{}"), "size": 2 },
+            "layers": [{ "digest": digest_of(artifact.as_bytes()), "size": artifact.len() }],
+            "subject": { "digest": subject, "size": 1 },
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_manifest_with_a_subject_is_listed_by_the_referrers_api_and_filtered_by_type() {
+        let registry = Registry::start();
+        let subject = registry.seed_manifest("t/a", "1.0.0", b"{}");
+        let sbom = referrer_body(&registry, &subject, "a/sbom");
+        let put = put_manifest(&registry, "t/a", &digest_of(&sbom), &sbom);
+        assert!(
+            put.head.contains(&format!("OCI-Subject: {subject}")),
+            "{}",
+            put.head
+        );
+        let other = referrer_body(&registry, &subject, "a/bundle");
+        put_manifest(&registry, "t/a", &digest_of(&other), &other);
+
+        let all = get_from(
+            registry.addr(),
+            &format!("/v2/t/a/referrers/{subject}"),
+            AUTH,
+        );
+        assert_eq!(json_of(&all)["manifests"].as_array().unwrap().len(), 2);
+        let asked = get_from(
+            registry.addr(),
+            &format!("/v2/t/a/referrers/{subject}?artifactType=a%2Fsbom"),
+            AUTH,
+        );
+        assert!(asked.head.contains("OCI-Filters-Applied: artifactType"));
+        let listed = json_of(&asked);
+        assert_eq!(listed["manifests"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["manifests"][0]["digest"], digest_of(&sbom).as_str());
+        assert_eq!(listed["manifests"][0]["artifactType"], "a/sbom");
+        assert_eq!(registry.referrers("t/a", &subject).len(), 2);
+    }
+
+    #[test]
+    fn without_the_referrers_api_the_route_is_404_and_a_subject_is_not_acknowledged() {
+        let registry = Registry::start();
+        registry.offer_referrers_api(false);
+        let subject = registry.seed_manifest("t/a", "1.0.0", b"{}");
+        let body = referrer_body(&registry, &subject, "a/sbom");
+        let put = put_manifest(&registry, "t/a", &digest_of(&body), &body);
+        assert_eq!(put.status_line, "HTTP/1.1 201 Created");
+        assert!(!put.head.contains("OCI-Subject"), "{}", put.head);
+        let route = format!("/v2/t/a/referrers/{subject}");
+        assert_eq!(
+            get_from(registry.addr(), &route, AUTH).status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+        assert_eq!(registry.referrers("t/a", &subject), [], "no index yet");
+    }
+
+    #[test]
+    fn a_seeded_referrer_is_listed_in_the_fallback_index_when_the_api_is_off() {
+        let registry = Registry::start();
+        let subject = registry.seed_manifest("t/a", "1.0.0", b"{}");
+        let tag = subject.replacen(':', "-", 1);
+        let with_api = registry.seed_referrer("t/a", &subject, "a/bundle", b"one");
+        assert_eq!(registry.tag_digest("t/a", &tag), None);
+        assert_eq!(
+            registry.referrers("t/a", &subject),
+            [(with_api, "a/bundle".to_string())]
+        );
+        registry.offer_referrers_api(false);
+        let without = registry.seed_referrer("t/a", &subject, "a/other", b"two");
+        let index = registry.tag_digest("t/a", &tag).expect("a fallback index");
+        let index: Value =
+            serde_json::from_slice(&registry.manifest("t/a", &index).unwrap()).unwrap();
+        assert_eq!(index["manifests"][0]["digest"], without.as_str());
+        assert_eq!(
+            registry.referrers("t/a", &subject),
+            [(without, "a/other".to_string())]
+        );
+    }
+
+    #[test]
+    fn writes_of_a_referrer_are_refused_for_one_repository_and_other_writes_are_not() {
+        let registry = Registry::start();
+        let subject = registry.seed_manifest("t/a", "1.0.0", b"{}");
+        registry.refuse_referrer_writes("t/a");
+        let body = referrer_body(&registry, &subject, "a/sbom");
+        let refused = put_manifest(&registry, "t/a", &digest_of(&body), &body);
+        assert_eq!(refused.status_line, "HTTP/1.1 403 Forbidden");
+        let index = put_manifest(&registry, "t/a", &subject.replacen(':', "-", 1), b"{}");
+        assert_eq!(index.status_line, "HTTP/1.1 403 Forbidden");
+        let plain = put_manifest(&registry, "t/a", "2.0.0", b"{}");
+        assert_eq!(plain.status_line, "HTTP/1.1 201 Created");
     }
 
     #[test]

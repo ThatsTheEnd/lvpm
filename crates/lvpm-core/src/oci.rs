@@ -9,6 +9,8 @@
 //! A package version is one OCI image manifest: `artifactType`
 //! [`ARTIFACT_TYPE`], an empty config, and one layer, the `.lvpkg` bytes
 //! (media type [`LAYER_TYPE`]). Its annotations carry what an index needs.
+//! What belongs to a version but is not the package, such as its SBOM, is a
+//! referrer: another manifest whose `subject` is the version's (`referrers`).
 
 use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::header::LOCATION;
@@ -23,10 +25,12 @@ mod auth;
 pub mod logins;
 mod manifest;
 pub mod reference;
+mod referrers;
 
 pub use logins::{Credential, Credentials};
 pub use manifest::{Manifest, Package};
 pub use reference::{FeedUrl, Reference, SCHEME, Target, UrlError, valid_tag};
+pub use referrers::Referrer;
 
 /// The manifest's `artifactType`: what tells a package from any other artifact.
 pub const ARTIFACT_TYPE: &str = "application/vnd.lvpm.package.v1";
@@ -38,6 +42,12 @@ pub const EMPTY_CONFIG: &[u8] = b"{}";
 pub const LAYER_TYPE: &str = "application/vnd.lvpm.lvpkg.v1+zip";
 /// The media type of an OCI image manifest.
 pub const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+/// The media type of an OCI image index: what the referrers API answers, and
+/// what a registry without it keeps under the fallback tag.
+pub const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+/// The `artifactType` and layer media type of a package's SBOM referrer: the
+/// package's `bom.cdx.json`, as CycloneDX.
+pub const SBOM_TYPE: &str = "application/vnd.cyclonedx+json";
 
 pub const ANNOTATION_TITLE: &str = "org.opencontainers.image.title";
 pub const ANNOTATION_VERSION: &str = "org.opencontainers.image.version";
@@ -63,6 +73,11 @@ pub fn digest_of(bytes: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect();
     format!("sha256:{hex}")
+}
+
+/// An OCI descriptor: what a manifest says of a blob or of another manifest.
+pub fn descriptor(media_type: &str, digest: &str, size: usize) -> serde_json::Value {
+    serde_json::json!({ "mediaType": media_type, "digest": digest, "size": size })
 }
 
 /// `error`'s text without the ` for url (...)` reqwest appends: the URL can be
