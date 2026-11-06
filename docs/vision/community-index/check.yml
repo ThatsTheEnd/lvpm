@@ -1,0 +1,105 @@
+name: Check the pull request
+
+# The bot of labview-package-manager/package-index. On every pull request it
+# runs `lvpm index check` on the target branch and the pull request's files,
+# then merges the pull request when every new version is accepted, or comments
+# with the refusal lines. A copy of this file is kept in the lvpm repository
+# (docs/vision/community-index/check.yml) so the index can be rebuilt.
+#
+# pull_request_target runs this file as it is on the target branch, with a
+# token that can merge. Nothing from the pull request is executed or sourced:
+# its files are checked out as data into head/ and only lvpm reads them.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  # The lvpm that checks. `lvpm index check` is in the first release that ships
+  # S8; until then the repository variable LVPM_GIT_REV names an lvpm commit to
+  # build instead.
+  LVPM_VERSION: "0.25.0"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # merge
+      pull-requests: write # merge, comment
+    steps:
+      - name: Check out the target branch
+        uses: actions/checkout@v4
+        with:
+          # The branch's tip now, not when the pull request was opened.
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: base
+          persist-credentials: false
+      - name: Check out the pull request, as data
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - name: Install lvpm
+        if: vars.LVPM_GIT_REV == ''
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
+          base="https://github.com/ThatsTheEnd/lvpm/releases/download/v${LVPM_VERSION}"
+          curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
+          grep -F "  $archive" SHA256SUMS | sha256sum --check
+          mkdir lvpm-bin
+          tar -xzf "$archive" -C lvpm-bin lvpm
+          echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
+      - name: Build lvpm from a commit
+        if: vars.LVPM_GIT_REV != ''
+        working-directory: ${{ runner.temp }}
+        env:
+          REV: ${{ vars.LVPM_GIT_REV }}
+        run: |
+          cargo install --locked --git https://github.com/ThatsTheEnd/lvpm --rev "$REV" --root "$RUNNER_TEMP/lvpm" lvpm
+          echo "$RUNNER_TEMP/lvpm/bin" >> "$GITHUB_PATH"
+      - name: Check
+        working-directory: ${{ runner.temp }}
+        env:
+          # gh verifies the attestations with it; lvpm sends no token to downloads.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          lvpm --json index check --base "$GITHUB_WORKSPACE/base" --head "$GITHUB_WORKSPACE/head" > check.jsonl
+          echo "lvpm exited $?"
+          # The last line is {"result": ...} or {"error": ...}.
+          tail -n 1 check.jsonl > result.json
+          cat result.json
+      - name: Merge or comment
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if ! jq -e '.result' result.json > /dev/null 2>&1; then
+            gh pr comment "$PR" --repo "$REPO" --body "lvpm index check could not run on this pull request. A maintainer will look at the job log."
+            exit 1
+          fi
+          accepted=$(jq -r '.result.accepted' result.json)
+          refused=$(jq -r '.result.refused' result.json)
+          if [ "$refused" -gt 0 ]; then
+            jq -r '.result.comment' result.json > comment.md
+            gh pr comment "$PR" --repo "$REPO" --body-file comment.md
+            exit 1
+          elif [ "$accepted" -gt 0 ]; then
+            # Merge exactly the commit that was checked.
+            gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"
+          else
+            gh pr comment "$PR" --repo "$REPO" --body "lvpm index check: nothing to check. This pull request adds no version, so a maintainer reviews it."
+          fi
