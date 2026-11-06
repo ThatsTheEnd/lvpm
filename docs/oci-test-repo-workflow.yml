@@ -30,8 +30,8 @@ on:
   workflow_dispatch:
     inputs:
       lvpm_ref:
-        description: The branch or tag of ThatsTheEnd/lvpm to build
-        default: claude/dev-team-ship-45aef4
+        description: The branch or tag of ThatsTheEnd/lvpm to build (one that has lvpm publish --to oci://)
+        default: main
 
 jobs:
   publish:

@@ -119,6 +119,8 @@ jobs:
           lvpm publish --to oci://${OCI_PREFIX} | tee publish.log
           # "published <name> <version> to oci://<host>/<repo>:<tag>", then the digest.
           reference=$(awk '/^published/ {print $5}' publish.log)
+          # An empty value here would make the attest step fail with a vaguer error.
+          test -n "$reference" && grep -q "OCI manifest digest" publish.log
           repository=${reference#oci://}
           echo "name=${repository%:*}" >> "$GITHUB_OUTPUT"
           echo "digest=$(awk '/OCI manifest digest/ {print $4}' publish.log)" >> "$GITHUB_OUTPUT"
