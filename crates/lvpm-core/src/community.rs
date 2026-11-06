@@ -69,6 +69,29 @@ pub struct FileVersion {
 }
 
 impl FileVersion {
+    /// The first field (as `field`, old text, new text) where `now` differs from
+    /// this listed version. Consumers trust every field, so any change counts.
+    fn first_change(&self, now: &FileVersion) -> Option<(&'static str, String, String)> {
+        let gate = |v: &FileVersion| v.labview.clone().unwrap_or_else(|| "none".into());
+        let requires = |v: &FileVersion| {
+            if v.requires.is_empty() {
+                "none".into()
+            } else {
+                v.requires.join(", ")
+            }
+        };
+        [
+            ("sha256", self.sha256.clone(), now.sha256.clone()),
+            ("url", self.url.clone(), now.url.clone()),
+            ("labview", gate(self), gate(now)),
+            ("requires", requires(self), requires(now)),
+        ]
+        .into_iter()
+        .find(|(_, old, new)| old != new)
+    }
+}
+
+impl FileVersion {
     /// What an index lists of `package`, as lvpm reads it out of the file
     /// (`entry_from_bytes`): the file at `url` has `sha256`.
     pub fn of_package(package: &Entry, url: &str, sha256: &str) -> Self {
@@ -283,12 +306,13 @@ pub enum Finding {
         old: String,
         new: String,
     },
-    /// R3: a listed version has another `sha256`; `version` is as the base
-    /// wrote it.
+    /// R3: a listed version has another `field` (`sha256`, `url`, `labview` or
+    /// `requires`, the first that differs); `version` is as the base wrote it.
     VersionChanged {
         path: String,
         name: String,
         version: String,
+        field: &'static str,
         old: String,
         new: String,
     },
@@ -452,16 +476,22 @@ impl Diff {
                         name,
                         version: listed.version.clone(),
                     }),
-                    Some(now) if now.sha256 != listed.sha256 => {
-                        self.findings.push(Finding::VersionChanged {
-                            path: path(),
-                            name,
-                            version: listed.version.clone(),
-                            old: listed.sha256.clone(),
-                            new: now.sha256.clone(),
-                        });
+                    Some(now) => {
+                        // R2 already refuses a new owner, whose URLs differ by construction.
+                        let change = listed
+                            .first_change(now)
+                            .filter(|(field, ..)| !owner_changed || *field == "sha256");
+                        if let Some((field, old, new)) = change {
+                            self.findings.push(Finding::VersionChanged {
+                                path: path(),
+                                name,
+                                version: listed.version.clone(),
+                                field,
+                                old,
+                                new,
+                            });
+                        }
                     }
-                    Some(_) => {}
                 }
             }
         }
@@ -1082,10 +1112,19 @@ github = \"a/x\"
             Finding::VersionChanged {
                 name,
                 version,
+                field,
                 old,
                 new,
                 ..
-            } => format!("R3 {name} {version} {old} {new}"),
+            } if *field == "sha256" => format!("R3 {name} {version} {old} {new}"),
+            Finding::VersionChanged {
+                name,
+                version,
+                field,
+                old,
+                new,
+                ..
+            } => format!("R3 {name} {version} {field} {old} -> {new}"),
             Finding::VersionRemoved { name, version, .. } => format!("R3b {name} {version}"),
             Finding::UrlNotReleaseFile { name, version, .. } => format!("R4 {name} {version}"),
             Finding::Unreadable { path, .. } => format!("parse {path}"),
@@ -1099,7 +1138,7 @@ github = \"a/x\"
     #[test]
     fn a_pure_rule_refuses() {
         type Change = fn(&mut Tree);
-        let rows: [(&str, Change, Vec<String>); 12] = [
+        let rows: [(&str, Change, Vec<String>); 14] = [
             (
                 "adds notes.md",
                 |t| t.put("notes.md", b"hi"),
@@ -1140,12 +1179,9 @@ github = \"a/x\"
             (
                 "changes foo's github to A/X",
                 |t| {
-                    t.put_entry(
-                        "packages/foo.toml",
-                        "foo",
-                        "A/X",
-                        &[("1.0.0", SHA_A), ("1.0.1", SHA_B)],
-                    );
+                    let text = entry_text("foo", "a/x", &[("1.0.0", SHA_A), ("1.0.1", SHA_B)])
+                        .replacen("github = \"a/x\"", "github = \"A/X\"", 1);
+                    t.put("packages/foo.toml", text.as_bytes());
                 },
                 vec![],
             ),
@@ -1172,6 +1208,31 @@ github = \"a/x\"
                     );
                 },
                 vec![format!("R3 foo 1.0.0 {SHA_A} {SHA_C}")],
+            ),
+            (
+                "adds a requirement to foo 1.0.0, same sha256",
+                |t| {
+                    let text = entry_text("foo", "a/x", &[("1.0.0", SHA_A), ("1.0.1", SHA_B)])
+                        .replacen(
+                            &format!("sha256 = \"{SHA_A}\"\n"),
+                            &format!("sha256 = \"{SHA_A}\"\nrequires = [\"bar >=2\"]\n"),
+                            1,
+                        );
+                    t.put("packages/foo.toml", text.as_bytes());
+                },
+                vec!["R3 foo 1.0.0 requires none -> bar >=2".into()],
+            ),
+            (
+                "points foo 1.0.0 at another release file, same sha256",
+                |t| {
+                    let text = entry_text("foo", "a/x", &[("1.0.0", SHA_A), ("1.0.1", SHA_B)])
+                        .replacen("/1.0.0/foo.lvpkg", "/1.0.0/other.lvpkg", 1);
+                    t.put("packages/foo.toml", text.as_bytes());
+                },
+                vec![format!(
+                    "R3 foo 1.0.0 url {WEB}/a/x/releases/download/1.0.0/foo.lvpkg -> \
+                     {WEB}/a/x/releases/download/1.0.0/other.lvpkg"
+                )],
             ),
             (
                 "removes foo 1.0.0",

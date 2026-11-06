@@ -65,7 +65,7 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 | R1 | `refused <path>: only .toml files directly under packages/ may change. fix: remove this change` |
 | R1b | `refused <path>: the entry for <name> must be packages/<key>.toml. fix: rename the file` |
 | R2 | `refused <name>: github changed from <old> to <new>, and <name> belongs to <old>. fix: publish from <old>, or register another name` |
-| R3 | `refused <name> <version>: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version` |
+| R3 | `refused <name> <version>: already listed with <field> <old>, now <new>. fix: listed versions cannot change; publish a new version` |
 | R3b | `refused <name> <version>: listed versions cannot be removed. fix: restore it` |
 | R4 | `refused <name> <version>: <url> is not a release file of <github>. fix: upload the package to a release of <github>` |
 | R5 | `refused <name> <version>: the file has sha256 <actual>, the entry says <entry>. fix: don't replace release files after tagging; push a new tag` |
@@ -77,6 +77,7 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 | none | `nothing to check` (exit 0) |
 
 - `<field>` of R5b is `name`, `version`, `requires` or `labview`.
+- `<field>` of R3 is the first of `sha256`, `url`, `labview`, `requires` that differs from the base; consumers trust every field. A missing `labview` or empty `requires` shows as `none`; `requires` joins with `, `. Under R2 (new owner) only `sha256` is compared, since the URLs change with the owner.
 - `<reason>` of R6 is S6's outcome text: `no attestation`, an unchecked reason (`gh` could not run), or `does not verify`. Every one refuses: the bot fails closed.
 - The bot's PR comment starts `lvpm index check refused this PR:`, lists the lines, and ends `Fix the cause, push a new tag, and close this PR.` with a link to docs/usage.md "Publish to the community index".
 
