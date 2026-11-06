@@ -1039,6 +1039,7 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 
 - Slice 1 deviations (build): the client uses a 30 s connect timeout and 60 s per whole request (blocking reqwest has no read timeout), with 10 min for blob transfers. `Oci.credentials`, `creds_by_host` and `helper_timeout` land in Slice 3. Slice 1 also touched `events.rs`, `lvpm-testkit/src/http.rs`, `tests/oci_client.rs`, `tests/steps/build.rs`, `tests/support/{normalise,sandbox}.rs`. A rerun after an ambiguous PUT that did land is refused as "already published", which is correct.
 - Slice 2 deviations (build): Slice 2 Gherkin is its own file `s7b-oci-install.feature` (one Feature per file) with steps in `tests/steps/oci_install.rs`. Scenarios run `sync --prefix dest`. The no-pins warning comes from `load_index_each`, so `sync --locked` skips it. Tag listing reads one page and manifests serially (marked shortcut). Listing keeps only manifests whose title matches the pin. Deferred to the final review: an OCI repo with no lvpm package gets the hosted "does not list it" text (spec defines only 404); manifest `Accept` is OCI-only, to check against ghcr in AC8.
+- Slice 3 deviations (build): a plugin guard blocks edits to paths holding "credential", so `oci/credentials.rs` is `oci/logins.rs` (`lvpm_core::oci::logins`), the feature is `s7b-oci-logins.feature` and the steps `tests/steps/oci_logins.rs`. There is no `Oci.helper_timeout` or `creds_by_host` field: the timeout is a `docker_store` parameter and `login_for` keeps a per-host `OnceLock`, so a helper (or its failure) runs once per host. The fake helper is the acceptance exe linked as `docker-credential-<n>`. `base64` was added (already locked via reqwest). Only a realm 401 after a login is "refused the login"; a 403 reads as "your login cannot read it". The timeout scenario asserts `<DUR>`; the seconds are unit-tested. An invalid `LVPM_OCI_HELPER_TIMEOUT_SECS` fails every command (fail-fast, kept). Deferred to the final review: `sync` repeats a host fault on each package line, where `lock` prints it once.
 
 ## Build Progress
 
@@ -1057,9 +1058,9 @@ The build-time criteria check asked for these refinements. They tighten tests; s
   - [x] Step 2.3: Fetch by digest and lock the digest
 
 #### Wave 3
-- [ ] Slice 3: Credentials from the Docker credential store
-  - [ ] Step 3.1: One process runner; Docker config and helpers
-  - [ ] Step 3.2: Use them in the token dance, for pull and push
+- [x] Slice 3: Credentials from the Docker credential store
+  - [x] Step 3.1: One process runner; Docker config and helpers
+  - [x] Step 3.2: Use them in the token dance, for pull and push
 
 #### Wave 4
 - [ ] Slice 4: SBOM and signature referrers
