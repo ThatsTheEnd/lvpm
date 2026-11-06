@@ -499,13 +499,19 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
                 subject = super::printable(subject.clone()),
                 signer = super::printable(signer.clone()),
             ),
-            Refusal::DoesNotVerify { cause } => format!(
-                "the attestation of {name} {version} from {from} does not verify:{}\n    \
-                 hint: if gh's reason is a network error, try again; otherwise report this to the \
-                 publisher, the archive may have been tampered with. lvpm refuses it whatever \
-                 [policy] says",
-                invalid(cause)
-            ),
+            Refusal::DoesNotVerify { cause } => {
+                let tampered = match origin {
+                    Origin::GitHub { .. } => "archive",
+                    Origin::Oci { .. } => "manifest",
+                };
+                format!(
+                    "the attestation of {name} {version} from {from} does not verify:{}\n    \
+                     hint: if gh's reason is a network error, try again; otherwise report this to \
+                     the publisher, the {tampered} may have been tampered with. lvpm refuses it \
+                     whatever [policy] says",
+                    invalid(cause)
+                )
+            }
             Refusal::CannotCheck { reason } => {
                 let repo = match origin {
                     Origin::GitHub { repo } => Some(repo.as_str()),
@@ -1498,6 +1504,34 @@ mod tests {
             assert!(text.contains(&line), "{line:?} is not in: {text}");
             assert!(!text.contains("github.com/"), "{text}");
         }
+    }
+
+    #[test]
+    fn a_failed_verification_blames_the_archive_of_a_github_package_and_the_manifest_of_an_oci_one()
+    {
+        let does_not_verify = |origin| {
+            refused(vec![AttestationRefusal {
+                name: "alpha".into(),
+                version: "1.0.0".into(),
+                origin,
+                kind: Refusal::DoesNotVerify {
+                    cause: Invalid::OtherArchive,
+                },
+            }])
+        };
+        let github = does_not_verify(Origin::GitHub { repo: "o/r".into() });
+        assert!(
+            github.contains("the archive may have been tampered with"),
+            "{github}"
+        );
+        let oci = does_not_verify(Origin::Oci {
+            source: "oci://reg:5000/team".into(),
+        });
+        assert!(
+            oci.contains("the manifest may have been tampered with"),
+            "{oci}"
+        );
+        assert!(!oci.contains("archive may"), "{oci}");
     }
 
     #[test]
