@@ -14,7 +14,8 @@ use super::snapshot::restoring_on_failure;
 use super::sync::{Search, Unfetched};
 use crate::cache::{now, sha256_hex};
 use crate::errors::{
-    ArchiveFailure, ArchiveFault, Cancelled, ListingFailures, LockError, MovedTag,
+    ArchiveFailure, ArchiveFault, Cancelled, IndexHashMismatch, ListingFailures, LockError,
+    MovedTag,
 };
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
@@ -759,6 +760,7 @@ fn hash_archives(
     let mut failures = Vec::new();
     let mut not_as_locked = Vec::new();
     let mut moved = Vec::new();
+    let mut differing = Vec::new();
     let pin_of = |entry: &Entry| pins.iter().find(|pin| same_name(pin.package, &entry.name));
     for (position, (key, entry)) in resolution.packages.iter().enumerate() {
         if env.cancel.is_cancelled() {
@@ -810,6 +812,10 @@ fn hash_archives(
                 hashes.insert(key.clone(), sha256_hex(&bytes));
             }
             Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
+            Err(why) if why.is::<IndexHashMismatch>() => differing.push(
+                why.downcast::<IndexHashMismatch>()
+                    .expect("checked by is above"),
+            ),
             Err(why) => {
                 let oci_manifest = index::oci_reference(entry);
                 let digest = oci_manifest.as_ref().and_then(Reference::digest);
@@ -831,15 +837,18 @@ fn hash_archives(
             }
         }
     }
-    match (
-        moved.is_empty(),
-        not_as_locked.is_empty(),
-        failures.is_empty(),
-    ) {
-        (false, _, _) => Err(LockError::TagMoved(moved)),
-        (true, false, _) => Err(LockError::LockedArchives(not_as_locked)),
-        (true, true, false) => Err(LockError::ArchivesUnavailable(failures)),
-        (true, true, true) => Ok(hashes),
+    if !moved.is_empty() {
+        return Err(LockError::TagMoved(moved));
+    }
+    if !not_as_locked.is_empty() {
+        return Err(LockError::LockedArchives(not_as_locked));
+    }
+    if !differing.is_empty() {
+        return Err(LockError::IndexFilesDiffer(differing));
+    }
+    match failures.is_empty() {
+        true => Ok(hashes),
+        false => Err(LockError::ArchivesUnavailable(failures)),
     }
 }
 

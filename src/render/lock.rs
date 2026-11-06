@@ -4,8 +4,9 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, ListingFailure, ListingFailures,
-    ListingFault, LockError, LockedArchiveProblem, MovedTag, Origin, SignatureLookupFailure,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, IndexHashMismatch, ListingFailure,
+    ListingFailures, ListingFault, LockError, LockedArchiveProblem, MovedTag, Origin,
+    SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -185,6 +186,7 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
         LockError::Conflict(conflict) => conflict_text(conflict, rerun),
         LockError::ArchivesUnavailable(failures) => archives_text(failures, rerun),
         LockError::LockedArchives(problems) => locked_archives_text(problems, rerun),
+        LockError::IndexFilesDiffer(files) => index_files_text(files),
         LockError::TagMoved(moved) => moved_tags_text(moved, rerun),
         LockError::Refused {
             refusals,
@@ -399,6 +401,24 @@ fn archives_text(failures: &[ArchiveFailure], rerun: &str) -> String {
         "\nnext: make each source reachable, or add the archive with `lvpm cache add <file>`, \
          then run {rerun} again"
     ));
+    text
+}
+
+/// Files that are not what their community index lists: the line of each, and
+/// whom to tell. The file is not kept, and no lock is written.
+fn index_files_text(files: &[IndexHashMismatch]) -> String {
+    let plural = if files.len() == 1 { "" } else { "s" };
+    let mut text = format!(
+        "cannot lock: {} downloaded file{plural} differ{} from the index:",
+        files.len(),
+        if files.len() == 1 { "s" } else { "" }
+    );
+    for file in files {
+        text.push_str(&format!(
+            "\n  {file}\n    hint: report this to the package's owner, {}; lvpm installed nothing",
+            file.publisher
+        ));
+    }
     text
 }
 
@@ -689,6 +709,31 @@ mod tests {
              locked again\n\
              next: add the archive lvpm.lock was made from with `lvpm cache add <file>`, or \
              delete lvpm.lock to lock the archives as they are now, then run `lvpm lock` again"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_the_one_the_index_lists_is_named_with_both_hashes_and_whom_to_tell() {
+        let file = |name: &str| IndexHashMismatch {
+            name: name.into(),
+            version: "1.2.0".into(),
+            index: "github-index:labview-package-manager/package-index".into(),
+            publisher: "someone/Serializer".into(),
+            pinned: "aaa".into(),
+            actual: "bbb".into(),
+        };
+        assert_eq!(
+            error(&LockError::IndexFilesDiffer(vec![file("pilot_b")])),
+            "cannot lock: 1 downloaded file differs from the index:\n\
+             \x20 the file of pilot_b 1.2.0 from github-index:labview-package-manager/package-index \
+             has sha256 bbb, but the index lists aaa\n\
+             \x20   hint: report this to the package's owner, someone/Serializer; lvpm installed \
+             nothing"
+        );
+        let both = error(&LockError::IndexFilesDiffer(vec![file("a"), file("b")]));
+        assert!(
+            both.starts_with("cannot lock: 2 downloaded files differ from the index:"),
+            "{both}"
         );
     }
 

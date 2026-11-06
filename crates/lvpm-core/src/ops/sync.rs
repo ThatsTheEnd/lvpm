@@ -18,7 +18,9 @@ use super::lock as locking;
 use super::session::{Downloads, InstallSession};
 use super::uninstall::uninstall_one;
 use crate::cache::{Stored, sha256_hex};
-use crate::errors::{ArchiveFault, Cancelled, LockError, LockedArchiveProblem, SyncError};
+use crate::errors::{
+    ArchiveFault, Cancelled, IndexHashMismatch, LockError, LockedArchiveProblem, SyncError,
+};
 use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
 use crate::install::{self, Manifest};
@@ -644,6 +646,19 @@ impl Unfetched {
         }
     }
 
+    /// Why `why` stopped a download from an index or a feed: a file the index
+    /// lists by another SHA-256 is a whole sentence, any other cause is
+    /// worded after the package.
+    pub(super) fn of_download(why: &anyhow::Error) -> Unfetched {
+        match why.downcast_ref::<IndexHashMismatch>() {
+            Some(mismatch) => Unfetched {
+                reason: mismatch.to_string(),
+                in_full: true,
+            },
+            None => Unfetched::plain(format!("{why:#}")),
+        }
+    }
+
     /// Why `why` stopped `name` `version` from being fetched from the OCI
     /// source `source`, by its manifest `manifest`.
     pub(super) fn of_oci(
@@ -697,9 +712,7 @@ impl<'a> Search<'a> {
             .filter(|entry| entry.version == version)
         {
             let fetched = downloads.fetch(entry);
-            self.consider(downloads, fetched, |why| {
-                Unfetched::plain(format!("{why:#}"))
-            })?;
+            self.consider(downloads, fetched, Unfetched::of_download)?;
             if self.found {
                 break;
             }

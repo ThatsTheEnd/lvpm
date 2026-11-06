@@ -5,9 +5,9 @@
 //! require a valid stored blob, while ordinary local paths remain live reads.
 //! Feed fetching and resolution stay in `index`; storage stays in `cache`.
 
-use crate::cache::{Cache, LocalEntry};
+use crate::cache::{Cache, LocalEntry, sha256_hex};
 use crate::cancel::CancelToken;
-use crate::errors::Cancelled;
+use crate::errors::{Cancelled, IndexHashMismatch};
 use crate::index::{self, Entry};
 use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
@@ -15,6 +15,10 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, HeaderMap};
 use std::io::Read;
+
+/// The most an index entry's file may be, in bytes: a community index is not
+/// trusted to bound its own entries.
+pub const MAX_INDEX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A GitHub download that came back with a status that is not a success. Its
 /// headers are kept (`error_for_status` drops them), so that a rate limit can
@@ -48,6 +52,11 @@ impl std::error::Error for Rejected {}
 /// finding the token (which may run `gh`) costs nothing on a cache hit. Nothing
 /// of the token is kept or shown.
 ///
+/// An entry a community index lists (`entry.index_pin`) is downloaded with no
+/// token and no more than [`MAX_INDEX_DOWNLOAD_BYTES`], and its SHA-256 must be
+/// the pinned one: bytes that are not fail with [`IndexHashMismatch`] before
+/// anything is cached. The cache answers for it by the pinned SHA-256.
+///
 /// A cancelled `cancel` ends the fetch with [`Cancelled`] before it starts and
 /// between the chunks of a download, so nothing of a cancelled download is
 /// cached.
@@ -65,7 +74,27 @@ pub fn package<'a>(
     if let Some(bytes) = on_hand(cache, entry)? {
         return Ok(bytes);
     }
-    let response = request(client, entry, auth())
+    download(
+        cache,
+        client,
+        entry,
+        auth(),
+        cancel,
+        MAX_INDEX_DOWNLOAD_BYTES,
+    )
+}
+
+/// [`package`] past the cache: the download, with `index_limit` the most an
+/// index entry's file may be.
+fn download(
+    cache: &Cache,
+    client: &Client,
+    entry: &Entry,
+    auth: Option<&str>,
+    cancel: &CancelToken,
+    index_limit: u64,
+) -> Result<Vec<u8>> {
+    let response = request(client, entry, auth)
         .send()
         .with_context(|| format!("downloading {}", entry.url))?;
     if index::github_repo(entry).is_some() && !response.status().is_success() {
@@ -76,8 +105,12 @@ pub fn package<'a>(
         .into());
     }
     let response = response.error_for_status()?;
-    let bytes = read_body(response, cancel)?;
+    let bytes = match entry.index_pin {
+        Some(_) => read_within(response, cancel, index_limit, entry)?,
+        None => read_body(response, cancel)?,
+    };
     let md5 = verify_md5(entry, &bytes)?;
+    verify_sha256(entry, &bytes)?;
     let sha256 = cache.store(&bytes)?;
     cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
     Ok(bytes)
@@ -137,6 +170,11 @@ pub fn on_hand(cache: &Cache, entry: &Entry) -> Result<Option<Vec<u8>>> {
         verify_md5(entry, &bytes)?;
         return Ok(Some(bytes));
     }
+    if let Some(pin) = &entry.index_pin
+        && let Some(bytes) = cache.load(&pin.sha256.to_ascii_lowercase())?
+    {
+        return Ok(Some(bytes));
+    }
     if index::is_local_url(&entry.url) {
         let bytes = std::fs::read(&entry.url).with_context(|| format!("reading {}", entry.url))?;
         verify_md5(entry, &bytes)?;
@@ -173,6 +211,24 @@ fn read_body(mut body: impl Read, cancel: &CancelToken) -> Result<Vec<u8>> {
     }
 }
 
+/// [`read_body`] of at most `limit` bytes of `entry`'s file: a longer body fails
+/// naming the limit, and is not kept.
+fn read_within(
+    body: impl Read,
+    cancel: &CancelToken,
+    limit: u64,
+    entry: &Entry,
+) -> Result<Vec<u8>> {
+    let bytes = read_body(body.take(limit + 1), cancel)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "the file of {} {} is larger than the download limit of {limit} bytes",
+        entry.name,
+        entry.version
+    );
+    Ok(bytes)
+}
+
 fn ensure_running(cancel: &CancelToken) -> Result<()> {
     match cancel.is_cancelled() {
         true => Err(Cancelled.into()),
@@ -191,6 +247,27 @@ fn verify_md5(entry: &Entry, bytes: &[u8]) -> Result<String> {
         );
     }
     Ok(got)
+}
+
+/// Reject bytes whose SHA-256 is not the one a community index pins for the
+/// entry; any other entry pins none.
+fn verify_sha256(entry: &Entry, bytes: &[u8]) -> Result<()> {
+    let Some(pin) = &entry.index_pin else {
+        return Ok(());
+    };
+    let actual = sha256_hex(bytes);
+    if actual.eq_ignore_ascii_case(&pin.sha256) {
+        return Ok(());
+    }
+    Err(IndexHashMismatch {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        index: entry.source.clone(),
+        publisher: pin.publisher.clone(),
+        pinned: pin.sha256.clone(),
+        actual,
+    }
+    .into())
 }
 
 #[cfg(test)]
@@ -316,6 +393,134 @@ mod tests {
             stream.write_all(rest).ok();
         });
         (url, first_sent, go, thread)
+    }
+
+    /// What a community index pins for `bytes`, as `entry` carries it.
+    fn pinned(url: String, bytes: &[u8]) -> Entry {
+        let mut pinned = entry(url, None);
+        pinned.source = "github-index:o/r".into();
+        pinned.index_pin = Some(index::IndexPin {
+            sha256: sha256_hex(bytes),
+            publisher: "someone/Serializer".into(),
+        });
+        pinned
+    }
+
+    /// Serves `bytes` once, and returns the head of the request it got.
+    fn head_server(bytes: &'static [u8]) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/pkg.lvpkg", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+            stream.write_all(bytes).unwrap();
+            String::from_utf8_lossy(&head).to_lowercase()
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn an_index_entrys_file_is_asked_for_with_no_token_even_when_one_is_configured() {
+        let (root, cache) = test_cache("index-no-token");
+        let (url, server) = head_server(b"package bytes");
+        let wanted = pinned(url, b"package bytes");
+        let token = || Some("tok");
+        let fetched = super::package(&cache, &Client::new(), &wanted, token, &CancelToken::new());
+        assert_eq!(fetched.unwrap(), b"package bytes");
+        let head = server.join().unwrap();
+        assert!(!head.contains("authorization"), "{head}");
+        assert!(!head.contains("octet-stream"), "{head}");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn bytes_that_are_not_the_pinned_sha256_fail_with_both_hashes_and_cache_nothing() {
+        let (root, cache) = test_cache("index-mismatch");
+        let (url, thread) = server(b"other bytes");
+        let wanted = pinned(url, b"package bytes");
+        let why = package(&cache, &Client::new(), &wanted).unwrap_err();
+        thread.join().unwrap();
+        let mismatch = why.downcast_ref::<IndexHashMismatch>().expect("typed");
+        assert_eq!(mismatch.pinned, sha256_hex(b"package bytes"));
+        assert_eq!(mismatch.actual, sha256_hex(b"other bytes"));
+        assert_eq!(
+            (&*mismatch.name, &*mismatch.index, &*mismatch.publisher),
+            ("test_package", "github-index:o/r", "someone/Serializer")
+        );
+        assert!(!root.join("content").exists());
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_pinned_file_is_cached_and_then_reused_by_its_sha256_with_the_server_gone() {
+        let (root, cache) = test_cache("index-reuse");
+        let (url, thread) = server(b"package bytes");
+        let wanted = pinned(url, b"package bytes");
+        assert_eq!(
+            package(&cache, &Client::new(), &wanted).unwrap(),
+            b"package bytes"
+        );
+        thread.join().unwrap();
+        assert_eq!(
+            package(&cache, &Client::new(), &wanted).unwrap(),
+            b"package bytes"
+        );
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn an_index_file_over_the_limit_fails_naming_the_limit_and_caches_nothing() {
+        let (root, cache) = test_cache("index-limit");
+        let client = Client::new();
+        let download = |bytes: &'static [u8], limit| {
+            let (url, thread) = server(bytes);
+            let wanted = pinned(url, bytes);
+            let fetched =
+                super::download(&cache, &client, &wanted, None, &CancelToken::new(), limit);
+            thread.join().unwrap();
+            fetched
+        };
+        let why = download(b"12345", 4).unwrap_err();
+        assert_eq!(
+            why.to_string(),
+            "the file of test_package 1.0.0 is larger than the download limit of 4 bytes"
+        );
+        assert!(!root.join("content").exists());
+        assert_eq!(download(b"1234", 4).unwrap(), b"1234");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_file_no_index_lists_is_not_limited_or_hash_checked() {
+        let (root, cache) = test_cache("no-index-limit");
+        let (url, thread) = server(b"12345");
+        let unpinned = entry(url, None);
+        let fetched = super::download(
+            &cache,
+            &Client::new(),
+            &unpinned,
+            None,
+            &CancelToken::new(),
+            4,
+        );
+        thread.join().unwrap();
+        assert_eq!(fetched.unwrap(), b"12345");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

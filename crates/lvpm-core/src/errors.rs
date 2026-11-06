@@ -112,6 +112,10 @@ pub enum LockError {
     /// asked next. Nothing was written.
     #[error("{} pinned package(s) could not be listed", .0.len())]
     OciListing(Vec<ListingFailure>),
+    /// Files whose SHA-256 is not the one their community index lists, all of
+    /// them. Nothing was written.
+    #[error("{} downloaded file(s) differ from the index", .0.len())]
+    IndexFilesDiffer(Vec<IndexHashMismatch>),
     /// There is no lock where it should be.
     #[error("there is no lvpm.lock at {}", .path.display())]
     NoLock { path: PathBuf },
@@ -190,6 +194,25 @@ pub struct AttestationRefusal {
     pub version: String,
     pub origin: Origin,
     pub kind: Refusal,
+}
+
+/// A file whose SHA-256 is not the one a community index lists for it. Nothing
+/// of it was kept.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the file of {name} {version} from {index} has sha256 {actual}, but the index lists {pinned}"
+)]
+pub struct IndexHashMismatch {
+    pub name: String,
+    pub version: String,
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// The `owner/repo` the entry file names as the package's owner.
+    pub publisher: String,
+    /// The SHA-256 the index lists.
+    pub pinned: String,
+    /// The SHA-256 the file has.
+    pub actual: String,
 }
 
 /// A locked OCI version that its source now lists at another manifest digest.
