@@ -210,3 +210,71 @@ fn something_that_is_no_digest_is_never_made_into_a_path_or_a_tag() {
     assert!(registry.writes().is_empty(), "{:?}", registry.writes());
     assert_eq!(digest_of(&subject.bytes), subject.digest);
 }
+
+#[test]
+fn a_bundle_is_found_with_the_api_and_without_and_its_bytes_come_back_whole() {
+    for api in [true, false] {
+        let (registry, subject) = with_package(api);
+        let oci = Oci::default();
+        on(&registry, |repo| {
+            let none = oci.sigstore_bundle(repo, &subject.digest);
+            assert_eq!(none, Ok(None), "api {api}");
+            // Not a bundle, so not what is looked for.
+            oci.push_referrer(repo, &subject, SBOM_TYPE, b"sbom")
+                .unwrap();
+            let none = oci.sigstore_bundle(repo, &subject.digest);
+            assert_eq!(none, Ok(None), "api {api}");
+        });
+        registry.seed_referrer(
+            NAME,
+            &subject.digest,
+            BUNDLE_TYPE,
+            b"{\"a\":\"bundle\"}\r\n",
+        );
+        let found = on(&registry, |repo| oci.sigstore_bundle(repo, &subject.digest));
+        assert_eq!(
+            found,
+            Ok(Some(b"{\"a\":\"bundle\"}\r\n".to_vec())),
+            "api {api}"
+        );
+    }
+}
+
+#[test]
+fn a_bundle_lookup_that_fails_is_an_error_never_no_bundle() {
+    let (registry, subject) = with_package(true);
+    let bundle = registry.seed_referrer(NAME, &subject.digest, BUNDLE_TYPE, b"a bundle");
+    let oci = Oci::default();
+    registry.answer("GET", &format!("/v2/{NAME}/manifests/{bundle}"), 500);
+    let found = on(&registry, |repo| oci.sigstore_bundle(repo, &subject.digest));
+    assert_eq!(found.unwrap_err().status_code(), Some(500));
+
+    let (registry, subject) = with_package(true);
+    registry.answer(
+        "GET",
+        &format!("/v2/{NAME}/referrers/{}", subject.digest),
+        403,
+    );
+    let found = on(&registry, |repo| oci.sigstore_bundle(repo, &subject.digest));
+    assert_eq!(found.unwrap_err().status_code(), Some(403));
+}
+
+#[test]
+fn a_listed_bundle_that_holds_no_bundle_is_an_error_too() {
+    let (registry, subject) = with_package(true);
+    // Listed as a bundle, but its layer is of another media type.
+    let layer = registry.seed_blob(NAME, b"x");
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "artifactType": BUNDLE_TYPE,
+        "config": { "mediaType": "application/vnd.oci.empty.v1+json", "digest": registry.seed_blob(NAME, b"{}"), "size": 2 },
+        "layers": [{ "mediaType": "text/plain", "digest": layer, "size": 1 }],
+        "subject": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": subject.digest, "size": 0 },
+    });
+    registry.seed_manifest(NAME, "not-a-bundle", manifest.to_string().as_bytes());
+    let found = on(&registry, |repo| {
+        Oci::default().sigstore_bundle(repo, &subject.digest)
+    });
+    assert!(matches!(found, Err(Error::Protocol { .. })), "{found:?}");
+}

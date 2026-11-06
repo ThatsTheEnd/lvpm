@@ -1,4 +1,5 @@
-//! Running `gh attestation verify` on a downloaded archive.
+//! Running `gh attestation verify` on a downloaded archive, or on the OCI
+//! manifest of a package with the bundle that signs it.
 //!
 //! Core reads no environment: the front end installs [`real_runner`] on
 //! [`GitHub`](super::GitHub). What the run came to is a [`GhRun`]; what that
@@ -29,35 +30,46 @@ pub enum GhRun {
     NotRunnable(NotChecked),
 }
 
-/// What runs gh: given the archive, `owner/repo` and the token.
-pub type Runner = Arc<dyn Fn(&Path, &str, &str) -> GhRun + Send + Sync>;
+/// What one run of `gh attestation verify` is asked. It holds the token, so it
+/// has no `Debug`.
+#[derive(Clone, Copy)]
+pub struct GhVerify<'a> {
+    /// The file whose SHA-256 the attestation names: a release archive, or the
+    /// bytes of an OCI manifest.
+    pub artifact: &'a Path,
+    /// `owner/repo` that built it.
+    pub repo: &'a str,
+    pub token: &'a str,
+    /// The Sigstore bundle to verify against, for an artifact whose
+    /// attestations are not looked up on GitHub.
+    pub bundle: Option<&'a Path>,
+}
+
+/// What runs gh.
+pub type Runner = Arc<dyn for<'a> Fn(GhVerify<'a>) -> GhRun + Send + Sync>;
 
 /// The runner a [`GitHub`](super::GitHub) starts with: gh is never run.
 pub(super) fn missing() -> Runner {
-    Arc::new(|_, _, _| GhRun::NotRunnable(NotChecked::GhMissing))
+    Arc::new(|_| GhRun::NotRunnable(NotChecked::GhMissing))
 }
 
-/// `gh attestation verify <archive> --repo <owner/repo> --format json`, the
-/// token handed over as `GH_TOKEN`.
+/// `gh attestation verify <archive> [--bundle <file>] --repo <owner/repo>
+/// --format json`, the token handed over as `GH_TOKEN`.
 pub fn real_runner() -> Runner {
-    Arc::new(|archive, repo, token| {
-        process::run(
-            &mut verify_command(archive, repo, token),
-            None,
-            GH_TIMEOUT,
-            MAX_OUTPUT_BYTES,
-        )
-        .into()
+    Arc::new(|ask| {
+        process::run(&mut verify_command(ask), None, GH_TIMEOUT, MAX_OUTPUT_BYTES).into()
     })
 }
 
-fn verify_command(archive: &Path, repo: &str, token: &str) -> Command {
+fn verify_command(ask: GhVerify) -> Command {
     let mut command = Command::new("gh");
+    command.args(["attestation", "verify"]).arg(ask.artifact);
+    if let Some(bundle) = ask.bundle {
+        command.arg("--bundle").arg(bundle);
+    }
     command
-        .args(["attestation", "verify"])
-        .arg(archive)
-        .args(["--repo", repo, "--format", "json"])
-        .env("GH_TOKEN", token);
+        .args(["--repo", ask.repo, "--format", "json"])
+        .env("GH_TOKEN", ask.token);
     command
 }
 
@@ -125,14 +137,23 @@ mod tests {
     #[test]
     fn the_missing_runner_never_runs_gh() {
         assert_eq!(
-            missing()(Path::new("a.lvpkg"), "o/r", "tok"),
+            missing()(ask(None)),
             GhRun::NotRunnable(NotChecked::GhMissing)
         );
     }
 
+    fn ask(bundle: Option<&Path>) -> GhVerify<'_> {
+        GhVerify {
+            artifact: Path::new("blob"),
+            repo: "o/r",
+            token: "tok",
+            bundle,
+        }
+    }
+
     #[test]
     fn gh_is_asked_to_verify_the_archive_for_the_repo_with_the_token_in_its_environment() {
-        let command = verify_command(Path::new("blob"), "o/r", "tok");
+        let command = verify_command(ask(None));
         assert_eq!(command.get_program(), "gh");
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(
@@ -149,5 +170,25 @@ mod tests {
         );
         let envs: Vec<_> = command.get_envs().collect();
         assert_eq!(envs, [("GH_TOKEN".as_ref(), Some("tok".as_ref()))]);
+    }
+
+    #[test]
+    fn a_bundle_is_handed_to_gh_after_the_artifact() {
+        let command = verify_command(ask(Some(Path::new("sig"))));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "attestation",
+                "verify",
+                "blob",
+                "--bundle",
+                "sig",
+                "--repo",
+                "o/r",
+                "--format",
+                "json"
+            ]
+        );
     }
 }

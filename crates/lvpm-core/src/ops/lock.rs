@@ -2517,7 +2517,8 @@ caraya = \"*\"
         fn gh(says: Vec<(&'static str, Gh)>) -> (Runner, Arc<Mutex<Vec<String>>>) {
             let ran = Arc::new(Mutex::new(Vec::new()));
             let log = ran.clone();
-            let runner: Runner = Arc::new(move |_, repo, _| {
+            let runner: Runner = Arc::new(move |ask| {
+                let repo = ask.repo;
                 log.lock().unwrap().push(repo.to_string());
                 let name = repo.strip_prefix("o/").unwrap_or(repo);
                 match says
@@ -2747,7 +2748,7 @@ caraya = \"*\"
                 [AttestationRefusal {
                     name: "p".into(),
                     version: "1.0.0".into(),
-                    repo: "o/p".into(),
+                    origin: crate::errors::Origin::GitHub { repo: "o/p".into() },
                     kind: Refusal::UntrustedPublisher {
                         subject: "https://github.com/b/x".into(),
                         signer: signer_of_repo("b/x"),

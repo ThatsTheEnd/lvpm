@@ -27,13 +27,13 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The `[sources]` name of the OCI source, and the prefix its packages are in.
-const TEAM: &str = "team";
+pub(super) const TEAM: &str = "team";
 /// The hosted feed's folder, and its `[sources]` name.
 const HOSTED_DIR: &str = "/hosted/";
 const HOSTED: &str = "hosted";
 /// The LabVIEW a package needs unless a scenario says it needs a newer one:
 /// below the consumer's 2026.
-const OLD_ENOUGH: &str = "21.0";
+pub(super) const OLD_ENOUGH: &str = "21.0";
 const TOO_NEW: &str = "30.0";
 /// Where `lvpm sync` puts what it installs.
 const DEST: &str = "dest";
@@ -46,6 +46,8 @@ pub struct OciState {
     /// `[dependencies]`: name, constraint and the `index` pin if it has one.
     dependencies: Vec<(String, String, Option<String>)>,
     min_age_days: u32,
+    /// The `[policy]` table, as written, or nothing.
+    pub(super) policy: String,
     /// What the scenario put in the registry, by repository and version.
     seeded: BTreeMap<(String, String), Seeded>,
     /// The OCI manifest digest `lvpm publish` printed.
@@ -56,7 +58,7 @@ pub struct OciState {
 
 impl CliWorld {
     /// `lvpm.toml` of the consumer project, from what the scenario has said.
-    fn write_consumer(&self) {
+    pub(super) fn write_consumer(&self) {
         let state = &self.oci;
         let mut text = String::from(
             "[project]\nname = \"consumer\"\nversion = \"0.1.0\"\nlabview = \">=2026\"\n\n\
@@ -78,17 +80,18 @@ impl CliWorld {
                 None => format!("{name} = \"{constraint}\"\n"),
             });
         }
+        text.push_str(&state.policy);
         std::fs::write(self.work(MANIFEST_FILE), self.with_placeholders(&text))
             .expect("write the consumer's manifest");
     }
 
-    fn set_source(&mut self, name: &str, url: &str) {
+    pub(super) fn set_source(&mut self, name: &str, url: &str) {
         self.oci.sources.retain(|(known, _)| known != name);
         self.oci.sources.push((name.to_string(), url.to_string()));
         self.write_consumer();
     }
 
-    fn oci_depend_on(&mut self, name: &str, constraint: &str, index: Option<&str>) {
+    pub(super) fn oci_depend_on(&mut self, name: &str, constraint: &str, index: Option<&str>) {
         self.oci.dependencies.retain(|(known, _, _)| known != name);
         self.oci.dependencies.push((
             name.to_string(),
@@ -101,7 +104,14 @@ impl CliWorld {
     /// Put `name` `version` in the registry as `lvpm publish` would, created at
     /// `created` (Unix seconds) and needing `labview`; `marker` tells two
     /// packages of one name and version apart.
-    fn seed(&mut self, name: &str, version: &str, created: i64, labview: &str, marker: &str) {
+    pub(super) fn seed(
+        &mut self,
+        name: &str,
+        version: &str,
+        created: i64,
+        labview: &str,
+        marker: &str,
+    ) {
         let meta = Meta {
             name: name.to_string(),
             version: version.to_string(),
@@ -165,7 +175,7 @@ impl CliWorld {
     }
 
     /// What the consumer's lock says of `name` under `key`.
-    fn lock_text(&self, key: &str, name: &str) -> String {
+    pub(super) fn lock_text(&self, key: &str, name: &str) -> String {
         let package = self.locked_package(name);
         let value = package.get(key).and_then(toml::Value::as_str);
         value
@@ -180,14 +190,14 @@ impl CliWorld {
     }
 
     /// What the last command failed with.
-    fn failure(&self) -> String {
+    pub(super) fn failure(&self) -> String {
         self.assert_failed();
         let output = self.output();
         format!("{}\n{}", output.stderr, output.stdout)
     }
 }
 
-fn now() -> i64 {
+pub(super) fn now() -> i64 {
     let since = SystemTime::now().duration_since(UNIX_EPOCH);
     since.expect("a clock after 1970").as_secs() as i64
 }

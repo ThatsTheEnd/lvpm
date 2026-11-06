@@ -17,12 +17,12 @@ use crate::cancel::CancelToken;
 use crate::fetch;
 use crate::github::{self, GitHub};
 use crate::index::{self, Entry};
-use crate::oci::{self, Oci};
+use crate::oci::{self, Access, Oci, Repo};
 use crate::target::{LvTarget, Roots};
 use crate::venv::Venv;
-use crate::verify::Outcome;
+use crate::verify::{Invalid, Outcome};
 use crate::viserver::Connection;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use reqwest::blocking::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -89,6 +89,42 @@ impl Downloads {
         let sha256 = sha256.to_ascii_lowercase();
         let blob = self.cache.blob_path(&sha256);
         github::attestation::outcome(&self.client, &self.github, repo, &sha256, &blob)
+    }
+
+    /// The attestation outcome for the OCI package `entry`: its signature is a
+    /// Sigstore bundle attached to its OCI manifest, which gh checks against
+    /// that manifest's own bytes (see [`github::attestation::verify_bundle`]).
+    /// Both go through the cache, which holds a file by its SHA-256 whole.
+    ///
+    /// A registry that fails to answer, or whose answer is no bundle, is an
+    /// [`oci::Error`]: never "unsigned". A bundle whose certificate names no
+    /// repository is [`Invalid::NoSourceRepository`], and gh is not run.
+    pub(super) fn oci_attestation(&self, entry: &Entry) -> Result<Outcome> {
+        let manifest_ref = index::oci_reference(entry)
+            .with_context(|| format!("{} is not an OCI manifest digest", entry.url))?;
+        let repo = Repo {
+            registry: &manifest_ref.registry,
+            name: &manifest_ref.repository,
+            access: Access::Pull,
+        };
+        let digest = manifest_ref.name();
+        let Some(bundle) = self.oci.sigstore_bundle(&repo, digest)? else {
+            return Ok(Outcome::Unattested);
+        };
+        let Some(source) = oci::sigstore::source_repository(&bundle) else {
+            return Ok(Outcome::Invalid(Invalid::NoSourceRepository));
+        };
+        let manifest = self.oci.get_manifest(&repo, digest)?;
+        let manifest_file = self.cache.blob_path(&self.keep(&manifest.bytes)?);
+        let bundle_file = self.cache.blob_path(&self.keep(&bundle)?);
+        let sha = digest.trim_start_matches("sha256:");
+        Ok(github::attestation::verify_bundle(
+            &self.github,
+            &source,
+            sha,
+            &manifest_file,
+            &bundle_file,
+        ))
     }
 
     /// What the cache holds under this SHA-256, without removing anything.
@@ -312,10 +348,12 @@ mod tests {
         );
         let calls = Arc::new(Mutex::new(Vec::new()));
         let seen = calls.clone();
-        env.github.runner = Arc::new(move |archive, repo, token| {
-            seen.lock()
-                .unwrap()
-                .push((archive.to_path_buf(), repo.to_string(), token.to_string()));
+        env.github.runner = Arc::new(move |ask| {
+            seen.lock().unwrap().push((
+                ask.artifact.to_path_buf(),
+                ask.repo.to_string(),
+                ask.token.to_string(),
+            ));
             GhRun::NotRunnable(NotChecked::GhTimedOut)
         });
         let downloads = Downloads::open(&env).unwrap();

@@ -107,11 +107,18 @@ mod tests {
         use crate::verify::NotChecked;
         use std::path::Path;
         let not_installed = gh::GhRun::NotRunnable(NotChecked::GhMissing);
-        let run = |github: &GitHub| (github.runner)(Path::new("a.lvpkg"), "o/r", "tok");
+        let run = |github: &GitHub| {
+            (github.runner)(gh::GhVerify {
+                artifact: Path::new("a.lvpkg"),
+                repo: "o/r",
+                token: "tok",
+                bundle: None,
+            })
+        };
         assert_eq!(run(&GitHub::default()), not_installed);
         assert_eq!(run(&GitHub::from_lookup(|_| None, || None)), not_installed);
 
-        let github = GitHub::default().with_gh_runner(std::sync::Arc::new(|_, _, _| {
+        let github = GitHub::default().with_gh_runner(std::sync::Arc::new(|_| {
             gh::GhRun::NotRunnable(NotChecked::GhTimedOut)
         }));
         assert_eq!(run(&github), gh::GhRun::NotRunnable(NotChecked::GhTimedOut));

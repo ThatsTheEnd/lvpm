@@ -26,6 +26,7 @@ pub mod logins;
 mod manifest;
 pub mod reference;
 mod referrers;
+pub mod sigstore;
 
 pub use logins::{Credential, Credentials};
 pub use manifest::{Manifest, Package};
@@ -48,6 +49,10 @@ pub const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 /// The `artifactType` and layer media type of a package's SBOM referrer: the
 /// package's `bom.cdx.json`, as CycloneDX.
 pub const SBOM_TYPE: &str = "application/vnd.cyclonedx+json";
+/// The `artifactType` and layer media type of the Sigstore bundle that signs a
+/// package, attached by `actions/attest-build-provenance` with
+/// `push-to-registry`.
+pub const BUNDLE_TYPE: &str = "application/vnd.dev.sigstore.bundle.v0.3+json";
 
 pub const ANNOTATION_TITLE: &str = "org.opencontainers.image.title";
 pub const ANNOTATION_VERSION: &str = "org.opencontainers.image.version";

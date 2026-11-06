@@ -148,6 +148,12 @@ pub enum LockError {
         refusals: Vec<AttestationRefusal>,
         trusted_publishers: Vec<String>,
     },
+    /// The registry could not say whether these OCI packages are signed, all
+    /// of them. That is no answer to the `[policy]`, whatever it says: a
+    /// failing registry must not pass for an unsigned package. Nothing was
+    /// written.
+    #[error("{} signature lookup(s) failed", .0.len())]
+    SignatureLookup(Vec<SignatureLookupFailure>),
     /// The operation's token was cancelled; nothing was written.
     #[error("cancelled")]
     Cancelled,
@@ -156,14 +162,32 @@ pub enum LockError {
     Other(#[from] anyhow::Error),
 }
 
-/// One GitHub package the `[policy]` refuses, and why.
+/// Where a package comes from, as far as its attestation goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// A release of this GitHub repository, `owner/repo`.
+    GitHub { repo: String },
+    /// A package in this OCI source: its `oci://<registry>/<prefix>` URL.
+    Oci { source: String },
+}
+
+/// One package the `[policy]` refuses, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationRefusal {
     pub name: String,
     pub version: String,
-    /// `owner/repo` the release is from.
-    pub repo: String,
+    pub origin: Origin,
     pub kind: Refusal,
+}
+
+/// One OCI package whose signature the registry could not be asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureLookupFailure {
+    pub name: String,
+    pub version: String,
+    pub registry: String,
+    /// What the registry client said, which holds no secret.
+    pub cause: String,
 }
 
 /// One archive that could not be had, and why, in the cause's own words.

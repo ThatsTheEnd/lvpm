@@ -4,7 +4,8 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem, Origin,
+    SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -188,6 +189,7 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
             refusals,
             trusted_publishers,
         } => refused_text(refusals, trusted_publishers),
+        LockError::SignatureLookup(failures) => signature_lookups_text(failures),
         // `lvpm lock --check` fails with one line: a script reads it.
         LockError::NoLock { .. } => {
             "there is no lvpm.lock; run `lvpm lock` to create it".to_string()
@@ -441,13 +443,17 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
         let AttestationRefusal {
             name,
             version,
-            repo,
+            origin,
             kind,
         } = refusal;
+        let from = match origin {
+            Origin::GitHub { repo } => format!("github.com/{repo}"),
+            Origin::Oci { source } => source.clone(),
+        };
         text.push_str("\n  ");
         text.push_str(&match kind {
             Refusal::NoAttestation => format!(
-                "{name} {version} from github.com/{repo} has no attestation\n    \
+                "{name} {version} from {from} has no attestation\n    \
                  hint: ask the publisher to build with the lvpm release template"
             ),
             Refusal::UntrustedPublisher { subject, signer } => format!(
@@ -460,19 +466,45 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
                 signer = super::printable(signer.clone()),
             ),
             Refusal::DoesNotVerify { cause } => format!(
-                "the attestation of {name} {version} from github.com/{repo} does not verify:{}\n    \
+                "the attestation of {name} {version} from {from} does not verify:{}\n    \
                  hint: if gh's reason is a network error, try again; otherwise report this to the \
                  publisher, the archive may have been tampered with. lvpm refuses it whatever \
                  [policy] says",
                 invalid(cause)
             ),
             Refusal::CannotCheck { reason } => {
-                let (said, hint) = not_checked(reason, Some(repo));
-                format!("cannot check the attestation of {name} {version}: {said}\n    hint: {hint}")
+                let repo = match origin {
+                    Origin::GitHub { repo } => Some(repo.as_str()),
+                    Origin::Oci { .. } => None,
+                };
+                let (said, hint) = not_checked(reason, repo);
+                format!(
+                    "cannot check the attestation of {name} {version}: {said}\n    hint: {hint}"
+                )
             }
         });
     }
     text
+}
+
+/// Every package whose signature the registry could not be asked about.
+fn signature_lookups_text(failures: &[SignatureLookupFailure]) -> String {
+    let lines: Vec<String> = failures
+        .iter()
+        .map(|failure| {
+            let SignatureLookupFailure {
+                name,
+                version,
+                registry,
+                cause,
+            } = failure;
+            format!(
+                "{name} {version}: the signature lookup on registry {registry} failed: {cause}; \
+                 the package was not locked"
+            )
+        })
+        .collect();
+    lines.join("\n")
 }
 
 /// The end of a "does not verify:" line: lvpm's own reason after a space, or
@@ -481,6 +513,10 @@ fn invalid(cause: &Invalid) -> String {
     let stderr = match cause {
         Invalid::UnreadableOutput => return " unrecognised gh output".to_string(),
         Invalid::OtherArchive => return " gh's attestation does not match the archive".to_string(),
+        Invalid::NoSourceRepository => {
+            return " the bundle's certificate names no source repository, so gh was not run"
+                .to_string();
+        }
         Invalid::Rejected { stderr } => super::printable(strip_ansi(stderr)),
     };
     if stderr.trim().is_empty() {
@@ -1248,7 +1284,7 @@ mod tests {
         AttestationRefusal {
             name: name.into(),
             version: version.into(),
-            repo: repo.into(),
+            origin: Origin::GitHub { repo: repo.into() },
             kind,
         }
     }
@@ -1285,6 +1321,69 @@ mod tests {
              \x20   which [policy] trusted-publishers does not list: https://github.com/a/*\n\
              \x20   hint: add the repository to [policy] trusted-publishers, or depend on a \
              release built by a trusted repository"
+        );
+    }
+
+    #[test]
+    fn an_oci_package_is_said_to_be_from_its_source_and_never_from_github() {
+        let oci = |kind| AttestationRefusal {
+            name: "alpha".into(),
+            version: "1.0.0".into(),
+            origin: Origin::Oci {
+                source: "oci://reg:5000/team".into(),
+            },
+            kind,
+        };
+        let from = "alpha 1.0.0 from oci://reg:5000/team";
+        let cannot = Refusal::CannotCheck {
+            reason: NotChecked::LookupRefused,
+        };
+        let table = [
+            (Refusal::NoAttestation, format!("{from} has no attestation")),
+            (
+                Refusal::DoesNotVerify {
+                    cause: Invalid::NoSourceRepository,
+                },
+                format!(
+                    "the attestation of {from} does not verify: the bundle's certificate names \
+                     no source repository, so gh was not run"
+                ),
+            ),
+            (
+                cannot,
+                "cannot check the attestation of alpha 1.0.0: GitHub refused the attestation \
+                 lookup (HTTP 403)\n    hint: check that your token can read the repository"
+                    .to_string(),
+            ),
+        ];
+        for (kind, line) in table {
+            let text = refused(vec![oci(kind)]);
+            assert!(text.contains(&line), "{line:?} is not in: {text}");
+            assert!(!text.contains("github.com/"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_failed_signature_lookup_is_a_line_for_each_package_that_says_it_was_not_locked() {
+        let failure = |name: &str, cause: &str| SignatureLookupFailure {
+            name: name.into(),
+            version: "1.0.0".into(),
+            registry: "reg:5000".into(),
+            cause: cause.into(),
+        };
+        let text = error(&LockError::SignatureLookup(vec![
+            failure(
+                "alpha",
+                "registry reg:5000 answered 500 to GET team/alpha/referrers",
+            ),
+            failure("beta", "registry reg:5000 is unreachable: refused"),
+        ]));
+        assert_eq!(
+            text,
+            "alpha 1.0.0: the signature lookup on registry reg:5000 failed: registry reg:5000 \
+             answered 500 to GET team/alpha/referrers; the package was not locked\n\
+             beta 1.0.0: the signature lookup on registry reg:5000 failed: registry reg:5000 is \
+             unreachable: refused; the package was not locked"
         );
     }
 
