@@ -1149,7 +1149,7 @@ A team that already runs a container registry (ghcr.io, GitLab, Azure
 Container Registry) can keep its packages there. One version of a package is
 one OCI manifest tagged with the version; the `.lvpkg` is its layer, byte for
 byte. Another project lists the registry as an `oci://` source and pins the
-packages it takes from it ([manifest.md](manifest.md#an-oci-registry-as-a-source)):
+packages it takes from it ([manifest.md](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#an-oci-registry-as-a-source)):
 
 ```toml
 [sources]
