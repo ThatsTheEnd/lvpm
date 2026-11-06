@@ -4,7 +4,8 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, ListingFailure, ListingFailures,
+    ListingFault, LockError, LockedArchiveProblem, MovedTag, Origin, SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -184,10 +185,13 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
         LockError::Conflict(conflict) => conflict_text(conflict, rerun),
         LockError::ArchivesUnavailable(failures) => archives_text(failures, rerun),
         LockError::LockedArchives(problems) => locked_archives_text(problems, rerun),
+        LockError::TagMoved(moved) => moved_tags_text(moved, rerun),
         LockError::Refused {
             refusals,
             trusted_publishers,
         } => refused_text(refusals, trusted_publishers),
+        LockError::SignatureLookup(failures) => signature_lookups_text(failures),
+        LockError::OciListing(failures) => listing_failures_text(failures),
         // `lvpm lock --check` fails with one line: a script reads it.
         LockError::NoLock { .. } => {
             "there is no lvpm.lock; run `lvpm lock` to create it".to_string()
@@ -311,7 +315,10 @@ fn general_conflict_text(facts: &[&Fact], rerun: &str) -> String {
             _ => None,
         })
         .collect();
-    let only_unlisted = unlisted.len() == facts.len();
+    let only_unlisted = unlisted.len()
+        == (facts.iter())
+            .filter(|fact| !matches!(fact, Fact::OciExplicit { .. }))
+            .count();
     let mut text = match only_unlisted {
         true => "cannot lock:".to_string(),
         false => "cannot lock: no set of versions satisfies lvpm.toml:".to_string(),
@@ -364,6 +371,15 @@ fn manifest_constraint(wanted: &str) -> String {
     }
 }
 
+/// An archive that could not be fetched, and why: the cause after the package,
+/// or alone when it is a whole sentence about it.
+pub(super) fn unfetched_line(name: &str, version: &str, reason: &str, in_full: bool) -> String {
+    match in_full {
+        true => reason.to_string(),
+        false => format!("{name} {version}: {reason}"),
+    }
+}
+
 fn archives_text(failures: &[ArchiveFailure], rerun: &str) -> String {
     let plural = if failures.len() == 1 { "" } else { "s" };
     let mut text = format!(
@@ -371,9 +387,12 @@ fn archives_text(failures: &[ArchiveFailure], rerun: &str) -> String {
         failures.len()
     );
     for failure in failures {
-        text.push_str(&format!(
-            "\n  {} {}: {}",
-            failure.name, failure.version, failure.reason
+        text.push_str("\n  ");
+        text.push_str(&unfetched_line(
+            &failure.name,
+            &failure.version,
+            &failure.reason,
+            failure.in_full,
         ));
     }
     text.push_str(&format!(
@@ -401,7 +420,9 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
             ArchiveFault::NotFound => format!(
                 "{name} {version}: no archive with SHA-256 {sha256} is in the cache or in any source"
             ),
-            ArchiveFault::Unfetched { reason } => format!("{name} {version}: {reason}"),
+            ArchiveFault::Unfetched { reason, in_full } => {
+                unfetched_line(name, version, reason, *in_full)
+            }
             ArchiveFault::DiffersFromLock { found_sha256 } => format!(
                 "{name} {version}: the archive has SHA-256 {found_sha256} and lvpm.lock has \
                  {sha256}, so it was not locked again"
@@ -415,6 +436,38 @@ fn locked_archives_text(problems: &[LockedArchiveProblem], rerun: &str) -> Strin
     text
 }
 
+/// Every locked OCI version whose tag now names another manifest. Only an
+/// upgrade accepts it, and the hint says which one.
+fn moved_tags_text(moved: &[MovedTag], rerun: &str) -> String {
+    let plural = if moved.len() == 1 { "" } else { "s" };
+    let mut text = format!(
+        "cannot lock: {} locked OCI version{plural} now {} another manifest, and nothing was written:",
+        moved.len(),
+        if moved.len() == 1 { "has" } else { "have" }
+    );
+    for MovedTag {
+        name,
+        version,
+        locked,
+        found,
+    } in moved
+    {
+        text.push_str(&format!(
+            "\n  {name} {version}: lvpm.lock has manifest {locked}, the registry now has {found}"
+        ));
+    }
+    let accept: Vec<String> = (moved.iter())
+        .map(|tag| format!("--upgrade-package {}@{}", tag.name, tag.version))
+        .collect();
+    text.push_str(&format!(
+        "\nnext: if the tags moved on purpose, accept the new manifests with `lvpm lock {}` (or \
+         `lvpm lock --upgrade` for every package); otherwise ask the publisher to put them back, \
+         then run {rerun} again",
+        accept.join(" ")
+    ));
+    text
+}
+
 /// Every package the policy refuses, each with what to do about it. No hint
 /// says to turn the policy off.
 fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) -> String {
@@ -424,13 +477,17 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
         let AttestationRefusal {
             name,
             version,
-            repo,
+            origin,
             kind,
         } = refusal;
+        let from = match origin {
+            Origin::GitHub { repo } => format!("github.com/{repo}"),
+            Origin::Oci { source } => source.clone(),
+        };
         text.push_str("\n  ");
         text.push_str(&match kind {
             Refusal::NoAttestation => format!(
-                "{name} {version} from github.com/{repo} has no attestation\n    \
+                "{name} {version} from {from} has no attestation\n    \
                  hint: ask the publisher to build with the lvpm release template"
             ),
             Refusal::UntrustedPublisher { subject, signer } => format!(
@@ -442,20 +499,84 @@ fn refused_text(refusals: &[AttestationRefusal], trusted_publishers: &[String]) 
                 subject = super::printable(subject.clone()),
                 signer = super::printable(signer.clone()),
             ),
-            Refusal::DoesNotVerify { cause } => format!(
-                "the attestation of {name} {version} from github.com/{repo} does not verify:{}\n    \
-                 hint: if gh's reason is a network error, try again; otherwise report this to the \
-                 publisher, the archive may have been tampered with. lvpm refuses it whatever \
-                 [policy] says",
-                invalid(cause)
-            ),
+            Refusal::DoesNotVerify { cause } => {
+                let tampered = match origin {
+                    Origin::GitHub { .. } => "archive",
+                    Origin::Oci { .. } => "manifest",
+                };
+                format!(
+                    "the attestation of {name} {version} from {from} does not verify:{}\n    \
+                     hint: if gh's reason is a network error, try again; otherwise report this to \
+                     the publisher, the {tampered} may have been tampered with. lvpm refuses it \
+                     whatever [policy] says",
+                    invalid(cause)
+                )
+            }
             Refusal::CannotCheck { reason } => {
-                let (said, hint) = not_checked(reason, Some(repo));
-                format!("cannot check the attestation of {name} {version}: {said}\n    hint: {hint}")
+                let repo = match origin {
+                    Origin::GitHub { repo } => Some(repo.as_str()),
+                    Origin::Oci { .. } => None,
+                };
+                let (said, hint) = not_checked(reason, repo);
+                format!(
+                    "cannot check the attestation of {name} {version}: {said}\n    hint: {hint}"
+                )
             }
         });
     }
     text
+}
+
+/// Every package whose signature the registry could not be asked about.
+fn signature_lookups_text(failures: &[SignatureLookupFailure]) -> String {
+    let lines: Vec<String> = failures
+        .iter()
+        .map(|failure| {
+            let SignatureLookupFailure {
+                name,
+                version,
+                registry,
+                cause,
+            } = failure;
+            format!(
+                "{name} {version}: the signature lookup on registry {registry} failed: {cause}; \
+                 the package was not locked"
+            )
+        })
+        .collect();
+    lines.join("\n")
+}
+
+/// An index load that failed on OCI listings, worded as `lvpm lock` words it,
+/// for the commands that end in a plain error (install, search).
+pub fn listing_error(error: &anyhow::Error) -> Option<String> {
+    let failures = error.downcast_ref::<ListingFailures>()?;
+    Some(listing_failures_text(failures.failures()))
+}
+
+/// Every pinned package an OCI source could not list: one line for each
+/// registry whose login failed, ahead of one line for each other package.
+fn listing_failures_text(failures: &[ListingFailure]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for failure in failures {
+        if let ListingFault::Host(said) = &failure.fault
+            && !lines.contains(said)
+        {
+            lines.push(said.clone());
+        }
+    }
+    let per_package = (failures.iter()).filter(|f| !matches!(f.fault, ListingFault::Host(_)));
+    lines.extend(per_package.map(|failure| match failure.fault {
+        ListingFault::NotListed => format!(
+            "{failure}; check the name, or publish it with lvpm publish --to {}",
+            failure.feed
+        ),
+        _ => failure.to_string(),
+    }));
+    lines.join(
+        "
+",
+    )
 }
 
 /// The end of a "does not verify:" line: lvpm's own reason after a space, or
@@ -464,6 +585,10 @@ fn invalid(cause: &Invalid) -> String {
     let stderr = match cause {
         Invalid::UnreadableOutput => return " unrecognised gh output".to_string(),
         Invalid::OtherArchive => return " gh's attestation does not match the archive".to_string(),
+        Invalid::NoSourceRepository => {
+            return " the bundle's certificate names no source repository, so gh was not run"
+                .to_string();
+        }
         Invalid::Rejected { stderr } => super::printable(strip_ansi(stderr)),
     };
     if stderr.trim().is_empty() {
@@ -543,6 +668,7 @@ mod tests {
     use super::super::tests::renderer;
     use super::*;
     use lvpm_core::events::PackageRef;
+    use lvpm_core::oci::FeedUrl;
     use lvpm_core::released::SECS_PER_DAY;
     use std::path::PathBuf;
 
@@ -563,6 +689,83 @@ mod tests {
              locked again\n\
              next: add the archive lvpm.lock was made from with `lvpm cache add <file>`, or \
              delete lvpm.lock to lock the archives as they are now, then run `lvpm lock` again"
+        );
+    }
+
+    #[test]
+    fn a_moved_tag_names_both_digests_and_the_upgrade_that_accepts_it() {
+        let moved = |name: &str| MovedTag {
+            name: name.into(),
+            version: "1.1.0".into(),
+            locked: "sha256:aaa".into(),
+            found: "sha256:bbb".into(),
+        };
+        assert_eq!(
+            error(&LockError::TagMoved(vec![moved("alpha")])),
+            "cannot lock: 1 locked OCI version now has another manifest, and nothing was \
+             written:\n\
+             \x20 alpha 1.1.0: lvpm.lock has manifest sha256:aaa, the registry now has sha256:bbb\n\
+             next: if the tags moved on purpose, accept the new manifests with `lvpm lock \
+             --upgrade-package alpha@1.1.0` (or `lvpm lock --upgrade` for every package); \
+             otherwise ask the publisher to put them back, then run `lvpm lock` again"
+        );
+        let both = error(&LockError::TagMoved(vec![moved("alpha"), moved("beta")]));
+        assert!(
+            both.contains("2 locked OCI versions now have another manifest"),
+            "{both}"
+        );
+        assert!(
+            both.contains("--upgrade-package alpha@1.1.0 --upgrade-package beta@1.1.0"),
+            "{both}"
+        );
+    }
+
+    fn listing(package: &str, fault: ListingFault) -> ListingFailure {
+        ListingFailure {
+            package: package.to_string(),
+            source: "team".to_string(),
+            feed: FeedUrl::parse("oci://r:1/org").unwrap(),
+            fault,
+        }
+    }
+
+    #[test]
+    fn pinned_failures_are_one_line_each_in_the_order_given() {
+        let text = error(&LockError::OciListing(vec![
+            listing("alpha", ListingFault::NotListed),
+            listing("zeta", ListingFault::Unreachable("closed".into())),
+        ]));
+        assert_eq!(
+            text,
+            "alpha: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org\n\
+             zeta: source \"team\" (oci://r:1/org) is unreachable: closed"
+        );
+        let refused = error(&LockError::OciListing(vec![listing(
+            "gamma",
+            ListingFault::Refused,
+        )]));
+        assert_eq!(
+            refused,
+            "gamma: registry r:1 refused the lookup for source \"team\"; the package is missing \
+             or your login cannot read it; run docker login r:1"
+        );
+    }
+
+    #[test]
+    fn a_registry_whose_login_failed_is_one_line_ahead_of_the_other_packages() {
+        let said = "registry r:1 refused the login from auths; run docker login r:1";
+        let host = ListingFault::Host(said.into());
+        let text = error(&LockError::OciListing(vec![
+            listing("alpha", host.clone()),
+            listing("beta", ListingFault::NotListed),
+            listing("zeta", host),
+        ]));
+        assert_eq!(
+            text,
+            "registry r:1 refused the login from auths; run docker login r:1\n\
+             beta: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org"
         );
     }
 
@@ -1110,6 +1313,29 @@ mod tests {
     }
 
     #[test]
+    fn the_oci_note_follows_a_package_in_no_source_and_keeps_the_short_heading() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                Fact::NotListed {
+                    package: "zeta".into(),
+                },
+                Fact::OciExplicit {
+                    source: "team".into(),
+                },
+            ],
+        }));
+        assert!(
+            text.starts_with(concat!(
+                "cannot lock:\n",
+                "  zeta is in no configured source\n",
+                "  note: OCI source \"team\" is explicit; pin with index = \"team\"\n",
+                "next: look for it"
+            )),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_package_in_no_source_comes_with_the_search_to_run() {
         let text = error(&LockError::Conflict(Conflict {
             facts: vec![
@@ -1138,11 +1364,13 @@ mod tests {
                 name: "alpha".into(),
                 version: "2.0".into(),
                 reason: "downloading http://h/a.vip: refused".into(),
+                in_full: false,
             },
             ArchiveFailure {
                 name: "gamma".into(),
                 version: "1.5".into(),
                 reason: "reading g.vip".into(),
+                in_full: false,
             },
         ]));
         assert!(
@@ -1155,6 +1383,20 @@ mod tests {
         );
         assert!(text.contains("\n  gamma 1.5: reading g.vip\n"), "{text}");
         assert!(text.ends_with("then run `lvpm lock` again"), "{text}");
+    }
+
+    #[test]
+    fn a_whole_sentence_about_an_archive_is_shown_as_it_is() {
+        let text = error(&LockError::ArchivesUnavailable(vec![ArchiveFailure {
+            name: "alpha".into(),
+            version: "1.1.0".into(),
+            reason: "cannot fetch alpha 1.1.0 by digest from source \"team\": refused".into(),
+            in_full: true,
+        }]));
+        assert!(
+            text.contains("\n  cannot fetch alpha 1.1.0 by digest from source \"team\": refused\n"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1192,7 +1434,7 @@ mod tests {
         AttestationRefusal {
             name: name.into(),
             version: version.into(),
-            repo: repo.into(),
+            origin: Origin::GitHub { repo: repo.into() },
             kind,
         }
     }
@@ -1229,6 +1471,97 @@ mod tests {
              \x20   which [policy] trusted-publishers does not list: https://github.com/a/*\n\
              \x20   hint: add the repository to [policy] trusted-publishers, or depend on a \
              release built by a trusted repository"
+        );
+    }
+
+    #[test]
+    fn an_oci_package_is_said_to_be_from_its_source_and_never_from_github() {
+        let oci = |kind| AttestationRefusal {
+            name: "alpha".into(),
+            version: "1.0.0".into(),
+            origin: Origin::Oci {
+                source: "oci://reg:5000/team".into(),
+            },
+            kind,
+        };
+        let from = "alpha 1.0.0 from oci://reg:5000/team";
+        let cannot = Refusal::CannotCheck {
+            reason: NotChecked::LookupRefused,
+        };
+        let table = [
+            (Refusal::NoAttestation, format!("{from} has no attestation")),
+            (
+                Refusal::DoesNotVerify {
+                    cause: Invalid::NoSourceRepository,
+                },
+                format!(
+                    "the attestation of {from} does not verify: the bundle's certificate names \
+                     no source repository, so gh was not run"
+                ),
+            ),
+            (
+                cannot,
+                "cannot check the attestation of alpha 1.0.0: GitHub refused the attestation \
+                 lookup (HTTP 403)\n    hint: check that your token can read the repository"
+                    .to_string(),
+            ),
+        ];
+        for (kind, line) in table {
+            let text = refused(vec![oci(kind)]);
+            assert!(text.contains(&line), "{line:?} is not in: {text}");
+            assert!(!text.contains("github.com/"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_failed_verification_blames_the_archive_of_a_github_package_and_the_manifest_of_an_oci_one()
+    {
+        let does_not_verify = |origin| {
+            refused(vec![AttestationRefusal {
+                name: "alpha".into(),
+                version: "1.0.0".into(),
+                origin,
+                kind: Refusal::DoesNotVerify {
+                    cause: Invalid::OtherArchive,
+                },
+            }])
+        };
+        let github = does_not_verify(Origin::GitHub { repo: "o/r".into() });
+        assert!(
+            github.contains("the archive may have been tampered with"),
+            "{github}"
+        );
+        let oci = does_not_verify(Origin::Oci {
+            source: "oci://reg:5000/team".into(),
+        });
+        assert!(
+            oci.contains("the manifest may have been tampered with"),
+            "{oci}"
+        );
+        assert!(!oci.contains("archive may"), "{oci}");
+    }
+
+    #[test]
+    fn a_failed_signature_lookup_is_a_line_for_each_package_that_says_it_was_not_locked() {
+        let failure = |name: &str, cause: &str| SignatureLookupFailure {
+            name: name.into(),
+            version: "1.0.0".into(),
+            registry: "reg:5000".into(),
+            cause: cause.into(),
+        };
+        let text = error(&LockError::SignatureLookup(vec![
+            failure(
+                "alpha",
+                "registry reg:5000 answered 500 to GET team/alpha/referrers",
+            ),
+            failure("beta", "registry reg:5000 is unreachable: refused"),
+        ]));
+        assert_eq!(
+            text,
+            "alpha 1.0.0: the signature lookup on registry reg:5000 failed: registry reg:5000 \
+             answered 500 to GET team/alpha/referrers; the package was not locked\n\
+             beta 1.0.0: the signature lookup on registry reg:5000 failed: registry reg:5000 is \
+             unreachable: refused; the package was not locked"
         );
     }
 

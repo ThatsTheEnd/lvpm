@@ -22,7 +22,8 @@ pub fn result(result: &serde_json::Value) -> String {
 
 /// The line a command that failed ends with: the error and its causes.
 pub fn error(error: &anyhow::Error) -> String {
-    to_line(serde_json::json!({ "error": format!("{error:#}") }))
+    let text = super::lock::listing_error(error).unwrap_or_else(|| format!("{error:#}"));
+    to_line(serde_json::json!({ "error": text }))
 }
 
 /// One line on stdout, written under one lock so no other write splits it. A
@@ -52,8 +53,10 @@ fn to_line(value: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lvpm_core::errors::{ListingFailure, ListingFailures, ListingFault};
     use lvpm_core::events::{AddedDependency, Phase, Retarget, SourceKind};
     use lvpm_core::git::GitOutcome;
+    use lvpm_core::oci::FeedUrl;
     use lvpm_core::ops::venv_cmd::VenvStatus;
     use lvpm_core::target::LvTarget;
     use lvpm_core::venv::Venv;
@@ -85,6 +88,21 @@ mod tests {
     fn an_error_line_has_only_the_error_and_its_causes() {
         let failed = error(&anyhow::anyhow!("no alpha").context("installing"));
         assert_eq!(failed, r#"{"error":"installing: no alpha"}"#);
+    }
+
+    #[test]
+    fn an_error_line_words_listing_failures_as_lock_does() {
+        let failure = ListingFailure {
+            package: "alpha".into(),
+            source: "team".into(),
+            feed: FeedUrl::parse("oci://r:1/org").unwrap(),
+            fault: ListingFault::NotListed,
+        };
+        let failed = error(&ListingFailures::new(vec![failure]).into());
+        assert_eq!(
+            failed,
+            r#"{"error":"alpha: source \"team\" (oci://r:1/org) does not list it; check the name, or publish it with lvpm publish --to oci://r:1/org"}"#
+        );
     }
 
     #[test]

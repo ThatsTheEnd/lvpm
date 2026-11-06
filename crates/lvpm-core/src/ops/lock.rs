@@ -11,15 +11,18 @@ use super::env::OpEnv;
 use super::github_index;
 use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
-use super::sync::Search;
+use super::sync::{Search, Unfetched};
 use crate::cache::{now, sha256_hex};
-use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError};
+use crate::errors::{
+    ArchiveFailure, ArchiveFault, Cancelled, ListingFailures, LockError, MovedTag,
+};
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
 use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
 use crate::manifest_edit::{self, DependencyTable};
+use crate::oci::Reference;
 use crate::paths;
-use crate::project::{Constraint, PackageArg, Project, name_key, same_name};
+use crate::project::{Constraint, Feed, PackageArg, Project, name_key, same_name};
 use crate::released;
 use crate::solve::{self, AllHeldBack, Conflict, Fact, Resolution, SolveError};
 use crate::verify::Attestation;
@@ -420,9 +423,10 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let feeds = index::feeds(&project.resolved_sources()?, project.default_sources);
+    let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+    let feeds = index::feeds(&hosted, project.default_sources);
     let pins = source_pins(project)?;
-    let hashes = hash_archives(env, index, &resolution, previous, &pins, &feeds)?;
+    let hashes = hash_archives(env, index, &resolution, previous, moving, &pins, &feeds)?;
     let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
     let lock = build(
         project,
@@ -465,8 +469,8 @@ pub fn check(env: &OpEnv) -> Result<(), LockError> {
     }
 }
 
-/// [`OpEnv::load_index`], with a load that was cancelled told apart from one
-/// that failed.
+/// [`OpEnv::load_index`], with a load that was cancelled, or whose pinned OCI
+/// packages could not be listed, told apart from one that failed.
 ///
 /// Each GitHub dependency of `manifest`'s project is then taken from its repo
 /// instead of the feeds (see [`github_index`]): `previous` is the lock the run
@@ -479,9 +483,12 @@ pub(super) fn load_index(
     moving: &Moving,
 ) -> Result<Index, LockError> {
     let index = env.load_index(manifest).map_err(|why| -> LockError {
-        match why.is::<Cancelled>() {
-            true => Cancelled.into(),
-            false => why.into(),
+        if why.is::<Cancelled>() {
+            return Cancelled.into();
+        }
+        match why.downcast::<ListingFailures>() {
+            Ok(failures) => LockError::OciListing(failures.into_failures()),
+            Err(why) => why.into(),
         }
     })?;
     match manifest {
@@ -565,9 +572,9 @@ fn resolve(
         &env.cancel,
     )
     .map_err(|why| match why {
-        SolveError::Conflict(conflict) => LockError::Conflict(name_source_pins(
-            name_pins(conflict, project, pins),
-            &source_pins,
+        SolveError::Conflict(conflict) => LockError::Conflict(note_oci_sources(
+            name_source_pins(name_pins(conflict, project, pins), &source_pins),
+            project,
         )),
         SolveError::Cancelled => Cancelled.into(),
     })
@@ -588,9 +595,10 @@ struct SourcePin<'a> {
 /// error, not a pin left out: the manifest reader already refuses one, and
 /// ignoring it would let the package come from any source.
 fn source_pins(project: &Project) -> Result<Vec<SourcePin<'_>>, LockError> {
+    let feeds = project.resolved_sources()?;
     (project.source_pins.iter())
         .map(|(package, source)| {
-            let (_, folder) = (project.sources.iter())
+            let (_, feed) = (feeds.iter())
                 .find(|(name, _)| name == source)
                 .ok_or_else(|| {
                     anyhow::anyhow!("{package}: index = {source:?} is not a [sources] name")
@@ -598,7 +606,7 @@ fn source_pins(project: &Project) -> Result<Vec<SourcePin<'_>>, LockError> {
             Ok(SourcePin {
                 package,
                 source,
-                feed: index::feed_url(folder),
+                feed: feed.owner(),
             })
         })
         .collect()
@@ -658,6 +666,26 @@ fn name_source_pins(mut conflict: Conflict, pins: &[SourcePin]) -> Conflict {
     conflict
 }
 
+/// `conflict` with a note for each OCI source when a package is in no source:
+/// an OCI source lists only what the manifest pins to it, so it may be the one
+/// that has the package.
+fn note_oci_sources(mut conflict: Conflict, project: &Project) -> Conflict {
+    let unlisted = (conflict.facts.iter()).any(|fact| matches!(fact, Fact::NotListed { .. }));
+    if !unlisted {
+        return conflict;
+    }
+    let feeds = project.resolved_sources().unwrap_or_default();
+    let oci = feeds
+        .iter()
+        .filter(|(_, feed)| matches!(feed, Feed::Oci(_)));
+    conflict
+        .facts
+        .extend(oci.map(|(name, _)| Fact::OciExplicit {
+            source: name.clone(),
+        }));
+    conflict
+}
+
 /// `conflict` with each fact that only a pin asked for named as one. The
 /// solver reads a pin as one more manifest line; a fact stays a manifest fact
 /// when `project` has a line that says the same.
@@ -705,11 +733,16 @@ fn wanted_by(constraint: &Constraint) -> String {
 /// same version listed by another source may be other bytes, which are then
 /// fetched fresh. The source is compared as [`build`] writes it, so
 /// nested `[sources]` folders compare the same way on both sides.
+///
+/// An OCI version `previous` locks that its source now lists at another
+/// manifest digest is an error too, unless `moving` lets that package move: only
+/// an upgrade accepts the new digest.
 fn hash_archives(
     env: &OpEnv,
     index: &Index,
     resolution: &Resolution,
     previous: Option<&Lockfile>,
+    moving: &Moving,
     pins: &[SourcePin],
     feeds: &[(String, String)],
 ) -> Result<HashMap<String, String>, LockError> {
@@ -722,6 +755,8 @@ fn hash_archives(
     let mut hashes = HashMap::new();
     let mut failures = Vec::new();
     let mut not_as_locked = Vec::new();
+    let mut moved = Vec::new();
+    let pin_of = |entry: &Entry| pins.iter().find(|pin| same_name(pin.package, &entry.name));
     for (position, (key, entry)) in resolution.packages.iter().enumerate() {
         if env.cancel.is_cancelled() {
             return Err(Cancelled.into());
@@ -734,25 +769,35 @@ fn hash_archives(
         });
         let from_pinned_feed = |locked: &LockedPackage| {
             !pins.iter().any(|pin| same_name(pin.package, &locked.name))
-                || locked.source == index::source_of(&entry.url, feeds)
+                || locked.source == entry_source(entry, feeds)
         };
+        if !moving.moves(&entry.name)
+            && let Some(tag) = moved_tag(previous, key, entry)
+        {
+            moved.push(tag);
+            continue;
+        }
         if let Some(locked) = kept_of(previous, key, entry).filter(|l| from_pinned_feed(l)) {
             let mut search = Search::in_cache(&downloads, locked);
             if !search.found {
-                search.look_in(&downloads, index)?;
+                // An OCI package is fetched by the digest the lock records.
+                match (locked.digest.is_some(), pin_of(entry)) {
+                    (true, Some(pin)) => search.fetch_oci(&downloads, pin.source)?,
+                    _ => search.look_in(&downloads, index)?,
+                }
             }
             match (search.problem(), search.unfetched) {
                 (None, _) => {
                     hashes.insert(key.clone(), locked.sha256.clone());
                 }
                 // Not found because it could not be fetched: that is what to say.
-                (Some(problem), Some(reason)) if problem.fault == ArchiveFault::NotFound => {
-                    failures.push(ArchiveFailure {
+                (Some(problem), Some(why)) if problem.fault == ArchiveFault::NotFound => failures
+                    .push(ArchiveFailure {
                         name: entry.name.clone(),
                         version: entry.version.to_string(),
-                        reason,
-                    })
-                }
+                        reason: why.reason,
+                        in_full: why.in_full,
+                    }),
                 (Some(problem), _) => not_as_locked.push(problem),
             }
             continue;
@@ -762,23 +807,73 @@ fn hash_archives(
                 hashes.insert(key.clone(), sha256_hex(&bytes));
             }
             Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
-            Err(why) => failures.push(ArchiveFailure {
-                name: entry.name.clone(),
-                version: entry.version.to_string(),
-                reason: format!("{why:#}"),
-            }),
+            Err(why) => {
+                let oci_manifest = index::oci_reference(entry);
+                let digest = oci_manifest.as_ref().and_then(Reference::digest);
+                let unfetched = match (digest, pin_of(entry)) {
+                    (Some(digest), Some(pin)) => Unfetched::of_oci(
+                        &why,
+                        (&entry.name, &entry.version.to_string()),
+                        pin.source,
+                        digest,
+                    ),
+                    _ => Unfetched::plain(format!("{why:#}")),
+                };
+                failures.push(ArchiveFailure {
+                    name: entry.name.clone(),
+                    version: entry.version.to_string(),
+                    reason: unfetched.reason,
+                    in_full: unfetched.in_full,
+                })
+            }
         }
     }
-    match (not_as_locked.is_empty(), failures.is_empty()) {
-        (false, _) => Err(LockError::LockedArchives(not_as_locked)),
-        (true, false) => Err(LockError::ArchivesUnavailable(failures)),
-        (true, true) => Ok(hashes),
+    match (
+        moved.is_empty(),
+        not_as_locked.is_empty(),
+        failures.is_empty(),
+    ) {
+        (false, _, _) => Err(LockError::TagMoved(moved)),
+        (true, false, _) => Err(LockError::LockedArchives(not_as_locked)),
+        (true, true, false) => Err(LockError::ArchivesUnavailable(failures)),
+        (true, true, true) => Ok(hashes),
+    }
+}
+
+/// The OCI version `previous` locks from `entry`'s source at a manifest digest
+/// other than `entry`'s: its tag moved. A version locked from another source
+/// is not this: that is a package changing source.
+fn moved_tag(previous: Option<&Lockfile>, key: &str, entry: &Entry) -> Option<MovedTag> {
+    let oci_manifest = index::oci_reference(entry)?;
+    let found = oci_manifest.digest()?;
+    let locked = previous?.packages.iter().find(|package| {
+        name_key(&package.name) == key
+            && Version::parse(&package.version) == entry.version
+            && package.source == entry.source
+    })?;
+    let was = locked.digest.as_deref().filter(|digest| *digest != found)?;
+    Some(MovedTag {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        locked: was.to_string(),
+        found: found.to_string(),
+    })
+}
+
+/// The `source` the lock records for a package from `entry`'s feed: an OCI
+/// source's own URL, which no feed folder contains, or the feed's index URL.
+fn entry_source(entry: &Entry, feeds: &[(String, String)]) -> String {
+    match index::oci_reference(entry) {
+        Some(_) => entry.source.clone(),
+        None => index::source_of(&entry.url, feeds),
     }
 }
 
 /// The package `previous` locks that `entry` (named `key`) stands for: the same
-/// version, and for a GitHub entry the same repo. A package kept keeps the
-/// SHA-256, and the signer, it was locked with.
+/// version, for a GitHub entry the same repo, and the same OCI manifest digest
+/// or none on both sides: a tag that moved is other bytes under the same
+/// version, and a package whose pin was removed is not the OCI row it was. A
+/// package kept keeps the SHA-256, and the signer, it was locked with.
 pub(super) fn kept_of<'a>(
     previous: Option<&'a Lockfile>,
     key: &str,
@@ -788,6 +883,10 @@ pub(super) fn kept_of<'a>(
         name_key(&package.name) == key
             && Version::parse(&package.version) == entry.version
             && from_same_repo(package, entry)
+            && index::oci_reference(entry)
+                .as_ref()
+                .and_then(Reference::digest)
+                == package.digest.as_deref()
     })
 }
 
@@ -834,9 +933,12 @@ fn build(
             version: entry.version.to_string(),
             sha256: hashes[key].clone(),
             md5: entry.md5.clone(),
+            digest: (index::oci_reference(entry).as_ref())
+                .and_then(Reference::digest)
+                .map(str::to_string),
             source: match index::github_repo(entry) {
                 Some(repo) => github_lock_source(repo),
-                None => index::source_of(&entry.url, feeds),
+                None => entry_source(entry, feeds),
             },
             requires: locked_requirements(entry, resolution),
             groups: groups_needing(key, &reached),
@@ -1039,6 +1141,7 @@ mod tests {
             version: "1.0".into(),
             sha256: "ab".into(),
             md5: None,
+            digest: None,
             source: source.into(),
             requires: Vec::new(),
             groups: Vec::new(),
@@ -1056,6 +1159,79 @@ mod tests {
         ));
         assert!(!from_same_repo(&locked("http://feed/index.vipr"), &github));
         assert!(from_same_repo(&locked("http://feed/index.vipr"), &feed));
+    }
+
+    /// `alpha` 1.0 as an OCI source lists it, by this manifest digest.
+    fn oci_entry(manifest: char) -> Entry {
+        let url = format!(
+            "oci://r:5000/org/alpha@sha256:{}",
+            manifest.to_string().repeat(64)
+        );
+        Entry {
+            source: "oci://r:5000/org".to_string(),
+            ..entry("alpha", "1.0", &[], &url)
+        }
+    }
+
+    #[test]
+    fn a_package_from_an_oci_source_is_locked_with_its_manifest_digest_and_the_sources_own_url() {
+        let text = "[project]\nlabview = \">=2023\"\n\n[sources]\nteam = \"oci://r:5000/org\"\n\
+                    defaults = false\n\n[dependencies]\nalpha = { version = \"*\", index = \"team\" }\n";
+        let project = manifest(text);
+        let resolved = resolution(vec![oci_entry('a')], Vec::new());
+        let hashes = hashes(&resolved);
+        let lock = build(&project, "2023", &resolved, &hashes, &HashMap::new(), &[]);
+        let alpha = &lock.packages[0];
+        assert_eq!(alpha.source, "oci://r:5000/org");
+        assert_eq!(alpha.digest, Some(format!("sha256:{}", "a".repeat(64))));
+        assert_eq!(alpha.md5, None);
+    }
+
+    #[test]
+    fn a_locked_oci_package_stands_for_an_entry_only_by_the_same_manifest_digest() {
+        let previous = |manifest: char| {
+            let mut lock = lock_of(&[("alpha", "1.0")]);
+            lock.packages[0].digest = Some(format!("sha256:{}", manifest.to_string().repeat(64)));
+            lock
+        };
+        let moved = oci_entry('b');
+        assert!(kept_of(Some(&previous('a')), "alpha", &moved).is_none());
+        assert!(kept_of(Some(&previous('b')), "alpha", &moved).is_some());
+    }
+
+    #[test]
+    fn a_locked_oci_package_does_not_stand_for_a_hosted_entry_and_the_reverse() {
+        let hosted = entry("alpha", "1.0", &[], "http://feed/alpha-1.0.vip");
+        let mut oci_row = lock_of(&[("alpha", "1.0")]);
+        oci_row.packages[0].digest = Some(format!("sha256:{}", "a".repeat(64)));
+        // The pin was removed: the hosted entry may not reuse the OCI row's hashes.
+        assert!(kept_of(Some(&oci_row), "alpha", &hosted).is_none());
+        let hosted_row = lock_of(&[("alpha", "1.0")]);
+        assert!(kept_of(Some(&hosted_row), "alpha", &hosted).is_some());
+        assert!(kept_of(Some(&hosted_row), "alpha", &oci_entry('a')).is_none());
+    }
+
+    #[test]
+    fn a_moved_tag_is_the_same_version_of_the_same_source_at_another_manifest() {
+        let previous = |source: &str, digest: char| {
+            let mut lock = lock_of(&[("alpha", "1.0")]);
+            lock.packages[0].source = source.to_string();
+            lock.packages[0].digest = Some(format!("sha256:{}", digest.to_string().repeat(64)));
+            lock
+        };
+        let moved = moved_tag(
+            Some(&previous("oci://r:5000/org", 'a')),
+            "alpha",
+            &oci_entry('b'),
+        );
+        let moved = moved.expect("a moved tag");
+        assert_eq!(moved.locked, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(moved.found, format!("sha256:{}", "b".repeat(64)));
+        let same = previous("oci://r:5000/org", 'b');
+        assert!(moved_tag(Some(&same), "alpha", &oci_entry('b')).is_none());
+        let other_source = previous("oci://r:5000/other", 'a');
+        assert!(moved_tag(Some(&other_source), "alpha", &oci_entry('b')).is_none());
+        assert!(moved_tag(None, "alpha", &oci_entry('b')).is_none());
     }
 
     fn resolution(entries: Vec<Entry>, unresolved: Vec<Unresolved>) -> Resolution {
@@ -1314,6 +1490,7 @@ caraya = \"*\"
                 version: version.to_string(),
                 sha256: String::new(),
                 md5: None,
+                digest: None,
                 source: LOCAL_SOURCE.to_string(),
                 requires: Vec::new(),
                 groups: Vec::new(),
@@ -2422,7 +2599,8 @@ caraya = \"*\"
         fn gh(says: Vec<(&'static str, Gh)>) -> (Runner, Arc<Mutex<Vec<String>>>) {
             let ran = Arc::new(Mutex::new(Vec::new()));
             let log = ran.clone();
-            let runner: Runner = Arc::new(move |_, repo, _| {
+            let runner: Runner = Arc::new(move |ask| {
+                let repo = ask.repo;
                 log.lock().unwrap().push(repo.to_string());
                 let name = repo.strip_prefix("o/").unwrap_or(repo);
                 match says
@@ -2652,7 +2830,7 @@ caraya = \"*\"
                 [AttestationRefusal {
                     name: "p".into(),
                     version: "1.0.0".into(),
-                    repo: "o/p".into(),
+                    origin: crate::errors::Origin::GitHub { repo: "o/p".into() },
                     kind: Refusal::UntrustedPublisher {
                         subject: "https://github.com/b/x".into(),
                         signer: signer_of_repo("b/x"),
@@ -3094,6 +3272,35 @@ gamma = \"1.0\""
     }
 
     #[test]
+    fn a_package_in_no_source_gets_a_note_for_each_oci_source_and_nothing_else_does() {
+        let text = concat!(
+            "[project]\nlabview = \">=2023\"\n\n",
+            "[sources]\nteam = \"oci://r:5000/org\"\nmirror = \"http://m.example/\"\n",
+            "defaults = false\n\n[dependencies]\nalpha = \"*\"\n"
+        );
+        let project = manifest(text);
+        let unlisted = Conflict {
+            facts: vec![Fact::NotListed {
+                package: "alpha".into(),
+            }],
+        };
+        let noted = note_oci_sources(unlisted.clone(), &project);
+        assert_eq!(
+            noted.facts[1..],
+            [Fact::OciExplicit {
+                source: "team".into()
+            }]
+        );
+        let other = Conflict {
+            facts: vec![Fact::Manifest {
+                package: "alpha".into(),
+                wanted: "*".into(),
+            }],
+        };
+        assert_eq!(note_oci_sources(other.clone(), &project), other);
+    }
+
+    #[test]
     fn a_source_pin_naming_no_source_is_an_error_not_a_pin_left_out() {
         let text = with_sources("alpha = \"*\"");
         let mut project = manifest(&text);
@@ -3152,6 +3359,7 @@ gamma = \"1.0\""
             },
             &resolution,
             Some(&previous),
+            &Moving::Nothing,
             &source_pins(&project).unwrap(),
             &[],
         )

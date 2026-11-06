@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::events::{Event, EventSink};
 use crate::github::GitHub;
 use crate::index::{self, Index};
+use crate::oci::Oci;
 use crate::paths;
 use crate::project::{self, Project};
 use crate::target::{self, LvTarget, Roots};
@@ -19,6 +20,7 @@ use crate::venv::{self, Venv};
 use anyhow::{Result, bail, ensure};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The flags that say where a command's packages live.
 #[derive(Debug, Clone, Default)]
@@ -67,6 +69,9 @@ pub struct OpEnv<'a> {
     pub machine: Option<PathBuf>,
     /// The API GitHub dependencies are read from, and the token it is told.
     pub github: GitHub,
+    /// The OCI registry client and the logins it holds. Anonymous until the
+    /// front end installs credentials.
+    pub oci: Arc<Oci>,
 }
 
 /// Where a command's packages live.
@@ -119,6 +124,7 @@ impl<'a> OpEnv<'a> {
             cancel: CancelToken::default(),
             machine: None,
             github: GitHub::default(),
+            oci: Arc::new(Oci::default()),
         }
     }
 
@@ -312,27 +318,42 @@ impl<'a> OpEnv<'a> {
         on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<index::Loaded> {
         let mut repos: Vec<String> = Vec::new();
+        let mut registries = Vec::new();
         let mut defaults = true;
         let mut owners = HashMap::new();
         if let Some((_, proj)) = manifest {
-            repos.extend(proj.resolved_sources()?);
+            let feeds = proj.resolved_sources()?;
+            owners = index::owners(&feeds, &proj.source_pins);
+            (repos, registries) = index::split_sources(feeds, &proj.source_pins);
             defaults = proj.default_sources;
-            owners = index::owners(&proj.sources, &proj.source_pins);
+            self.warn_unpinned(&registries);
         }
         let sources = index::SourceSet {
             extra: &repos,
             local: &self.local_sources(),
             defaults,
+            oci: &registries,
         };
         index::load_each(
             &self.config.cache,
             self.refresh,
             &sources,
             &owners,
+            &self.oci,
             self.sink,
             &self.cancel,
             on_fail,
         )
+    }
+
+    /// Says, once, of each OCI source nothing is pinned to: it is asked for
+    /// no name, so it would sit in `[sources]` and do nothing.
+    pub(super) fn warn_unpinned(&self, registries: &[index::OciFeed]) {
+        for feed in registries.iter().filter(|feed| feed.pinned.is_empty()) {
+            self.sink.emit(Event::OciSourceUnpinned {
+                name: feed.name.clone(),
+            });
+        }
     }
 }
 
@@ -349,6 +370,24 @@ mod tests {
         config.local_sources = vec![PathBuf::from("./packages"), elsewhere.clone()];
         let env = OpEnv::new(&NullSink, config, Vec::new(), cwd.clone());
         assert_eq!(env.local_sources(), [cwd.join("packages"), elsewhere]);
+    }
+
+    #[test]
+    fn an_oci_source_with_no_pinned_package_is_warned_about_and_one_with_a_pin_is_not() {
+        let feed = |name: &str, pinned: &[&str]| index::OciFeed {
+            name: name.to_string(),
+            url: crate::oci::FeedUrl::parse(&format!("oci://r:5000/{name}")).unwrap(),
+            pinned: pinned.iter().map(|p| p.to_string()).collect(),
+        };
+        let recorded = crate::ops::testing::Recorded::default();
+        let env = OpEnv::new(&recorded, config(), Vec::new(), PathBuf::from("."));
+        env.warn_unpinned(&[feed("idle", &[]), feed("busy", &["alpha"])]);
+        assert_eq!(
+            recorded.events(),
+            [Event::OciSourceUnpinned {
+                name: "idle".to_string()
+            }]
+        );
     }
 
     fn config() -> Config {

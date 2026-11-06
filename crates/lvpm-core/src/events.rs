@@ -522,6 +522,20 @@ pub enum Event {
     // ---- ops::query ----
     /// A package's archive is not cached and is about to be downloaded.
     ArchiveFetching { name: String, version: String },
+
+    // ---- OCI sources ----
+    /// The `[sources]` entry `name` is an OCI registry that no dependency is
+    /// pinned to, so nothing is ever asked of it.
+    OciSourceUnpinned { name: String },
+
+    // ---- ops::publish ----
+    /// A package is about to be uploaded to an OCI registry, as `repository`
+    /// (`<prefix>/<name>`) tagged `tag`, at host `registry`.
+    OciUploading {
+        repository: String,
+        tag: String,
+        registry: String,
+    },
 }
 
 /// A Unix time (seconds) as an RFC 3339 string.

@@ -9,6 +9,7 @@ use crate::cache::{Cache, LocalEntry};
 use crate::cancel::CancelToken;
 use crate::errors::Cancelled;
 use crate::index::{self, Entry};
+use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -50,6 +51,9 @@ impl std::error::Error for Rejected {}
 /// A cancelled `cancel` ends the fetch with [`Cancelled`] before it starts and
 /// between the chunks of a download, so nothing of a cancelled download is
 /// cached.
+///
+/// It handles no `oci://` entry: the dispatch is in `Downloads::fetch`
+/// (`ops/session.rs`), which sends one to [`oci_package`].
 pub fn package<'a>(
     cache: &Cache,
     client: &Client,
@@ -76,6 +80,36 @@ pub fn package<'a>(
     let md5 = verify_md5(entry, &bytes)?;
     let sha256 = cache.store(&bytes)?;
     cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
+    Ok(bytes)
+}
+
+/// The archive of a package an OCI source lists, `entry.url` being the OCI
+/// manifest's reference by digest: the manifest is read by that digest first, and
+/// its one layer is the archive. Then the cache answers, by the layer's SHA-256;
+/// otherwise the layer is fetched, its digest checked, and kept. Nothing is
+/// read by tag, so a tag that moved changes nothing here.
+///
+/// The failures are [`crate::oci::Error`], for the caller to put in words.
+pub fn oci_package(
+    cache: &Cache,
+    oci: &Oci,
+    entry: &Entry,
+    cancel: &CancelToken,
+) -> Result<Vec<u8>> {
+    ensure_running(cancel)?;
+    let manifest_ref = index::manifest_reference(entry)?;
+    let repo = manifest_ref.repo(Access::Pull);
+    let manifest = oci.get_manifest(&repo, manifest_ref.name())?;
+    let package = manifest
+        .package()
+        .with_context(|| format!("{} is not an lvpm package", entry.url))?;
+    let sha256 = package.layer.trim_start_matches("sha256:");
+    if let Some(bytes) = cache.load(sha256)? {
+        return Ok(bytes);
+    }
+    ensure_running(cancel)?;
+    let bytes = oci.get_blob(&repo, &package.layer)?;
+    cache.store(&bytes)?;
     Ok(bytes)
 }
 
@@ -281,6 +315,15 @@ mod tests {
             stream.write_all(rest).ok();
         });
         (url, first_sent, go, thread)
+    }
+
+    #[test]
+    fn an_oci_reference_is_never_read_as_a_file_and_is_not_on_hand() {
+        let (root, cache) = test_cache("oci-on-hand");
+        let reference = format!("oci://r:5000/team/alpha@sha256:{}", "ab".repeat(32));
+        assert_eq!(on_hand(&cache, &entry(reference, None)).unwrap(), None);
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

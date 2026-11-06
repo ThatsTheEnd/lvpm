@@ -70,7 +70,8 @@ impl Renderer {
             Event::PhaseStarted { .. } => {}
             Event::FeedCheckStart { .. }
             | Event::FeedChecked { .. }
-            | Event::LocalPackageIgnored { .. } => index::render(self, event),
+            | Event::LocalPackageIgnored { .. }
+            | Event::OciSourceUnpinned { .. } => index::render(self, event),
             Event::RelinkDoneNotClearable { .. }
             | Event::RelinkProgress { .. }
             | Event::RelinkProgressUnreadable { .. }
@@ -174,6 +175,7 @@ impl Renderer {
             | Event::InitGit { .. } => init::render(self, event),
             Event::AppBuildStarting { .. } => build::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
+            Event::OciUploading { .. } => publish::render(self, event),
         }
     }
 

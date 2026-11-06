@@ -107,6 +107,9 @@ pub enum Invalid {
     UnreadableOutput,
     /// gh vouched for no subject with the archive's digest.
     OtherArchive,
+    /// The bundle's certificate names no GitHub repository, so there is no
+    /// repository to ask gh about: gh was not run.
+    NoSourceRepository,
 }
 
 /// Why a package is refused.

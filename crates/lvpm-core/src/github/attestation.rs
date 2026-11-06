@@ -7,7 +7,7 @@
 
 use super::GitHub;
 use super::api::{MAX_BODY_BYTES, failure, request, unix_now};
-use super::gh::GhRun;
+use super::gh::{GhRun, GhVerify};
 use crate::errors::GitHubFault;
 use crate::verify::{Attestation, Invalid, NotChecked, Outcome};
 use reqwest::blocking::Client;
@@ -24,10 +24,42 @@ pub fn outcome(client: &Client, github: &GitHub, repo: &str, sha: &str, archive:
     if let Some(settled) = settled_by_api(client, github, repo, sha) {
         return settled;
     }
+    run_gh(github, repo, sha, archive, None)
+}
+
+/// What gh says of the OCI manifest in the file `manifest` (its SHA-256 is
+/// `sha`), checked against the Sigstore `bundle` and built by `repo`
+/// (`owner/repo`). GitHub's API is not asked: the bundle came from the
+/// registry. gh needs a token.
+pub fn verify_bundle(
+    github: &GitHub,
+    repo: &str,
+    sha: &str,
+    manifest: &Path,
+    bundle: &Path,
+) -> Outcome {
+    run_gh(github, repo, sha, manifest, Some(bundle))
+}
+
+/// What `gh attestation verify` makes of `artifact` (SHA-256 `sha`), when
+/// there is a token to run it with.
+fn run_gh(
+    github: &GitHub,
+    repo: &str,
+    sha: &str,
+    artifact: &Path,
+    bundle: Option<&Path>,
+) -> Outcome {
     let Some(token) = github.auth.token() else {
         return Outcome::Unchecked(NotChecked::NoToken);
     };
-    classify((github.runner)(archive, repo, token), sha)
+    let ask = GhVerify {
+        artifact,
+        repo,
+        token,
+        bundle,
+    };
+    classify((github.runner)(ask), sha)
 }
 
 /// What GitHub's API says of the attestations of the archive with SHA-256
@@ -304,10 +336,12 @@ mod tests {
     fn recording(answer: GhRun) -> (Runner, Calls) {
         let calls = Calls::default();
         let seen = calls.clone();
-        let runner: Runner = Arc::new(move |archive, repo, token| {
-            seen.lock()
-                .unwrap()
-                .push((archive.to_path_buf(), repo.to_string(), token.to_string()));
+        let runner: Runner = Arc::new(move |ask| {
+            seen.lock().unwrap().push((
+                ask.artifact.to_path_buf(),
+                ask.repo.to_string(),
+                ask.token.to_string(),
+            ));
             answer.clone()
         });
         (runner, calls)
@@ -547,5 +581,47 @@ mod tests {
             "{head}"
         );
         assert!(head.contains("authorization: bearer tok"), "{head}");
+    }
+
+    #[test]
+    fn a_bundle_goes_to_gh_with_the_manifest_and_the_repo_and_github_is_not_asked() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let runner: Runner = Arc::new(move |ask| {
+            let bundle = ask.bundle.map(Path::to_path_buf);
+            log.lock()
+                .unwrap()
+                .push((ask.artifact.to_path_buf(), bundle, ask.repo.to_string()));
+            spawned(0, RECORDED, "")
+        });
+        // The API is unreachable: a call to it would make the outcome unchecked.
+        let github = github("http://127.0.0.1:1", Some("tok"), runner);
+        let outcome = verify_bundle(&github, "cli/cli", ARCHIVE, Path::new("m"), Path::new("b"));
+        assert_eq!(
+            outcome,
+            attested(RECORDED_SIGNER, "https://github.com/cli/cli")
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                PathBuf::from("m"),
+                Some(PathBuf::from("b")),
+                "cli/cli".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_bundle_is_not_verified_without_a_token_and_a_digest_gh_did_not_vouch_for_is_invalid() {
+        let (runner, calls) = recording(spawned(0, RECORDED, ""));
+        let no_token = github("http://127.0.0.1:1", None, runner);
+        let outcome = verify_bundle(&no_token, "o/r", ARCHIVE, Path::new("m"), Path::new("b"));
+        assert_eq!(outcome, Outcome::Unchecked(NotChecked::NoToken));
+        assert!(calls.lock().unwrap().is_empty());
+
+        let (runner, _) = recording(spawned(0, RECORDED, ""));
+        let github = github("http://127.0.0.1:1", Some("tok"), runner);
+        let outcome = verify_bundle(&github, "o/r", OTHER, Path::new("m"), Path::new("b"));
+        assert_eq!(outcome, Outcome::Invalid(Invalid::OtherArchive));
     }
 }

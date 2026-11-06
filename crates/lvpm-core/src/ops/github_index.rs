@@ -402,6 +402,7 @@ mod tests {
                 version: "1.0".into(),
                 sha256: "AB".into(),
                 md5: None,
+                digest: None,
                 source: source.into(),
                 requires: Vec::new(),
                 groups: Vec::new(),

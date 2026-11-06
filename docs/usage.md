@@ -27,6 +27,7 @@
 | `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
+| `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
@@ -466,7 +467,9 @@ package and why, writes no lock and exits 1.
   refused when the policy requires an attestation; the error says what to do.
 - An attestation from a repository that no pattern matches is refused.
 
-**What it covers.** Only packages from a GitHub repo. Packages from a feed,
+**What it covers.** Only packages from a GitHub repo or an OCI registry (see
+[Signatures on OCI packages](#signatures-on-oci-packages) for the difference).
+Packages from a feed,
 vipm.io, NI or a local folder are not checked, `[policy]` or not. A package
 the lock already holds with a signer is judged again from the lock under the
 current policy, with no network; one it holds with no signer is asked again
@@ -914,7 +917,8 @@ to call two pilot libraries.
 ## Publishing a package
 
 `lvpm publish --to <folder>` copies the package `lvpm build` wrote for the
-current manifest, `dist/<name>-<version>.lvpkg`, into a folder feed. Another
+current manifest (to push it to an OCI registry instead, see
+[Publishing to a registry](#publishing-to-a-registry)), `dist/<name>-<version>.lvpkg`, into a folder feed. Another
 project that lists that folder in `sources.local` then locks and installs
 it.
 
@@ -1047,7 +1051,8 @@ Both are OGPM's Package Directory format, `[Package <name>-<version>]`
 sections with a `Package.URL`, unchanged since `openg.ogpd` in 2004; `.vipr`
 adds an MD5 per entry. Anything they lack can come from an index folder of
 your own, named in the manifest's `[sources]`. A `[sources]` entry is an
-`http://` or `https://` folder holding an `index.vipr`. Local directories of
+`http://` or `https://` folder holding an `index.vipr`, or an `oci://` registry
+([OCI registries](#oci-registries)). Local directories of
 `.vip`, `.ogp` and `.lvpkg` files are configured globally with `lvpm config set sources.local`
 instead; lvpm reads their specs and package files directly. These local
 directories reuse cached spec metadata when file size and modification time
@@ -1137,6 +1142,187 @@ no feed request goes out. With it, the `ETag` and `Last-Modified` the server las
 are sent back as a conditional request: only a feed that actually changed is
 downloaded again, and an unchanged one answers `304` and costs no bytes. See
 [Configuration](#configuration) to move the cache.
+
+## OCI registries
+
+A team that already runs a container registry (ghcr.io, GitLab, Azure
+Container Registry) can keep its packages there. One version of a package is
+one OCI manifest tagged with the version; the `.lvpkg` is its layer, byte for
+byte. Another project lists the registry as an `oci://` source and pins the
+packages it takes from it ([manifest.md](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#an-oci-registry-as-a-source)):
+
+```toml
+[sources]
+team = "oci://ghcr.io/acme/lv"
+
+[dependencies]
+acme_lib = { version = ">=1.0", index = "team" }
+```
+
+An `oci://host[:port]/prefix` source is explicit: it is asked only for the
+packages pinned to it, so a package needs a pin. A pinned package that the
+registry cannot serve fails and never comes from another source
+([ADR 7](adr/0007-oci-sources-are-explicit.md)). `lvpm catalog`, `lvpm info`
+and the TUI show the plain listing text, without the publish hint that
+`lvpm lock` and `lvpm install` add.
+
+### Publishing to a registry
+
+`lvpm publish --to oci://host/prefix` pushes the package `lvpm build` wrote to
+`<prefix>/<name>:<version>`, with the name in lower case.
+
+```console
+$ lvpm build
+$ lvpm publish --to oci://ghcr.io/acme/lv
+uploading acme/lv/acme_lib:1.2.3 to ghcr.io
+published acme_lib 1.2.3 to oci://ghcr.io/acme/lv/acme_lib:1.2.3
+  OCI manifest digest sha256:5b2c…
+  SBOM attached
+```
+
+- The version is the tag, so it must be a valid OCI tag. A version with `+`
+  build metadata is refused before any request: `1.0.0+build.7 is not a valid
+  OCI tag; publish a version without "+" build metadata`.
+- The package's `bom.cdx.json` is pushed as an OCI referrer of the package, and
+  the last line says so, or says `no SBOM in the package`. If that push fails
+  after the package is live, lvpm prints `SBOM could not be attached: <cause>;
+  the package is published and a rerun will be refused` and exits 1. The digest
+  is printed either way.
+- The target holds no credentials: `oci://user:secret@host/prefix` is refused
+  with `--to: credentials do not belong in the target; remove the user:password@
+  part and run docker login host`, and the user name and secret are not shown.
+
+**Tags are immutable.** A published version is never replaced. Publish checks
+that the tag does not exist, uploads the blobs, checks again, and only then
+writes the OCI manifest. An existing tag fails and writes nothing:
+`acme/lv/acme_lib:1.2.3 is already published at oci://ghcr.io/acme/lv; a
+published version is never replaced; bump the version to publish again`. A check
+that fails for any other reason than "no such tag" stops the publish too. A
+publish that fails before the OCI manifest is written says `nothing was
+published, it is safe to rerun`; the blobs it uploaded are reused.
+
+The OCI API has no "create this tag only if it is new", so two publishers of
+one version can still race in the moment between the second check and the
+write. For tag immutability that the registry enforces itself, turn it on where
+the registry has it: some registries can lock or protect tags (see your
+registry's documentation).
+
+**On ghcr.io, a `403` means the token lacks the package scope.** A refused
+upload says `registry ghcr.io refused the upload to acme/lv/acme_lib; run docker
+login ghcr.io with a token that can write packages; nothing was published, it
+is safe to rerun`. Log in with a classic personal access token that has
+`write:packages`.
+
+### Credentials
+
+Registry credentials come only from the Docker credential store, never from
+`lvpm.toml`. lvpm reads `config.json` in `DOCKER_CONFIG`, else in `~/.docker`,
+and takes the first of these for the registry's host:
+
+1. the `credHelpers` entry for that host
+2. `credsStore`
+3. the `auths` entry for that host
+
+A helper is the program `docker-credential-<name>`, run as `get` with the host
+on its input. A helper that holds nothing for the host counts as no login. With
+no login at all, lvpm asks anonymously, which is enough for a public package.
+`docker login <registry>` is how to add one (`az acr login` does it for Azure
+Container Registry). A helper that answers the user name `<token>` gives an
+identity token, which lvpm sends to the registry's token service as a
+refresh token.
+
+A login the registry refuses is printed once per registry when lvpm lists
+packages (`lock`, `install`, `search`, and a `sync` that has to lock first), and
+once per package when `sync --locked` fetches the packages by digest.
+
+A helper runs once per registry per run. If it does not answer within 30
+seconds lvpm stops waiting: set `LVPM_OCI_HELPER_TIMEOUT_SECS` to a whole number
+of seconds, 1 or more, to change that. What a helper prints is never shown, and
+neither is a secret from the config. What lvpm says instead:
+
+- `registry <host> refused the login from <credHelpers docker-credential-<name> | credsStore docker-credential-<name> | auths>; run docker login <host>`
+- `credential helper docker-credential-<name> for <host> failed with exit code <code>; run it by hand to see why`
+- `credential helper docker-credential-<name> for <host> was not found; check that it is installed and on PATH`
+- `credential helper docker-credential-<name> for <host> did not answer within <secs>s`
+
+On ghcr.io a repository that does not exist answers `403`, as one you may not
+read does (observed behaviour, not one that ghcr.io documents). `lvpm lock` can only say `<package>: registry ghcr.io refused the
+lookup for source "team"; the package is missing or your login cannot read it;
+run docker login ghcr.io`, and does not fall through to another source.
+
+### The lock and `sync --locked`
+
+For an OCI package `lvpm.lock` records the `source` (the `oci://` URL) and the
+`digest` of its OCI manifest, beside the `sha256` of the archive, which is the
+layer's digest. `lvpm sync --locked` asks the registry only by that digest,
+never by tag, and checks the layer's bytes against the lock's `sha256`. Someone
+who moves the tag to other bytes changes nothing for a project that is locked,
+and a package already in the cache needs no network at all. When the registry
+fails the fetch, the message says what to do:
+
+- `cannot fetch <package> <version> by digest from source "<source>": registry <host> refused it; run docker login <host>`
+- `cannot fetch <package> <version> by digest from source "<source>": registry <host> no longer holds sha256:<hex>; run lvpm lock`
+- `<package> <version> from source "<source>": registry <host> served bytes that do not match sha256:<hex>; nothing was installed`
+
+A moved tag is never taken silently. When a plain `lvpm lock` (or any command
+that locks again because the manifest changed) finds a locked version at a
+different OCI manifest digest, it fails, names the package, the version, the
+digest in `lvpm.lock` and the digest the registry has now, and writes nothing.
+`lvpm lock --upgrade`, or `lvpm lock --upgrade-package <package>@<version>` for
+one package without moving the others, accepts the new digest and records it
+with the new archive's `sha256`. A version's age for `min-age-days` is the time
+in the OCI manifest's `org.opencontainers.image.created` annotation.
+
+### Signatures on OCI packages
+
+The SBOM and the signature are OCI referrers of the package's OCI manifest.
+lvpm finds them with the registry's referrers API. A registry without it keeps
+them in the fallback tag `sha256-<hex>` that the OCI specification defines for
+that, and lvpm reads that tag. A lookup that fails with anything but `404`, on
+the API or on the fallback tag, is an error under every `[policy]`, never read
+as "no signature": `<package> <version>: the signature lookup on registry <host>
+failed: <cause>; the package was not locked`.
+
+The signature is a Sigstore bundle that the publisher's CI attaches with
+`push-to-registry`. The
+[release template](https://github.com/ThatsTheEnd/lvpm/blob/main/.github/workflow-templates/lvpm-release.yml)
+has an optional `publish-oci` job that does it: `lvpm publish --to oci://…`,
+then `actions/attest-build-provenance` with `subject-name`, `subject-digest`
+(the OCI manifest digest that `lvpm publish` printed) and
+`push-to-registry: true`. That signs the OCI manifest, not the `.lvpkg`. The
+job needs an lvpm release that has `lvpm publish --to oci://`, the first one
+that ships it: the template's `LVPM_VERSION` pin (0.24.0 at the time of writing)
+has none, so raise it first.
+
+If the SBOM push fails, `lvpm publish` exits 1 after the package is live, the
+job's attest step is skipped, and a rerun is refused because the tag exists.
+`gh` cannot sign, so attest by hand: run `actions/attest-build-provenance` once
+in a workflow of that repository with the same permissions as `publish-oci`,
+giving the repository and digest from the publish log:
+
+```yaml
+- uses: actions/attest-build-provenance@v2
+  with:
+    subject-name: ghcr.io/acme/lv/acme_lib   # the published reference, no oci:// or tag
+    subject-digest: sha256:5b2c…             # the OCI manifest digest publish printed
+    push-to-registry: true
+```
+
+`lvpm lock` checks the bundle with `gh attestation verify` against the OCI
+manifest it has already read, under the same [`[policy]`](#policy) as a GitHub
+release, and records `signer` and `subject` in the lock. A bundle that `gh`
+rejects, or whose certificate names no source repository, is refused whatever
+the policy says. `lvpm sync --locked` trusts the locked signer and does not run
+`gh`. Only the first bundle referrer of a package is used.
+
+**The limit: an identity, not an endorsement.** For a GitHub release lvpm
+passes `gh` the repository the dependency names. An OCI source declares no
+repository, so lvpm takes it from the bundle's own certificate, and `gh` then
+checks the bundle against that. `require-signature = true` without
+`trusted-publishers` therefore accepts a bundle built by any GitHub repository:
+the signer is an identity, not an endorsement, and that is weaker than for a
+GitHub release. Only `trusted-publishers` gives assurance; list the
+repositories you trust.
 
 ## Configuration
 

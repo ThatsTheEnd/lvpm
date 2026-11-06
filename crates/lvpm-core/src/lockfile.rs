@@ -38,10 +38,11 @@
 //! version = "2.0"
 //! sha256 = "..."
 //! md5 = "..."                          # only when the feed lists one
-//! source = "local"                     # or the feed's index URL, or https://github.com/owner/repo
+//! digest = "sha256:..."               # only for an OCI source: the digest of the package's OCI manifest
+//! source = "local"                     # or the feed's index URL, https://github.com/owner/repo, or an oci:// source URL
 //! requires = ["beta"]                  # the locked packages it needs
 //! groups = ["ci", "dev"]               # only when [dependencies] does not need it
-//! signer = "https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"  # GitHub packages with an attestation
+//! signer = "https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"  # GitHub and OCI packages with an attestation
 //! subject = "https://github.com/o/r"   # the repository that built it
 //!
 //! [[unresolved]]                       # a requirement no source lists
@@ -93,7 +94,8 @@ pub struct Lockfile {
 pub struct Inputs {
     /// Whether the public indexes were consulted too.
     pub defaults: bool,
-    /// The hosted `[sources]` index folders, as the manifest lists them.
+    /// The `[sources]` URLs, as the manifest lists them: hosted index folders
+    /// and `oci://` registries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// `[sources] min-age-days`; 0, which is also the absent key, is not written.
@@ -164,8 +166,12 @@ pub struct LockedPackage {
     /// The MD5 the feed lists for the archive, when it lists one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub md5: Option<String>,
+    /// The digest of the package's OCI manifest, `sha256:<hex>`, for a package
+    /// from an OCI source: what a sync fetches it by, never a tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
     /// The feed's index URL, `https://github.com/{repo}` for a GitHub dependency,
-    /// or [`LOCAL_SOURCE`].
+    /// the `oci://` URL of an OCI source, or [`LOCAL_SOURCE`].
     pub source: String,
     /// The locked packages this one requires, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -174,7 +180,7 @@ pub struct LockedPackage {
     /// `[dev-dependencies]`, sorted; empty when `[dependencies]` needs it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
-    /// The workflow that built a GitHub package's archive, as its attestation
+    /// The workflow that built a GitHub or OCI package, as its attestation
     /// names it; absent when no attestation was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
@@ -187,6 +193,20 @@ impl LockedPackage {
     /// `[dependencies]` needs it. The lock then lists no groups for it, whatever other tables also need it.
     pub fn needed_by_dependencies(&self) -> bool {
         self.groups.is_empty()
+    }
+
+    /// Where an OCI source's package is fetched from: the repository the source
+    /// keeps it in, at the locked manifest digest. `None` for a package from any
+    /// other source.
+    pub fn oci_reference(&self) -> Option<crate::oci::Reference> {
+        let feed = crate::oci::FeedUrl::parse(&self.source).ok()?;
+        let digest = (self.digest.clone()).filter(|d| crate::oci::reference::valid_digest(d))?;
+        let repository = feed.repository(&self.name)?;
+        Some(crate::oci::Reference::by_digest(
+            feed.registry(),
+            &repository,
+            &digest,
+        ))
     }
 
     /// The attestation the lock records, when it records one.
@@ -436,6 +456,7 @@ mod tests {
             version: version.to_string(),
             sha256: "ab".repeat(32),
             md5: None,
+            digest: None,
             source: LOCAL_SOURCE.to_string(),
             requires: Vec::new(),
             groups: Vec::new(),
@@ -492,6 +513,63 @@ mod tests {
         assert_eq!(text.matches("dev = ").count(), 0, "{text}");
         assert_eq!(text.matches("md5 = ").count(), 1, "{text}");
         assert_eq!(text.matches("[[package]]").count(), 3, "{text}");
+    }
+
+    #[test]
+    fn an_oci_package_records_its_manifest_digest_and_a_lock_without_one_reads_as_before() {
+        let digest = format!("sha256:{}", "cd".repeat(32));
+        let mut alpha = package("alpha", "2.0");
+        alpha.source = "oci://r:5000/org".to_string();
+        alpha.digest = Some(digest.clone());
+        let mut with = lock();
+        with.packages[0] = alpha.clone();
+        let text = with.to_toml().unwrap();
+        assert_eq!(text.matches("digest = ").count(), 1, "{text}");
+        assert_eq!(Lockfile::parse(&text).unwrap(), with);
+        // No `digest` line is written, or needed, for any other package.
+        let plain = lock().to_toml().unwrap();
+        assert_eq!(plain.matches("digest").count(), 0, "{plain}");
+        assert_eq!(Lockfile::parse(&plain).unwrap(), lock());
+        let reference = alpha.oci_reference().unwrap();
+        assert_eq!(
+            reference.to_string(),
+            format!("oci://r:5000/org/alpha@{digest}")
+        );
+        assert_eq!(package("alpha", "2.0").oci_reference(), None);
+        // A hand-edited digest is no address: it never reaches a request.
+        for bad in ["latest", "sha256:../x", &digest.to_uppercase()] {
+            alpha.digest = Some(bad.to_string());
+            assert_eq!(alpha.oci_reference(), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_edited_oci_source_makes_the_lock_stale() {
+        let text = |url: &str| {
+            format!(
+                "[project]\nlabview = \">=2024\"\n\n[sources]\nteam = \"{url}\"\ndefaults = false\n\n\
+                 [dependencies]\nalpha = {{ version = \"*\", index = \"team\" }}\n"
+            )
+        };
+        let project = |url: &str| crate::project::parse(&text(url)).unwrap();
+        let locked = Lockfile {
+            inputs: Inputs::of(&project("oci://r:5000/org")),
+            ..lock_for_alpha()
+        };
+        assert_eq!(locked.staleness(&project("oci://r:5000/org")), None);
+        assert_eq!(
+            locked.staleness(&project("oci://r:5000/other")),
+            Some(StaleReason::SourcesChanged)
+        );
+    }
+
+    /// A lock with `alpha` as the only package, made from nothing in particular.
+    fn lock_for_alpha() -> Lockfile {
+        Lockfile {
+            packages: vec![package("alpha", "2.0")],
+            unresolved: Vec::new(),
+            ..lock()
+        }
     }
 
     #[test]

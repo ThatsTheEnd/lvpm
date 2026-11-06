@@ -3,17 +3,19 @@
 //! The message of each is neutral: it says what failed and names no lvpm
 //! command; it names a flag only when that flag's value is what is wrong. A
 //! front end words the hint that follows, because only it knows what the user
-//! can type. The GitHub faults are the exception: their texts carry the hint,
-//! because it names `gh` and `GH_TOKEN`, not an lvpm command, so every front
-//! end would word it the same.
+//! can type. GitHub and Docker-login faults (they name `gh`, `GH_TOKEN` or
+//! `docker login`, not an lvpm command) are the exception: their texts carry
+//! the hint, so every front end would word it the same.
 
 use crate::events::SyncStep;
 use crate::github::TokenSource;
 use crate::lockfile::StaleReason;
 use crate::manifest_edit::DependencyTable;
+use crate::oci::FeedUrl;
 use crate::solve::Conflict;
 use crate::timefmt::{rfc3339, time_until};
 use crate::verify::Refusal;
+use std::fmt;
 use std::path::PathBuf;
 
 /// The operation's [`CancelToken`](crate::cancel::CancelToken) was cancelled
@@ -101,6 +103,15 @@ pub enum LockError {
     /// other bytes under it are never pinned in its place.
     #[error("{} locked archive(s) could not be had", .0.len())]
     LockedArchives(Vec<LockedArchiveProblem>),
+    /// Locked OCI versions whose tag now names another manifest, all of them.
+    /// Only an upgrade accepts the new manifest; nothing was written.
+    #[error("{} locked OCI version(s) now have another manifest", .0.len())]
+    TagMoved(Vec<MovedTag>),
+    /// Pinned packages that an OCI source could not list, all of them: one run
+    /// reports every one, and none is read as "not listed" by a source that is
+    /// asked next. Nothing was written.
+    #[error("{} pinned package(s) could not be listed", .0.len())]
+    OciListing(Vec<ListingFailure>),
     /// There is no lock where it should be.
     #[error("there is no lvpm.lock at {}", .path.display())]
     NoLock { path: PathBuf },
@@ -128,9 +139,10 @@ pub enum LockError {
         needs_year: u32,
         project_year: u32,
     },
-    /// A source-pinned package that its source does not list. No other source
-    /// is asked for it, so there is nothing to lock. `source_name` is the
-    /// `[sources]` name and `feed` its index URL.
+    /// A package pinned to a hosted source that does not list it. No other
+    /// source is asked for it, so there is nothing to lock. `source_name` is
+    /// the `[sources]` name and `feed` its index URL. An OCI source that cannot
+    /// list a pinned package fails as [`LockError::OciListing`] instead.
     #[error(
         "{package} is pinned to \"{source_name}\" ({feed}), which does not list it; {}",
         crate::solve::OTHER_SOURCES_IGNORED
@@ -140,7 +152,7 @@ pub enum LockError {
         source_name: String,
         feed: String,
     },
-    /// The `[policy]` refuses these GitHub packages, all of them: one run
+    /// The `[policy]` refuses these GitHub and OCI packages, all of them: one run
     /// reports every one. Nothing was written. `trusted_publishers` is the
     /// policy's list, which an untrusted signer is told it is not on.
     #[error("{} package(s) refused", .refusals.len())]
@@ -148,6 +160,12 @@ pub enum LockError {
         refusals: Vec<AttestationRefusal>,
         trusted_publishers: Vec<String>,
     },
+    /// The registry could not say whether these OCI packages are signed, all
+    /// of them. That is no answer to the `[policy]`, whatever it says: a
+    /// failing registry must not pass for an unsigned package. Nothing was
+    /// written.
+    #[error("{} signature lookup(s) failed", .0.len())]
+    SignatureLookup(Vec<SignatureLookupFailure>),
     /// The operation's token was cancelled; nothing was written.
     #[error("cancelled")]
     Cancelled,
@@ -156,14 +174,136 @@ pub enum LockError {
     Other(#[from] anyhow::Error),
 }
 
-/// One GitHub package the `[policy]` refuses, and why.
+/// Where a package comes from, as far as its attestation goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// A release of this GitHub repository, `owner/repo`.
+    GitHub { repo: String },
+    /// A package in this OCI source: its `oci://<registry>/<prefix>` URL.
+    Oci { source: String },
+}
+
+/// One package the `[policy]` refuses, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttestationRefusal {
     pub name: String,
     pub version: String,
-    /// `owner/repo` the release is from.
-    pub repo: String,
+    pub origin: Origin,
     pub kind: Refusal,
+}
+
+/// A locked OCI version that its source now lists at another manifest digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedTag {
+    pub name: String,
+    pub version: String,
+    /// The manifest digest the lock records.
+    pub locked: String,
+    /// The manifest digest the source lists now.
+    pub found: String,
+}
+
+/// Why a package pinned to an OCI source could not be listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListingFault {
+    /// The registry has no repository for it.
+    NotListed,
+    /// `401` or `403`: the package is missing, or the login cannot read it. A
+    /// registry that hides what a login cannot read answers this for both.
+    Refused,
+    /// No answer, or one that is no listing; the cause in words.
+    Unreachable(String),
+    /// The login could not be had or was refused: one fault for the whole
+    /// registry host, in words, and the same for every package on it.
+    Host(String),
+}
+
+/// One package pinned to an OCI source that the source could not list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailure {
+    pub package: String,
+    /// The `[sources]` name.
+    pub source: String,
+    /// The source's URL, `oci://registry/prefix`.
+    pub feed: FeedUrl,
+    pub fault: ListingFault,
+}
+
+/// What failed, and no lvpm-command hint: the front end words the way on (see
+/// `src/render/lock.rs`). A refusal keeps its `docker login` hint, which names
+/// no lvpm command.
+impl fmt::Display for ListingFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            package,
+            source,
+            feed,
+            fault,
+        } = self;
+        let registry = feed.registry();
+        match fault {
+            ListingFault::NotListed => {
+                write!(
+                    f,
+                    "{package}: source \"{source}\" ({feed}) does not list it"
+                )
+            }
+            ListingFault::Refused => write!(
+                f,
+                "{package}: registry {registry} refused the lookup for source \"{source}\"; the \
+                 package is missing or your login cannot read it; run docker login {registry}"
+            ),
+            ListingFault::Unreachable(cause) => write!(
+                f,
+                "{package}: source \"{source}\" ({feed}) is unreachable: {cause}"
+            ),
+            ListingFault::Host(said) => write!(f, "{package}: {said}"),
+        }
+    }
+}
+
+/// Every pinned package the OCI sources could not list, in package order: what
+/// [`crate::index::load`] fails with, for the caller to downcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailures(Vec<ListingFailure>);
+
+impl ListingFailures {
+    pub fn new(mut failures: Vec<ListingFailure>) -> ListingFailures {
+        failures.sort_by_cached_key(|f| crate::project::name_key(&f.package));
+        ListingFailures(failures)
+    }
+
+    pub fn failures(&self) -> &[ListingFailure] {
+        &self.0
+    }
+
+    pub fn into_failures(self) -> Vec<ListingFailure> {
+        self.0
+    }
+}
+
+/// One line for each failure: the plain text of a caller that does not word
+/// them itself.
+impl fmt::Display for ListingFailures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lines: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+        f.write_str(&lines.join(
+            "
+",
+        ))
+    }
+}
+
+impl std::error::Error for ListingFailures {}
+
+/// One OCI package whose signature the registry could not be asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureLookupFailure {
+    pub name: String,
+    pub version: String,
+    pub registry: String,
+    /// What the registry client said, which holds no secret.
+    pub cause: String,
 }
 
 /// One archive that could not be had, and why, in the cause's own words.
@@ -172,6 +312,9 @@ pub struct ArchiveFailure {
     pub name: String,
     pub version: String,
     pub reason: String,
+    /// `reason` is a whole sentence that names the package itself, and is
+    /// shown as it is.
+    pub in_full: bool,
 }
 
 /// Why `sync` changed nothing, or stopped part-way.
@@ -449,8 +592,9 @@ pub enum ArchiveFault {
     /// SHA-256.
     NotFound,
     /// A source lists it and could not be read or fetched from, in the cause's
-    /// own words: sync tells the user this instead of "not found".
-    Unfetched { reason: String },
+    /// own words: sync tells the user this instead of "not found". `in_full`:
+    /// the words are a whole sentence that names the package itself.
+    Unfetched { reason: String, in_full: bool },
     /// An archive of that name and version was found, and its bytes are not
     /// the locked ones: it is never installed.
     DiffersFromLock { found_sha256: String },

@@ -327,6 +327,7 @@ labview = \">=2024\"
                 version: "1.0".into(),
                 sha256: "ab".repeat(32),
                 md5: None,
+                digest: None,
                 source: LOCAL_SOURCE.into(),
                 requires: Vec::new(),
                 groups: Vec::new(),

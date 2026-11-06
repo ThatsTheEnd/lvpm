@@ -6,11 +6,11 @@
 //! first use, so a run with no GitHub dependency never starts `gh`. The token
 //! is shown nowhere: `Debug` prints `***`.
 
+use crate::process::{self, Ran};
 use std::fmt;
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// How long `gh auth token` may take: it reads a local file or the keyring.
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -119,46 +119,18 @@ pub fn gh_auth_token() -> Option<String> {
     run(Command::new("gh").args(["auth", "token"]), GH_TIMEOUT)
 }
 
-/// The standard output of `command` when it succeeds within `limit`.
+/// The standard output of `command` when it succeeds within `limit`. A token is
+/// a few dozen bytes: output past [`MAX_OUTPUT_BYTES`] is not one.
 fn run(command: &mut Command, limit: Duration) -> Option<String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    // Read as it is written, so output past the pipe's buffer cannot stall the
-    // child; a token is a few dozen bytes, and nothing longer is let through.
-    let stdout = child.stdout.take()?;
-    let (sender, output) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut text = String::new();
-        // One byte over the cap tells a too-long output from one that fits.
-        let read = stdout.take(MAX_OUTPUT_BYTES + 1).read_to_string(&mut text);
-        sender
-            .send(
-                read.ok()
-                    .filter(|_| text.len() as u64 <= MAX_OUTPUT_BYTES)
-                    .map(|_| text),
-            )
-            .ok();
-    });
-    let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                // gh has exited; the grace covers the reader seeing EOF, and stops a
-                // grandchild that kept the pipe open from holding us.
-                return output.recv_timeout(Duration::from_secs(1)).ok().flatten();
-            }
-            Ok(Some(_)) => return None,
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(_) => break,
-        }
+    // One byte over the cap tells a too-long output from one that fits.
+    match process::run(command, None, limit, MAX_OUTPUT_BYTES + 1) {
+        Ran::Exited {
+            status: Some(0),
+            stdout,
+            ..
+        } if stdout.len() as u64 <= MAX_OUTPUT_BYTES => String::from_utf8(stdout).ok(),
+        _ => None,
     }
-    child.kill().ok();
-    child.wait().ok();
-    None
 }
 
 #[cfg(test)]

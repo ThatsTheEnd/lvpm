@@ -8,6 +8,7 @@
 //!
 //! [sources]                         # repositories beyond the public indexes
 //! mirror = "http://host:8090/files" # a hosted index.vipr folder
+//! team = "oci://ghcr.io/org/lvpm"   # an OCI registry prefix: asked only for packages pinned to it
 //! defaults = true                   # false: only the sources listed here
 //!
 //! [dependencies]
@@ -40,6 +41,7 @@
 
 use crate::errors::LockError;
 use crate::manifest_edit::DependencyTable;
+use crate::oci::{self, FeedUrl, UrlError};
 use crate::verify::Policy;
 use crate::version::Version;
 use anyhow::{Context, Result, bail};
@@ -183,7 +185,8 @@ pub struct Project {
     /// oldest LabVIEW the project is meant for. A venv binds to this version or a newer one; a global
     /// install still takes its target from `--labview-version`.
     pub labview: Option<String>,
-    /// `[sources]`, in file order: a name and an index URL as written.
+    /// `[sources]`, in file order: a name and an index URL or `oci://` registry
+    /// URL as written.
     pub sources: Vec<(String, String)>,
     /// Whether the public indexes are consulted too (`sources.defaults`).
     pub default_sources: bool,
@@ -243,16 +246,89 @@ impl Default for Project {
     }
 }
 
-impl Project {
-    /// The `[sources]` as index arguments. Only hosted index folders: a path
-    /// on disk is refused here rather than silently resolving nothing.
-    pub fn resolved_sources(&self) -> Result<Vec<String>> {
-        for (name, s) in &self.sources {
-            if !s.starts_with("http://") && !s.starts_with("https://") {
-                bail!("[sources] {name}: {s:?} is not an http:// or https:// index folder");
-            }
+/// A `[sources]` entry, once its URL is read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Feed {
+    /// A hosted index folder (`http://` or `https://`), listed as a whole.
+    Hosted(String),
+    /// A registry prefix (`oci://host/prefix`). A registry has no catalogue,
+    /// so only the packages pinned to it with `index = "<source>"` are asked.
+    Oci(FeedUrl),
+}
+
+impl Feed {
+    /// What `Entry::source` holds for the entries this feed lists, and so what
+    /// a source pin is compared with: the index URL of a hosted folder, the
+    /// `oci://` URL of a registry prefix.
+    pub fn owner(&self) -> String {
+        match self {
+            Feed::Hosted(folder) => feed_url(folder),
+            Feed::Oci(url) => url.to_string(),
         }
-        Ok(self.sources.iter().map(|(_, s)| s.clone()).collect())
+    }
+}
+
+/// A source folder's URL with the trailing slash that `Package.URL` is
+/// relative to.
+pub(crate) fn folder_base(folder: &str) -> String {
+    match folder.ends_with('/') {
+        true => folder.to_string(),
+        false => format!("{folder}/"),
+    }
+}
+
+/// The index URL of the hosted source at `folder`, which is what `Entry.source`
+/// holds for its entries.
+pub(crate) fn feed_url(folder: &str) -> String {
+    format!("{}index.vipr", folder_base(folder))
+}
+
+/// The feed `url` names, for the `[sources]` entry `name`.
+fn feed_of(name: &str, url: &str) -> Result<Feed> {
+    if url.starts_with(oci::SCHEME) {
+        return oci_feed(name, url).map(Feed::Oci);
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        bail!(
+            "[sources] {name}: {:?} is not an http:// or https:// index folder",
+            without_userinfo(url)
+        );
+    }
+    Ok(Feed::Hosted(url.to_string()))
+}
+
+/// `url` without a `user:password@` part, for a message: a scheme written as
+/// `OCI://` is not recognised as an OCI source, and must not carry its secret
+/// into the output.
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    // The last `@`: a password may hold a slash, so the authority's end is unknown.
+    let tail = rest.rsplit_once('@').map_or(rest, |(_, tail)| tail);
+    format!("{scheme}://{tail}")
+}
+
+/// `oci://host/prefix`. A URL with `user:password@` is refused without a word
+/// of it in the message: it would reach the output, and the lock.
+fn oci_feed(name: &str, url: &str) -> Result<FeedUrl> {
+    FeedUrl::parse(url).map_err(|why| match why {
+        UrlError::Credentials { registry } => anyhow::anyhow!(
+            "[sources] {name}: credentials do not belong in lvpm.toml; remove the \
+             user:password@ part and run docker login {registry}"
+        ),
+        // Fixed text: it holds nothing of the URL.
+        UrlError::Invalid(problem) => anyhow::anyhow!("[sources] {name}: {problem}"),
+    })
+}
+
+impl Project {
+    /// The `[sources]`, each with its feed. A path on disk is refused here
+    /// rather than silently resolving nothing.
+    pub fn resolved_sources(&self) -> Result<Vec<(String, Feed)>> {
+        (self.sources.iter())
+            .map(|(name, url)| Ok((name.clone(), feed_of(name, url)?)))
+            .collect()
     }
 
     /// The `[sources]` name `name` is pinned to, in any table, whatever the
@@ -366,7 +442,14 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
                          (got {value}), for example min-age-days = 14"
                 ),
             },
-            (_, toml::Value::String(s)) => p.sources.push((key, s)),
+            (_, toml::Value::String(s)) => {
+                // Refused as the manifest is read, so that no command carries a
+                // secret from lvpm.toml into the lock or its own output.
+                if s.starts_with(oci::SCHEME) {
+                    oci_feed(&key, &s)?;
+                }
+                p.sources.push((key, s))
+            }
             (k, other) => {
                 bail!(
                     "[sources] {k}: expected an index URL string, got {}",
@@ -1013,14 +1096,90 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
 
     #[test]
     fn sources_must_be_hosted_index_folders() {
-        let p = parse("[sources]\nnet = \"http://h/x\"\nsecure = \"https://h/y\"\n").unwrap();
-        assert_eq!(p.resolved_sources().unwrap(), ["http://h/x", "https://h/y"]);
-
-        let folder = parse("[sources]\nlocal = \"./Dependencies\"\n").unwrap();
-        assert!(
-            folder.resolved_sources().is_err(),
-            "a path on disk is not a source"
+        let p = parse(
+            "[sources]\nnet = \"http://h/x\"\nsecure = \"https://h/y\"\nteam = \"oci://r.example:5000/org/lvpm\"\n",
+        )
+        .unwrap();
+        let feeds = p.resolved_sources().unwrap();
+        assert_eq!(
+            feeds[..2],
+            [
+                ("net".to_string(), Feed::Hosted("http://h/x".into())),
+                ("secure".to_string(), Feed::Hosted("https://h/y".into())),
+            ]
         );
+        let (name, Feed::Oci(url)) = &feeds[2] else {
+            panic!("an oci:// source is an OCI feed: {feeds:?}");
+        };
+        assert_eq!((name.as_str(), url.registry()), ("team", "r.example:5000"));
+        assert_eq!(url.prefix(), "org/lvpm");
+
+        for refused in ["./Dependencies", "ftp://h/x"] {
+            let folder = parse(&format!("[sources]\nlocal = \"{refused}\"\n")).unwrap();
+            assert!(
+                folder.resolved_sources().is_err(),
+                "{refused} is not a source"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_pin_compares_with_the_owner_of_its_feed() {
+        let hosted = Feed::Hosted("http://h/x".into());
+        assert_eq!(hosted.owner(), "http://h/x/index.vipr");
+        let oci = Feed::Oci(FeedUrl::parse("oci://r:5000/org/lvpm").unwrap());
+        assert_eq!(oci.owner(), "oci://r:5000/org/lvpm");
+    }
+
+    #[test]
+    fn credentials_in_an_oci_source_are_refused_without_echoing_them() {
+        let user = "u1-4d2e8b-user";
+        let secret = "s1-7f3a9c-secret";
+        for url in [
+            format!("oci://{user}:{secret}@r:5000/team"),
+            format!("oci://{user}:{secret}@r:5000/team/"),
+            // A password may hold a slash.
+            format!("oci://{user}:{secret}/x@r:5000/team"),
+            format!("oci://{user}@r:5000/team"),
+        ] {
+            let why = parse(&format!("[sources]\nteam = \"{url}\"\n"))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                why,
+                "[sources] team: credentials do not belong in lvpm.toml; remove the \
+                 user:password@ part and run docker login r:5000",
+                "{url}"
+            );
+        }
+        // A scheme in capitals is no OCI source, and still keeps the secret out.
+        let why = parse(&format!(
+            "[sources]\nteam = \"OCI://{user}:{secret}/x@r:5000/team\"\n"
+        ))
+        .unwrap()
+        .resolved_sources()
+        .unwrap_err()
+        .to_string();
+        assert!(!why.contains(user) && !why.contains(secret), "{why}");
+        // A tail that is no registry is not echoed either, so the message
+        // cannot carry the secret.
+        let why = parse(&format!(
+            "[sources]\nteam = \"oci://{user}:{secret}@/x@y/z\"\n"
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(!why.contains(user) && !why.contains(secret), "{why}");
+        assert!(why.starts_with("[sources] team: "), "{why}");
+    }
+
+    #[test]
+    fn an_oci_source_that_is_no_registry_prefix_is_refused() {
+        for url in ["oci://r:5000", "oci://r:5000/", "oci://r:5000/UPPER"] {
+            let why = parse(&format!("[sources]\nteam = \"{url}\"\n"))
+                .unwrap_err()
+                .to_string();
+            assert!(why.starts_with("[sources] team: "), "{url}: {why}");
+        }
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub const XDG_CONFIG_DIR: &str = "xdg-config";
 pub const XDG_CACHE_DIR: &str = "xdg-cache";
 /// An empty `GH_CONFIG_DIR`: a `gh` on the machine finds no login in it.
 pub const GH_CONFIG_DIR: &str = "gh-config";
+/// The token a scenario with a fake `gh` runs with: a long unique string.
+pub const FAKE_GH_TOKEN: &str = "s7-4c1d9e-gh-token";
 /// What the child sees as the user's home and profile.
 pub const HOME_DIR: &str = "home";
 /// Where a scenario keeps the copy of a recording it has altered.
@@ -258,6 +260,8 @@ struct Learned {
 pub struct Sandbox {
     dir: TempDir,
     feed: OnceLock<Feed>,
+    /// The `host:port` of the scenario's loopback OCI registry, once it has one.
+    registry: OnceLock<String>,
     learned: Mutex<Learned>,
     /// Folders configured as local sources after the sandbox's own.
     more_local_sources: Mutex<Vec<PathBuf>>,
@@ -277,6 +281,7 @@ impl Sandbox {
         let sandbox = Sandbox {
             dir,
             feed: OnceLock::new(),
+            registry: OnceLock::new(),
             learned: Mutex::new(Learned::default()),
             more_local_sources: Mutex::new(Vec::new()),
             headless: AtomicBool::new(false),
@@ -436,6 +441,59 @@ impl Sandbox {
         self.more_local_sources
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Run the children against a loopback OCI registry at `origin`
+    /// (`host:port`): its address is `<registry>` in their output, and no proxy
+    /// stands between them and it.
+    pub fn set_registry(&self, origin: &str) {
+        self.registry
+            .set(origin.to_string())
+            .expect("one registry per scenario");
+        for name in NO_PROXY_ENV_VARS {
+            self.set_child_env(name, "127.0.0.1,localhost");
+        }
+    }
+
+    /// Where a scenario's Docker config (`config.json`) is kept.
+    pub fn docker_config_dir(&self) -> PathBuf {
+        self.root().join("docker-config")
+    }
+
+    /// Where a scenario's credential helpers are installed.
+    pub fn helper_dir(&self) -> PathBuf {
+        self.root().join("helpers")
+    }
+
+    /// Where a scenario's fake `gh` is installed.
+    pub fn gh_dir(&self) -> PathBuf {
+        self.root().join("gh-bin")
+    }
+
+    /// From now on, run the children with `GH_TOKEN` set and a `PATH` that has
+    /// no `gh` but the one a scenario installs in [`Sandbox::gh_dir`]: a `gh` on
+    /// the machine is never run. Without an installed one, gh is not installed.
+    pub fn use_fake_gh(&self) {
+        std::fs::create_dir_all(self.gh_dir()).expect("create the gh directory");
+        let system = path_without_gh(std::env::var_os("PATH"));
+        let path = std::iter::once(self.gh_dir()).chain(std::env::split_paths(&system));
+        let path = std::env::join_paths(path).expect("the gh directory joins PATH");
+        self.set_child_env("PATH", &path.to_string_lossy());
+        self.set_child_env("GH_TOKEN", FAKE_GH_TOKEN);
+    }
+
+    /// From now on, run the children with `DOCKER_CONFIG` at the scenario's
+    /// Docker config, and its helper directory in front of the system `PATH`
+    /// and nothing else added, so only the helpers a scenario installed are found.
+    pub fn use_docker_config(&self) {
+        let (config, helpers) = (self.docker_config_dir(), self.helper_dir());
+        std::fs::create_dir_all(&config).expect("create the Docker config directory");
+        std::fs::create_dir_all(&helpers).expect("create the helper directory");
+        self.set_child_env("DOCKER_CONFIG", &config.to_string_lossy());
+        let system = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::iter::once(helpers).chain(std::env::split_paths(&system));
+        let path = std::env::join_paths(path).expect("the helper directory joins PATH");
+        self.set_child_env("PATH", &path.to_string_lossy());
     }
 
     /// Empty the cache: no feed body, no archive, no import.
@@ -631,6 +689,7 @@ impl Sandbox {
         let learned = self.learned();
         let mut anchors = Anchors::new(self.root());
         anchors.feed_origin = origin.as_deref();
+        anchors.registry_origin = self.registry.get().map(String::as_str);
         anchors.labview_dir = learned
             .labview
             .as_ref()

@@ -19,8 +19,10 @@ pub mod ui;
 pub mod worker;
 
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
+use lvpm_core::oci::{Oci, logins};
 use lvpm_core::{config, target};
 use ratatui::crossterm::event;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long the loop waits for a key before it looks for the worker's result.
@@ -36,6 +38,9 @@ pub fn run() -> anyhow::Result<()> {
         destination::EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
     builder.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token)
         .with_gh_runner(gh::real_runner());
+    builder.oci = Arc::new(Oci::with_credentials(logins::from_lookup(|name| {
+        std::env::var_os(name)
+    })?));
     let mut app = app::App::new(builder);
     let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
     app.log_file = local_app_data.as_deref().map(log::path);

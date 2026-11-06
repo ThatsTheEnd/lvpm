@@ -7,9 +7,11 @@
 use lvpm_core::events::{Event, EventSink};
 use lvpm_core::github::{GitHub, gh, gh_auth_token};
 use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::oci::{Oci, logins};
 use lvpm_core::ops::build_app::VenvAppLauncher;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::lock::{Upgrade, UpgradeTarget};
+use lvpm_core::ops::publish::PublishTarget;
 use lvpm_core::ops::relink::RelinkOptions;
 use lvpm_core::ops::route::{self, InstallMode, InstallRequest};
 use lvpm_core::ops::sync::{LockFlags, SyncOptions, strictness};
@@ -23,6 +25,7 @@ use clap::builder::TypedValueParser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -438,13 +441,15 @@ enum Cmd {
         #[arg(long)]
         package: bool,
     },
-    /// Copy dist/<name>-<version>.lvpkg into a folder feed.
+    /// Copy dist/<name>-<version>.lvpkg into a folder feed, or push it to an
+    /// OCI registry.
     ///
     /// Publishes the package lvpm build wrote for the current manifest. A
-    /// published file is never replaced: publishing a version the folder
-    /// already holds fails and changes nothing.
+    /// published version is never replaced: publishing a version the folder
+    /// or the registry already holds fails and changes nothing.
     Publish {
-        /// The folder feed to copy the package into. It must exist.
+        /// The folder feed to copy the package into (it must exist), or
+        /// oci://host/prefix to push it to <prefix>/<name>:<version> there.
         #[arg(long)]
         to: PathBuf,
     },
@@ -580,6 +585,9 @@ fn op_env<'a>(cli: &Cli, sink: &'a dyn EventSink) -> Result<OpEnv<'a>> {
     env.headless = std::env::var_os("LV_RTE_HEADLESS").is_some();
     env.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token)
         .with_gh_runner(gh::real_runner());
+    env.oci = Arc::new(Oci::with_credentials(logins::from_lookup(|name| {
+        std::env::var_os(name)
+    })?));
     Ok(env)
 }
 
@@ -709,7 +717,8 @@ fn main() -> std::process::ExitCode {
         // As `main() -> Result` would print it, but a feed's text in an error
         // cannot drive the terminal.
         (Err(error), false) => {
-            eprintln!("Error: {}", render::printable(format!("{error:?}")));
+            let text = render::lock::listing_error(&error).unwrap_or_else(|| format!("{error:?}"));
+            eprintln!("Error: {}", render::printable(text));
             ExitCode::FAILURE
         }
         (Err(error), true) => {
@@ -861,10 +870,33 @@ fn run(cli: &Cli) -> Result<Report> {
             app,
             package,
         } => cmd_build(&env, *no_check, *app, *package, cli.json),
-        Cmd::Publish { to } => Ok(Report::said(
-            render::publish::published(&ops::publish::publish(&env, to)?),
-            "publish",
-        )),
+        Cmd::Publish { to } => {
+            let done = ops::publish::publish(&env, &PublishTarget::from_arg(to)?)?;
+            let text = render::publish::published(&done);
+            // A script that gets exit 1 needs the digest to sign the package.
+            let mut result = match &done {
+                ops::publish::Published::Oci {
+                    reference, digest, ..
+                } => {
+                    json!({ "command": "publish", "reference": reference.to_string(), "digest": digest })
+                }
+                ops::publish::Published::Folder { .. } => json!({ "command": "publish" }),
+            };
+            // The package is live but its SBOM is not attached: what was
+            // published is printed all the same, then the warning, and the
+            // command fails. Both go to stderr, as a failure does: stdout
+            // would print after stderr, which puts the warning first.
+            match render::publish::sbom_failure(&done) {
+                None => Report::new(text, result),
+                Some(warning) => {
+                    result["warning"] = warning.trim_end().into();
+                    let all = format!("{text}{warning}");
+                    Ok(Report::new(String::new(), result)?
+                        .warning(all)
+                        .failed(true))
+                }
+            }
+        }
         Cmd::Check { dir } => {
             let checked = ops::check::check(&env, dir.as_deref())?;
             let warning = render::check::warnings(&checked, dir.as_deref());

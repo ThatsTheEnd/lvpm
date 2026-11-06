@@ -1,0 +1,86 @@
+name: Publish the lvpm fixtures to ghcr.io
+
+# Commit this as .github/workflows/publish-fixture.yml in
+# labview-package-manager/lvpm-oci-test. It backs the @ghcr scenarios of lvpm
+# (tests/features/build-slices/s7b-ghcr.feature, run with LVPM_TEST_GHCR=1).
+#
+# It builds lvpm from the branch below, publishes the fixture package alpha
+# 1.0.0 (tests/fixtures/ghcr-alpha) and a copy of it named internal to
+# oci://ghcr.io/labview-package-manager/lvpm-oci-test, and attests alpha's OCI
+# manifest with push-to-registry, so the signature is a referrer of the package.
+#
+# Run it ONCE. Its tags are never replaced, so a second run fails at
+# "already published", and the scenarios rely on alpha:1.0.0 staying.
+#
+# Manual setup, in this order (GitHub's UI moves, so look for the settings of
+# the package on its GitHub page):
+#   1. Run this workflow. Its pushes create the packages alpha and internal,
+#      both private.
+#   2. Make alpha public (the package's visibility setting). The anonymous
+#      scenario needs it, and so do the SBOM and the signature referrers.
+#      Leave internal private.
+#   3. On the machine that runs the scenarios, run `docker login ghcr.io` with
+#      a classic token that has write:packages (the republish scenario asks
+#      for push access), and have a gh that is logged in (or GH_TOKEN set)
+#      for the signature check.
+on:
+  workflow_dispatch:
+    inputs:
+      lvpm_ref:
+        description: The branch or tag of ThatsTheEnd/lvpm to build (one that has lvpm publish --to oci://)
+        default: main
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ThatsTheEnd/lvpm
+          ref: ${{ inputs.lvpm_ref }}
+          path: lvpm-src
+          persist-credentials: false
+      - name: Build lvpm
+        working-directory: lvpm-src
+        run: |
+          rustup toolchain install stable --profile minimal && rustup default stable
+          cargo build --release --locked
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+      - name: Publish alpha 1.0.0
+        id: publish
+        working-directory: lvpm-src/tests/fixtures/ghcr-alpha
+        run: |
+          set -o pipefail
+          lvpm build --no-check
+          lvpm publish --to oci://ghcr.io/labview-package-manager/lvpm-oci-test | tee publish.log
+          digest=$(awk '/OCI manifest digest/ {print $4}' publish.log)
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the OCI manifest
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/labview-package-manager/lvpm-oci-test/alpha
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+      - name: Publish internal 1.0.0
+        working-directory: lvpm-src/tests/fixtures
+        run: |
+          # Only the sources: alpha's build output must not ride along.
+          mkdir "$RUNNER_TEMP/internal"
+          cp ghcr-alpha/A.vi ghcr-alpha/Lib.lvlib ghcr-alpha/lvpm.toml "$RUNNER_TEMP/internal/"
+          cd "$RUNNER_TEMP/internal"
+          sed -i 's/^name = "alpha"$/name = "internal"/' lvpm.toml
+          grep -q '^name = "internal"$' lvpm.toml
+          lvpm build --no-check
+          lvpm publish --to oci://ghcr.io/labview-package-manager/lvpm-oci-test

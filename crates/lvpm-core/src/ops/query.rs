@@ -5,6 +5,7 @@ use super::env::OpEnv;
 use super::session::Downloads;
 use crate::cache::Cache;
 use crate::config;
+use crate::errors::ListingFailures;
 use crate::events::Event;
 use crate::fetch;
 use crate::index::{self, Entry, Import};
@@ -54,7 +55,32 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
     let manifest = env.manifest_for(None, None)?;
     let mut failed = Vec::new();
     let loaded = env.load_index_each(manifest.as_ref(), |source, error| {
-        failed.push((source.to_string(), format!("{error:#}")));
+        match error.downcast_ref::<ListingFailures>() {
+            // Every OCI feed fails in one error; each is a source of its own.
+            Some(listing) => {
+                let mut feeds: Vec<String> = Vec::new();
+                for f in listing.failures() {
+                    if !feeds.contains(&f.feed.to_string()) {
+                        feeds.push(f.feed.to_string());
+                    }
+                }
+                for feed in feeds {
+                    let lines = listing
+                        .failures()
+                        .iter()
+                        .filter(|f| f.feed.to_string() == feed);
+                    let why: Vec<String> = lines.map(ToString::to_string).collect();
+                    failed.push((
+                        feed,
+                        why.join(
+                            "
+",
+                        ),
+                    ));
+                }
+            }
+            None => failed.push((source.to_string(), format!("{error:#}"))),
+        }
         Ok(())
     })?;
     let all_failed = !failed.is_empty() && failed.len() == loaded.sources.len();

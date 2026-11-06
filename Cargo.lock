@@ -1721,6 +1721,7 @@ name = "lvpm-core"
 version = "0.24.0"
 dependencies = [
  "anyhow",
+ "base64",
  "md-5",
  "pubgrub",
  "reqwest",
@@ -1753,6 +1754,7 @@ dependencies = [
 name = "lvpm-testkit"
 version = "0.24.0"
 dependencies = [
+ "base64",
  "lvpm-core",
  "md-5",
  "serde_json",

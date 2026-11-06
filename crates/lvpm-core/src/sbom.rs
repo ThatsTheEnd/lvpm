@@ -209,6 +209,7 @@ mod tests {
             version: version.to_string(),
             sha256: format!("{name}-sha"),
             md5: None,
+            digest: None,
             source: format!("https://feed.example/{name}"),
             requires: requires.iter().map(|name| name.to_string()).collect(),
             groups: groups.iter().map(|group| group.to_string()).collect(),

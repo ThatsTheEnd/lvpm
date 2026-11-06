@@ -32,3 +32,4 @@
   - [4. Sources: the first one wins](adr/0004-sources-first-wins-and-pinning.md)
   - [5. Core does the work, the CLI the terminal](adr/0005-core-and-cli-split.md)
   - [6. Write .lvpkg only, read .vip](adr/0006-lvpkg-only-vip-read-only.md)
+  - [7. OCI sources are explicit](adr/0007-oci-sources-are-explicit.md)

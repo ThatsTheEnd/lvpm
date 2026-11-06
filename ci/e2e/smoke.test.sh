@@ -21,7 +21,8 @@ case \$1 in
            echo "oglib_boolean   6.0.0.9   OpenG Boolean Library" ;;
   lock)    echo "lvpm.lock is up to date" ;;
   install) mkdir -p "$llb"
-           [ -n "\${STUB_LABVIEW:-}" ] && { cp "\$(command -v sleep)" "$work/labview"; "$work/labview" 3 & sleep 1; }
+           # A script, not a copy of sleep: a multicall coreutils sleep refuses another name.
+           [ -n "\${STUB_LABVIEW:-}" ] && { printf '#!/bin/sh\nsleep "\$1"; :\n' > "$work/labview"; chmod +x "$work/labview"; "$work/labview" 3 & sleep 1; }
            echo "done" ;;
   list)    echo "oglib_boolean   6.0.0.9   5 files" ;;
   uninstall) rm -rf "$llb"; echo "removed" ;;
