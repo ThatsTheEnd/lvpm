@@ -41,7 +41,8 @@ pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Pub
     }
     let Some(name) = feed.repository(&spec.name) else {
         bail!(
-            "{} is not a valid OCI repository name; name the package with lowercase letters and              digits, separated by . _ - (nothing was published)",
+            "{} is not a valid OCI repository name; name the package with lowercase letters and \
+             digits, separated by . _ -; {SAFE_TO_RERUN}",
             spec.name
         );
     };

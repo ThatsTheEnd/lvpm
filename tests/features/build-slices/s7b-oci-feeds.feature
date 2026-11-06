@@ -68,6 +68,12 @@ Feature: lvpm publish to an OCI registry
     Then it fails saying "1.0.0+build.7" is not a valid OCI tag
     And the registry received no request
 
+  Scenario: A package name that is not a valid OCI repository is refused before any request
+    Given a package "_lib" whose metadata gives version 1.0.0
+    When I run "lvpm publish --to oci://<registry>/team"
+    Then it fails saying "_lib is not a valid OCI repository name; name the package with lowercase letters and digits, separated by . _ -; nothing was published, it is safe to rerun"
+    And the registry received no request
+
   Scenario: Credentials in the publish target are refused
     When I run "lvpm publish --to oci://u-4c1d2e:pw-7f3a9c-secret@<registry>/team"
     Then it fails saying "--to: credentials do not belong in the target; remove the user:password@ part and run docker login <registry>"
