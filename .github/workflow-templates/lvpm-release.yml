@@ -18,6 +18,17 @@ name: Publish the package
 # `lvpm publish --to oci://` is in the first lvpm release that ships S7b, and the
 # LVPM_VERSION pin below is older: raise it to that release before you set
 # LVPM_OCI_PREFIX, or the job fails at `lvpm publish`.
+#
+# Optional third job, register: lists the package in the community index
+# (docs/usage.md, "Publish to the community index") by opening a pull request on
+# labview-package-manager/package-index; the repository variable LVPM_INDEX_REPO
+# names another index. It does something only when the repository secret
+# LVPM_INDEX_TOKEN is set, a classic token with the public_repo scope that forks
+# the index and opens the PR; without it the job's summary says it did not
+# register. Delete the job if you do not list your package. `lvpm index add` is
+# in the first lvpm release that ships S8, and the LVPM_VERSION pin below is
+# older: raise it to that release before you set LVPM_INDEX_TOKEN, or the job
+# fails at `lvpm index add`.
 on:
   push:
     tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
@@ -142,3 +153,134 @@ jobs:
           subject-name: ${{ steps.publish.outputs.name }}
           subject-digest: ${{ steps.publish.outputs.digest }}
           push-to-registry: true
+
+  register:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Reading the package from the tag's release needs contents: read. The index
+    # token is the only other credential, and only the steps that need it get it
+    # as GH_TOKEN.
+    permissions:
+      contents: read
+    env:
+      LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
+      INDEX_REPO: ${{ vars.LVPM_INDEX_REPO || 'labview-package-manager/package-index' }}
+    steps:
+      - name: Install lvpm
+        id: install-lvpm
+        if: env.LVPM_INDEX_TOKEN != ''
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
+          base="https://github.com/ThatsTheEnd/lvpm/releases/download/v${LVPM_VERSION}"
+          curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
+          grep -F "  $archive" SHA256SUMS | sha256sum --check
+          mkdir lvpm-bin
+          tar -xzf "$archive" -C lvpm-bin lvpm
+          echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
+      - name: Get the package
+        id: get-the-package
+        if: env.LVPM_INDEX_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The file publish attached to the tag's release; one is expected.
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.lvpkg' --dir "$RUNNER_TEMP/package"
+          test "$(ls "$RUNNER_TEMP/package" | wc -l)" -eq 1
+      - name: Fork the index
+        id: fork-the-index
+        if: env.LVPM_INDEX_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
+        run: |
+          # What gh says goes to a file the failure step reads, and to the log if a call fails.
+          err="$RUNNER_TEMP/gh.err"
+          : > "$err"
+          fail() { cat "$err" >&2; exit 1; }
+          login=$(gh api user --jq .login 2>> "$err") || fail
+          gh repo fork "$INDEX_REPO" --clone=false 2>> "$err" || fail
+          fork="$login/${INDEX_REPO#*/}"
+          # A new fork takes a moment to exist.
+          for _ in 1 2 3 4 5 6; do gh repo view "$fork" > /dev/null 2>&1 && break; sleep 5; done
+          gh repo view "$fork" > /dev/null 2>> "$err" || fail
+          # git asks gh for the token, so it is in no URL or command line.
+          gh auth setup-git
+          # Clone the index itself, not the fork: the branch then starts at its current tip.
+          gh repo clone "$INDEX_REPO" "$RUNNER_TEMP/index" 2>> "$err" || fail
+          echo "login=$login" >> "$GITHUB_OUTPUT"
+          echo "fork=$fork" >> "$GITHUB_OUTPUT"
+      - name: Add the entry
+        id: add-the-entry
+        if: env.LVPM_INDEX_TOKEN != ''
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          package=$(ls "$RUNNER_TEMP"/package/*.lvpkg)
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$package")"
+          err="$RUNNER_TEMP/add.err"
+          out=$(lvpm index add "$RUNNER_TEMP/index/packages" "$package" --github "$GITHUB_REPOSITORY" --url "$url" 2> "$err") || { cat "$err" >&2; exit 1; }
+          echo "$out"
+          # "added <name> <version> to packages/<key>.toml". The two words become a
+          # branch name and a command argument, so they must be plain.
+          read -r _ name version _ <<< "$out"
+          pattern='^[A-Za-z0-9._-]+$'
+          [[ $name =~ $pattern && $version =~ $pattern ]] || { echo "::error::cannot read the name and version from: $out"; exit 1; }
+          branch="lvpm/$name-$version"
+          git check-ref-format --branch "$branch" > /dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Open the pull request
+        id: open-the-pull-request
+        if: env.LVPM_INDEX_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
+          LOGIN: ${{ steps.fork-the-index.outputs.login }}
+          FORK: ${{ steps.fork-the-index.outputs.fork }}
+          NAME: ${{ steps.add-the-entry.outputs.name }}
+          VERSION: ${{ steps.add-the-entry.outputs.version }}
+          BRANCH: ${{ steps.add-the-entry.outputs.branch }}
+        run: |
+          err="$RUNNER_TEMP/gh.err"
+          fail() { cat "$err" >&2; exit 1; }
+          cd "$RUNNER_TEMP/index"
+          git add packages
+          git -c "user.name=$LOGIN" -c "user.email=$LOGIN@users.noreply.github.com" commit --quiet -m "Add $NAME $VERSION"
+          # The branch is this tag's alone, so a re-run replaces it.
+          git push --force "https://github.com/$FORK.git" "HEAD:refs/heads/$BRANCH" 2>> "$err" || fail
+          # A re-run finds the PR it opened before.
+          url=$(gh pr list --repo "$INDEX_REPO" --head "$BRANCH" --state open --json url,headRepositoryOwner --jq '[.[] | select(.headRepositoryOwner.login == env.LOGIN)][0].url // empty' 2>> "$err") || fail
+          if [ -z "$url" ]; then
+            url=$(gh pr create --repo "$INDEX_REPO" --head "$LOGIN:$BRANCH" --title "Add $NAME $VERSION" --body "Registered by the lvpm release template of $GITHUB_REPOSITORY, tag $GITHUB_REF_NAME." 2>> "$err") || fail
+          fi
+          name=$NAME version=$VERSION
+          echo "registered $name $version: $url. The index bot checks it, then merges it or comments the reasons it refused. A PR with no verdict waits for a maintainer." >> "$GITHUB_STEP_SUMMARY"
+      - name: Say why it failed
+        if: failure() && env.LVPM_INDEX_TOKEN != ''
+        env:
+          # The step that failed is the one whose outcome is "failure".
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          {
+            if grep -qE 'HTTP (401|403)' "$RUNNER_TEMP/gh.err" 2> /dev/null; then
+              echo "register failed: the token was refused. fix: save a classic token with public_repo as LVPM_INDEX_TOKEN"
+            elif listed=$(sed -nE 's/.*lvpm index: ([^ ]+ [^ ]+) is already listed in .*/\1/p' "$RUNNER_TEMP/add.err" 2> /dev/null | head -n 1) && [ -n "$listed" ]; then
+              read -r name version <<< "$listed"
+              echo "register failed: $name $version is already listed. fix: push a new tag"
+            elif belongs=$(sed -nE 's/.*lvpm index: ([^ ]+) [^ ]+ belongs to ([^ ]+) in .*/\1 \2/p' "$RUNNER_TEMP/add.err" 2> /dev/null | head -n 1) && [ -n "$belongs" ]; then
+              read -r name owner <<< "$belongs"
+              echo "register failed: $name belongs to $owner. fix: publish from $owner, or register another name"
+            else
+              # A step's id is its name in lower case with dashes.
+              step=$(jq -r 'to_entries[] | select(.value.outcome == "failure") | .key' <<< "$STEPS" | head -n 1)
+              step=${step//-/ }
+              step=${step:-a step}
+              echo "register failed: $step failed. fix: see the job log, then re-run the job"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Say it did not register
+        if: env.LVPM_INDEX_TOKEN == ''
+        run: |
+          echo "not registered in the community index: LVPM_INDEX_TOKEN is not set" >> "$GITHUB_STEP_SUMMARY"

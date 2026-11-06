@@ -813,3 +813,199 @@ async fn the_lines_are_sorted(world: &mut CliWorld) {
     assert_eq!(output.stdout, "", "{}", world.printed());
     assert_eq!(output.stderr.lines().collect::<Vec<_>>(), lines);
 }
+
+// ---- the release template's register job (S8 slice 6) ----
+
+const RELEASE_TEMPLATE: &str = ".github/workflow-templates/lvpm-release.yml";
+
+/// The pinned summary lines of the `register` job, as the spec words them. A
+/// `<placeholder>` is the shell variable of that name in the template.
+const REGISTER_LINES: [&str; 5] = [
+    "registered <name> <version>: <url>. The index bot checks it, then merges it or comments the reasons it refused. A PR with no verdict waits for a maintainer.",
+    "register failed: the token was refused. fix: save a classic token with public_repo as LVPM_INDEX_TOKEN",
+    "register failed: <name> <version> is already listed. fix: push a new tag",
+    "register failed: <name> belongs to <owner>. fix: publish from <owner>, or register another name",
+    "register failed: <step> failed. fix: see the job log, then re-run the job",
+];
+
+/// The lines of job `name` of the release template, after its `  name:` line.
+fn template_job(name: &str) -> Vec<String> {
+    let text = super::docs::repo_file(RELEASE_TEMPLATE);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = (lines.iter())
+        .position(|line| *line == format!("  {name}:"))
+        .unwrap_or_else(|| panic!("{RELEASE_TEMPLATE} has no job {name}"));
+    let is_job_header = |line: &&str| line.starts_with("  ") && !line.starts_with("   ");
+    (lines[start + 1..].iter())
+        .take_while(|line| !is_job_header(line) && !line.starts_with(|c: char| !c.is_whitespace()))
+        .map(|line| line.to_string())
+        .collect()
+}
+
+/// The steps of a job's lines, each as its lines. A step starts at a `      - `.
+fn job_steps(job: &[String]) -> Vec<Vec<String>> {
+    let first = job
+        .iter()
+        .position(|line| line == "    steps:")
+        .unwrap_or_else(|| panic!("the job has no steps"));
+    let mut steps: Vec<Vec<String>> = Vec::new();
+    for line in &job[first + 1..] {
+        if line.starts_with("      - ") {
+            steps.push(Vec::new());
+        }
+        steps.last_mut().expect("a step").push(line.clone());
+    }
+    steps
+}
+
+/// A step's own `if:`, not one inside its script.
+fn step_if(step: &[String]) -> Option<&str> {
+    step.iter()
+        .find_map(|line| line.strip_prefix("        if: "))
+}
+
+fn register_steps() -> Vec<Vec<String>> {
+    job_steps(&template_job("register"))
+}
+
+fn the_step_has_if(step: &[String], condition: &str) {
+    let wanted = condition.strip_prefix("if: ").expect("an if: condition");
+    assert_eq!(
+        step_if(step),
+        Some(wanted),
+        "the step:\n{}",
+        step.join("\n")
+    );
+}
+
+#[then(regex = r#"^the release template has a job "([^"]+)" that needs "([^"]+)"$"#)]
+async fn the_template_has_a_job_that_needs(_: &mut CliWorld, job: String, needs: String) {
+    assert!(
+        template_job(&job).contains(&format!("    needs: {needs}")),
+        "job {job} of {RELEASE_TEMPLATE} does not need {needs}"
+    );
+}
+
+#[then(
+    regex = r#"^"([^"]+)" sets LVPM_INDEX_TOKEN from the secret, and every step but the last two has "([^"]+)"$"#
+)]
+async fn the_job_sets_the_token_and_guards_its_steps(
+    _: &mut CliWorld,
+    job: String,
+    condition: String,
+) {
+    let lines = template_job(&job);
+    assert!(
+        lines.contains(&"      LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}".to_string()),
+        "job {job} does not set LVPM_INDEX_TOKEN from the secret"
+    );
+    let steps = job_steps(&lines);
+    assert!(steps.len() > 2, "job {job} has only {} steps", steps.len());
+    for step in &steps[..steps.len() - 2] {
+        the_step_has_if(step, &condition);
+    }
+}
+
+#[then(regex = r#"^the step writing "([^"]+)" has "([^"]+)"$"#)]
+async fn the_failure_step_runs_on_failure(_: &mut CliWorld, text: String, condition: String) {
+    let steps = register_steps();
+    let writing: Vec<_> = (steps.iter())
+        .enumerate()
+        .filter(|(_, step)| step.iter().any(|line| line.contains(&text)))
+        .collect();
+    assert_eq!(writing.len(), 1, "steps writing {text}: {}", writing.len());
+    let (at, step) = writing[0];
+    assert_eq!(at, steps.len() - 2, "that step is the one before the last");
+    the_step_has_if(step, &condition);
+}
+
+#[then(
+    regex = r#"^the last step of "register" has "([^"]+)" and writes "([^"]+)" to GITHUB_STEP_SUMMARY$"#
+)]
+async fn the_last_step_says_it_did_not_register(_: &mut CliWorld, condition: String, line: String) {
+    let steps = register_steps();
+    let last = steps.last().expect("a last step");
+    the_step_has_if(last, &condition);
+    assert!(
+        last.iter()
+            .any(|l| l.contains(&format!("\"{line}\""))
+                && l.ends_with(">> \"$GITHUB_STEP_SUMMARY\"")),
+        "the last step does not write {line:?} to GITHUB_STEP_SUMMARY:\n{}",
+        last.join("\n")
+    );
+}
+
+#[then(
+    regex = r#"^"register" runs "([^"]+)" and "([^"]+)" against LVPM_INDEX_REPO, defaulting to (\S+)$"#
+)]
+async fn the_job_registers_against_the_index_repo(
+    _: &mut CliWorld,
+    add: String,
+    create: String,
+    default: String,
+) {
+    let job = template_job("register");
+    let has = |text: String| job.iter().any(|line| line.contains(&text));
+    assert!(has(add.clone()), "register does not run {add}");
+    assert!(
+        has(format!("{create} --repo \"$INDEX_REPO\"")),
+        "register does not run {create} against $INDEX_REPO"
+    );
+    assert!(
+        has(format!(
+            "INDEX_REPO: ${{{{ vars.LVPM_INDEX_REPO || '{default}' }}}}"
+        )),
+        "register's INDEX_REPO is not vars.LVPM_INDEX_REPO, defaulting to {default}"
+    );
+}
+
+#[then(
+    regex = r#"^"register" writes to GITHUB_STEP_SUMMARY the pinned success line and each pinned "register failed:" line$"#
+)]
+async fn the_job_writes_the_pinned_lines(_: &mut CliWorld) {
+    let steps = register_steps();
+    for pinned in REGISTER_LINES {
+        let shell = (pinned
+            .replace("<name>", "$name")
+            .replace("<version>", "$version"))
+        .replace("<url>", "$url")
+        .replace("<owner>", "$owner")
+        .replace("<step>", "$step");
+        let step = (steps.iter())
+            .find(|step| step.iter().any(|line| line.contains(&shell)))
+            .unwrap_or_else(|| panic!("no step of register says {shell:?}"));
+        assert!(
+            step.iter().any(|line| line.contains("GITHUB_STEP_SUMMARY")),
+            "the step that says {shell:?} does not write to GITHUB_STEP_SUMMARY"
+        );
+    }
+}
+
+#[then(regex = r#"^the jobs "([^"]+)" and "([^"]+)" do not mention LVPM_INDEX_TOKEN$"#)]
+async fn the_other_jobs_do_not_mention_the_token(_: &mut CliWorld, a: String, b: String) {
+    for job in [a, b] {
+        let lines = template_job(&job);
+        assert!(
+            !lines.iter().any(|line| line.contains("LVPM_INDEX_TOKEN")),
+            "job {job} mentions LVPM_INDEX_TOKEN"
+        );
+    }
+}
+
+#[then(regex = r#"^the template's header comment documents "([^"]+)"$"#)]
+async fn the_header_comment_documents(_: &mut CliWorld, job: String) {
+    let text = super::docs::repo_file(RELEASE_TEMPLATE);
+    let header = text.split("\non:\n").next().expect("a header");
+    assert!(
+        header
+            .lines()
+            .all(|line| line.starts_with('#') || line.starts_with("name:") || line.is_empty()),
+        "the text before `on:` is not all comments"
+    );
+    for word in [job.as_str(), "LVPM_INDEX_TOKEN"] {
+        assert!(
+            header.contains(word),
+            "the header comment does not name {word}"
+        );
+    }
+}
