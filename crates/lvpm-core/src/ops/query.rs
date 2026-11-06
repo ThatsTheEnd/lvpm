@@ -43,7 +43,8 @@ pub fn resolvable<'e>(versions: &'e [Entry], target: Option<&LvTarget>) -> Optio
 /// of each, by name. All of them: a front end that shows fewer says so itself.
 pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
     let manifest = env.manifest_for(None, None)?;
-    let index = env.load_index(manifest.as_ref())?;
+    // A search asks the community indexes for nothing: they have no catalogue.
+    let index = env.load_index(manifest.as_ref(), &[])?;
     Ok(index.search(query).into_iter().cloned().collect())
 }
 
@@ -52,9 +53,15 @@ pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
 /// A source that cannot be read is named in `failed` and the others are still
 /// listed; when every source fails and nothing is imported, so does this.
 pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
+    catalog_asking(env, query, &[])
+}
+
+/// [`catalog`], with the community indexes asked for `wanted` and what those
+/// require; they are asked for nothing by [`catalog`], having no catalogue.
+fn catalog_asking(env: &OpEnv, query: Option<&str>, wanted: &[String]) -> Result<Catalog> {
     let manifest = env.manifest_for(None, None)?;
     let mut failed = Vec::new();
-    let loaded = env.load_index_each(manifest.as_ref(), |source, error| {
+    let loaded = env.load_index_each(manifest.as_ref(), wanted, |source, error| {
         match error.downcast_ref::<ListingFailures>() {
             // Every OCI feed fails in one error; each is a source of its own.
             Some(listing) => {
@@ -125,7 +132,7 @@ pub struct Catalog {
 pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
     let arg = PackageArg::parse(package)?;
     let constraint = arg.read_constraint()?;
-    let catalog = catalog(env, Some(&arg.name))?;
+    let catalog = catalog_asking(env, Some(&arg.name), std::slice::from_ref(&arg.name))?;
     let versions: Vec<Entry> = catalog
         .entries
         .into_iter()

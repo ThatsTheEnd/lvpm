@@ -32,6 +32,7 @@ fn load(feeds: &[OciFeed]) -> anyhow::Result<Index> {
             local: &[],
             defaults: false,
             oci: feeds,
+            ..SourceSet::default()
         },
         &Oci::default(),
         &RecordingSink::default(),

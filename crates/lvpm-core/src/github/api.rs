@@ -26,6 +26,8 @@ const MAX_PAGES: usize = 50;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// A page of releases larger than this is not one GitHub sent.
 pub(super) const MAX_BODY_BYTES: u64 = 32 * 1024 * 1024;
+/// What the API's JSON is asked for as.
+const JSON: &str = "application/vnd.github+json";
 /// The API version the requests ask for.
 const API_VERSION: &str = "2022-11-28";
 /// The cache's `kind` for a repo's listing.
@@ -221,9 +223,19 @@ fn fetch_all(
 /// A GET of `url` as every API call is made: the API's headers, the timeout
 /// and, when there is one, the token.
 pub(super) fn request(client: &Client, url: &str, auth: &GitHubAuth) -> RequestBuilder {
+    request_accepting(client, url, auth, JSON)
+}
+
+/// [`request`], asking for the media type `accept`.
+fn request_accepting(
+    client: &Client,
+    url: &str,
+    auth: &GitHubAuth,
+    accept: &str,
+) -> RequestBuilder {
     let request = client
         .get(url)
-        .header(ACCEPT, "application/vnd.github+json")
+        .header(ACCEPT, accept)
         .header("X-GitHub-Api-Version", API_VERSION)
         .header(USER_AGENT, concat!("lvpm/", env!("CARGO_PKG_VERSION")))
         .timeout(REQUEST_TIMEOUT);
@@ -233,26 +245,36 @@ pub(super) fn request(client: &Client, url: &str, auth: &GitHubAuth) -> RequestB
     }
 }
 
-/// One API call: the body, and the `Link` header.
+/// One API call for JSON: the body, and the `Link` header.
 fn get(
     client: &Client,
     url: &str,
     auth: &GitHubAuth,
 ) -> Result<(Vec<u8>, Option<String>), GitHubFault> {
-    let response = request(client, url, auth)
+    get_accepting(client, url, auth, JSON, MAX_BODY_BYTES)
+}
+
+/// One API call asking for `accept`: the body, at most `limit` bytes of it,
+/// and the `Link` header. Any status but a success is the fault it maps to.
+pub(super) fn get_accepting(
+    client: &Client,
+    url: &str,
+    auth: &GitHubAuth,
+    accept: &str,
+    limit: u64,
+) -> Result<(Vec<u8>, Option<String>), GitHubFault> {
+    let response = request_accepting(client, url, auth, accept)
         .send()
         .map_err(|error| transport(&error))?;
     let status = response.status();
     let headers = response.headers().clone();
     let mut body = Vec::new();
     response
-        .take(MAX_BODY_BYTES + 1)
+        .take(limit + 1)
         .read_to_end(&mut body)
         .map_err(|error| transport(&error))?;
-    if body.len() as u64 > MAX_BODY_BYTES {
-        return Err(unreadable(format!(
-            "a response of more than {MAX_BODY_BYTES} bytes"
-        )));
+    if body.len() as u64 > limit {
+        return Err(unreadable(format!("a response of more than {limit} bytes")));
     }
     if !status.is_success() {
         return Err(failure(status, &headers, &body, auth, unix_now()));

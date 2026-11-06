@@ -1,0 +1,536 @@
+//! A community index repo read one name at a time: the transport over the
+//! contents API, its cache, and which names `index::load` asks for. Rust tests,
+//! not harness scenarios: they live here because `lvpm-testkit` depends on
+//! `lvpm-core`.
+
+use lvpm_core::cache::Cache;
+use lvpm_core::cancel::CancelToken;
+use lvpm_core::community;
+use lvpm_core::config::Config;
+use lvpm_core::github::{GitHub, GitHubAuth, contents_cached};
+use lvpm_core::index::{self, Entry, IndexFeed, SourceSet};
+use lvpm_core::manifest_edit::DependencyTable;
+use lvpm_core::oci::Oci;
+use lvpm_core::ops::install::InstallOptions;
+use lvpm_core::ops::{OpEnv, add_remove, install, lock, query};
+use lvpm_testkit::events::RecordingSink;
+use lvpm_testkit::feed::Feed;
+use lvpm_testkit::github::GitHubFake;
+use reqwest::blocking::Client;
+use std::path::Path;
+
+const REPO: &str = "o/r";
+const LIMIT: u64 = 1024 * 1024;
+
+fn fake_with(files: &[(&str, &str)]) -> GitHubFake {
+    let fake = GitHubFake::start(&[(REPO, vec![])]);
+    for (path, body) in files {
+        fake.add_file(REPO, path, body);
+    }
+    fake
+}
+
+fn get(
+    fake: &GitHubFake,
+    cache: &Cache,
+    path: &str,
+    refresh: bool,
+    limit: u64,
+) -> anyhow::Result<Option<String>> {
+    let auth = GitHubAuth::anonymous();
+    let client = Client::new();
+    contents_cached(
+        cache,
+        &client,
+        &fake.api_url(),
+        REPO,
+        path,
+        &auth,
+        refresh,
+        limit,
+    )
+}
+
+fn cache() -> (tempfile::TempDir, Cache) {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = Cache::open(dir.path()).unwrap();
+    (dir, cache)
+}
+
+#[test]
+fn a_file_is_its_body_and_a_missing_one_is_not_listed() {
+    let fake = fake_with(&[("packages/foo.toml", "name = \"foo\"\n")]);
+    let (_dir, cache) = cache();
+    assert_eq!(
+        get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap(),
+        Some("name = \"foo\"\n".to_string())
+    );
+    assert_eq!(
+        get(&fake, &cache, "packages/bar.toml", false, LIMIT).unwrap(),
+        None
+    );
+    let raw = fake
+        .requests()
+        .into_iter()
+        .map(|r| r.accept)
+        .collect::<Vec<_>>();
+    let want = Some("application/vnd.github.raw".to_string());
+    assert_eq!(raw, [want.clone(), want]);
+}
+
+#[test]
+fn any_other_status_is_an_error_that_says_the_status() {
+    let fake = fake_with(&[("packages/foo.toml", "x")]);
+    fake.fail_with(500);
+    let (_dir, cache) = cache();
+    let error = get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap_err();
+    assert_eq!(format!("{error:#}"), "HTTP 500");
+}
+
+#[test]
+fn a_body_over_the_limit_is_an_error_naming_the_limit_and_is_not_cached() {
+    let fake = fake_with(&[("packages/foo.toml", &"x".repeat(33))]);
+    let (_dir, cache) = cache();
+    let error = get(&fake, &cache, "packages/foo.toml", false, 32).unwrap_err();
+    assert_eq!(format!("{error:#}"), "a response of more than 32 bytes");
+    // Asked again with room for it: the first answer left nothing behind.
+    assert!(
+        get(&fake, &cache, "packages/foo.toml", false, 33)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(fake.requests().len(), 2);
+}
+
+#[test]
+fn a_cached_answer_is_used_without_a_request_unless_refreshing() {
+    let fake = fake_with(&[("packages/foo.toml", "one")]);
+    let (_dir, cache) = cache();
+    get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap();
+    assert_eq!(fake.requests().len(), 1);
+
+    fake.add_file(REPO, "packages/foo.toml", "two");
+    let again = get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap();
+    assert_eq!((again.as_deref(), fake.requests().len()), (Some("one"), 1));
+
+    let refreshed = get(&fake, &cache, "packages/foo.toml", true, LIMIT).unwrap();
+    assert_eq!(
+        (refreshed.as_deref(), fake.requests().len()),
+        (Some("two"), 2)
+    );
+}
+
+#[test]
+fn a_404_is_cached_too_until_refreshing_finds_the_file() {
+    let fake = fake_with(&[]);
+    let (_dir, cache) = cache();
+    assert_eq!(
+        get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap(),
+        None
+    );
+    fake.add_file(REPO, "packages/foo.toml", "now");
+    assert_eq!(
+        get(&fake, &cache, "packages/foo.toml", false, LIMIT).unwrap(),
+        None
+    );
+    assert_eq!(fake.requests().len(), 1);
+
+    let found = get(&fake, &cache, "packages/foo.toml", true, LIMIT).unwrap();
+    assert_eq!(found.as_deref(), Some("now"));
+    // The body replaced the marker.
+    assert_eq!(
+        get(&fake, &cache, "packages/foo.toml", false, LIMIT)
+            .unwrap()
+            .as_deref(),
+        Some("now")
+    );
+    assert_eq!(fake.requests().len(), 2);
+}
+
+/// `packages/<name>.toml` for `name`, owned by a/x, with one version that
+/// requires `requires`.
+fn entry_file(name: &str, requires: &[&str]) -> String {
+    let requires = requires
+        .iter()
+        .map(|r| format!("\"{r}\""))
+        .collect::<Vec<_>>();
+    format!(
+        "name = \"{name}\"
+github = \"a/x\"
+
+[[version]]
+version = \"1.0.0\"
+         url = \"https://github.com/a/x/releases/download/v1/{name}-1.0.0.lvpkg\"
+         sha256 = \"{}\"
+requires = [{}]
+",
+        "a".repeat(64),
+        requires.join(", ")
+    )
+}
+
+fn index_with(files: &[(&str, &[&str])]) -> GitHubFake {
+    let fake = GitHubFake::start(&[(REPO, vec![])]);
+    for (name, requires) in files {
+        fake.add_file(
+            REPO,
+            &format!("packages/{name}.toml"),
+            &entry_file(name, requires),
+        );
+    }
+    fake
+}
+
+/// What `index::load_each` gave: the entries, and each source that failed with
+/// why.
+#[derive(Default)]
+struct Read {
+    entries: Vec<Entry>,
+    failed: Vec<(String, String)>,
+}
+
+impl Read {
+    fn names(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.name.clone()).collect()
+    }
+}
+
+/// How a read is set up; the rest is what a project with one community
+/// index at `o/r` and the given hosted folders would have.
+struct Setup<'a> {
+    fake: &'a GitHubFake,
+    cache: &'a Path,
+    hosted: Vec<String>,
+    refresh: bool,
+    limit: u64,
+}
+
+impl<'a> Setup<'a> {
+    fn new(fake: &'a GitHubFake, cache: &'a Path) -> Setup<'a> {
+        Setup {
+            fake,
+            cache,
+            hosted: Vec::new(),
+            refresh: false,
+            limit: LIMIT,
+        }
+    }
+
+    fn read(&self, wanted: &[&str]) -> Read {
+        let cache = Cache::open(self.cache).unwrap();
+        let client = Client::new();
+        let auth = GitHubAuth::anonymous();
+        let api = self.fake.api_url();
+        let fetch = |feed: &IndexFeed, key: &str| {
+            let repo = format!("{}/{}", feed.owner, feed.repo);
+            let path = format!("packages/{key}.toml");
+            contents_cached(
+                &cache,
+                &client,
+                &api,
+                &repo,
+                &path,
+                &auth,
+                self.refresh,
+                self.limit,
+            )
+        };
+        let wanted: Vec<String> = wanted.iter().map(|name| name.to_string()).collect();
+        let indexes = [IndexFeed {
+            owner: "o".into(),
+            repo: "r".into(),
+        }];
+        let mut read = Read::default();
+        let loaded = index::load_each(
+            self.cache,
+            self.refresh,
+            &SourceSet {
+                extra: &self.hosted,
+                index: &indexes,
+                wanted: &wanted,
+                index_fetch: &fetch,
+                index_parse: community::read_entries,
+                ..SourceSet::default()
+            },
+            &Default::default(),
+            &Oci::default(),
+            &RecordingSink::default(),
+            &CancelToken::new(),
+            |source, error| {
+                read.failed.push((source.to_string(), format!("{error:#}")));
+                Ok(())
+            },
+        )
+        .unwrap();
+        read.entries = loaded.index.entries;
+        read
+    }
+}
+
+fn asked(fake: &GitHubFake) -> Vec<String> {
+    let all = fake.requests().into_iter().map(|r| r.path);
+    all.map(|p| p.trim_start_matches("/repos/o/r/contents/").to_string())
+        .collect()
+}
+
+#[test]
+fn an_entry_file_is_read_as_entries_of_the_index_source() {
+    let fake = index_with(&[("foo", &["bar >=2"])]);
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&["foo"]);
+    assert_eq!(read.failed, []);
+    let [entry] = read.entries.as_slice() else {
+        panic!("{:?}", read.names())
+    };
+    assert_eq!(
+        (entry.name.as_str(), entry.source.as_str()),
+        ("foo", "github-index:o/r")
+    );
+    assert_eq!(entry.index_pin.as_ref().unwrap().publisher, "a/x");
+}
+
+#[test]
+fn the_index_is_asked_for_each_wanted_name_and_the_names_they_require() {
+    let fake = index_with(&[("foo", &["bar >=2"]), ("bar", &[])]);
+    let dir = tempfile::tempdir().unwrap();
+    Setup::new(&fake, dir.path()).read(&["foo"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
+}
+
+/// A hosted folder at `/team/` listing `name` 1.0 with `requires` (`bar>=1.0`).
+fn hosted_listing(name: &str, requires: &str) -> (Feed, String) {
+    let feed = Feed::start(&[]);
+    let body = format!(
+        "[Package {name}-1.0]\nPackage.URL={name}-1.0.vip\nDependencies.Requires={requires}\n"
+    );
+    feed.publish("/team/", &body);
+    let url = feed.source_url("/team/");
+    (feed, url)
+}
+
+#[test]
+fn requires_of_a_name_nobody_wanted_are_not_followed() {
+    let fake = index_with(&[("foo", &[]), ("zap", &[])]);
+    let (_feed, url) = hosted_listing("qux", "zap>=1.0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.hosted = vec![url];
+    setup.read(&["foo"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}
+
+#[test]
+fn requires_of_a_hosted_entry_of_a_wanted_name_are_followed() {
+    let fake = index_with(&[("bar", &[])]);
+    let (_feed, url) = hosted_listing("foo", "bar>=1.0");
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.hosted = vec![url];
+    let read = setup.read(&["foo"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
+    assert_eq!(read.names(), ["foo", "bar"]);
+}
+
+#[test]
+fn a_requires_cycle_ends_with_each_name_asked_once() {
+    let fake = index_with(&[("foo", &["bar"]), ("bar", &["foo"])]);
+    let dir = tempfile::tempdir().unwrap();
+    Setup::new(&fake, dir.path()).read(&["foo"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
+}
+
+#[test]
+fn a_name_is_asked_by_its_lower_case_key_and_a_name_that_cannot_be_a_file_name_is_not_asked() {
+    let fake = index_with(&[("foo", &[])]);
+    let dir = tempfile::tempdir().unwrap();
+    Setup::new(&fake, dir.path()).read(&["../x", "a/b", "", "a b", "Foo", "FOO"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}
+
+#[test]
+fn with_no_wanted_names_the_index_gets_no_request() {
+    let fake = index_with(&[("foo", &[])]);
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&[]);
+    assert_eq!((fake.requests().len(), read.entries.len()), (0, 0));
+}
+
+#[test]
+fn a_name_the_index_does_not_list_is_a_404_and_nothing_else() {
+    let fake = index_with(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&["foo"]);
+    assert_eq!(read.names(), Vec::<String>::new());
+    assert_eq!(read.failed, []);
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}
+
+#[test]
+fn an_index_that_fails_is_a_listing_failure_of_that_source() {
+    let fake = index_with(&[("foo", &[])]);
+    fake.fail_with(500);
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&["foo", "bar"]);
+    assert_eq!(
+        read.failed,
+        [("github-index:o/r".to_string(), "HTTP 500".to_string())]
+    );
+    // The index is not asked again once it has failed.
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}
+
+#[test]
+fn an_entry_that_does_not_parse_is_a_listing_failure_naming_its_file_and_the_key() {
+    let fake = index_with(&[]);
+    fake.add_file(REPO, "packages/foo.toml", "name = \"foo\"\nown = 1\n");
+    fake.add_file(REPO, "packages/bar.toml", &entry_file("bar", &[]));
+    let dir = tempfile::tempdir().unwrap();
+    let read = Setup::new(&fake, dir.path()).read(&["foo", "bar"]);
+    assert_eq!(
+        read.failed,
+        [(
+            "github-index:o/r".to_string(),
+            "packages/foo.toml in github:o/r does not parse: own: unknown key".to_string()
+        )]
+    );
+    // One bad file does not stop the next name.
+    assert_eq!(read.names(), ["bar"]);
+}
+
+#[test]
+fn an_entry_body_over_the_limit_is_a_listing_failure_naming_the_limit() {
+    let fake = index_with(&[("foo", &[])]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.limit = 16;
+    let read = setup.read(&["foo"]);
+    assert_eq!(
+        read.failed,
+        [(
+            "github-index:o/r".to_string(),
+            "a response of more than 16 bytes".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_cached_entry_file_is_used_without_a_request_unless_refreshing() {
+    let fake = index_with(&[("foo", &[])]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    assert_eq!(setup.read(&["foo"]).names(), ["foo"]);
+    assert_eq!(fake.requests().len(), 1);
+    assert_eq!(setup.read(&["foo"]).names(), ["foo"]);
+    assert_eq!(fake.requests().len(), 1, "no new request without --refresh");
+    setup.refresh = true;
+    assert_eq!(setup.read(&["foo"]).names(), ["foo"]);
+    assert_eq!(fake.requests().len(), 2);
+}
+
+#[test]
+fn a_404_is_cached_too() {
+    let fake = index_with(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let setup = Setup::new(&fake, dir.path());
+    setup.read(&["foo"]);
+    setup.read(&["foo"]);
+    assert_eq!(fake.requests().len(), 1);
+}
+
+/// A project that takes `dependencies` (lines of `[dependencies]`) and has the
+/// fake at `o/r` as its community index, and an environment for it that
+/// installs into a scratch folder.
+fn project(dependencies: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = format!(
+        "[project]
+labview = \">=2024\"
+
+[sources]
+defaults = false
+         community = \"github:o/r\"
+
+[dependencies]
+{dependencies}"
+    );
+    std::fs::write(dir.path().join("lvpm.toml"), manifest).unwrap();
+    dir
+}
+
+fn env<'a>(dir: &Path, sink: &'a RecordingSink, fake: &GitHubFake) -> OpEnv<'a> {
+    let config = Config {
+        cache: dir.join("cache"),
+        hooks_run: Vec::new(),
+        local_sources: Vec::new(),
+        venv_dir: ".lv-venv".into(),
+    };
+    let mut env = OpEnv::new(sink, config, Vec::new(), dir.to_path_buf());
+    env.github = GitHub {
+        api: fake.api_url(),
+        ..GitHub::default()
+    };
+    env.flags.prefix = Some(dir.join("prefix"));
+    env
+}
+
+#[test]
+fn search_in_a_project_with_a_community_index_makes_no_index_request() {
+    let fake = index_with(&[("foo", &[])]);
+    let dir = project(
+        "foo = \"*\"
+",
+    );
+    let sink = RecordingSink::default();
+    query::search(&env(dir.path(), &sink, &fake), "foo").unwrap();
+    query::catalog(&env(dir.path(), &sink, &fake), None).unwrap();
+    assert_eq!(asked(&fake), Vec::<String>::new());
+}
+
+#[test]
+fn lock_asks_for_the_manifests_dependencies() {
+    let fake = index_with(&[]);
+    let dir = project(
+        "foo = \"*\"
+Bar = \">=1.0\"
+",
+    );
+    let sink = RecordingSink::default();
+    let _ = lock::lock(&env(dir.path(), &sink, &fake));
+    assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
+}
+
+#[test]
+fn a_name_passed_to_add_is_asked() {
+    let fake = index_with(&[]);
+    let dir = project("");
+    let sink = RecordingSink::default();
+    let env = env(dir.path(), &sink, &fake);
+    let options = InstallOptions::default();
+    let _ = add_remove::add(&env, "foo", DependencyTable::Dependencies, None, &options);
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}
+
+#[test]
+fn a_name_passed_to_install_is_asked_with_the_manifests_dependencies() {
+    let fake = index_with(&[]);
+    let dir = project(
+        "bar = \"*\"
+",
+    );
+    let sink = RecordingSink::default();
+    let env = env(dir.path(), &sink, &fake);
+    let _ = install::install(&env, Some("foo@1.0"), &InstallOptions::default());
+    assert_eq!(asked(&fake), ["packages/bar.toml", "packages/foo.toml"]);
+}
+
+#[test]
+fn a_name_passed_to_info_is_asked() {
+    let fake = index_with(&[]);
+    let dir = project(
+        "bar = \"*\"
+",
+    );
+    let sink = RecordingSink::default();
+    let _ = query::info(&env(dir.path(), &sink, &fake), "foo");
+    assert_eq!(asked(&fake), ["packages/foo.toml"]);
+}

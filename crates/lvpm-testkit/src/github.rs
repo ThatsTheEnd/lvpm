@@ -2,7 +2,9 @@
 //!
 //! It serves `GET /repos/{owner}/{repo}/releases` (paged by `per_page`, with a
 //! `Link: rel="next"`), each release's draft and pre-release flags, and its
-//! assets. An asset's API URL answers JSON, unless the request asks for
+//! assets, and `GET /repos/{owner}/{repo}/contents/{path}` for the files a test
+//! registers with [`GitHubFake::add_file`] (raw, for `Accept:
+//! application/vnd.github.raw`; any other file is a 404). An asset's API URL answers JSON, unless the request asks for
 //! `Accept: application/octet-stream`: then it redirects to
 //! `http://localhost:{port}/download/{id}`, the same server under another host
 //! *name*, so a client's redirect policy sees a cross-host hop. `/download/{id}`
@@ -27,6 +29,7 @@ pub const DOWNLOAD_HOST: &str = "localhost";
 const DEFAULT_PER_PAGE: usize = 30;
 const MAX_PER_PAGE: usize = 100;
 const OCTET_STREAM: &str = "application/octet-stream";
+const RAW: &str = "application/vnd.github.raw";
 const FIRST_ASSET_ID: u64 = 1000;
 
 /// A release as a test describes it: ids are the fake's to give.
@@ -95,6 +98,8 @@ struct Repo {
     /// Only [`PRIVATE_TOKEN`] sees it.
     private: bool,
     releases: Vec<Release>,
+    /// The files `contents` serves, by path in the repo.
+    files: BTreeMap<String, Vec<u8>>,
 }
 
 /// What every API request (not a download) answers instead of its own reply.
@@ -241,6 +246,14 @@ impl GitHubFake {
     pub fn make_private(&self, repo: &str) {
         let mut state = lock(&self.state);
         state.repos.entry(repo.to_string()).or_default().private = true;
+    }
+
+    /// Serve `body` as the file `path` of `repo`, replacing what it held.
+    pub fn add_file(&self, repo: &str, path: &str, body: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        repo.files
+            .insert(path.to_string(), body.as_bytes().to_vec());
     }
 
     /// Add `release` to `repo`, after the releases it has (newest first).
@@ -413,6 +426,7 @@ fn answer(
                     Some(asset) => asset_reply(asset, &slug, request.header("accept"), addr),
                     None => not_found(),
                 },
+                ["contents", path @ ..] => file_reply(found, &path.join("/"), request),
                 _ => not_found(),
             }
         }
@@ -443,6 +457,22 @@ fn visible<'a>(state: &'a State, slug: &str, request: &Request) -> Result<&'a Re
             &[],
             &message("Bad credentials"),
         )),
+    }
+}
+
+/// The file at `path`, raw as the client asks for it; JSON about it is not
+/// something the fake can say.
+fn file_reply(repo: &Repo, path: &str, request: &Request) -> Vec<u8> {
+    let Some(body) = repo.files.get(path) else {
+        return not_found();
+    };
+    match request.header("accept") {
+        Some(RAW) => response("200 OK", &[("Content-Type", RAW)], body),
+        _ => json_reply(
+            "415 Unsupported Media Type",
+            &[],
+            &message("ask for application/vnd.github.raw"),
+        ),
     }
 }
 
@@ -635,6 +665,41 @@ mod tests {
 
         let download = get_from(fake.addr, &format!("/download/{id}"), "");
         assert_eq!(download.body, b"bytes");
+    }
+
+    #[test]
+    fn a_file_is_served_raw_a_file_not_registered_is_404_and_each_request_is_recorded() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "name = \"foo\"\n");
+        let raw = "Accept: application/vnd.github.raw\r\n";
+
+        let served = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(served.status_line, "HTTP/1.1 200 OK");
+        assert_eq!(served.body, b"name = \"foo\"\n");
+        let other = get_from(fake.addr, "/repos/o/r/contents/packages/bar.toml", raw);
+        assert_eq!(other.status_line, "HTTP/1.1 404 Not Found");
+        let json = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", "");
+        assert_eq!(json.status_line, "HTTP/1.1 415 Unsupported Media Type");
+
+        let asked: Vec<_> = fake.requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(
+            asked,
+            [
+                "/repos/o/r/contents/packages/foo.toml",
+                "/repos/o/r/contents/packages/bar.toml",
+                "/repos/o/r/contents/packages/foo.toml",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failing_mode_answers_a_file_request_with_its_status() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "x");
+        fake.fail_with(500);
+        let raw = "Accept: application/vnd.github.raw\r\n";
+        let reply = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(reply.status_line, "HTTP/1.1 500 Internal Server Error");
     }
 
     #[test]

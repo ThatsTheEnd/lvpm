@@ -482,15 +482,18 @@ pub(super) fn load_index(
     previous: Option<&Lockfile>,
     moving: &Moving,
 ) -> Result<Index, LockError> {
-    let index = env.load_index(manifest).map_err(|why| -> LockError {
-        if why.is::<Cancelled>() {
-            return Cancelled.into();
-        }
-        match why.downcast::<ListingFailures>() {
-            Ok(failures) => LockError::OciListing(failures.into_failures()),
-            Err(why) => why.into(),
-        }
-    })?;
+    let wanted = super::env::wanted_names(manifest.map(|(_, project)| project), &[]);
+    let index = env
+        .load_index(manifest, &wanted)
+        .map_err(|why| -> LockError {
+            if why.is::<Cancelled>() {
+                return Cancelled.into();
+            }
+            match why.downcast::<ListingFailures>() {
+                Ok(failures) => LockError::OciListing(failures.into_failures()),
+                Err(why) => why.into(),
+            }
+        })?;
     match manifest {
         // No GitHub dependency: no cache is opened for one.
         Some((_, project)) if !project.github.is_empty() => {

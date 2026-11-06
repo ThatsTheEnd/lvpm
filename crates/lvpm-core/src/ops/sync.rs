@@ -893,7 +893,7 @@ impl Source {
                 extra: &feeds,
                 local: &folders,
                 defaults,
-                oci: &[],
+                ..index::SourceSet::default()
             },
             &env.oci,
             env.sink,

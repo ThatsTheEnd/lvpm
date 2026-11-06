@@ -20,7 +20,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::Client;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// (index url, base url that `Package.URL` is relative to)
@@ -492,6 +492,14 @@ pub struct IndexFeed {
     pub repo: String,
 }
 
+impl IndexFeed {
+    /// The [`Entry::source`] of what this index lists, with the repo spelled as
+    /// the manifest spells it: `github-index:owner/repo`.
+    pub fn source(&self) -> String {
+        format!("{INDEX_SCHEME}{}/{}", self.owner, self.repo)
+    }
+}
+
 /// `sources` cut into what the hosted-feed reader takes (the index folders),
 /// what the OCI reader takes (each OCI feed with its pinned packages) and the
 /// community index repos, each in `[sources]` order.
@@ -587,6 +595,42 @@ pub struct SourceSet<'a> {
     /// OCI sources, each asked only for the packages pinned to it, after
     /// every hosted feed.
     pub oci: &'a [OciFeed],
+    /// Community index repos, each asked one `packages/<key>.toml` per name in
+    /// `wanted` and per name those entries, or any other source's, require.
+    pub index: &'a [IndexFeed],
+    /// The names the community indexes are asked for. None: no request.
+    pub wanted: &'a [String],
+    /// The text of an index repo's `packages/<key>.toml`; `None` when it has no
+    /// such file. Which request that is, and how it is cached, is the caller's.
+    pub index_fetch: &'a dyn Fn(&IndexFeed, &str) -> Result<Option<String>>,
+    /// The entries of the text of `packages/<key>.toml`, given the key and the
+    /// text, with no source set. This module knows nothing of the file's format.
+    pub index_parse: fn(&str, &str) -> Result<Vec<Entry>>,
+}
+
+/// What a [`SourceSet`] with no community index fetches: nothing.
+fn nothing_listed(_: &IndexFeed, _: &str) -> Result<Option<String>> {
+    Ok(None)
+}
+
+fn no_entries(_: &str, _: &str) -> Result<Vec<Entry>> {
+    Ok(Vec::new())
+}
+
+impl Default for SourceSet<'_> {
+    /// No source at all: every list empty, the public indexes off.
+    fn default() -> Self {
+        SourceSet {
+            extra: &[],
+            local: &[],
+            defaults: false,
+            oci: &[],
+            index: &[],
+            wanted: &[],
+            index_fetch: &nothing_listed,
+            index_parse: no_entries,
+        }
+    }
 }
 
 /// What [`load_each`] read, and the name of every source it was asked to.
@@ -636,6 +680,10 @@ fn read_each(
         local,
         defaults,
         oci: oci_feeds,
+        index: index_feeds,
+        wanted,
+        index_fetch,
+        index_parse,
     } = source_set;
     let mut entries = Vec::new();
     let mut sources = Vec::new();
@@ -692,6 +740,13 @@ fn read_each(
         }
     }
 
+    let ask = IndexAsk {
+        feeds: index_feeds,
+        fetch: *index_fetch,
+        parse: *index_parse,
+    };
+    ask.read(wanted, cancel, &mut entries, &mut sources, &mut on_fail)?;
+
     let mut failures = Vec::new();
     for feed in *oci_feeds {
         sources.push(feed.url.to_string());
@@ -705,6 +760,91 @@ fn read_each(
 
     let index = Index { entries };
     Ok(Loaded { index, sources })
+}
+
+/// The community index repos and how to read them: [`SourceSet::index`],
+/// [`SourceSet::index_fetch`] and [`SourceSet::index_parse`].
+struct IndexAsk<'a> {
+    feeds: &'a [IndexFeed],
+    fetch: &'a dyn Fn(&IndexFeed, &str) -> Result<Option<String>>,
+    parse: fn(&str, &str) -> Result<Vec<Entry>>,
+}
+
+impl IndexAsk<'_> {
+    /// Asks every index for each of `wanted`, then for each name that the
+    /// entries of a name already asked for (from any source, the indexes' own
+    /// as they come) require, until no new name turns up. A name is asked once,
+    /// so a cycle ends, and what a name nobody asked for requires is never
+    /// read. An index whose request failed is not asked again.
+    fn read(
+        &self,
+        wanted: &[String],
+        cancel: &CancelToken,
+        entries: &mut Vec<Entry>,
+        sources: &mut Vec<String>,
+        on_fail: &mut impl FnMut(&str, anyhow::Error) -> Result<()>,
+    ) -> Result<()> {
+        sources.extend(self.feeds.iter().map(IndexFeed::source));
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut enqueue = |name: &str, queue: &mut VecDeque<String>| {
+            let key = crate::project::name_key(name);
+            if is_file_key(&key) && seen.insert(key.clone()) {
+                queue.push_back(key);
+            }
+        };
+        for name in wanted {
+            enqueue(name, &mut queue);
+        }
+        let mut down = vec![false; self.feeds.len()];
+        while let Some(key) = queue.pop_front() {
+            for (feed, down) in self.feeds.iter().zip(&mut down) {
+                if *down {
+                    continue;
+                }
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
+                let source = feed.source();
+                match (self.fetch)(feed, &key) {
+                    Ok(None) => {}
+                    Ok(Some(text)) => match (self.parse)(&key, &text) {
+                        Ok(mut found) => {
+                            label(&mut found, &source);
+                            entries.extend(found);
+                        }
+                        Err(error) => {
+                            let file = format!(
+                                "packages/{key}.toml in {GITHUB_SCHEME}{}/{}",
+                                feed.owner, feed.repo
+                            );
+                            on_fail(&source, anyhow::anyhow!("{file} does not parse: {error:#}"))?;
+                        }
+                    },
+                    Err(error) => {
+                        *down = true;
+                        on_fail(&source, error)?;
+                    }
+                }
+            }
+            let of_key = |e: &&Entry| crate::project::name_key(&e.name) == key;
+            let required: Vec<String> = (entries.iter().filter(of_key))
+                .flat_map(|entry| entry.requires.iter().map(|r| r.name.clone()))
+                .collect();
+            for name in required {
+                enqueue(&name, &mut queue);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `key` (a [`name_key`](crate::project::name_key)) can be the file name
+/// in `packages/<key>.toml`: `[a-z0-9_.-]+`. A name that cannot is listed in no
+/// index, and is never put in a URL.
+fn is_file_key(key: &str) -> bool {
+    let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+    !key.is_empty() && key.bytes().all(allowed)
 }
 
 /// What an OCI source lists of the packages pinned to it: for each, the tags
@@ -1141,7 +1281,7 @@ mod tests {
                 extra,
                 local: local_sources,
                 defaults,
-                oci: &[],
+                ..SourceSet::default()
             },
             &Oci::default(),
             sink,
@@ -1518,7 +1658,7 @@ mod tests {
                 extra: &feeds,
                 local: &[],
                 defaults: false,
-                oci: &[],
+                ..SourceSet::default()
             };
             super::load(&root, false, &sources, &Oci::default(), sink, token)
         };
@@ -2043,7 +2183,7 @@ Package.Display Name=A Thing
             extra: &[],
             local: &folders,
             defaults: false,
-            oci: &[],
+            ..SourceSet::default()
         };
         let resolved = load_each(
             &root,

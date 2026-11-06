@@ -7,6 +7,7 @@
 //! and *which indexes* it sees is the first thing every operation does, so it
 //! is the first thing here.
 
+use super::session::Downloads;
 use crate::cancel::CancelToken;
 use crate::config::Config;
 use crate::events::{Event, EventSink};
@@ -304,9 +305,15 @@ impl<'a> OpEnv<'a> {
     }
 
     /// Every index the command should see: global local folders plus hosted
-    /// manifest sources, on top of the public indexes unless disabled.
-    pub fn load_index(&self, manifest: Option<&(PathBuf, Project)>) -> Result<Index> {
-        let loaded = self.load_index_each(manifest, |_, error| Err(error))?;
+    /// manifest sources, on top of the public indexes unless disabled. The
+    /// community indexes are asked for `wanted` (see [`wanted_names`]) and what
+    /// those require, and for nothing else.
+    pub fn load_index(
+        &self,
+        manifest: Option<&(PathBuf, Project)>,
+        wanted: &[String],
+    ) -> Result<Index> {
+        let loaded = self.load_index_each(manifest, wanted, |_, error| Err(error))?;
         Ok(loaded.index)
     }
 
@@ -315,24 +322,38 @@ impl<'a> OpEnv<'a> {
     pub(super) fn load_index_each(
         &self,
         manifest: Option<&(PathBuf, Project)>,
+        wanted: &[String],
         on_fail: impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<index::Loaded> {
         let mut repos: Vec<String> = Vec::new();
         let mut registries = Vec::new();
+        let mut indexes = Vec::new();
         let mut defaults = true;
         let mut owners = HashMap::new();
         if let Some((_, proj)) = manifest {
             let feeds = proj.resolved_sources()?;
             owners = index::owners(&feeds, &proj.source_pins);
-            (repos, registries, _) = index::split_sources(feeds, &proj.source_pins);
+            (repos, registries, indexes) = index::split_sources(feeds, &proj.source_pins);
             defaults = proj.default_sources;
             self.warn_unpinned(&registries);
         }
+        // Opened for a project that has a community index, and for no other.
+        let downloads = (!indexes.is_empty())
+            .then(|| Downloads::open(self))
+            .transpose()?;
+        let fetch = |feed: &index::IndexFeed, key: &str| match &downloads {
+            Some(downloads) => downloads.index_file(feed, key, self.refresh),
+            None => Ok(None),
+        };
         let sources = index::SourceSet {
             extra: &repos,
             local: &self.local_sources(),
             defaults,
             oci: &registries,
+            index: &indexes,
+            wanted,
+            index_fetch: &fetch,
+            index_parse: crate::community::read_entries,
         };
         index::load_each(
             &self.config.cache,
@@ -357,10 +378,34 @@ impl<'a> OpEnv<'a> {
     }
 }
 
+/// The names the community indexes are asked for: every dependency of
+/// `project`, in any table, and `own`, the names the command was given
+/// (`lvpm add foo`).
+pub(super) fn wanted_names(project: Option<&Project>, own: &[String]) -> Vec<String> {
+    let listed = project.into_iter().flat_map(|p| p.tables());
+    let listed = listed.flat_map(|(_, lines)| lines.iter().map(|(name, _)| name.clone()));
+    listed.chain(own.iter().cloned()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::events::NullSink;
+
+    #[test]
+    fn the_wanted_names_are_every_dependency_in_any_table_then_the_commands_own() {
+        use crate::project::Constraint::Any;
+        let project = Project {
+            dependencies: vec![("a".to_string(), Any)],
+            dev_dependencies: vec![("d".to_string(), Any)],
+            groups: vec![("ci".to_string(), vec![("g".to_string(), Any)])],
+            ..Project::default()
+        };
+        let own = ["new".to_string()];
+        assert_eq!(wanted_names(Some(&project), &own), ["a", "d", "g", "new"]);
+        assert_eq!(wanted_names(None, &own), ["new"]);
+        assert_eq!(wanted_names(Some(&project), &[]), ["a", "d", "g"]);
+    }
 
     #[test]
     fn a_relative_local_source_is_taken_from_the_directory_the_command_ran_in() {

@@ -197,6 +197,13 @@ impl EntryFile {
     }
 }
 
+/// The entries of `packages/<key>.toml` as `text`, with no source yet: what the
+/// reader of the sources is handed to parse an index file, and labels the
+/// entries itself.
+pub fn read_entries(key: &str, text: &str) -> anyhow::Result<Vec<Entry>> {
+    Ok(EntryFile::parse(key, text)?.entries(""))
+}
+
 /// One requirement, `bar >=2`: a name, and a version if there is an operator.
 /// `parse_requires` reads leniently (`bar >=?` gets a version `?`), so what it
 /// returns is checked here.
