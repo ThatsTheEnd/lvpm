@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.24.0...v0.25.0) (2026-11-06)
+
+
+### Features
+
+* **s7b:** OCI feeds ([#121](https://github.com/ThatsTheEnd/lvpm/issues/121)) ([c98e2a3](https://github.com/ThatsTheEnd/lvpm/commit/c98e2a3032bd15ce61beab8704ab81ab1a7b80c8))
+* **s9:** application builds and SBOM ([#119](https://github.com/ThatsTheEnd/lvpm/issues/119)) ([2db838e](https://github.com/ThatsTheEnd/lvpm/commit/2db838e4582c25e85542841795c58c93220d0e1b))
+
 ## [0.24.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.23.0...v0.24.0) (2026-11-04)
 
 
