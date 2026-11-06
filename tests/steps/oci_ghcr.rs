@@ -105,6 +105,12 @@ async fn runner_config(world: &mut CliWorld) {
 async fn fixture_package(world: &mut CliWorld) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURE);
     copy_tree(&source, &world.sandbox.work_dir());
+    // It publishes to a shared repository whose tags are immutable.
+    let manifest = std::fs::read_to_string(world.sandbox.work_dir().join("lvpm.toml")).unwrap();
+    let manifest: toml::Table = manifest.parse().expect("the fixture's lvpm.toml is TOML");
+    let project = &manifest["project"];
+    assert_eq!(project["name"].as_str(), Some("alpha"));
+    assert_eq!(project["version"].as_str(), Some("1.0.0"));
     let built = world.sandbox.run_lvpm(&["build", "--no-check"], None);
     assert_eq!(built.exit_code, 0, "lvpm build failed: {built:?}");
 }

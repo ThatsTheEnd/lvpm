@@ -1,5 +1,6 @@
 //! `fetch::oci_package` against `Registry`: a package comes by its manifest
-//! digest, and the cache answers by the layer's SHA-256. Rust tests, not harness
+//! digest; the manifest is read first, then the cache answers by the layer's
+//! SHA-256. Rust tests, not harness
 //! scenarios: they live here because `lvpm-testkit` depends on `lvpm-core`.
 
 use lvpm_core::cache::Cache;
@@ -39,6 +40,24 @@ fn a_package_is_fetched_by_its_manifest_digest() {
 
     let bytes = fetch(&cache, &entry(&registry, &seeded.manifest)).unwrap();
     assert_eq!(bytes, b"the archive");
+}
+
+#[test]
+fn a_package_fetched_twice_downloads_its_layer_once() {
+    let registry = Registry::start();
+    let seeded = registry.seed_package(REPO, "1.1.0", &[], b"the archive");
+    let cache_dir = tempfile::tempdir().unwrap();
+    let cache = Cache::open(cache_dir.path()).unwrap();
+    let entry = entry(&registry, &seeded.manifest);
+
+    assert_eq!(fetch(&cache, &entry).unwrap(), b"the archive");
+    registry.clear_requests();
+    assert_eq!(fetch(&cache, &entry).unwrap(), b"the archive");
+    let asked: Vec<String> = registry.requests().into_iter().map(|r| r.path).collect();
+    assert!(
+        asked.iter().all(|path| !path.contains("/blobs/")),
+        "{asked:?}"
+    );
 }
 
 #[test]

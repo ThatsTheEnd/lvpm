@@ -54,6 +54,7 @@ Feature: lvpm publish to an OCI registry
     And I ran "lvpm publish --to oci://<registry>/team" and it failed
     When the registry is back and I run "lvpm publish --to oci://<registry>/team"
     Then it succeeds
+    And the registry holds tag "1.0.0" in repository "team/alpha"
     And the registry received no second upload of a blob it already held
 
   Scenario: A tag check that fails with an error other than 404 stops the publish
