@@ -2,8 +2,8 @@
 //! config's `credHelpers` entry for the host, else its `credsStore`, else its
 //! `auths` entry. With none, a call is anonymous.
 //!
-//! Core reads no environment: the front end finds the config directory and
-//! hands it to [`docker_store`]. A helper is `docker-credential-<name> get`
+//! Core reads no environment: the front end hands [`from_lookup`] the way it
+//! reads one, or [`docker_store`] the config directory it found itself. A helper is `docker-credential-<name> get`
 //! with the host on its standard input; what it holds comes back as JSON.
 //!
 //! A secret reaches nothing that prints: [`Credential`]'s `Debug` omits it, no
@@ -14,6 +14,7 @@ use crate::process::{self, Ran};
 use base64::Engine as _;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -218,6 +219,45 @@ pub fn docker_store(
     run: HelperRunner,
 ) -> Credentials {
     Arc::new(move |registry| lookup(&config_dir, registry, helper_timeout, &*run))
+}
+
+/// How many seconds a Docker credential helper may take, to override
+/// [`DEFAULT_HELPER_TIMEOUT`].
+const HELPER_TIMEOUT_VAR: &str = "LVPM_OCI_HELPER_TIMEOUT_SECS";
+
+/// The logins a front end gives its `Oci`, found from the environment as `var`
+/// reads it: where Docker keeps its config (`DOCKER_CONFIG`, else `.docker` in
+/// the home directory) and how long a helper may take. Anonymous when no
+/// config directory is known.
+pub fn from_lookup(var: impl Fn(&str) -> Option<OsString>) -> anyhow::Result<Credentials> {
+    let Some(config_dir) = docker_config_dir(&var) else {
+        return Ok(anonymous());
+    };
+    let timeout = helper_timeout(var(HELPER_TIMEOUT_VAR).and_then(|v| v.into_string().ok()))?;
+    Ok(docker_store(config_dir, timeout, real_helper_runner()))
+}
+
+/// Where Docker keeps its config: `DOCKER_CONFIG`, else `.docker` in the home
+/// directory. `None` when neither is known: no login is looked for.
+fn docker_config_dir(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(dir) = var("DOCKER_CONFIG").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    var(home)
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(".docker"))
+}
+
+/// `LVPM_OCI_HELPER_TIMEOUT_SECS`: a whole number of seconds, one or more.
+fn helper_timeout(value: Option<String>) -> anyhow::Result<Duration> {
+    let Some(text) = value else {
+        return Ok(DEFAULT_HELPER_TIMEOUT);
+    };
+    match text.trim().parse::<u64>() {
+        Ok(secs) if secs > 0 => Ok(Duration::from_secs(secs)),
+        _ => anyhow::bail!("{HELPER_TIMEOUT_VAR} must be a whole number of seconds, 1 or more"),
+    }
 }
 
 /// The parts of `config.json` that name a login.
@@ -453,6 +493,61 @@ mod tests {
 
     fn basic(origin: Origin, user: &str, secret: &str) -> Option<Credential> {
         Some(Credential::basic(origin, user, secret))
+    }
+
+    fn vars(set: Vec<(&'static str, String)>) -> impl Fn(&str) -> Option<OsString> {
+        move |name| {
+            (set.iter())
+                .find(|(have, _)| *have == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn the_docker_config_is_docker_config_else_dot_docker_in_the_home() {
+        let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let both = vec![
+            ("DOCKER_CONFIG", "/d".to_string()),
+            (home, "/h".to_string()),
+        ];
+        assert_eq!(docker_config_dir(&vars(both)), Some(PathBuf::from("/d")));
+        let blank = vec![("DOCKER_CONFIG", String::new()), (home, "/h".to_string())];
+        assert_eq!(
+            docker_config_dir(&vars(blank)),
+            Some(PathBuf::from("/h").join(".docker"))
+        );
+        assert_eq!(docker_config_dir(&vars(Vec::new())), None);
+    }
+
+    #[test]
+    fn the_helper_timeout_is_thirty_seconds_unless_a_positive_number_says_otherwise() {
+        assert_eq!(helper_timeout(None).unwrap(), Duration::from_secs(30));
+        let secs = |text: &str| helper_timeout(Some(text.to_string()));
+        assert_eq!(secs(" 1 ").unwrap(), Duration::from_secs(1));
+        for bad in ["0", "", "soon", "-3", "1.5"] {
+            let error = secs(bad).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "LVPM_OCI_HELPER_TIMEOUT_SECS must be a whole number of seconds, 1 or more"
+            );
+        }
+    }
+
+    #[test]
+    fn the_logins_of_the_environment_are_the_docker_config_it_names_or_none() {
+        let dir = Dir::with(Some(&format!(
+            r#"{{"auths":{{"{HOST}":{{"auth":"dTM6czM="}}}}}}"#
+        )));
+        let dir_text = dir.0.display().to_string();
+        let found = from_lookup(vars(vec![("DOCKER_CONFIG", dir_text.clone())])).unwrap();
+        assert_eq!(found(HOST).unwrap(), basic(Origin::Auths, "u3", "s3"));
+        let none = from_lookup(vars(Vec::new())).unwrap();
+        assert_eq!(none(HOST).unwrap(), None);
+        let slow = vec![
+            ("DOCKER_CONFIG", dir_text),
+            (HELPER_TIMEOUT_VAR, "soon".to_string()),
+        ];
+        assert!(from_lookup(vars(slow)).is_err());
     }
 
     #[test]

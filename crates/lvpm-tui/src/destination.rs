@@ -4,6 +4,7 @@ use crate::worker::Park;
 use lvpm_core::config::Config;
 use lvpm_core::events::EventSink;
 use lvpm_core::github::GitHub;
+use lvpm_core::oci::Oci;
 use lvpm_core::ops::{Destination, OpEnv};
 use lvpm_core::target::LvTarget;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,9 @@ pub struct EnvBuilder {
     /// See [`OpEnv::github`]: the front end sets it from the process, and every
     /// job's environment shares its token.
     pub github: GitHub,
+    /// See [`OpEnv::oci`]: the front end sets it from the Docker config, and
+    /// every job's environment shares its logins and tokens.
+    pub oci: Arc<Oci>,
 }
 
 impl EnvBuilder {
@@ -38,6 +42,7 @@ impl EnvBuilder {
             prefix: None,
             park: None,
             github: GitHub::default(),
+            oci: Arc::default(),
         }
     }
 
@@ -56,6 +61,7 @@ impl EnvBuilder {
         env.refresh = refresh;
         env.machine = self.machine.clone();
         env.github = self.github.clone();
+        env.oci = self.oci.clone();
         env
     }
 
@@ -103,4 +109,28 @@ fn file_name(path: &Path) -> String {
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lvpm_core::oci::logins::{Credential, Origin};
+
+    #[test]
+    fn a_job_logs_in_to_a_registry_with_what_the_front_end_gave_the_builder() {
+        let config = Config {
+            cache: "cache".into(),
+            hooks_run: Vec::new(),
+            local_sources: Vec::new(),
+            venv_dir: ".venv".into(),
+        };
+        let mut builder = EnvBuilder::new(config, Vec::new(), ".".into());
+        let login = Credential::basic(Origin::Auths, "user", "secret");
+        let given = login.clone();
+        builder.oci = Arc::new(Oci::with_credentials(Arc::new(move |_| {
+            Ok(Some(given.clone()))
+        })));
+        let env = builder.env(&Quiet, false);
+        assert_eq!(env.oci.login_for("reg.example"), Ok(Some(login)));
+    }
 }
