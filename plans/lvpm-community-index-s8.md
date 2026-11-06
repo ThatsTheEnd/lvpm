@@ -766,10 +766,10 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 2.3: `[sources]` order across hosted folders and indexes
 
 #### Wave 3
-- [ ] Slice 3: installing from the index
-  - [ ] Step 3.1: web base and the fake's release downloads
-  - [ ] Step 3.2: download an index entry and check its sha256
-  - [ ] Step 3.3: attest, lock and sync index packages
+- [x] Slice 3: installing from the index
+  - [x] Step 3.1: web base and the fake's release downloads
+  - [x] Step 3.2: download an index entry and check its sha256
+  - [x] Step 3.3: attest, lock and sync index packages
 
 #### Wave 4
 - [ ] Slice 4: `lvpm index add`
