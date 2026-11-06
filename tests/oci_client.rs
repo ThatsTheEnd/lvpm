@@ -70,6 +70,34 @@ fn a_token_is_kept_for_its_repository_and_access_so_a_run_logs_in_once_for_each(
 }
 
 #[test]
+fn an_expired_token_is_asked_for_again_and_the_call_goes_through() {
+    let registry = Registry::start();
+    let oci = Oci::default();
+    with(&registry, Access::Push, |repo| {
+        oci.manifest_exists(repo, "1.0.0").unwrap();
+        assert_eq!(registry.token_requests().len(), 1);
+        registry.expire_tokens();
+        let digest = oci.upload_blob(repo, b"{}").unwrap();
+        assert_eq!(digest, digest_of(b"{}"));
+    });
+    assert_eq!(registry.token_requests().len(), 2);
+    assert_eq!(registry.blob(NAME, &digest_of(b"{}")), Some(b"{}".to_vec()));
+}
+
+#[test]
+fn a_401_that_offers_no_challenge_is_returned_without_asking_the_realm_again() {
+    let registry = Registry::start();
+    let oci = Oci::default();
+    registry.answer("HEAD", "/v2/team/alpha/manifests/2.0.0", 401);
+    with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0").unwrap();
+        let refused = oci.manifest_exists(repo, "2.0.0").unwrap_err();
+        assert_eq!(refused.status_code(), Some(401));
+    });
+    assert_eq!(registry.token_requests().len(), 1);
+}
+
+#[test]
 fn a_push_asks_for_the_push_scope() {
     let registry = Registry::start();
     let oci = Oci::default();

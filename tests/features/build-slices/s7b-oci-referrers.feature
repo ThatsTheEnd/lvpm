@@ -132,6 +132,41 @@ Feature: OCI referrers
       | 403    | has require-signature = true | <registry> |
       | 500    | is empty                     | <registry> |
 
+  Scenario: Every package whose referrers lookup fails is named in one error
+    Given "team/alpha:1.0.0" is in the registry
+    And "team/beta:1.0.0" is in the registry
+    And the registry answers 500 to the referrers lookup of "team/alpha:1.0.0"
+    And the registry answers 500 to the referrers lookup of "team/beta:1.0.0"
+    And a project pinned to alpha from team
+    And a project pinned to beta from team
+    When I run "lvpm lock"
+    Then it fails saying "alpha 1.0.0: the signature lookup on registry <registry> failed"
+    And it fails saying "beta 1.0.0: the signature lookup on registry <registry> failed"
+    And no version of alpha is locked
+    And no version of beta is locked
+
+  Scenario: A failed lookup is reported alone, ahead of a package the policy refuses
+    Given "team/alpha:1.0.0" is in the registry
+    And the registry answers 500 to the referrers lookup of "team/alpha:1.0.0"
+    And "team/beta:1.0.0" has a Sigstore bundle referrer that gh verifies as built by "https://github.com/evil/r"
+    And a project pinned to alpha from team
+    And a project pinned to beta from team
+    And the project's [policy] trusts only "https://github.com/o/*"
+    When I run "lvpm lock"
+    Then it fails saying "alpha 1.0.0: the signature lookup on registry <registry> failed"
+    And the output does not contain "evil"
+    And the output does not contain "refused"
+    And no version of beta is locked
+
+  Scenario: A signed lock is decided again under a changed policy without asking gh
+    Given "team/alpha:1.0.0" has a Sigstore bundle referrer that gh verifies as built by "https://github.com/o/r"
+    And a project pinned to alpha from team, locked under require-signature with alpha's signer
+    And the project's [policy] trusts only "https://github.com/other/*"
+    When I run "lvpm lock"
+    Then it fails naming the subject "https://github.com/o/r"
+    And gh was not run
+    And the lock is unchanged
+
   Scenario: With no policy, an unsigned package locks with no signer
     Given "team/alpha:1.0.0" has no Sigstore bundle referrer
     And a project pinned to alpha from team

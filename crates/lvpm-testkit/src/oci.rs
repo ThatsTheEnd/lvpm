@@ -162,6 +162,9 @@ struct State {
     /// A login by this user name is refused at the token realm.
     refused_users: Vec<String>,
     token_requests: Vec<TokenRequest>,
+    /// How many times the tokens expired: the token that is valid is
+    /// [`TOKEN`] until the first, and a new one after each.
+    expired: usize,
     /// Set by `offer_referrers_api(false)`.
     referrers_api_off: bool,
     /// Repositories that refuse a manifest with a `subject` and any `sha256-`
@@ -282,6 +285,12 @@ impl Registry {
     /// From now on a login by `user` is refused at the token realm, `401`.
     pub fn refuse_user(&self, user: &str) {
         lock(&self.state).refused_users.push(user.to_string());
+    }
+
+    /// From now on the tokens given so far are refused with the challenge, and
+    /// the token realm gives a new one: a token that ran out.
+    pub fn expire_tokens(&self) {
+        lock(&self.state).expired += 1;
     }
 
     /// Every ask of the token realm since the start or the last
@@ -654,7 +663,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
         | Route::Upload(name, _) => *name,
         Route::Token | Route::Other => return not_found("UNSUPPORTED", "no such route"),
     };
-    if request.header("authorization") != Some(&format!("Bearer {TOKEN}")) {
+    if request.header("authorization") != Some(&format!("Bearer {}", valid_token(state))) {
         return challenge(name, &request.method, addr);
     }
     if let Some(status) = wanted {
@@ -738,7 +747,15 @@ fn token(state: &mut State, request: &Request, query: &str, body: &[u8]) -> Vec<
     if refused || (needs_login && user.is_none()) {
         return error_reply(401, "UNAUTHORIZED", "authentication required");
     }
-    json_reply("200 OK", &[], &json!({ "token": TOKEN }))
+    json_reply("200 OK", &[], &json!({ "token": valid_token(state) }))
+}
+
+/// The token the registry accepts now.
+fn valid_token(state: &State) -> String {
+    match state.expired {
+        0 => TOKEN.to_string(),
+        n => format!("{TOKEN}-{n}"),
+    }
 }
 
 /// `a=b&c=d`, each value with its `+` and `%XX` decoded.
@@ -1367,6 +1384,22 @@ mod tests {
         registry.answer("GET", "/token", 500);
         let token = get_from(registry.addr(), "/token?scope=x", "");
         assert_eq!(token.status_line, "HTTP/1.1 500 Internal Server Error");
+    }
+
+    #[test]
+    fn an_expired_token_is_challenged_again_and_the_realm_gives_a_new_one() {
+        let registry = Registry::start();
+        let path = "/v2/t/a/manifests/1.0.0";
+        let first = json_of(&get_from(registry.addr(), "/token?scope=x", ""))["token"].clone();
+        assert_eq!(first, TOKEN);
+        registry.expire_tokens();
+        let old = get_from(registry.addr(), path, AUTH);
+        assert_eq!(old.status_line, "HTTP/1.1 401 Unauthorized");
+        let second = json_of(&get_from(registry.addr(), "/token?scope=x", ""))["token"].clone();
+        assert_ne!(second, first);
+        let headers = format!("Authorization: Bearer {}\r\n", second.as_str().unwrap());
+        let new = get_from(registry.addr(), path, &headers);
+        assert_eq!(new.status_line, "HTTP/1.1 404 Not Found");
     }
 
     #[test]
