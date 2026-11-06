@@ -117,6 +117,7 @@ fn is_owner_and_repo(text: &str) -> bool {
     let name = |part: &str| {
         !part.is_empty()
             && !part.starts_with('-')
+            && !part.chars().all(|c| c == '.')
             && part
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
@@ -218,6 +219,38 @@ mod tests {
             (
                 "a claim that is cut short",
                 bundle_of(&SOURCE_REPOSITORY_OID),
+            ),
+            (
+                "a length that runs past the end",
+                bundle_of(&[&SOURCE_REPOSITORY_OID[..], &[TAG_OCTET_STRING, 0x20, 0x0c]].concat()),
+            ),
+            (
+                "an indefinite length",
+                bundle_of(&[&SOURCE_REPOSITORY_OID[..], &[TAG_OCTET_STRING, 0x80, 0x00]].concat()),
+            ),
+            (
+                "a length of three bytes",
+                bundle_of(
+                    &[
+                        &SOURCE_REPOSITORY_OID[..],
+                        &[TAG_OCTET_STRING, 0x83, 0, 0, 4, 1, 2, 3, 4],
+                    ]
+                    .concat(),
+                ),
+            ),
+            (
+                "a value that is no octet string",
+                bundle_of(
+                    &[
+                        &SOURCE_REPOSITORY_OID[..],
+                        &tlv(0x13, b"https://github.com/o/r"),
+                    ]
+                    .concat(),
+                ),
+            ),
+            (
+                "a flag with nothing after it",
+                bundle_of(&[&SOURCE_REPOSITORY_OID[..], &[TAG_BOOLEAN, 1, 0xff]].concat()),
             ),
         ];
         for (what, bundle) in table {

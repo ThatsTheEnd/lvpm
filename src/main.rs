@@ -902,13 +902,27 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Publish { to } => {
             let done = ops::publish::publish(&env, &PublishTarget::from_arg(to)?)?;
             let text = render::publish::published(&done);
+            // A script that gets exit 1 needs the digest to sign the package.
+            let mut result = match &done {
+                ops::publish::Published::Oci {
+                    reference, digest, ..
+                } => {
+                    json!({ "command": "publish", "reference": reference.to_string(), "digest": digest })
+                }
+                ops::publish::Published::Folder { .. } => json!({ "command": "publish" }),
+            };
             // The package is live but its SBOM is not attached: what was
-            // published is printed all the same, and the command fails.
+            // published is printed all the same, then the warning, and the
+            // command fails. Both go to stderr, as a failure does: stdout
+            // would print after stderr, which puts the warning first.
             match render::publish::sbom_failure(&done) {
-                None => Ok(Report::said(text, "publish")),
+                None => Report::new(text, result),
                 Some(warning) => {
-                    let result = json!({ "command": "publish", "warning": warning.trim_end() });
-                    Ok(Report::new(text, result)?.warning(warning).failed(true))
+                    result["warning"] = warning.trim_end().into();
+                    let all = format!("{text}{warning}");
+                    Ok(Report::new(String::new(), result)?
+                        .warning(all)
+                        .failed(true))
                 }
             }
         }

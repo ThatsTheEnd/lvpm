@@ -207,6 +207,12 @@ impl CliWorld {
 #[given(regex = r#"^"([^"]+)" has no Sigstore bundle referrer$"#)]
 async fn package_without_bundle(world: &mut CliWorld, reference: String) {
     world.ensure_package(&reference);
+    // A gh that would verify, so that "gh was not run" can fail.
+    world.sandbox.use_fake_gh();
+    let verifies = Behavior::Verifies {
+        repository: BUILT_BY.into(),
+    };
+    gh::install(&world.sandbox.gh_dir(), &verifies).expect("install the fake gh");
 }
 
 #[given(regex = r#"^"([^"]+)" has a Sigstore bundle referrer$"#)]

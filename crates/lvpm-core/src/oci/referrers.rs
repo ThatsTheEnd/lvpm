@@ -53,6 +53,15 @@ impl Oci {
             404 => self.fallback_index(repo, subject)?,
             _ => {
                 let response = expect(repo, response, &request, &[200])?;
+                // shortcut: a paged list is refused, not followed; follow
+                // `Link` when a registry that pages referrers is met. It must
+                // not read as "no referrers", which is "unsigned".
+                if response.headers().contains_key(reqwest::header::LINK) {
+                    return Err(Error::protocol(
+                        repo.registry,
+                        "pages its referrers list, which lvpm does not follow",
+                    ));
+                }
                 let body = read_limited(repo.registry, response, MAX_MANIFEST_BYTES)?;
                 manifests_of(repo, &body)?
             }
@@ -75,8 +84,10 @@ impl Oci {
     /// subject is updated to list this one.
     ///
     /// shortcut: the fallback index is read, then written, with no lock: two
-    /// publishers that attach to one subject at once may lose one entry. Only
-    /// a registry without the API has it, and a version is published once.
+    /// writers that attach to one subject at once (this one and the CI that
+    /// pushes the Sigstore bundle) may lose one entry. Only a registry without
+    /// the API has it. A lost bundle reads as unsigned, which `[policy]`
+    /// refuses, and the write is read back so that a lost entry is an error.
     pub fn push_referrer(
         &self,
         repo: &Repo,
@@ -120,9 +131,11 @@ impl Oci {
     /// Add `entry` to the fallback index of `subject`, keeping what it lists.
     fn list_in_fallback(&self, repo: &Repo, subject: &str, entry: Value) -> Result<(), Error> {
         let mut manifests = self.fallback_index(repo, subject)?;
-        if !manifests.iter().any(|m| m["digest"] == entry["digest"]) {
-            manifests.push(entry);
+        if manifests.iter().any(|m| m["digest"] == entry["digest"]) {
+            return Ok(());
         }
+        let digest = entry["digest"].clone();
+        manifests.push(entry);
         let index = json!({
             "schemaVersion": 2,
             "mediaType": INDEX_TYPE,
@@ -131,6 +144,16 @@ impl Oci {
         .to_string()
         .into_bytes();
         self.put(repo, &fallback_tag(subject), INDEX_TYPE, &index)?;
+        if !self
+            .fallback_index(repo, subject)?
+            .iter()
+            .any(|m| m["digest"] == digest)
+        {
+            return Err(Error::protocol(
+                repo.registry,
+                "lost the referrer from its fallback index to another write",
+            ));
+        }
         Ok(())
     }
 }
@@ -170,7 +193,12 @@ fn check_subject(repo: &Repo, subject: &str) -> Result<(), Error> {
 fn manifests_of(repo: &Repo, body: &[u8]) -> Result<Vec<Value>, Error> {
     let index: Value = serde_json::from_slice(body)
         .map_err(|_| Error::protocol(repo.registry, "sent a referrers list that is not JSON"))?;
-    Ok(index["manifests"].as_array().cloned().unwrap_or_default())
+    // A body with no list is a broken answer, not an empty one: "no
+    // referrers" would read as "unsigned".
+    index["manifests"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| Error::protocol(repo.registry, "sent a referrers list with no manifests"))
 }
 
 #[cfg(test)]
@@ -178,6 +206,26 @@ mod tests {
     use super::*;
 
     const SUBJECT: &str = "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+
+    #[test]
+    fn a_list_without_manifests_is_an_error_never_no_referrers() {
+        let repo = Repo {
+            registry: "r:1",
+            name: "t/a",
+            access: crate::oci::Access::Pull,
+        };
+        for body in [
+            "{}",
+            "[]",
+            "null",
+            r#"{"manifests":null}"#,
+            r#"{"errors":[]}"#,
+        ] {
+            assert!(manifests_of(&repo, body.as_bytes()).is_err(), "{body}");
+        }
+        let empty = manifests_of(&repo, br#"{"manifests":[]}"#).unwrap();
+        assert!(empty.is_empty());
+    }
 
     #[test]
     fn the_fallback_tag_is_the_digest_with_a_dash_for_the_colon() {

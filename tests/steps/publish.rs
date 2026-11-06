@@ -610,7 +610,8 @@ async fn output_gives_digest(world: &mut CliWorld, repository: String, tag: Stri
     let out = world.last_printed();
     let line = format!("OCI manifest digest {digest}");
     assert!(
-        out.stdout.lines().any(|l| l.trim() == line),
+        // A publish whose SBOM failed prints everything on stderr.
+        (out.stdout.lines().chain(out.stderr.lines())).any(|l| l.trim() == line),
         "no {line:?} in {out:?}"
     );
 }

@@ -417,6 +417,28 @@ impl Cache {
         Ok(sha)
     }
 
+    /// A file named `<sha256>.json` holding `bytes`, in the staging folder.
+    /// gh picks how to read a `--bundle` from its extension and refuses a
+    /// file with none, which the content-addressed blob path is.
+    pub(crate) fn json_file(&self, bytes: &[u8]) -> Result<PathBuf> {
+        let dest = self
+            .root
+            .join("tmp")
+            .join(format!("{}.json", sha256_hex(bytes)));
+        if std::fs::read(&dest).is_ok_and(|held| held == bytes) {
+            return Ok(dest);
+        }
+        let blob = self.store(bytes)?;
+        // Link first so that a reader never sees half a file; copy where a
+        // filesystem cannot link.
+        std::fs::remove_file(&dest).ok();
+        if std::fs::hard_link(self.blob_path(&blob), &dest).is_err() {
+            std::fs::copy(self.blob_path(&blob), &dest)
+                .with_context(|| format!("writing {}", dest.display()))?;
+        }
+        Ok(dest)
+    }
+
     /// The stored bytes for a digest, if they are there and still hash to it.
     /// Bytes that do not are removed.
     pub(crate) fn load(&self, sha: &str) -> Result<Option<Vec<u8>>> {

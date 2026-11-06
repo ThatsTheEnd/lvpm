@@ -106,19 +106,20 @@ fn read_package(package: &Path) -> Result<(Vec<u8>, Spec, Option<Vec<u8>>)> {
     // `read` has checked the SBOM entry against RECORD, so what is found is
     // the one the build wrote.
     let spec = lvpkg::read(&mut zip).with_context(|| format!("reading {}", package.display()))?;
-    let sbom = sbom_of(&mut zip).with_context(|| format!("reading {}", package.display()))?;
+    let sbom = sbom_of(&mut zip, MAX_SBOM_BYTES)
+        .with_context(|| format!("reading {}", package.display()))?;
     Ok((bytes, spec, sbom))
 }
 
-/// The SBOM entry, up to [`MAX_SBOM_BYTES`].
-fn sbom_of(zip: &mut zip::ZipArchive<Cursor<&[u8]>>) -> Result<Option<Vec<u8>>> {
+/// The SBOM entry, up to `max` bytes.
+fn sbom_of(zip: &mut zip::ZipArchive<Cursor<&[u8]>>, max: u64) -> Result<Option<Vec<u8>>> {
     let Ok(entry) = zip.by_name(lvpkg::SBOM) else {
         return Ok(None);
     };
     let mut sbom = Vec::new();
-    entry.take(MAX_SBOM_BYTES + 1).read_to_end(&mut sbom)?;
-    if sbom.len() as u64 > MAX_SBOM_BYTES {
-        bail!("{} is larger than {MAX_SBOM_BYTES} bytes", lvpkg::SBOM);
+    entry.take(max + 1).read_to_end(&mut sbom)?;
+    if sbom.len() as u64 > max {
+        bail!("{} is larger than {max} bytes", lvpkg::SBOM);
     }
     Ok(Some(sbom))
 }
@@ -299,13 +300,30 @@ mod tests {
     fn a_package_gives_its_sbom_bytes_and_one_without_gives_none() {
         let read = |bytes: &[u8]| {
             let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-            sbom_of(&mut zip).unwrap()
+            sbom_of(&mut zip, MAX_SBOM_BYTES).unwrap()
         };
         assert_eq!(
             read(&package(Some(b"{\"x\":1}"))),
             Some(b"{\"x\":1}".to_vec())
         );
         assert_eq!(read(&package(None)), None);
+    }
+
+    #[test]
+    fn an_sbom_over_the_limit_is_refused_and_one_at_it_is_not() {
+        let bytes = package(Some(&[b'x'; 16]));
+        let read = |max| {
+            sbom_of(
+                &mut zip::ZipArchive::new(Cursor::new(&bytes[..])).unwrap(),
+                max,
+            )
+        };
+        assert_eq!(read(16).unwrap(), Some(vec![b'x'; 16]));
+        let refused = read(15).unwrap_err().to_string();
+        assert!(
+            refused.contains("bom.cdx.json is larger than 15 bytes"),
+            "{refused}"
+        );
     }
 
     fn spec(requires: Option<&str>, lv_gate: Option<&str>) -> Spec {

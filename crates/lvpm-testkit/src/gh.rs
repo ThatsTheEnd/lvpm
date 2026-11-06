@@ -128,6 +128,17 @@ fn respond(behavior: &Behavior, run: &Run) -> Response {
     if !verify || !run.token_given {
         return said("", NOT_LOGGED_IN, 4);
     }
+    // As real gh: it reads a bundle by its extension, and refuses any other.
+    let bundle_extension = run
+        .flag("--bundle")
+        .map(|path| Path::new(path).extension().and_then(|e| e.to_str()));
+    if matches!(bundle_extension, Some(extension) if !matches!(extension, Some("json" | "jsonl"))) {
+        return said(
+            "",
+            "Error: bundle file extension not supported, must be json or jsonl",
+            1,
+        );
+    }
     match behavior {
         Behavior::Rejects { stderr } => said("", stderr, 1),
         Behavior::Verifies { repository } => {
@@ -289,7 +300,7 @@ mod tests {
         "verify",
         "m",
         "--bundle",
-        "b",
+        "b.json",
         "--repo",
         "o/r",
         "--format",
@@ -326,11 +337,17 @@ mod tests {
         other_repo[6] = "o/other";
         let mut no_bundle = run(&VERIFY, true);
         no_bundle.bundle_sha256 = None;
+        let mut no_extension = VERIFY;
+        no_extension[4] = "b";
         let table = [
             (run(&other_repo, true), WRONG_REPO),
             (run(&VERIFY, false), NOT_LOGGED_IN),
             (run(&["auth", "token"], true), NOT_LOGGED_IN),
             (no_bundle, "no bundle or no file to verify"),
+            (
+                run(&no_extension, true),
+                "Error: bundle file extension not supported, must be json or jsonl",
+            ),
         ];
         for (asked, says) in table {
             let got = respond(&verifies(), &asked);

@@ -116,7 +116,8 @@ impl Downloads {
         };
         let manifest = self.oci.get_manifest(&repo, digest)?;
         let manifest_file = self.cache.blob_path(&self.keep(&manifest.bytes)?);
-        let bundle_file = self.cache.blob_path(&self.keep(&bundle)?);
+        // gh refuses a bundle whose file name has no .json or .jsonl extension.
+        let bundle_file = self.cache.json_file(&bundle)?;
         let sha = digest.trim_start_matches("sha256:");
         Ok(github::attestation::verify_bundle(
             &self.github,
