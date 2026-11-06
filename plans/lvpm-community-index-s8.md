@@ -82,11 +82,13 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 
 Add (`lvpm index add`), each refusal exits 1:
 - `added <name> <version> to packages/<key>.toml`
-- `lvpm index: <name> belongs to <owner> in packages/<key>.toml, not <github>. fix: publish from <owner>, or register another name`
+- `lvpm index: <name> <version> belongs to <owner> in packages/<key>.toml, not <github>. fix: publish from <owner>, or register another name`
 - `lvpm index: <name> <version> is already listed in packages/<key>.toml. fix: listed versions cannot change; publish a new version`
-- `lvpm index: --url must be <web>/<github>/releases/download/<tag>/<file>. fix: pass the release asset's download URL`
-- `lvpm index: <file> is not an .lvpkg: <error>. fix: pass the package lvpm build made`
+- `lvpm index: <name> <version>: --url must be <web>/<github>/releases/download/<tag>/<file>. fix: pass the release asset's download URL`
+- `lvpm index: <file> is not an .lvpkg: <error>. fix: pass the package lvpm build made` (any package lvpm reads counts, as for install; the Background's pilot B fixture is a `.vip`)
 - `lvpm index: packages/<key>.toml does not parse: <error>. fix: restore it from the index repo`
+- `lvpm index: <name> <version>: packages/<key>.toml would exceed 1048576 bytes. fix: ask the index maintainers to split or prune it`
+- `lvpm index: <entries-dir> is not a folder: <error>. fix: pass the index repo's packages folder`
 
 Template `register` summary lines (`$GITHUB_STEP_SUMMARY`):
 - success: `registered <name> <version>: <pr-url>. The index bot checks it, then merges it or comments the reasons it refused. A PR with no verdict waits for a maintainer.`
@@ -472,9 +474,9 @@ Feature: S8: lvpm index add
     And the packages folder is unchanged
     Examples:
       | state                                                  | input                                              | line                                                                 |
-      | the entry file is owned by someone/Serializer           | <file> with --github other/Fork                    | belongs to someone/Serializer in packages/labview_open_source_lib_serializer.toml, not other/Fork. fix: |
+      | the entry file is owned by someone/Serializer           | <file> with --github other/Fork                    | <version> belongs to someone/Serializer in packages/labview_open_source_lib_serializer.toml, not other/Fork. fix: |
       | the entry file already lists 1.2.1.16                   | <file> with --github someone/Serializer            | 1.2.1.16 is already listed in packages/labview_open_source_lib_serializer.toml. fix: |
-      | an empty packages folder                                | <file> with --github someone/Serializer --url https://example.com/x.lvpkg | --url must be https://github.com/someone/Serializer/releases/download/<tag>/<file>. fix: |
+      | an empty packages folder                                | <file> with --github someone/Serializer --url https://example.com/x.lvpkg | <version>: --url must be https://github.com/someone/Serializer/releases/download/<tag>/<file>. fix: |
       | an empty packages folder                                | notes.txt with --github someone/Serializer         | notes.txt is not an .lvpkg: <error>. fix: pass the package lvpm build made |
       | the entry file is not TOML                              | <file> with --github someone/Serializer            | does not parse                                                       |
 ```
@@ -772,8 +774,8 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 3.3: attest, lock and sync index packages
 
 #### Wave 4
-- [ ] Slice 4: `lvpm index add`
-  - [ ] Step 4.1: the add op, event, render and CLI
+- [x] Slice 4: `lvpm index add`
+  - [x] Step 4.1: the add op, event, render and CLI
 
 #### Wave 5
 - [ ] Slice 5: `lvpm index check`, the bot
