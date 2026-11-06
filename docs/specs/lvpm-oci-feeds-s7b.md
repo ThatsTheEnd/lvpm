@@ -99,7 +99,7 @@ GitLab protected tags).
 `docker-credential-<name> get`, else `auths[host].auth`. A username of
 `<token>` is an identity token (refresh-token grant); otherwise basic auth on
 the token realm. No credentials → anonymous token. An `oci://` URL carrying
-`user:pass@` is refused when the manifest is read.
+`user:pass@` is refused when sources are resolved, naming `[sources]`.
 
 **Lock.** `LockedPackage` gains an optional `digest` (manifest digest,
 `sha256:…`), present only for OCI packages; `source` is the `oci://` URL.
@@ -135,7 +135,7 @@ out of scope. Existing folder publish unchanged.
 5. **Signature referrer.** A package with a Sigstore bundle referrer locks with the signer the (faked) gh run reports; with `require-signature = true`, one without a bundle is refused; one whose subject is not in `trusted-publishers` is refused.
 6. **Explicit source.** An `oci://` source is asked only for names pinned to it: a project with an OCI source and an unpinned public dependency sends the registry no request for that name. A pinned name the registry does not list (404) fails naming the package and the source; an unreachable OCI source fails naming it; a `403` (the fake's ghcr mode) fails naming both and saying the registry refused the lookup (missing package or no access). None falls through to another source.
 7. **Credentials.** With a Docker config whose `credHelpers` names a fake helper on the PATH, lvpm sends that helper's credentials to the token realm; with `auths` only, it uses those; with neither, it pulls anonymously. An `oci://user:pass@host/…` source is refused when sources are resolved, naming `[sources]`. *(Amended 2026-11-06; was: when the manifest is read.)*
-8. **ghcr.io** (`@ghcr`, opt-in): against `ThatsTheEnd/lvpm-oci-test`, the public package installs anonymously by digest with its SBOM and signature referrers found; republishing its existing tag is refused; the private package fails anonymously with the pin hint and installs with Docker credentials.
+8. **ghcr.io** (`@ghcr`, opt-in): against `ThatsTheEnd/lvpm-oci-test`, the public package installs anonymously by digest with its SBOM and signature referrers found; republishing its existing tag is refused; the private package fails anonymously saying the registry refused the lookup and installs with Docker credentials.
 9. **GitLab and ACR** *(manual)*: publish and install (ACR after `az acr login`); evidence in the PR.
 10. **Template.** `.github/workflow-templates/lvpm-release.yml` shows the OCI publish and `attest-build-provenance` with `push-to-registry: true`; a test checks the template's keys line by line. *(Amended 2026-11-06.)*
 11. `docs/manifest.md` and `docs/usage.md` document `oci://` sources, `publish --to oci://`, credentials and tag immutability.
@@ -147,6 +147,8 @@ The user approved these on 2026-11-06, while reviewing the finished slice.
 - **AC4:** `publish` attaches the SBOM as a referrer, with the referrers API on and off; install does not read it.
 - **AC10:** a test checks the template's keys line by line.
 - **AC7:** an `oci://user:pass@host/…` source is refused when sources are resolved.
+- **Wording corrections that follow ADR 7 (every OCI package is pinned):** AC8 says the private package "fails anonymously saying the registry refused the lookup", not "with the pin hint"; the Ambiguity Log answer for a `401`/`403` suggests `docker login`, not an `index =` pin.
+- **Listing text:** `lvpm catalog`, `lvpm info` and the TUI show core's plain listing text, without the publish hint that `lvpm lock` and `lvpm install` add.
 - **Moved tag:** a plain `lvpm lock` that finds a locked OCI version at another manifest digest fails and writes nothing; `lvpm lock --upgrade` accepts the new digest (see Lock).
 - **Feature files:** the scenarios live in `tests/features/build-slices/s7b-*.feature`.
 - **Deviation, unpinned transitive dependencies:** an OCI package's dependency that is pinned to no source is not an error with a pin hint. As for a package from a hosted source, lock warns `beta, required by alpha, is in no source` and records it as unresolved. Only a direct dependency that no source lists fails.
@@ -168,7 +170,7 @@ The user approved these on 2026-11-06, while reviewing the finished slice.
 | Rust OCI client or `oras` | `requires-stakeholder-input` | human | Own client over blocking reqwest. |
 | How an OCI feed is declared | `requires-stakeholder-input` | human | `oci://` in `[sources]`, repo per package, tag = version. |
 | Atomic refusal of an existing tag | `requires-stakeholder-input` | human | Check, upload, recheck, PUT; remaining race documented, immutability recommended. |
-| How a `401`/`403` on the tags list counts | `requires-stakeholder-input` | human | Fail safe, naming source and package, and suggest an `index =` pin. ghcr answers `403 DENIED` for a missing repository, so "missing" and "no access" look alike; falling through would reopen dependency confusion (ADR 4). |
+| How a `401`/`403` on the tags list counts | `requires-stakeholder-input` | human | Fail safe, naming source and package, and suggest `docker login`. ghcr answers `403 DENIED` for a missing repository, so "missing" and "no access" look alike; falling through would reopen dependency confusion (ADR 4). |
 | Which names an OCI source is asked for | `requires-stakeholder-input` | human | Only names pinned to it (explicit source, as uv's `explicit = true`). Found while planning: `[sources]` comes before the public indexes, so probing all names would hit ghcr's 403 for every public package. |
 | Test against a real registry | `requires-stakeholder-input` | human | Yes: opt-in `@ghcr` scenarios against a test repository the user sets up. |
 | OCI media types | `inferable` | inference | OCI 1.1 artifact guidance: custom `artifactType`, empty config, typed layer. Alternative (Helm-style JSON config blob with metadata) ruled out: annotations give the same data in the manifest GET already needed for the digest. |

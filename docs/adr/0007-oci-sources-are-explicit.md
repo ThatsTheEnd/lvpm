@@ -44,7 +44,7 @@ packages that name it in `[tool.uv.sources]`.
    manifest digest of each package, and `sync --locked` asks by that digest
    only. The lock format version does not change.
 4. **Credentials are not in `lvpm.toml`.** A `user:password@` part is refused
-   when the manifest is read. They come from the Docker credential store, which
+   when sources are resolved, naming `[sources]`. They come from the Docker credential store, which
    `docker login` fills.
 5. **A signature from an OCI source is an identity, not an endorsement.** The
    package's Sigstore bundle is read from the registry, and its repository is

@@ -158,7 +158,7 @@ as a direct dependency with `version = "*"` and its own `index`.
   `note: OCI source "team" is explicit; pin with index = "team"`.
 - The URL is `oci://host[:port]/prefix`. lvpm talks `https` to it, and plain
   `http` only to `127.0.0.1` and `localhost`.
-- A URL with `user:password@` is refused when the manifest is read:
+- A URL with `user:password@` is refused when sources are resolved, naming `[sources]`:
   `[sources] team: credentials do not belong in lvpm.toml; remove the user:password@ part and run docker login ghcr.io`.
   Credentials come from the Docker credential store only: run `docker login`
   (see [OCI registries](usage.md#oci-registries)).

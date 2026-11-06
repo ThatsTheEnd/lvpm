@@ -212,7 +212,7 @@ Feature: Installing from an explicit OCI source
     When I run "lvpm lock"
     Then alpha 1.1.0 is locked
 
-  Scenario: Credentials in an oci:// source are refused when the manifest is read
+  Scenario: Credentials in an oci:// source are refused when sources are resolved
     Given [sources] has team = "oci://u1-4d2e8b-user:s1-7f3a9c-secret@<registry>/team"
     When I run "lvpm lock"
     Then it fails saying '[sources] team: credentials do not belong in lvpm.toml; remove the user:password@ part and run docker login <registry>'

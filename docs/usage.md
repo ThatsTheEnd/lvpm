@@ -1162,7 +1162,9 @@ acme_lib = { version = ">=1.0", index = "team" }
 An `oci://host[:port]/prefix` source is explicit: it is asked only for the
 packages pinned to it, so a package needs a pin. A pinned package that the
 registry cannot serve fails and never comes from another source
-([ADR 7](adr/0007-oci-sources-are-explicit.md)).
+([ADR 7](adr/0007-oci-sources-are-explicit.md)). `lvpm catalog`, `lvpm info`
+and the TUI show the plain listing text, without the publish hint that
+`lvpm lock` and `lvpm install` add.
 
 ### Publishing to a registry
 
