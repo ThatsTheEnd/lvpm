@@ -24,7 +24,7 @@ use crate::verify::{Invalid, Outcome};
 use crate::viserver::Connection;
 use anyhow::Result;
 use reqwest::blocking::Client;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What fetching an archive needs, opened when the first archive is wanted:
@@ -40,11 +40,17 @@ pub(super) struct Downloads {
 
 impl Downloads {
     pub(super) fn open(env: &OpEnv) -> Result<Downloads> {
+        Downloads::open_in(env, &env.config.cache)
+    }
+
+    /// [`open`](Self::open), with the cache under `cache` instead of the
+    /// configured one.
+    pub(super) fn open_in(env: &OpEnv, cache: &Path) -> Result<Downloads> {
         Ok(Downloads {
             client: Client::builder()
                 .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
                 .build()?,
-            cache: Cache::open(&env.config.cache)?,
+            cache: Cache::open(cache)?,
             cancel: env.cancel.clone(),
             github: env.github.clone(),
             oci: env.oci.clone(),

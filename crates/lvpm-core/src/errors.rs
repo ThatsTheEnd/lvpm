@@ -215,6 +215,16 @@ pub struct IndexHashMismatch {
     pub actual: String,
 }
 
+/// A community index entry's file that is longer than the download limit. Only
+/// the limit was read, and nothing of it was kept.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the file of {name} {version} is larger than the download limit of {limit} bytes")]
+pub struct IndexFileTooLarge {
+    pub name: String,
+    pub version: String,
+    pub limit: u64,
+}
+
 /// A community index entry whose `url` is not a file of its publisher's
 /// releases, so nothing was read from it. The url is not kept: it is the
 /// index's, and unchecked.

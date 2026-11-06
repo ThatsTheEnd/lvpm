@@ -8,15 +8,16 @@ use crate::cache::sha256_hex;
 use crate::community::{
     self, EntryFile, FileVersion, Finding, NewVersion, NotAttested, Tree, VersionListed,
 };
-use crate::errors::{Cancelled, IndexHashMismatch};
+use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch};
 use crate::events::Event;
-use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, check_index_url};
+use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, Rejected, check_index_url};
 use crate::github::MAX_ENTRY_BYTES;
 use crate::index::{self, Entry};
 use crate::project::{name_key, split_owner_repo};
 use crate::verify::{Accepted, Policy, Refusal, decide};
 use crate::version::Version;
 use anyhow::{Context, Result, ensure};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -164,20 +165,24 @@ impl Verdict {
 /// followed. Each version it adds is downloaded from the owner's releases with
 /// no token, up to [`MAX_INDEX_DOWNLOAD_BYTES`], and only if its url passed R4.
 /// Every outcome of the attestation lookup but "built by the owner" refuses.
+///
+/// Each download goes through a cache of its own, in a folder this run makes and
+/// removes, so that R5 always fetches the url and never finds the file a
+/// cache from another run holds. A package file is read once per SHA-256.
 pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
     let diff = community::diff(&Tree::read(base_dir)?, &Tree::read(head_dir)?);
     let web = env.github.web_base();
     let mut verdicts: Vec<Verdict> = diff.findings.into_iter().map(Verdict::Refused).collect();
-    let mut downloads = None;
-    for new in diff.new_versions {
+    let run = tempfile::Builder::new()
+        .prefix("lvpm-index-check")
+        .tempdir()?;
+    let mut packages = HashMap::new();
+    for (i, new) in diff.new_versions.into_iter().enumerate() {
         let found = match new.url_finding(&web) {
             Some(url) => vec![url],
             None => {
-                if downloads.is_none() {
-                    downloads = Some(Downloads::open(env)?);
-                }
-                let session = downloads.as_ref().expect("opened above");
-                network_findings(session, &new)?
+                let downloads = Downloads::open_in(env, &run.path().join(i.to_string()))?;
+                network_findings(&downloads, &new, &mut packages)?
             }
         };
         match found.is_empty() {
@@ -211,30 +216,67 @@ pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
     Ok(checked)
 }
 
+/// The package files read so far: by SHA-256, what lvpm made of the file, or
+/// why it is no package.
+type Packages = HashMap<String, Result<Entry, String>>;
+
 /// R5 to R6b for one new version whose url passed R4: its file is downloaded
 /// (checked against the entry's SHA-256 on the way in), read, and asked about.
-/// A refusal is a finding; only a cancel is an error.
-fn network_findings(downloads: &Downloads, new: &NewVersion) -> Result<Vec<Finding>> {
+/// A refusal is a finding; only a cancel is an error. A version that already
+/// has a finding is not asked about its attestation.
+fn network_findings(
+    downloads: &Downloads,
+    new: &NewVersion,
+    packages: &mut Packages,
+) -> Result<Vec<Finding>> {
     let bytes = match downloads.fetch(&new.entry()) {
         Ok(bytes) => bytes,
         Err(why) if why.is::<Cancelled>() => return Err(why),
         Err(why) => {
             let finding = match why.downcast_ref::<IndexHashMismatch>() {
                 Some(mismatch) => new.file_differs(&mismatch.actual),
-                None => new.not_downloaded(format!("{why:#}")),
+                None => new.not_downloaded(download_failure(&why)),
             };
             return Ok(vec![finding]);
         }
     };
-    let package = match index::entry_from_bytes(Path::new(&new.version.url), &bytes) {
+    // The file has the entry's SHA-256 (the download checked it), so that is what it is read by.
+    let package = packages
+        .entry(new.version.sha256.clone())
+        .or_insert_with(|| {
+            index::entry_from_bytes(Path::new(&new.version.url), &bytes)
+                .map_err(|why| format!("{why:#}"))
+        });
+    let package = match package {
         Ok(package) => package,
-        Err(why) => return Ok(vec![new.not_a_package(format!("{why:#}"))]),
+        Err(why) => return Ok(vec![new.not_a_package(why.clone())]),
     };
-    let found = [
-        new.package_finding(&package),
-        attestation_finding(downloads, new),
-    ];
-    Ok(found.into_iter().flatten().collect())
+    if let Some(differs) = new.package_finding(package) {
+        return Ok(vec![differs]);
+    }
+    Ok(attestation_finding(downloads, new).into_iter().collect())
+}
+
+/// Why a download failed, in one of four fixed forms: what the bot says goes on
+/// a public PR, and the url and a server's own words are not its to repeat.
+fn download_failure(why: &anyhow::Error) -> String {
+    let status = why
+        .downcast_ref::<Rejected>()
+        .map(|rejected| rejected.status)
+        .or_else(|| why.downcast_ref::<reqwest::Error>()?.status());
+    let timed_out = why
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(reqwest::Error::is_timeout)
+        || why
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::TimedOut);
+    match status {
+        Some(status) => format!("HTTP {}", status.as_u16()),
+        None if why.is::<IndexFileTooLarge>() => "too large".to_string(),
+        None if timed_out => "timed out".to_string(),
+        // shortcut: any other failure (a body cut off, a full disk) is said as this one; split it when a publisher needs to tell them apart.
+        None => "could not connect".to_string(),
+    }
 }
 
 /// R6 and R6b: S6's verdict on the downloaded file, under a policy that
@@ -860,5 +902,121 @@ Requires=\"bar>=?\"",
             assert_eq!(shown, dir.display().to_string());
             assert!(!error.is_empty());
         }
+    }
+
+    /// A listener that answers its first request with `response` and the url
+    /// of it.
+    fn answering(response: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/secret/path?token=hunter2",
+            listener.local_addr().unwrap()
+        );
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.read(&mut [0u8; 1024]);
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn a_failed_download_is_said_in_one_of_four_fixed_forms_with_no_url() {
+        use anyhow::Context;
+        // Each failure as the download makes it: a context over the client's own error.
+        let fetch = |url: &str, wait: Option<u64>| -> anyhow::Error {
+            let mut client = reqwest::blocking::Client::builder();
+            if let Some(millis) = wait {
+                client = client.timeout(std::time::Duration::from_millis(millis));
+            }
+            let sent = client.build().unwrap().get(url).send();
+            sent.context("downloading foo 1.1.0")
+                .and_then(|response| Ok(response.error_for_status()?))
+                .unwrap_err()
+        };
+        let not_found = answering("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let silent_url = format!("http://{}/x", silent.local_addr().unwrap());
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}/x", listener.local_addr().unwrap())
+        };
+        let rejected = Rejected {
+            status: reqwest::StatusCode::FORBIDDEN,
+            headers: Default::default(),
+        };
+        let too_large = IndexFileTooLarge {
+            name: "foo".into(),
+            version: "1.1.0".into(),
+            limit: 4,
+        };
+        let rows = [
+            ("a 404", fetch(&not_found, None), "HTTP 404"),
+            (
+                "a server that never answers",
+                fetch(&silent_url, Some(300)),
+                "timed out",
+            ),
+            (
+                "a port nobody listens on",
+                fetch(&closed, None),
+                "could not connect",
+            ),
+            ("a rejected download", rejected.into(), "HTTP 403"),
+            ("a file past the limit", too_large.into(), "too large"),
+            (
+                "anything else",
+                anyhow::anyhow!("secret"),
+                "could not connect",
+            ),
+        ];
+        for (what, why, said) in rows {
+            assert_eq!(download_failure(&why), said, "{what}: {why:#}");
+        }
+    }
+
+    #[test]
+    fn a_download_never_goes_through_the_configured_cache() {
+        let dir = testing::scratch_dir("check-cache");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        let listed = |version: &str| FileVersion {
+            version: version.into(),
+            url: format!("http://127.0.0.1:1/a/x/releases/download/{version}/foo.lvpkg"),
+            sha256: SHA_A.into(),
+            labview: None,
+            requires: Vec::new(),
+        };
+        let file = EntryFile {
+            name: "foo".into(),
+            github: "a/x".into(),
+            versions: vec![listed("1.0.0"), listed("1.1.0")],
+        };
+        head.write("packages/foo.toml", &file.write());
+        let sink = Recorded::default();
+        let mut env = testing::env_on(&sink, &dir);
+        env.github.api = "http://127.0.0.1:1".into();
+        let configured = dir.join("configured-cache");
+        env.config.cache = configured.clone();
+
+        // The listing of 1.0.0 is changed too (url): the new 1.1.0 is what gets downloaded.
+        check(&env, &base.0, &head.0).unwrap();
+
+        let said: Vec<_> = sink
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::IndexRefused {
+                    finding: Finding::NotDownloaded { version, error, .. },
+                } => Some((version, error)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [("1.1.0".to_string(), "could not connect".to_string())]
+        );
+        assert!(!configured.exists(), "the configured cache was opened");
     }
 }

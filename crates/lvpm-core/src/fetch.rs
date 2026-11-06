@@ -7,7 +7,7 @@
 
 use crate::cache::{Cache, LocalEntry, sha256_hex};
 use crate::cancel::CancelToken;
-use crate::errors::{Cancelled, IndexHashMismatch, IndexUrlRefused};
+use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch, IndexUrlRefused};
 use crate::index::{self, Entry};
 use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
@@ -275,12 +275,14 @@ fn read_within(
     entry: &Entry,
 ) -> Result<Vec<u8>> {
     let bytes = read_body(body.take(limit + 1), cancel)?;
-    ensure!(
-        bytes.len() as u64 <= limit,
-        "the file of {} {} is larger than the download limit of {limit} bytes",
-        entry.name,
-        entry.version
-    );
+    if bytes.len() as u64 > limit {
+        return Err(IndexFileTooLarge {
+            name: entry.name.clone(),
+            version: entry.version.to_string(),
+            limit,
+        }
+        .into());
+    }
     Ok(bytes)
 }
 
