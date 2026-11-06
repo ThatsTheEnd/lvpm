@@ -11,9 +11,11 @@ use crate::events::SyncStep;
 use crate::github::TokenSource;
 use crate::lockfile::StaleReason;
 use crate::manifest_edit::DependencyTable;
+use crate::oci::FeedUrl;
 use crate::solve::Conflict;
 use crate::timefmt::{rfc3339, time_until};
 use crate::verify::Refusal;
+use std::fmt;
 use std::path::PathBuf;
 
 /// The operation's [`CancelToken`](crate::cancel::CancelToken) was cancelled
@@ -105,6 +107,11 @@ pub enum LockError {
     /// Only an upgrade accepts the new manifest; nothing was written.
     #[error("{} locked OCI version(s) now have another manifest", .0.len())]
     TagMoved(Vec<MovedTag>),
+    /// Pinned packages that an OCI source could not list, all of them: one run
+    /// reports every one, and none is read as "not listed" by a source that is
+    /// asked next. Nothing was written.
+    #[error("{} pinned package(s) could not be listed", .0.len())]
+    OciListing(Vec<ListingFailure>),
     /// There is no lock where it should be.
     #[error("there is no lvpm.lock at {}", .path.display())]
     NoLock { path: PathBuf },
@@ -194,6 +201,98 @@ pub struct MovedTag {
     /// The manifest digest the source lists now.
     pub found: String,
 }
+
+/// Why a package pinned to an OCI source could not be listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListingFault {
+    /// The registry has no repository for it.
+    NotListed,
+    /// `401` or `403`: the package is missing, or the login cannot read it. A
+    /// registry that hides what a login cannot read answers this for both.
+    Refused,
+    /// No answer, or one that is no listing; the cause in words.
+    Unreachable(String),
+    /// The login could not be had or was refused: one fault for the whole
+    /// registry host, in words, and the same for every package on it.
+    Host(String),
+}
+
+/// One package pinned to an OCI source that the source could not list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailure {
+    pub package: String,
+    /// The `[sources]` name.
+    pub source: String,
+    /// The source's URL, `oci://registry/prefix`.
+    pub feed: FeedUrl,
+    pub fault: ListingFault,
+}
+
+/// What failed, and no hint: the front end words the way on (see
+/// `src/render/lock.rs`).
+impl fmt::Display for ListingFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            package,
+            source,
+            feed,
+            fault,
+        } = self;
+        let registry = feed.registry();
+        match fault {
+            ListingFault::NotListed => {
+                write!(
+                    f,
+                    "{package}: source \"{source}\" ({feed}) does not list it"
+                )
+            }
+            ListingFault::Refused => write!(
+                f,
+                "{package}: registry {registry} refused the lookup for source \"{source}\"; the \
+                 package is missing or your login cannot read it; run docker login {registry}"
+            ),
+            ListingFault::Unreachable(cause) => write!(
+                f,
+                "{package}: source \"{source}\" ({feed}) is unreachable: {cause}"
+            ),
+            ListingFault::Host(said) => write!(f, "{package}: {said}"),
+        }
+    }
+}
+
+/// Every pinned package the OCI sources could not list, in package order: what
+/// [`crate::index::load`] fails with, for the caller to downcast.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingFailures(Vec<ListingFailure>);
+
+impl ListingFailures {
+    pub fn new(mut failures: Vec<ListingFailure>) -> ListingFailures {
+        failures.sort_by_cached_key(|f| crate::project::name_key(&f.package));
+        ListingFailures(failures)
+    }
+
+    pub fn failures(&self) -> &[ListingFailure] {
+        &self.0
+    }
+
+    pub fn into_failures(self) -> Vec<ListingFailure> {
+        self.0
+    }
+}
+
+/// One line for each failure: the plain text of a caller that does not word
+/// them itself.
+impl fmt::Display for ListingFailures {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lines: Vec<String> = self.0.iter().map(ToString::to_string).collect();
+        f.write_str(&lines.join(
+            "
+",
+        ))
+    }
+}
+
+impl std::error::Error for ListingFailures {}
 
 /// One OCI package whose signature the registry could not be asked about.
 #[derive(Debug, Clone, PartialEq, Eq)]

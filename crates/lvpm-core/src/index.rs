@@ -9,12 +9,9 @@
 
 use crate::cache::{Cache, LocalEntry, SourceState};
 use crate::cancel::CancelToken;
-use crate::errors::Cancelled;
+use crate::errors::{Cancelled, ListingFailure, ListingFailures, ListingFault};
 use crate::events::{Event, EventSink, FeedOutcome};
-use crate::oci::{
-    self, Access, ListingFailure, ListingFailures, ListingFault, Oci, Package, Reference, Repo,
-    Target,
-};
+use crate::oci::{self, Access, Oci, Package, Reference, Repo, Target};
 use crate::project::{Feed, same_name};
 use crate::version::{Version, split_id};
 use anyhow::{Context, Result};
@@ -731,7 +728,7 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
         access: Access::Pull,
     };
     let mut found = Vec::new();
-    for tag in oci.list_tags(&repo).map_err(|e| ListingFault::of(&e))? {
+    for tag in oci.list_tags(&repo).map_err(|e| fault_of(&e))? {
         // The registry names the tags: one that is no tag is never put in a URL.
         // `sha256-<hex>` is where a registry without the referrers API keeps an
         // index of referrers, never a package.
@@ -742,7 +739,7 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
             Ok(manifest) => manifest,
             // A tag the registry does not serve is not a package of ours.
             Err(error) if error.status_code() == Some(404) => continue,
-            Err(error) => return Err(ListingFault::of(&error)),
+            Err(error) => return Err(fault_of(&error)),
         };
         let entry = (manifest.package())
             .and_then(|package| oci_entry(feed, &repository, &package))
@@ -755,6 +752,17 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
     match found.is_empty() {
         true => Err(ListingFault::NotListed),
         false => Ok(found),
+    }
+}
+
+/// What a failed tags list or manifest read comes to.
+fn fault_of(error: &oci::Error) -> ListingFault {
+    match error {
+        _ if error.status_code() == Some(404) => ListingFault::NotListed,
+        _ if error.is_refused() => ListingFault::Refused,
+        _ if error.is_host_level() => ListingFault::Host(error.to_string()),
+        oci::Error::Unreachable { cause, .. } => ListingFault::Unreachable(cause.clone()),
+        other => ListingFault::Unreachable(other.to_string()),
     }
 }
 
@@ -2001,5 +2009,26 @@ Package.Display Name=A Thing
         assert_eq!(resolved.entries[0].source, CACHE_SOURCE);
         assert_eq!(lookup.entries.len(), 2);
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn what_a_registry_answered_is_told_apart_as_a_listing_fault() {
+        let status = |status| oci::Error::Status {
+            registry: "r:1".into(),
+            status,
+            request: "GET".into(),
+        };
+        assert_eq!(fault_of(&status(404)), ListingFault::NotListed);
+        assert_eq!(fault_of(&status(401)), ListingFault::Refused);
+        assert_eq!(fault_of(&status(403)), ListingFault::Refused);
+        assert!(
+            matches!(fault_of(&status(500)), ListingFault::Unreachable(c) if c.contains("500"))
+        );
+        let login = oci::Error::LoginRefused {
+            registry: "r:1".into(),
+            origin: "auths".into(),
+        };
+        assert!(login.is_host_level());
+        assert_eq!(fault_of(&login), ListingFault::Host(login.to_string()));
     }
 }

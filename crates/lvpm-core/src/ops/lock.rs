@@ -13,7 +13,9 @@ use super::session::Downloads;
 use super::snapshot::restoring_on_failure;
 use super::sync::{Search, Unfetched};
 use crate::cache::{now, sha256_hex};
-use crate::errors::{ArchiveFailure, ArchiveFault, Cancelled, LockError, MovedTag};
+use crate::errors::{
+    ArchiveFailure, ArchiveFault, Cancelled, ListingFailures, LockError, MovedTag,
+};
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
 use crate::lockfile::{self, Inputs, LockedPackage, LockedUnresolved, Lockfile};
@@ -466,8 +468,8 @@ pub fn check(env: &OpEnv) -> Result<(), LockError> {
     }
 }
 
-/// [`OpEnv::load_index`], with a load that was cancelled told apart from one
-/// that failed.
+/// [`OpEnv::load_index`], with a load that was cancelled, or whose pinned OCI
+/// packages could not be listed, told apart from one that failed.
 ///
 /// Each GitHub dependency of `manifest`'s project is then taken from its repo
 /// instead of the feeds (see [`github_index`]): `previous` is the lock the run
@@ -480,9 +482,12 @@ pub(super) fn load_index(
     moving: &Moving,
 ) -> Result<Index, LockError> {
     let index = env.load_index(manifest).map_err(|why| -> LockError {
-        match why.is::<Cancelled>() {
-            true => Cancelled.into(),
-            false => why.into(),
+        if why.is::<Cancelled>() {
+            return Cancelled.into();
+        }
+        match why.downcast::<ListingFailures>() {
+            Ok(failures) => LockError::OciListing(failures.into_failures()),
+            Err(why) => why.into(),
         }
     })?;
     match manifest {

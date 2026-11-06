@@ -3,8 +3,9 @@
 //! live here because `lvpm-testkit` depends on `lvpm-core`.
 
 use lvpm_core::cancel::CancelToken;
+use lvpm_core::errors::{ListingFailures, ListingFault};
 use lvpm_core::index::{self, Index, OciFeed, SourceSet};
-use lvpm_core::oci::{FeedUrl, ListingFailures, ListingFault, Oci};
+use lvpm_core::oci::{FeedUrl, Oci};
 use lvpm_core::released;
 use lvpm_testkit::events::RecordingSink;
 use lvpm_testkit::oci::Registry;
@@ -54,7 +55,8 @@ fn seed(registry: &Registry, name: &str, version: &str) -> String {
         .manifest
 }
 
-/// The failures `load` gave, as the lines a lock prints.
+/// The failures `load` gave, as core says them: the hint a front end adds to a
+/// package its source does not list is not in them.
 fn failure_lines(error: &anyhow::Error) -> Vec<String> {
     let failures = error
         .downcast_ref::<ListingFailures>()
@@ -212,8 +214,7 @@ fn a_repository_whose_tags_are_none_of_its_package_is_not_listed() {
     assert_eq!(
         failure_lines(&error),
         [format!(
-            "alpha: source \"team\" (oci://{host}/team) does not list it; check the name, or \
-             publish it with lvpm publish --to oci://{host}/team"
+            "alpha: source \"team\" (oci://{host}/team) does not list it"
         )]
     );
 }
@@ -226,8 +227,7 @@ fn a_pin_the_registry_has_nothing_for_is_not_listed() {
     assert_eq!(
         failure_lines(&error),
         [format!(
-            "gamma: source \"team\" (oci://{host}/team) does not list it; check the name, or \
-             publish it with lvpm publish --to oci://{host}/team"
+            "gamma: source \"team\" (oci://{host}/team) does not list it"
         )]
     );
 }
@@ -313,10 +313,7 @@ fn every_failing_pin_is_reported_together_in_package_order() {
     assert_eq!(
         failure_lines(&error),
         [
-            format!(
-                "delta: source \"team\" (oci://{host}/team) does not list it; check the name, or \
-                 publish it with lvpm publish --to oci://{host}/team"
-            ),
+            format!("delta: source \"team\" (oci://{host}/team) does not list it"),
             format!(
                 "gamma: registry {host} refused the lookup for source \"team\"; the package is \
                  missing or your login cannot read it; run docker login {host}"

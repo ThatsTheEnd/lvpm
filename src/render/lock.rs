@@ -4,8 +4,8 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::errors::{
-    ArchiveFailure, ArchiveFault, AttestationRefusal, LockError, LockedArchiveProblem, MovedTag,
-    Origin, SignatureLookupFailure,
+    ArchiveFailure, ArchiveFault, AttestationRefusal, ListingFailure, ListingFault, LockError,
+    LockedArchiveProblem, MovedTag, Origin, SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
@@ -191,6 +191,7 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
             trusted_publishers,
         } => refused_text(refusals, trusted_publishers),
         LockError::SignatureLookup(failures) => signature_lookups_text(failures),
+        LockError::OciListing(failures) => listing_failures_text(failures),
         // `lvpm lock --check` fails with one line: a script reads it.
         LockError::NoLock { .. } => {
             "there is no lvpm.lock; run `lvpm lock` to create it".to_string()
@@ -540,6 +541,31 @@ fn signature_lookups_text(failures: &[SignatureLookupFailure]) -> String {
     lines.join("\n")
 }
 
+/// Every pinned package an OCI source could not list: one line for each
+/// registry whose login failed, ahead of one line for each other package.
+fn listing_failures_text(failures: &[ListingFailure]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for failure in failures {
+        if let ListingFault::Host(said) = &failure.fault
+            && !lines.contains(said)
+        {
+            lines.push(said.clone());
+        }
+    }
+    let per_package = (failures.iter()).filter(|f| !matches!(f.fault, ListingFault::Host(_)));
+    lines.extend(per_package.map(|failure| match failure.fault {
+        ListingFault::NotListed => format!(
+            "{failure}; check the name, or publish it with lvpm publish --to {}",
+            failure.feed
+        ),
+        _ => failure.to_string(),
+    }));
+    lines.join(
+        "
+",
+    )
+}
+
 /// The end of a "does not verify:" line: lvpm's own reason after a space, or
 /// the first 5 lines of gh's stderr, one to a line and indented four spaces.
 fn invalid(cause: &Invalid) -> String {
@@ -629,6 +655,7 @@ mod tests {
     use super::super::tests::renderer;
     use super::*;
     use lvpm_core::events::PackageRef;
+    use lvpm_core::oci::FeedUrl;
     use lvpm_core::released::SECS_PER_DAY;
     use std::path::PathBuf;
 
@@ -677,6 +704,55 @@ mod tests {
         assert!(
             both.contains("--upgrade-package alpha@1.1.0 --upgrade-package beta@1.1.0"),
             "{both}"
+        );
+    }
+
+    fn listing(package: &str, fault: ListingFault) -> ListingFailure {
+        ListingFailure {
+            package: package.to_string(),
+            source: "team".to_string(),
+            feed: FeedUrl::parse("oci://r:1/org").unwrap(),
+            fault,
+        }
+    }
+
+    #[test]
+    fn pinned_failures_are_one_line_each_in_the_order_given() {
+        let text = error(&LockError::OciListing(vec![
+            listing("alpha", ListingFault::NotListed),
+            listing("zeta", ListingFault::Unreachable("closed".into())),
+        ]));
+        assert_eq!(
+            text,
+            "alpha: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org\n\
+             zeta: source \"team\" (oci://r:1/org) is unreachable: closed"
+        );
+        let refused = error(&LockError::OciListing(vec![listing(
+            "gamma",
+            ListingFault::Refused,
+        )]));
+        assert_eq!(
+            refused,
+            "gamma: registry r:1 refused the lookup for source \"team\"; the package is missing \
+             or your login cannot read it; run docker login r:1"
+        );
+    }
+
+    #[test]
+    fn a_registry_whose_login_failed_is_one_line_ahead_of_the_other_packages() {
+        let said = "registry r:1 refused the login from auths; run docker login r:1";
+        let host = ListingFault::Host(said.into());
+        let text = error(&LockError::OciListing(vec![
+            listing("alpha", host.clone()),
+            listing("beta", ListingFault::NotListed),
+            listing("zeta", host),
+        ]));
+        assert_eq!(
+            text,
+            "registry r:1 refused the login from auths; run docker login r:1\n\
+             beta: source \"team\" (oci://r:1/org) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://r:1/org"
         );
     }
 
