@@ -113,7 +113,7 @@ Feature: OCI referrers
     And a project pinned to alpha from team
     And the project's [policy] has require-signature = true
     When I run "lvpm lock"
-    Then it fails saying gh is needed to check alpha's attestation
+    Then it fails saying "cannot check the attestation of alpha 1.0.0: gh is not installed"
 
   Scenario Outline: A referrers lookup that fails is an error, not "unsigned"
     Given "team/alpha:1.0.0" is in the registry

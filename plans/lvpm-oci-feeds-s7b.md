@@ -146,7 +146,8 @@ rest is split as `github/*` is:
 - The attestation pass re-GETs the OCI manifest by digest (cache or
   registry), since `fetch::package` returns only the archive.
   `Downloads::oci_attestation(entry)` sits beside `attestation(repo, sha)`.
-  An OCI refusal's `repo` field is the certificate's repo.
+  A refusal names its origin (`Origin::GitHub{repo}` or `Origin::Oci{source}`);
+  the certificate's repo is in `UntrustedPublisher.subject`.
 - `--repo` comes from the bundle's certificate. lvpm scans the DER for the
   Fulcio SourceRepositoryURI extension (OID 1.3.6.1.4.1.57264.1.12). No new
   dependency. Trust does not depend on this scan: gh verifies the repo, and a
@@ -158,7 +159,8 @@ rest is split as `github/*` is:
 - Documented limit: with `require-signature = true` and no
   `trusted-publishers`, any GitHub-built bundle is accepted. The signer is an
   identity, not an endorsement; only `trusted-publishers` gives assurance.
-  S6 behaves the same way.
+  This is weaker than S6, which passes the repo the source declares; OCI
+  takes it from the bundle's own certificate. ADR 7 and `docs/usage.md` say so.
 - A referrers lookup that fails with anything but 404 (API or fallback tag)
   is an error under every policy. It is never read as "no signature", so it
   cannot fail open.
@@ -799,7 +801,7 @@ Feature: OCI referrers
     And a project pinned to alpha from team
     And the project's [policy] has require-signature = true
     When I run "lvpm lock"
-    Then it fails saying gh is needed to check alpha's attestation
+    Then it fails saying "cannot check the attestation of alpha 1.0.0: gh is not installed"
 
   Scenario Outline: A referrers lookup that fails is an error, not "unsigned"
     Given "team/alpha:1.0.0" is in the registry
@@ -1030,7 +1032,7 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 - AC2: the re-pointed-tag scenario also asserts no tags-list request and no GET by tag path for `team/alpha`.
 - AC3: publish prints the "; bump the version" form of the tag-exists message.
 - AC4: the lock-side referrers on/off outline (Sigstore bundle) is the lock check; the SBOM is checked on the registry.
-- AC5: Step 4.3 adds literal message rows for "has no attestation", "does not verify", "gh is needed to check" and the foreign-subject refusal.
+- AC5: Step 4.3 adds literal message rows for "has no attestation", "does not verify", "cannot check the attestation of <pkg> <ver>: gh is not installed" (S6 wording, reused) and the foreign-subject refusal.
 - AC7: test secrets are long unique strings (for example `s1-7f3a9c-secret`), so "does not contain" checks cannot match by chance.
 - AC8: the ghcr republish assertion uses the full repository path.
 - AC9: manual. The PR carries GitLab/ACR evidence, or states it was not run and names the follow-up issue.
@@ -1041,6 +1043,7 @@ The build-time criteria check asked for these refinements. They tighten tests; s
 - Slice 2 deviations (build): Slice 2 Gherkin is its own file `s7b-oci-install.feature` (one Feature per file) with steps in `tests/steps/oci_install.rs`. Scenarios run `sync --prefix dest`. The no-pins warning comes from `load_index_each`, so `sync --locked` skips it. Tag listing reads one page and manifests serially (marked shortcut). Listing keeps only manifests whose title matches the pin. Deferred to the final review: an OCI repo with no lvpm package gets the hosted "does not list it" text (spec defines only 404); manifest `Accept` is OCI-only, to check against ghcr in AC8.
 - Slice 3 deviations (build): a plugin guard blocks edits to paths holding "credential", so `oci/credentials.rs` is `oci/logins.rs` (`lvpm_core::oci::logins`), the feature is `s7b-oci-logins.feature` and the steps `tests/steps/oci_logins.rs`. There is no `Oci.helper_timeout` or `creds_by_host` field: the timeout is a `docker_store` parameter and `login_for` keeps a per-host `OnceLock`, so a helper (or its failure) runs once per host. The fake helper is the acceptance exe linked as `docker-credential-<n>`. `base64` was added (already locked via reqwest). Only a realm 401 after a login is "refused the login"; a 403 reads as "your login cannot read it". The timeout scenario asserts `<DUR>`; the seconds are unit-tested. An invalid `LVPM_OCI_HELPER_TIMEOUT_SECS` fails every command (fail-fast, kept). Deferred to the final review: `sync` repeats a host fault on each package line, where `lock` prints it once.
 - Step 4.0 spike (2026-11-06, gh 2.100.0, public image `ghcr.io/astral-sh/uv:latest`, index digest `sha256:96f40d39…b490`): `gh attestation verify oci://ghcr.io/astral-sh/uv:latest --repo astral-sh/uv --format json` passes; the subject is `ghcr.io/astral-sh/uv` with that digest, predicate `https://slsa.dev/provenance/v1`, bundle mediaType `application/vnd.dev.sigstore.bundle.v0.3+json`, signer SAN `https://github.com/astral-sh/uv/.github/workflows/publish-docker-image.yml@refs/heads/main`. The Step 4.3 path works: with the manifest bytes saved to a file (sha256 equals the subject digest) and the bundle from `gh attestation download`, `gh attestation verify manifest.json --bundle <bundle> --repo astral-sh/uv --format json` exits 0 offline of the registry, and `--repo astral-sh/ruff` exits 1 with `verifying with issuer "sigstore.dev"`. The bundle must be written byte for byte: re-decoding it as cp1252 corrupts the Rekor checkpoint's em dash and verification fails with the same message. uv does not use `push-to-registry`, so ghcr returned 404 for both `/referrers/<digest>` and the `sha256-<hex>` tag; whether ghcr serves the referrers API stays open until the user's test repo (AC8). gh also has `--bundle-from-oci`, which reads the bundle from the registry.
+- Slice 4 deviations (build): Slice 4 Gherkin is `s7b-oci-referrers.feature` with steps in `tests/steps/oci_referrers.rs`. The client detects the referrers API from the `OCI-Subject` header on the manifest PUT; without it, it writes the `sha256-<hex>` fallback index, then reads it back and errors if the entry was lost (a read-modify-write with no lock, marked shortcut). A referrers answer with no `manifests` array, or a paged one (`Link` header), is an error, never "unsigned"; whether ghcr pages is checked in AC8. The SBOM is read with a 32 MiB cap. If the SBOM push fails after the package is live, the success lines and then a warning go to stderr and lvpm exits 1. New module `oci/sigstore.rs` holds the DER scan; it refuses a repo starting with `-` or made only of dots. gh needs `--bundle` to end in `.json`/`.jsonl`, so the cached bundle is linked as `<cache>/tmp/<sha>.json`. Only the first bundle referrer is used (fails closed, marked shortcut). A bundle with no readable source repository is Invalid under every policy. Scenarios fake gh with the acceptance exe linked as `gh` (`Sandbox::use_fake_gh`). Refusals reuse S6 wording.
 
 ## Build Progress
 
@@ -1064,11 +1067,11 @@ The build-time criteria check asked for these refinements. They tighten tests; s
   - [x] Step 3.2: Use them in the token dance, for pull and push
 
 #### Wave 4
-- [ ] Slice 4: SBOM and signature referrers
+- [x] Slice 4: SBOM and signature referrers
   - [x] Step 4.0: Spike real gh on a ghcr push-to-registry attestation
-  - [ ] Step 4.1: Referrers in the client and the fake
-  - [ ] Step 4.2: publish attaches the SBOM
-  - [ ] Step 4.3: Verify the Sigstore bundle against the OCI manifest digest
+  - [x] Step 4.1: Referrers in the client and the fake
+  - [x] Step 4.2: publish attaches the SBOM
+  - [x] Step 4.3: Verify the Sigstore bundle against the OCI manifest digest
 
 #### Wave 5
 - [ ] Slice 5: ghcr.io, template and docs

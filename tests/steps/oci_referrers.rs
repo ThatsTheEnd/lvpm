@@ -367,12 +367,6 @@ async fn fails_does_not_verify(world: &mut CliWorld, name: String) {
     assert_failed_saying(world, &said);
 }
 
-#[then(regex = r#"^it fails saying gh is needed to check (\w+)'s attestation$"#)]
-async fn fails_gh_needed(world: &mut CliWorld, name: String) {
-    let said = format!("cannot check the attestation of {name} 1.0.0: gh is not installed");
-    assert_failed_saying(world, &said);
-}
-
 #[then(regex = r#"^it fails naming the subject "([^"]+)"$"#)]
 async fn fails_naming_subject(world: &mut CliWorld, subject: String) {
     assert_failed_saying(world, &format!("attested by repository {subject}"));
