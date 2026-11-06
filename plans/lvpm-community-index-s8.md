@@ -73,6 +73,7 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 | R5b | `refused <name> <version>: the package says <field> <actual>, the entry says <entry>. fix: don't replace release files after tagging; push a new tag` |
 | R6 | `refused <name> <version>: not attested (<reason>). fix: build with the lvpm release template, which attests the package` |
 | R6b | `refused <name> <version>: attested by <subject>, not https://github.com/<github>. fix: publish from <github>` |
+| R5 (not a package) | `refused <name> <version>: the file is not a package lvpm reads: <error>. fix: build the package with the lvpm release template, then push a new tag` |
 | parse | `refused <path>: does not parse: <error>. fix: register with the lvpm release template instead of editing by hand` |
 | none | `nothing to check` (exit 0) |
 
@@ -780,8 +781,8 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 
 #### Wave 5
 - [ ] Slice 5: `lvpm index check`, the bot
-  - [ ] Step 5.1: the pure rules (R1–R3b)
-  - [ ] Step 5.2: the network rules (R5–R6b), the render and the CLI
+  - [x] Step 5.1: the pure rules (R1–R3b)
+  - [x] Step 5.2: the network rules (R5–R6b), the render and the CLI
 
 #### Wave 6
 - [ ] Slice 6: the release template and the docs
