@@ -782,7 +782,11 @@ fn read_each(
             Remote::Hosted(_) => None,
         })
         .collect();
-    sources.extend(index_feeds.iter().map(|(_, feed)| feed.source()));
+    // An index asked no names is not a source this read used, so it never counts
+    // toward "every source failed".
+    if !wanted.is_empty() {
+        sources.extend(index_feeds.iter().map(|(_, feed)| feed.source()));
+    }
     let mut failures = Vec::new();
     for feed in *oci_feeds {
         sources.push(feed.url.to_string());

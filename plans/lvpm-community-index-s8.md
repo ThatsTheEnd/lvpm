@@ -760,7 +760,7 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 1.1: parse `github:` into `Feed::Index`
 
 #### Wave 2
-- [ ] Slice 2: reading entry files
+- [x] Slice 2: reading entry files
   - [x] Step 2.1: the entry file in `community.rs`
   - [x] Step 2.2: fetch per name, with the name closure and the cache
   - [x] Step 2.3: `[sources]` order across hosted folders and indexes

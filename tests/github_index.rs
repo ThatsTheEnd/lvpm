@@ -511,6 +511,17 @@ fn search_in_a_project_with_a_community_index_makes_no_index_request() {
 }
 
 #[test]
+fn the_catalog_still_fails_when_its_only_read_source_fails_beside_an_index() {
+    let fake = index_with(&[]);
+    let dir = project("");
+    let sink = RecordingSink::default();
+    let mut env = env(dir.path(), &sink, &fake);
+    env.config.local_sources = vec![dir.path().join("missing")];
+    let why = query::catalog(&env, None).unwrap_err().to_string();
+    assert!(why.starts_with("no package source could be read"), "{why}");
+}
+
+#[test]
 fn lock_asks_for_the_manifests_dependencies() {
     let fake = index_with(&[]);
     let dir = project(
