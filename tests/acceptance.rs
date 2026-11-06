@@ -60,6 +60,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s2-lvpm-publish.feature",
     "tests/features/build-slices/s7b-oci-feeds.feature",
     "tests/features/build-slices/s7b-oci-install.feature",
+    "tests/features/build-slices/s7b-oci-logins.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/build-slices/s10d-unattended.feature",
@@ -132,6 +133,8 @@ pub struct CliWorld {
     pub publish: steps::publish::PublishState,
     /// What an OCI install scenario has set up and seen.
     pub oci: steps::oci_install::OciState,
+    /// What an OCI login scenario has put in the Docker config.
+    pub logins: steps::oci_logins::LoginState,
     /// What a `.lvpkg` scenario has set up and seen.
     pub lvpkg: steps::sources::LvpkgState,
     /// What the feeds of a `min-age-days` scenario list, and when each was released.
@@ -168,6 +171,7 @@ impl CliWorld {
             build: Default::default(),
             publish: Default::default(),
             oci: Default::default(),
+            logins: Default::default(),
             lvpkg: Default::default(),
             listings: Default::default(),
             init: Default::default(),

@@ -1,13 +1,18 @@
 //! The registry's bearer-token login: read the challenge a `401` carries, ask
-//! its realm for a token. This slice asks anonymously.
+//! its realm for a token. The realm is asked anonymously, or with the login the
+//! Docker config gave: Basic auth for a user name and password, and for an
+//! identity token the OAuth2 refresh-token grant.
 
 use super::Error;
+use super::logins::Credential;
 use reqwest::Url;
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, WWW_AUTHENTICATE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, WWW_AUTHENTICATE};
 
 /// A token reply is a few hundred bytes; more is not one.
 const MAX_TOKEN_REPLY_BYTES: u64 = 64 * 1024;
+/// What lvpm calls itself to a token service in a refresh-token grant.
+const CLIENT_ID: &str = "lvpm";
 
 /// What `WWW-Authenticate: Bearer ...` says: where to get a token. Its scope
 /// is not kept: a caller asks for the access it needs, as its repository says.
@@ -53,19 +58,39 @@ fn parse(header: &str) -> Option<Challenge> {
     })
 }
 
-/// A token for `wanted` scope from the challenge's realm.
+/// A token for `wanted` scope from the challenge's realm, logged in with
+/// `login` when there is one. A realm that refuses a login says so as
+/// [`Error::LoginRefused`]; one that refuses an anonymous ask is a plain status.
 pub(super) fn fetch_token(
     client: &Client,
     registry: &str,
     challenge: &Challenge,
     wanted: &str,
+    login: Option<&Credential>,
 ) -> Result<String, Error> {
-    let url = realm_url(registry, challenge, wanted)?;
-    let reply = client
-        .get(url)
+    let request = match login.and_then(Credential::identity_token) {
+        Some(token) => client
+            .post(checked_realm(registry, challenge)?)
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(refresh_form(challenge, wanted, token)),
+        None => {
+            let request = client.get(realm_url(registry, challenge, wanted)?);
+            match login.and_then(Credential::basic_login) {
+                Some((user, secret)) => request.basic_auth(user, Some(secret)),
+                None => request,
+            }
+        }
+    };
+    let reply = request
         .send()
         .map_err(|e| Error::unreachable(registry, &e))?;
     let status = reply.status().as_u16();
+    if let (401 | 403, Some(login)) = (status, login) {
+        return Err(Error::LoginRefused {
+            registry: registry.to_string(),
+            origin: login.origin().to_string(),
+        });
+    }
     if status != 200 {
         return Err(Error::status(registry, status, "the token request"));
     }
@@ -79,10 +104,41 @@ pub(super) fn fetch_token(
         .ok_or_else(|| Error::protocol(registry, "answered the token request with no token"))
 }
 
-/// The realm with `service` and `scope` as query parameters. The realm is the
-/// registry's word, so it must be `https` too, but for a loopback test fake.
+/// The body of the refresh-token grant that trades an identity token for an
+/// access token.
+fn refresh_form(challenge: &Challenge, wanted: &str, token: &str) -> String {
+    // Only to write the pairs the way a form is: `Url` has the encoder.
+    let mut form = Url::parse("http://form.invalid/").expect("a URL");
+    {
+        let mut pairs = form.query_pairs_mut();
+        pairs.append_pair("grant_type", "refresh_token");
+        if let Some(service) = &challenge.service {
+            pairs.append_pair("service", service);
+        }
+        pairs.append_pair("scope", wanted);
+        pairs.append_pair("client_id", CLIENT_ID);
+        pairs.append_pair("refresh_token", token);
+    }
+    form.query().unwrap_or_default().to_string()
+}
+
+/// The realm with `service` and `scope` as query parameters.
 fn realm_url(registry: &str, challenge: &Challenge, wanted: &str) -> Result<Url, Error> {
-    let mut url = Url::parse(&challenge.realm)
+    let mut url = checked_realm(registry, challenge)?;
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(service) = &challenge.service {
+            query.append_pair("service", service);
+        }
+        query.append_pair("scope", wanted);
+    }
+    Ok(url)
+}
+
+/// The realm the challenge names. It is the registry's word, so it must be
+/// `https` too, but for a loopback test fake: a login is never sent in the clear.
+fn checked_realm(registry: &str, challenge: &Challenge) -> Result<Url, Error> {
+    let url = Url::parse(&challenge.realm)
         .map_err(|_| Error::protocol(registry, "named a token realm that is not a URL"))?;
     // A plain-http realm is for a loopback registry only: a remote registry
     // must not point lvpm at a service on this machine.
@@ -94,13 +150,6 @@ fn realm_url(registry: &str, challenge: &Challenge, wanted: &str) -> Result<Url,
             registry,
             "named a token realm that is not https",
         ));
-    }
-    {
-        let mut query = url.query_pairs_mut();
-        if let Some(service) = &challenge.service {
-            query.append_pair("service", service);
-        }
-        query.append_pair("scope", wanted);
     }
     Ok(url)
 }
@@ -160,5 +209,18 @@ mod tests {
         }
         // A remote registry cannot send lvpm to a service on this machine.
         assert!(realm_url("ghcr.io", &named("http://127.0.0.1:9/t"), "own").is_err());
+    }
+
+    #[test]
+    fn an_identity_token_is_traded_in_a_refresh_token_grant_form() {
+        let challenge = Challenge {
+            realm: "https://a.example/token".into(),
+            service: Some("svc one".into()),
+        };
+        assert_eq!(
+            refresh_form(&challenge, "repository:o/a:pull,push", "r1-3c8f2b-token"),
+            "grant_type=refresh_token&service=svc+one&scope=repository%3Ao%2Fa%3Apull%2Cpush\
+             &client_id=lvpm&refresh_token=r1-3c8f2b-token"
+        );
     }
 }

@@ -113,6 +113,22 @@ impl Credential {
     pub fn origin(&self) -> &Origin {
         &self.origin
     }
+
+    /// The user name and password, unless this is an identity token.
+    pub(super) fn basic_login(&self) -> Option<(&str, &str)> {
+        match &self.login {
+            Login::Basic { user, secret } => Some((user, secret)),
+            Login::Identity(_) => None,
+        }
+    }
+
+    /// The identity token, unless this is a user name and password.
+    pub(super) fn identity_token(&self) -> Option<&str> {
+        match &self.login {
+            Login::Identity(token) => Some(token),
+            Login::Basic { .. } => None,
+        }
+    }
 }
 
 /// Why no login could be had. No variant holds a secret, or anything a helper

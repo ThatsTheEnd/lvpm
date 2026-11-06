@@ -20,6 +20,7 @@ pub mod json;
 pub mod lock;
 pub mod manifest;
 pub mod oci_install;
+pub mod oci_logins;
 pub mod pilots;
 pub mod publish;
 pub mod query;

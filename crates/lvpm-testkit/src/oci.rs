@@ -9,8 +9,14 @@
 //! what was asked and what was written. Each failure a registry can show is
 //! something a test switches on: `go_down`, a status for one method and path,
 //! a tag that appears while a package is uploading.
+//!
+//! The `/token` realm gives its one token to anyone, unless a login is
+//! required for a repository prefix ([`Registry::require_login`]): then Basic
+//! auth, or a refresh-token grant, is asked for, per repository and access, and
+//! a user can be refused. What it was asked is [`Registry::token_requests`].
 
 use crate::http::{Request, accept, accept_loop, read_body, response, shut_down};
+use base64::Engine as _;
 use lvpm_core::oci;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -57,9 +63,53 @@ pub struct LoggedRequest {
 impl LoggedRequest {
     /// Whether it changes what the registry holds.
     pub fn is_write(&self) -> bool {
-        !matches!(self.method.as_str(), "GET" | "HEAD")
+        !matches!(self.method.as_str(), "GET" | "HEAD") && !self.path.starts_with("/token")
     }
 }
+
+/// One ask of the token realm: a GET with its query, or a POST with a form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRequest {
+    pub method: String,
+    /// The `Authorization` header as sent.
+    pub authorization: Option<String>,
+    /// The query of a GET, or the form of a POST: `service`, `scope`, and for
+    /// a refresh-token grant `grant_type` and `refresh_token`.
+    pub form: BTreeMap<String, String>,
+}
+
+impl TokenRequest {
+    /// The user name and password of its Basic login.
+    pub fn basic_login(&self) -> Option<(String, String)> {
+        let sent = self.authorization.as_deref()?.strip_prefix("Basic ")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(sent)
+            .ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        let (user, secret) = text.split_once(':')?;
+        Some((user.to_string(), secret.to_string()))
+    }
+
+    /// The refresh token of a `refresh_token` grant.
+    pub fn refresh_token(&self) -> Option<&str> {
+        (self.form.get("grant_type")? == "refresh_token")
+            .then(|| self.form.get("refresh_token").map(String::as_str))?
+    }
+
+    /// The scope asked for, as `repository:<name>:<actions>`.
+    pub fn scope(&self) -> &str {
+        self.form.get("scope").map_or("", String::as_str)
+    }
+
+    /// Who logged in: the Basic user name, or `<refresh-token>`.
+    fn login_user(&self) -> Option<String> {
+        let basic = self.basic_login().map(|(user, _)| user);
+        basic.or_else(|| self.refresh_token().map(|_| REFRESH_USER.to_string()))
+    }
+}
+
+/// What a login by refresh token counts as the user of.
+const REFRESH_USER: &str = "<refresh-token>";
 
 #[derive(Debug, Default)]
 struct Repo {
@@ -94,8 +144,15 @@ struct State {
     /// A repository the registry does not hold answers `403 DENIED`, as a
     /// registry does that hides what a login cannot read.
     deny_missing: bool,
-    /// After the login, a request under a repository prefix answers a status.
-    refused_under: Vec<(String, u16)>,
+    /// After the login, a request under a repository prefix answers a status:
+    /// (prefix, status, only for a write).
+    refused_under: Vec<(String, u16, bool)>,
+    /// A token for a repository under the prefix needs a login: (prefix, only
+    /// for a token that may push).
+    login_required: Vec<(String, bool)>,
+    /// A login by this user name is refused at the token realm.
+    refused_users: Vec<String>,
+    token_requests: Vec<TokenRequest>,
 }
 
 #[derive(Debug)]
@@ -177,7 +234,41 @@ impl Registry {
     pub fn refuse_under(&self, prefix: &str, status: u16) {
         lock(&self.state)
             .refused_under
-            .push((prefix.to_string(), status));
+            .push((prefix.to_string(), status, false));
+    }
+
+    /// Like [`Registry::refuse_under`], for a write only: a registry that lets
+    /// anyone read and lets no one push.
+    pub fn refuse_writes_under(&self, prefix: &str, status: u16) {
+        lock(&self.state)
+            .refused_under
+            .push((prefix.to_string(), status, true));
+    }
+
+    /// From now on the token realm gives no token for a repository under
+    /// `prefix` (`prefix/...`) without a login.
+    pub fn require_login(&self, prefix: &str) {
+        lock(&self.state)
+            .login_required
+            .push((prefix.to_string(), false));
+    }
+
+    /// Like [`Registry::require_login`], for a token that may push.
+    pub fn require_login_to_write(&self, prefix: &str) {
+        lock(&self.state)
+            .login_required
+            .push((prefix.to_string(), true));
+    }
+
+    /// From now on a login by `user` is refused at the token realm, `401`.
+    pub fn refuse_user(&self, user: &str) {
+        lock(&self.state).refused_users.push(user.to_string());
+    }
+
+    /// Every ask of the token realm since the start or the last
+    /// [`clear_requests`](Registry::clear_requests), oldest first.
+    pub fn token_requests(&self) -> Vec<TokenRequest> {
+        lock(&self.state).token_requests.clone()
     }
 
     /// `tag` appears in `repo` when the first blob is uploaded, as another
@@ -325,6 +416,7 @@ impl Registry {
     pub fn clear_requests(&self) {
         let mut state = lock(&self.state);
         state.log.clear();
+        state.token_requests.clear();
         state.turned_away = 0;
     }
 
@@ -427,7 +519,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     if matches!(route, Route::Token) {
         return match wanted {
             Some(status) => error_reply(status, "UNAVAILABLE", "answered on purpose"),
-            None => json_reply("200 OK", &[], &json!({ "token": TOKEN })),
+            None => token(state, request, query, body),
         };
     }
     let name = match &route {
@@ -443,11 +535,13 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     if let Some(status) = wanted {
         return error_reply(status, "UNAVAILABLE", "answered on purpose");
     }
-    let refused = state.refused_under.iter().find_map(|(prefix, status)| {
-        name.strip_prefix(prefix.as_str())
-            .is_some_and(|rest| rest.starts_with('/'))
-            .then_some(*status)
-    });
+    let write = !matches!(request.method.as_str(), "GET" | "HEAD");
+    let refused = state
+        .refused_under
+        .iter()
+        .find_map(|(prefix, status, writes_only)| {
+            (is_below(name, prefix) && (write || !writes_only)).then_some(*status)
+        });
     if let Some(status) = refused {
         return error_reply(
             status,
@@ -477,6 +571,51 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
         },
         Route::Token | Route::Other => unreachable!("answered above"),
     }
+}
+
+/// Whether repository `name` is under `prefix`: `prefix/...`.
+fn is_below(name: &str, prefix: &str) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The token realm's answer: the one token, unless the scope is for a
+/// repository that needs a login the ask does not carry, or the login is by a
+/// refused user.
+fn token(state: &mut State, request: &Request, query: &str, body: &[u8]) -> Vec<u8> {
+    let form = match request.method.as_str() {
+        "POST" => form_pairs(&String::from_utf8_lossy(body)),
+        _ => form_pairs(query),
+    };
+    let asked = TokenRequest {
+        method: request.method.clone(),
+        authorization: request.header("authorization").map(str::to_string),
+        form,
+    };
+    let user = asked.login_user();
+    let scope = asked.scope().to_string();
+    state.token_requests.push(asked);
+    let wanted = scope.strip_prefix("repository:").unwrap_or_default();
+    let (name, actions) = wanted.rsplit_once(':').unwrap_or_default();
+    let may_push = actions.split(',').any(|action| action == "push");
+    let refused = user
+        .as_ref()
+        .is_some_and(|u| state.refused_users.contains(u));
+    let needs_login = (state.login_required.iter())
+        .any(|(prefix, push_only)| is_below(name, prefix) && (may_push || !push_only));
+    if refused || (needs_login && user.is_none()) {
+        return error_reply(401, "UNAUTHORIZED", "authentication required");
+    }
+    json_reply("200 OK", &[], &json!({ "token": TOKEN }))
+}
+
+/// `a=b&c=d`, each value with its `+` and `%XX` decoded.
+fn form_pairs(text: &str) -> BTreeMap<String, String> {
+    let decoded = |part: &str| percent_decoded(&part.replace('+', " "));
+    let pairs = text.split('&').filter_map(|pair| pair.split_once('='));
+    pairs
+        .map(|(key, value)| (decoded(key), decoded(value)))
+        .collect()
 }
 
 /// The 401 a registry gives a request with no valid token: where to get one.
@@ -1089,6 +1228,84 @@ mod tests {
         assert_eq!(refused.status_line, "HTTP/1.1 401 Unauthorized");
         let outside = get_from(registry.addr(), "/v2/other/a/manifests/1.0.0", AUTH);
         assert_eq!(outside.status_line, "HTTP/1.1 200 OK");
+    }
+
+    fn basic(user: &str, secret: &str) -> String {
+        let sent = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{secret}"));
+        format!("Authorization: Basic {sent}\r\n")
+    }
+
+    const PUSH: &str = "/token?service=fake-registry&scope=repository%3Ateam%2Fa%3Apull%2Cpush";
+    const PULL: &str = "/token?service=fake-registry&scope=repository%3Ateam%2Fa%3Apull";
+
+    #[test]
+    fn a_prefix_that_requires_a_login_gives_a_token_only_to_a_login_and_not_to_a_refused_user() {
+        let registry = Registry::start();
+        registry.require_login("team");
+        registry.refuse_user("u9");
+        let status =
+            |target: &str, headers: &str| get_from(registry.addr(), target, headers).status_line;
+        assert_eq!(status(PULL, ""), "HTTP/1.1 401 Unauthorized");
+        assert_eq!(status(PULL, &basic("u1", "s1")), "HTTP/1.1 200 OK");
+        assert_eq!(
+            status(PULL, &basic("u9", "s1")),
+            "HTTP/1.1 401 Unauthorized"
+        );
+        let elsewhere = "/token?scope=repository%3Aother%2Fa%3Apull";
+        assert_eq!(status(elsewhere, ""), "HTTP/1.1 200 OK");
+        assert_eq!(
+            status("/token", ""),
+            "HTTP/1.1 200 OK",
+            "no scope, no repository"
+        );
+    }
+
+    #[test]
+    fn a_login_required_to_write_leaves_a_pull_anonymous() {
+        let registry = Registry::start();
+        registry.require_login_to_write("team");
+        let status = |target: &str| get_from(registry.addr(), target, "").status_line;
+        assert_eq!(status(PULL), "HTTP/1.1 200 OK");
+        assert_eq!(status(PUSH), "HTTP/1.1 401 Unauthorized");
+    }
+
+    #[test]
+    fn a_refresh_token_grant_is_a_login_and_what_the_realm_was_asked_is_kept_until_cleared() {
+        let registry = Registry::start();
+        registry.require_login("team");
+        let form = "grant_type=refresh_token&service=fake-registry&scope=repository%3Ateam%2Fa%3Apull\
+                    &client_id=lvpm&refresh_token=r1+x%2By";
+        let grant = send_to(registry.addr(), "POST", "/token", "", form.as_bytes());
+        assert_eq!(grant.status_line, "HTTP/1.1 200 OK");
+        get_from(registry.addr(), PULL, &basic("u1", "s1-secret"));
+        let asked = registry.token_requests();
+        assert_eq!(asked[0].method, "POST");
+        assert_eq!(asked[0].refresh_token(), Some("r1 x+y"));
+        assert_eq!(asked[0].scope(), "repository:team/a:pull");
+        assert_eq!(asked[0].basic_login(), None);
+        assert_eq!(
+            asked[1].basic_login(),
+            Some(("u1".to_string(), "s1-secret".to_string()))
+        );
+        assert_eq!(asked[1].refresh_token(), None);
+        assert_eq!(
+            registry.writes().len(),
+            0,
+            "a POST to the token realm changes nothing"
+        );
+        registry.clear_requests();
+        assert!(registry.token_requests().is_empty());
+    }
+
+    #[test]
+    fn writes_refused_under_a_prefix_leave_reads_alone() {
+        let registry = Registry::start();
+        registry.seed_manifest("t/a", "1.0.0", b"{}");
+        registry.refuse_writes_under("t", 403);
+        let read = get_from(registry.addr(), "/v2/t/a/manifests/1.0.0", AUTH);
+        assert_eq!(read.status_line, "HTTP/1.1 200 OK");
+        let write = send_to(registry.addr(), "POST", "/v2/t/a/blobs/uploads/", AUTH, b"");
+        assert_eq!(write.status_line, "HTTP/1.1 403 Forbidden");
     }
 
     #[test]

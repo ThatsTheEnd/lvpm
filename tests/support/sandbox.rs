@@ -453,6 +453,30 @@ impl Sandbox {
         }
     }
 
+    /// Where a scenario's Docker config (`config.json`) is kept.
+    pub fn docker_config_dir(&self) -> PathBuf {
+        self.root().join("docker-config")
+    }
+
+    /// Where a scenario's credential helpers are installed.
+    pub fn helper_dir(&self) -> PathBuf {
+        self.root().join("helpers")
+    }
+
+    /// From now on, run the children with `DOCKER_CONFIG` at the scenario's
+    /// Docker config, and its helper directory in front of the system `PATH`
+    /// and nothing else added, so only the helpers a scenario installed are found.
+    pub fn use_docker_config(&self) {
+        let (config, helpers) = (self.docker_config_dir(), self.helper_dir());
+        std::fs::create_dir_all(&config).expect("create the Docker config directory");
+        std::fs::create_dir_all(&helpers).expect("create the helper directory");
+        self.set_child_env("DOCKER_CONFIG", &config.to_string_lossy());
+        let system = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::iter::once(helpers).chain(std::env::split_paths(&system));
+        let path = std::env::join_paths(path).expect("the helper directory joins PATH");
+        self.set_child_env("PATH", &path.to_string_lossy());
+    }
+
     /// Empty the cache: no feed body, no archive, no import.
     pub fn empty_cache(&self) {
         let cache = self.cache_dir();

@@ -2,8 +2,11 @@
 //! `Registry`. Rust tests, not harness scenarios. They live here because
 //! `lvpm-testkit` depends on `lvpm-core`: a dev-dependency back would be a cycle.
 
-use lvpm_core::oci::{Access, Error, Oci, Repo, digest_of};
+use lvpm_core::oci::logins::{self, Origin};
+use lvpm_core::oci::{Access, Credential, Credentials, Error, Oci, Repo, digest_of};
 use lvpm_testkit::oci::{LoggedRequest, Registry};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const NAME: &str = "team/alpha";
 
@@ -253,4 +256,143 @@ fn a_manifest_larger_than_a_registry_allows_is_refused_not_read_to_the_end() {
         why.to_string().contains("sent more than 4194304 bytes"),
         "{why}"
     );
+}
+
+// ---- logins from the Docker config ----
+
+const SECRET: &str = "s1-7f3a9c-secret";
+
+/// An `Oci` whose Docker config gives `credential` for every registry, and how
+/// many times it was asked.
+fn logged_in_with(credential: Credential) -> (Oci, Arc<AtomicUsize>) {
+    let asked = Arc::new(AtomicUsize::new(0));
+    let credentials: Credentials = {
+        let asked = asked.clone();
+        Arc::new(move |_| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(credential.clone()))
+        })
+    };
+    (Oci::with_credentials(credentials), asked)
+}
+
+fn user_and_helper() -> Credential {
+    Credential::basic(Origin::CredsStore("lvpmtest".into()), "u1", SECRET)
+}
+
+#[test]
+fn a_registry_that_wants_a_login_is_given_the_basic_login_of_the_docker_config() {
+    let registry = Registry::start();
+    registry.require_login("team");
+    let (oci, _) = logged_in_with(user_and_helper());
+    let found = with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0")
+    });
+    assert_eq!(found, Ok(false));
+    let asked = registry.token_requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(
+        asked[0].basic_login(),
+        Some(("u1".to_string(), SECRET.to_string()))
+    );
+    assert_eq!(asked[0].scope(), "repository:team/alpha:pull");
+}
+
+#[test]
+fn an_identity_token_is_traded_for_a_token_by_a_refresh_token_grant() {
+    let registry = Registry::start();
+    registry.require_login("team");
+    let token = Credential::identity(Origin::CredHelpers("lvpmtest".into()), "r1-3c8f2b-token");
+    let (oci, _) = logged_in_with(token);
+    let found = with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0")
+    });
+    assert_eq!(found, Ok(false));
+    let asked = registry.token_requests();
+    assert_eq!(asked[0].method, "POST");
+    assert_eq!(asked[0].refresh_token(), Some("r1-3c8f2b-token"));
+    assert_eq!(asked[0].authorization, None);
+    assert_eq!(asked[0].scope(), "repository:team/alpha:pull");
+}
+
+#[test]
+fn a_login_the_token_realm_refuses_is_named_with_where_it_came_from_and_never_shows_the_secret() {
+    let registry = Registry::start();
+    registry.refuse_user("u1");
+    let (oci, _) = logged_in_with(user_and_helper());
+    let found = with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0")
+    });
+    let host = registry.host();
+    let error = found.unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "registry {host} refused the login from credsStore docker-credential-lvpmtest; run \
+             docker login {host}"
+        )
+    );
+    assert!(error.is_host_level());
+    assert!(!format!("{error:?}{error}").contains(SECRET));
+}
+
+#[test]
+fn an_anonymous_ask_that_the_realm_refuses_is_a_refused_status_not_a_refused_login() {
+    let registry = Registry::start();
+    registry.require_login("team");
+    let oci = Oci::default();
+    let error = with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0")
+    })
+    .unwrap_err();
+    assert!(error.is_refused());
+    assert!(!error.is_host_level());
+}
+
+#[test]
+fn a_helper_that_failed_is_a_host_level_error_asked_once_however_many_calls_follow() {
+    let registry = Registry::start();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let credentials: Credentials = {
+        let asked = asked.clone();
+        Arc::new(move |host| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Err(logins::Error::HelperFailed {
+                helper: "docker-credential-lvpmtest".into(),
+                registry: host.to_string(),
+                code: Some(3),
+            })
+        })
+    };
+    let oci = Oci::with_credentials(credentials);
+    for access in [Access::Pull, Access::Push, Access::Pull] {
+        let error = with(&registry, access, |repo| oci.manifest_exists(repo, "1.0.0"));
+        let host = registry.host();
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            format!(
+                "credential helper docker-credential-lvpmtest for {host} failed with exit code 3; \
+                 run it by hand to see why"
+            )
+        );
+    }
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_push_logs_in_for_the_push_scope_and_the_login_is_asked_once_for_both_scopes() {
+    let registry = Registry::start();
+    registry.require_login_to_write("team");
+    let (oci, asked) = logged_in_with(user_and_helper());
+    with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0").unwrap();
+    });
+    with(&registry, Access::Push, |repo| {
+        oci.manifest_exists(repo, "1.0.0").unwrap();
+    });
+    let tokens = registry.token_requests();
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(tokens[0].basic_login(), Some(("u1".into(), SECRET.into())));
+    assert_eq!(tokens[1].scope(), "repository:team/alpha:pull,push");
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "one ask for one registry");
 }

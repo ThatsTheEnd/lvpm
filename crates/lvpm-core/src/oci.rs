@@ -419,7 +419,8 @@ impl Oci {
         let Some(challenge) = auth::challenge(first.headers()) else {
             return Ok(first);
         };
-        let token = auth::fetch_token(client, repo.registry, &challenge, &key.1)?;
+        let login = self.login_for(repo.registry)?;
+        let token = auth::fetch_token(client, repo.registry, &challenge, &key.1, login.as_ref())?;
         self.tokens().insert(key, token.clone());
         attempt(Some(token))
     }

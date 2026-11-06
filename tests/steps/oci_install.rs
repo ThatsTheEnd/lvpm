@@ -373,10 +373,6 @@ async fn registry_wants_a_login(world: &mut CliWorld, prefix: String) {
     world.registry().refuse_under(&prefix, 401);
 }
 
-/// The sandbox's children are given no Docker config, in any scenario.
-#[given("no Docker config")]
-async fn no_docker_config(_world: &mut CliWorld) {}
-
 // ---- lock and sync as setup ----
 
 #[given(regex = r#"^the project is locked with (\w+) (\S+)( and sync has installed it once)?$"#)]

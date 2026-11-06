@@ -12,6 +12,7 @@
 //! Every run of the helper adds the host it was asked for to a `.runs` file
 //! beside it, so a test can count them.
 
+use base64::Engine as _;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,11 @@ pub const PREFIX: &str = "docker-credential-";
 pub const NOT_FOUND: &str = "credentials not found in native keychain";
 /// How long a helper that never answers sleeps: far more than any test waits.
 const HANG: Duration = Duration::from_secs(600);
+
+/// The `auth` of a Docker config's `auths` entry: `base64(user:secret)`.
+pub fn auths_entry(user: &str, secret: &str) -> String {
+    base64::engine::general_purpose::STANDARD.encode(format!("{user}:{secret}"))
+}
 
 /// What the fake does when it is asked for a login.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +235,11 @@ mod tests {
             ("", "token s7 locked", 3)
         );
         assert!(get(Behavior::Hangs).hang);
+    }
+
+    #[test]
+    fn an_auths_entry_is_base64_of_user_colon_secret() {
+        assert_eq!(auths_entry("u3", "s3"), "dTM6czM=");
     }
 
     #[test]
