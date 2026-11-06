@@ -1,0 +1,501 @@
+//! `lvpm index add`: list a package's file in a community index's entry file.
+
+use super::build::write_atomically;
+use super::env::OpEnv;
+use crate::cache::sha256_hex;
+use crate::community::{EntryFile, FileVersion, VersionListed};
+use crate::events::Event;
+use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, check_index_url};
+use crate::index::{self, Entry};
+use crate::project::{name_key, split_owner_repo};
+use anyhow::{Context, Result, ensure};
+use std::io::Read;
+use std::path::Path;
+
+/// The most an entry file may be: it is read before it is parsed, and the bot
+/// refuses a larger one in a PR.
+const MAX_ENTRY_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Why `lvpm index add` wrote nothing. The wording is the front end's; the
+/// `Display` here is for a log.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AddRefused {
+    #[error("--github is not owner/repo")]
+    NotOwnerRepo,
+    #[error("{file} is not a package: {error}")]
+    NotAPackage { file: String, error: String },
+    #[error("--url is not a release file of {github} on {web}")]
+    UrlNotInReleases { web: String, github: String },
+    #[error("{name} belongs to {owner}, not {github}")]
+    NotTheOwner {
+        name: String,
+        owner: String,
+        github: String,
+        entry_file: String,
+    },
+    #[error("{name} {version} is already listed")]
+    AlreadyListed {
+        name: String,
+        version: String,
+        entry_file: String,
+    },
+    #[error("{entry_file} does not parse: {error}")]
+    EntryFileUnreadable { entry_file: String, error: String },
+}
+
+/// `lvpm index add`: list `package` (a file at `url`, published from `github`)
+/// in `<entries_dir>/<key>.toml`, creating the file for a new name. A refusal
+/// is an [`AddRefused`] and writes nothing; the file is replaced whole or not
+/// at all.
+///
+/// The url must be one the consumer accepts for this entry
+/// ([`check_index_url`]), so a listed version is always installable.
+pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &str) -> Result<()> {
+    ensure!(split_owner_repo(github).is_some(), AddRefused::NotOwnerRepo);
+    let (listed, sha256) = read_package(package)?;
+    let key = name_key(&listed.name);
+    let path = entries_dir.join(format!("{key}.toml"));
+    let entry_file = shown_path(entries_dir, &key);
+    let mut file = read_entry_file(&path, &key, &entry_file)?.unwrap_or_else(|| EntryFile {
+        name: listed.name.clone(),
+        github: github.to_string(),
+        versions: Vec::new(),
+    });
+    ensure!(
+        file.github.eq_ignore_ascii_case(github),
+        AddRefused::NotTheOwner {
+            name: listed.name.clone(),
+            owner: file.github.clone(),
+            github: github.to_string(),
+            entry_file,
+        }
+    );
+    let version = FileVersion::of_package(&listed, url, &sha256);
+    file.add_version(version)
+        .map_err(|VersionListed| AddRefused::AlreadyListed {
+            name: listed.name.clone(),
+            version: listed.version.to_string(),
+            entry_file: entry_file.clone(),
+        })?;
+    check_url(&file, &env.github.web_base())?;
+    let text = file.write();
+    EntryFile::parse(&key, &text).map_err(|why| not_a_package(package, why.to_string()))?;
+    write_atomically(&path, text.as_bytes())?;
+    env.sink.emit(Event::IndexEntryAdded {
+        name: listed.name,
+        version: listed.version.to_string(),
+        file: entry_file,
+    });
+    Ok(())
+}
+
+/// The package as lvpm reads it, and the SHA-256 of its file. The file is read
+/// up to the most an index entry's file may be.
+fn read_package(path: &Path) -> Result<(Entry, String)> {
+    let bytes = std::fs::File::open(path)
+        .and_then(|file| read_up_to(file, MAX_INDEX_DOWNLOAD_BYTES))
+        .map_err(|why| not_a_package(path, why.to_string()))?
+        .ok_or_else(|| {
+            let error = format!("the file is larger than {MAX_INDEX_DOWNLOAD_BYTES} bytes");
+            not_a_package(path, error)
+        })?;
+    let entry = index::entry_from_bytes(path, &bytes)
+        .map_err(|why| not_a_package(path, format!("{why:#}")))?;
+    ensure!(
+        index::is_file_key(&name_key(&entry.name)),
+        not_a_package(
+            path,
+            format!("its name {:?} cannot be an entry file's name", entry.name)
+        )
+    );
+    Ok((entry, sha256_hex(&bytes)))
+}
+
+fn not_a_package(path: &Path, error: String) -> AddRefused {
+    AddRefused::NotAPackage {
+        file: path.display().to_string(),
+        error,
+    }
+}
+
+/// The entry file at `path` (shown as `shown`): `None` when there is none.
+fn read_entry_file(path: &Path, key: &str, shown: &str) -> Result<Option<EntryFile>> {
+    let unreadable = |error: String| AddRefused::EntryFileUnreadable {
+        entry_file: shown.to_string(),
+        error,
+    };
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(why) => return Err(why).with_context(|| format!("reading {shown}")),
+    };
+    let bytes = read_up_to(file, MAX_ENTRY_FILE_BYTES)
+        .with_context(|| format!("reading {shown}"))?
+        .ok_or_else(|| {
+            unreadable(format!(
+                "the file is larger than {MAX_ENTRY_FILE_BYTES} bytes"
+            ))
+        })?;
+    let text = String::from_utf8(bytes).map_err(|_| unreadable("the file is not UTF-8".into()))?;
+    let file = EntryFile::parse(key, &text).map_err(|why| unreadable(why.to_string()))?;
+    Ok(Some(file))
+}
+
+/// What `file` holds, or `None` when it holds more than `limit` bytes: no more
+/// than `limit` and one byte are read.
+fn read_up_to(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+}
+
+/// The newest version of `file` is a release file of its publisher, on the
+/// site at `web`: the rule the consumer applies to it.
+fn check_url(file: &EntryFile, web: &str) -> Result<(), AddRefused> {
+    let added = file.entries("").pop().expect("a version was just added");
+    check_index_url(&added, web).map_err(|_| AddRefused::UrlNotInReleases {
+        web: web.to_string(),
+        github: file.github.clone(),
+    })
+}
+
+/// `<entries_dir>/<key>.toml` as the folder was given, with `/` on every
+/// platform.
+fn shown_path(entries_dir: &Path, key: &str) -> String {
+    let dir = entries_dir.display().to_string();
+    format!("{}/{key}.toml", dir.trim_end_matches(['/', '\\']))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testing::{self, Recorded};
+    use super::*;
+    use crate::lvpkg;
+    use std::path::PathBuf;
+
+    const OWNER: &str = "someone/Serializer";
+    const URL: &str =
+        "https://github.com/someone/Serializer/releases/download/1.2.1/foo-1.2.1.lvpkg";
+
+    /// A scratch folder holding an empty `packages/` and the packages built
+    /// for a test.
+    struct Index {
+        dir: PathBuf,
+    }
+
+    impl Index {
+        fn new(tag: &str) -> Index {
+            let dir = testing::scratch_dir(tag);
+            std::fs::create_dir(dir.join("packages")).unwrap();
+            Index { dir }
+        }
+
+        fn packages(&self) -> PathBuf {
+            self.dir.join("packages")
+        }
+
+        fn entry_file(&self) -> PathBuf {
+            self.packages().join("foo.toml")
+        }
+
+        /// The package file of `foo` at `version`, which requires `bar >=2.0`.
+        fn package(&self, version: &str) -> PathBuf {
+            let meta = lvpkg::Meta {
+                name: "foo".into(),
+                version: version.into(),
+                labview: ">=2024".into(),
+                vendor: "acme".into(),
+                display_name: "Foo".into(),
+                install_dir: "vi.lib/acme/foo".into(),
+                dependencies: vec![("bar".into(), ">=2.0".into())],
+            };
+            let files = vec![("a.vi".to_string(), b"a".to_vec())];
+            let path = self.dir.join(format!("foo-{version}.lvpkg"));
+            std::fs::write(&path, lvpkg::write(&meta, &files, None).unwrap()).unwrap();
+            path
+        }
+
+        /// A `.vip` whose spec says `name`, version 1.0 and `extra` lines.
+        fn vip(&self, name: &str, extra: &str) -> PathBuf {
+            let spec = format!(
+                "[Package]
+Name=\"{name}\"
+Version=\"1.0\"
+{extra}
+"
+            );
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            zip.start_file("spec", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, spec.as_bytes()).unwrap();
+            let path = self.dir.join("odd.vip");
+            std::fs::write(&path, zip.finish().unwrap().into_inner()).unwrap();
+            path
+        }
+
+        /// Everything under `packages/`, by name, with its bytes.
+        fn snapshot(&self) -> Vec<(String, Vec<u8>)> {
+            let mut files: Vec<_> = std::fs::read_dir(self.packages())
+                .unwrap()
+                .map(|e| e.unwrap())
+                .map(|e| {
+                    (
+                        e.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(e.path()).unwrap(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        }
+
+        fn add(&self, package: &Path, github: &str, url: &str) -> Result<()> {
+            let env = testing::env(&self.dir);
+            add(&env, &self.packages(), package, github, url)
+        }
+
+        /// The refusal of an add, which wrote nothing.
+        fn refused(&self, package: &Path, github: &str, url: &str) -> AddRefused {
+            let before = self.snapshot();
+            let why = self.add(package, github, url).unwrap_err();
+            assert_eq!(self.snapshot(), before, "a refusal wrote something");
+            why.downcast::<AddRefused>().expect("a refusal")
+        }
+
+        fn entry(&self) -> EntryFile {
+            let text = std::fs::read_to_string(self.entry_file()).unwrap();
+            EntryFile::parse("foo", &text).unwrap()
+        }
+    }
+
+    #[test]
+    fn a_first_version_creates_the_entry_file_with_what_the_package_says() {
+        let index = Index::new("add-first");
+        let package = index.package("1.2.1.16");
+        let sink = Recorded::default();
+        let env = testing::env_on(&sink, &index.dir);
+
+        add(&env, &index.packages(), &package, OWNER, URL).unwrap();
+
+        let file = index.entry();
+        assert_eq!(file.github, OWNER);
+        let [version] = file.versions.as_slice() else {
+            panic!("{file:?}");
+        };
+        assert_eq!(version.version, "1.2.1.16");
+        assert_eq!(version.url, URL);
+        assert_eq!(
+            version.sha256,
+            sha256_hex(&std::fs::read(&package).unwrap())
+        );
+        assert_eq!(version.labview.as_deref(), Some(">=24.0"));
+        assert_eq!(version.requires, ["bar >=2.0"]);
+        let packages = index.packages().display().to_string();
+        assert_eq!(
+            sink.events(),
+            [Event::IndexEntryAdded {
+                name: "foo".into(),
+                version: "1.2.1.16".into(),
+                file: format!("{packages}/foo.toml"),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_new_version_is_appended_and_the_old_one_stays() {
+        let index = Index::new("add-second");
+        index.add(&index.package("1.0"), OWNER, URL).unwrap();
+        let first = index.entry().versions[0].clone();
+        let url = URL.replace("1.2.1", "1.1");
+
+        index
+            .add(&index.package("1.1"), "someone/serializer", &url)
+            .unwrap();
+
+        let file = index.entry();
+        assert_eq!(file.versions.len(), 2);
+        assert_eq!(file.versions[0], first);
+        assert_eq!(file.versions[1].version, "1.1");
+        assert_eq!(file.github, OWNER, "the owner's own spelling stays");
+    }
+
+    #[test]
+    fn another_repo_is_refused_naming_the_owner_and_nothing_is_written() {
+        let index = Index::new("add-owner");
+        index.add(&index.package("1.0"), OWNER, URL).unwrap();
+        let url = "https://github.com/other/Fork/releases/download/1.1/foo-1.1.lvpkg";
+
+        let why = index.refused(&index.package("1.1"), "other/Fork", url);
+
+        let packages = index.packages().display().to_string();
+        assert_eq!(
+            why,
+            AddRefused::NotTheOwner {
+                name: "foo".into(),
+                owner: OWNER.into(),
+                github: "other/Fork".into(),
+                entry_file: format!("{packages}/foo.toml"),
+            }
+        );
+    }
+
+    #[test]
+    fn a_listed_version_is_refused_even_spelled_another_way() {
+        let index = Index::new("add-listed");
+        index.add(&index.package("1.0"), OWNER, URL).unwrap();
+
+        let why = index.refused(&index.package("1.0.0.0"), OWNER, URL);
+
+        assert!(matches!(why, AddRefused::AlreadyListed { .. }), "{why:?}");
+    }
+
+    #[test]
+    fn a_url_the_consumer_would_refuse_is_refused_and_nothing_is_written() {
+        let index = Index::new("add-url");
+        let package = index.package("1.0");
+        let release = "https://github.com/someone/Serializer/releases/download";
+        let urls = [
+            "https://example.com/x.lvpkg".to_string(),
+            format!("{release}/1.0/../../../../other/Fork/releases/download/1/x.lvpkg"),
+            "https://github.com/other/Fork/releases/download/1.0/foo.lvpkg".to_string(),
+            format!("{release}/1.0/foo.lvpkg?token=1"),
+            "C:\\Users\\x\\foo.lvpkg".to_string(),
+            "cache:abc".to_string(),
+            "oci://ghcr.io/x/foo:1.0".to_string(),
+        ];
+        for url in urls {
+            let why = index.refused(&package, OWNER, &url);
+            assert_eq!(
+                why,
+                AddRefused::UrlNotInReleases {
+                    web: "https://github.com".into(),
+                    github: OWNER.into()
+                },
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_url_is_checked_against_the_web_base_of_the_api() {
+        let index = Index::new("add-web");
+        let mut env = testing::env(&index.dir);
+        env.github.api = "http://127.0.0.1:1".into();
+        let package = index.package("1.0");
+
+        let why = add(&env, &index.packages(), &package, OWNER, URL).unwrap_err();
+        assert_eq!(
+            why.downcast::<AddRefused>().unwrap(),
+            AddRefused::UrlNotInReleases {
+                web: "http://127.0.0.1:1".into(),
+                github: OWNER.into()
+            }
+        );
+
+        let url = "http://127.0.0.1:1/someone/Serializer/releases/download/1.0/foo.lvpkg";
+        add(&env, &index.packages(), &package, OWNER, url).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_package_is_refused_naming_it() {
+        let index = Index::new("add-notes");
+        let notes = index.dir.join("notes.txt");
+        std::fs::write(&notes, "not a zip").unwrap();
+        let missing = index.dir.join("missing.lvpkg");
+
+        for file in [&notes, &missing] {
+            let why = index.refused(file, OWNER, URL);
+            let AddRefused::NotAPackage { file: shown, .. } = &why else {
+                panic!("{why:?}");
+            };
+            assert_eq!(shown, &file.display().to_string());
+        }
+    }
+
+    #[test]
+    fn a_package_file_over_the_limit_is_refused() {
+        let index = Index::new("add-big");
+        let big = index.dir.join("big.lvpkg");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(MAX_INDEX_DOWNLOAD_BYTES + 1).unwrap();
+
+        let why = index.refused(&big, OWNER, URL);
+
+        let AddRefused::NotAPackage { error, .. } = &why else {
+            panic!("{why:?}");
+        };
+        assert!(error.contains("larger than"), "{error}");
+    }
+
+    #[test]
+    fn an_entry_file_that_does_not_read_is_refused_and_left_as_it_was() {
+        let index = Index::new("add-unreadable");
+        let package = index.package("1.0");
+        // A listing that reads, but is padded past the limit.
+        let too_big = format!(
+            "name = \"foo\"
+github = \"{OWNER}\"
+{}",
+            " ".repeat(MAX_ENTRY_FILE_BYTES as usize)
+        );
+        let texts: [(&str, Vec<u8>); 3] = [
+            ("not TOML", b"name = [".to_vec()),
+            ("a listing for another name", b"name = \"bar\"\n".to_vec()),
+            ("over the limit", too_big.into_bytes()),
+        ];
+        for (what, text) in texts {
+            std::fs::write(index.entry_file(), &text).unwrap();
+
+            let why = index.refused(&package, OWNER, URL);
+
+            assert!(
+                matches!(why, AddRefused::EntryFileUnreadable { .. }),
+                "{what}: {why:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_github_that_is_not_owner_slash_repo_is_refused() {
+        let index = Index::new("add-github");
+        let package = index.package("1.0");
+        for github in ["someone", "/r", "o/", "o/r/x", "../r", "o/.."] {
+            assert_eq!(
+                index.refused(&package, github, URL),
+                AddRefused::NotOwnerRepo,
+                "{github}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_package_whose_name_cannot_be_a_file_name_is_refused() {
+        let index = Index::new("add-name");
+        for name in ["../evil", "a/b", r"a\b", "sp ace", ""] {
+            let why = index.refused(&index.vip(name, ""), OWNER, URL);
+
+            let AddRefused::NotAPackage { error, .. } = &why else {
+                panic!("{name:?}: {why:?}");
+            };
+            assert!(error.contains("name"), "{name:?}: {error}");
+        }
+        assert!(!index.dir.join("evil.toml").exists());
+    }
+
+    #[test]
+    fn a_requirement_the_entry_file_cannot_hold_is_refused_before_anything_is_written() {
+        let index = Index::new("add-requires");
+        let package = index.vip(
+            "foo",
+            "[Dependencies]
+Requires=\"bar>=?\"",
+        );
+
+        let why = index.refused(&package, OWNER, URL);
+
+        let AddRefused::NotAPackage { error, .. } = &why else {
+            panic!("{why:?}");
+        };
+        assert!(error.contains("requires"), "{error}");
+    }
+}

@@ -7,6 +7,7 @@ mod attest;
 pub mod build;
 pub mod build_app;
 pub mod check;
+pub mod community;
 pub mod env;
 mod github_index;
 pub mod hook_policy;

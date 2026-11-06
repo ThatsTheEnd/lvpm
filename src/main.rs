@@ -415,6 +415,10 @@ enum Cmd {
     /// Import package archives into the shared cache.
     #[command(subcommand)]
     Cache(CacheCmd),
+    /// Work on a community index: a GitHub repo of `packages/<name>.toml`
+    /// entry files, which a project lists as `github:owner/repo` in `[sources]`.
+    #[command(subcommand)]
+    Index(IndexCmd),
     /// Build what lvpm.toml describes: the library as dist/<name>-<version>.lvpkg
     /// and the application its build specification names.
     ///
@@ -546,6 +550,29 @@ enum CacheCmd {
     Add {
         /// A `.vip`, `.ogp` or `.lvpkg` file, or a directory holding them.
         path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum IndexCmd {
+    /// List a package's file in an entry file of the index checkout
+    /// ENTRIES_DIR (`packages/`): creates `<name>.toml` for a new name, or
+    /// appends the version to the file its owner already has.
+    ///
+    /// Refuses, and writes nothing, when the name belongs to another
+    /// --github, the version is listed, or --url is not a file of
+    /// --github's GitHub releases.
+    Add {
+        /// The folder of entry files, `packages/` of the index repo; it must exist.
+        entries_dir: PathBuf,
+        /// The package file `lvpm build` made.
+        package: PathBuf,
+        /// The repo that publishes the package, owner/repo.
+        #[arg(long, value_name = "OWNER/REPO")]
+        github: String,
+        /// Where the package file is downloaded from: the release asset's URL.
+        #[arg(long)]
+        url: String,
     },
 }
 
@@ -855,6 +882,16 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Cache(CacheCmd::Add { path }) => {
             let imports = ops::query::cache_add(&env, path)?;
             Report::new(render::query::cache_add(&imports), &imports)
+        }
+        Cmd::Index(IndexCmd::Add {
+            entries_dir,
+            package,
+            github,
+            url,
+        }) => {
+            ops::community::add(&env, entries_dir, package, github, url)
+                .map_err(render::community::add_error)?;
+            Ok(Report::done("index-add"))
         }
         Cmd::Config(ConfigCmd::Set { key, values }) => {
             ops::query::config_set(&env, key, values)?;

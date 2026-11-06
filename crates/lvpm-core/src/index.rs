@@ -928,7 +928,7 @@ impl IndexAsk<'_> {
 /// Whether `key` (a [`name_key`](crate::project::name_key)) can be the file name
 /// in `packages/<key>.toml`: `[a-z0-9_.-]+`. A name that cannot is listed in no
 /// index, and is never put in a URL.
-fn is_file_key(key: &str) -> bool {
+pub(crate) fn is_file_key(key: &str) -> bool {
     let allowed = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
     !key.is_empty() && key.bytes().all(allowed)
 }

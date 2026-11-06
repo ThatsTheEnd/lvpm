@@ -536,6 +536,15 @@ pub enum Event {
         tag: String,
         registry: String,
     },
+
+    // ---- ops::community ----
+    /// `lvpm index add` wrote `version` of `name` into the entry file `file`
+    /// (`<entries-dir>/<key>.toml`, as the command was given the folder).
+    IndexEntryAdded {
+        name: String,
+        version: String,
+        file: String,
+    },
 }
 
 /// A Unix time (seconds) as an RFC 3339 string.

@@ -1,6 +1,7 @@
-//! Steps of the community-index install scenarios (S8): the index repo the
-//! GitHub fake serves, the release its entry points at, who attested that
-//! release, and the projects that read the index.
+//! Steps of the community-index scenarios (S8): the index repo the GitHub
+//! fake serves, the release its entry points at, who attested that release,
+//! the projects that read the index, and the entry files `lvpm index add`
+//! writes.
 
 use super::github::{
     PILOT_B, PILOT_B_DEPENDENCY_FILES, PILOT_B_FILE, PILOT_B_NEEDS, PILOT_B_TAG, PROJECT_LABVIEW,
@@ -10,7 +11,7 @@ use crate::CliWorld;
 use crate::support::pilots::{check_checksums, pilots_dir};
 use crate::support::project::MANIFEST_FILE;
 use crate::support::sandbox::LOCAL_PACKAGES_DIR;
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 use lvpm_core::community::{EntryFile, FileVersion};
 use lvpm_testkit::gh::{self, Behavior};
 
@@ -30,6 +31,8 @@ pub struct CommunityState {
     publisher: String,
     /// The bytes the release serves in place of pilot B's file.
     other_bytes: Option<Vec<u8>>,
+    /// What the packages folder held before `lvpm index add` ran, by file name.
+    packages_before: Vec<(String, Vec<u8>)>,
 }
 
 fn pilot_b_vip() -> Vec<u8> {
@@ -85,6 +88,7 @@ async fn a_fake_github_with_an_index(world: &mut CliWorld, index: String, publis
         index,
         publisher,
         other_bytes: None,
+        packages_before: Vec::new(),
     };
 }
 
@@ -286,4 +290,197 @@ async fn fails_naming_data_manipulation(world: &mut CliWorld, said: String) {
 #[then("data_manipulation is not taken from the local folder")]
 async fn data_manipulation_is_not_taken(world: &mut CliWorld) {
     assert!(world.lock_bytes().is_none(), "a lock was written");
+}
+
+// ---- lvpm index add ----
+
+/// The folder of entry files `lvpm index add` is given, in the working directory.
+const PACKAGES_DIR: &str = "packages";
+/// The tag pilot B's release is under in the urls these scenarios give.
+const ADD_TAG: &str = "1.2.1";
+/// What `lvpm index add` lists of pilot B: what it needs, and its LabVIEW minimum.
+const PILOT_B_LISTED_REQUIRES: &str = "labview_open_source_lib_data_manipulation >=1.5.0.15";
+const PILOT_B_LISTED_LABVIEW: &str = ">=13.0";
+
+impl CliWorld {
+    /// `line` with pilot B's file for `<file>`, when it is an `lvpm index add`.
+    pub(crate) fn with_package_file(&self, line: &str) -> String {
+        match line.starts_with("lvpm index add") {
+            true => line.replace("<file>", PILOT_B_FILE),
+            false => line.to_string(),
+        }
+    }
+
+    fn packages_dir(&self) -> std::path::PathBuf {
+        let dir = self.sandbox.work_dir().join(PACKAGES_DIR);
+        std::fs::create_dir_all(&dir).expect("create the packages folder");
+        dir
+    }
+
+    fn entry_file_path(&self) -> std::path::PathBuf {
+        self.packages_dir().join(format!("{PILOT_B}.toml"))
+    }
+
+    /// The entry file `lvpm index add` wrote.
+    fn written_entry_file(&self) -> EntryFile {
+        let text = std::fs::read_to_string(self.entry_file_path()).expect("the entry file");
+        EntryFile::parse(PILOT_B, &text).expect("an entry file that reads")
+    }
+
+    fn packages_snapshot(&self) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(self.packages_dir())
+            .expect("read the packages folder")
+            .map(|entry| entry.expect("a directory entry"))
+            .map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let bytes = std::fs::read(entry.path()).expect("read an entry file");
+                (name, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// An entry file for pilot B owned by `owner`, listing `version`.
+    fn list_pilot_b(&self, owner: &str, version: &str) {
+        let entry = EntryFile {
+            name: PILOT_B.to_string(),
+            github: owner.to_string(),
+            versions: vec![FileVersion {
+                version: version.to_string(),
+                url: format!("https://github.com/{owner}/releases/download/{version}/old.lvpkg"),
+                sha256: "0".repeat(64),
+                labview: None,
+                requires: Vec::new(),
+            }],
+        };
+        std::fs::write(self.entry_file_path(), entry.write()).expect("write the entry file");
+    }
+}
+
+#[given(regex = r"^pilot B's built \.lvpkg as <file>, version 1\.2\.1\.16$")]
+async fn pilot_bs_built_package(world: &mut CliWorld) {
+    if let Err(why) = check_checksums(&pilots_dir()) {
+        panic!("{why}");
+    }
+    let work = world.sandbox.work_dir();
+    std::fs::create_dir_all(&work).expect("create the working directory");
+    std::fs::write(work.join(PILOT_B_FILE), pilot_b_vip()).expect("copy pilot B's file");
+    // The default API, so the web base is github.com whatever the machine sets.
+    world.sandbox.set_github("https://api.github.com", None);
+}
+
+#[given("an empty packages folder")]
+async fn an_empty_packages_folder(world: &mut CliWorld) {
+    world.packages_dir();
+}
+
+#[given(
+    regex = r"^packages/labview_open_source_lib_serializer\.toml owned by (\S+) with version (\S+)$"
+)]
+async fn an_entry_file_owned_by(world: &mut CliWorld, owner: String, version: String) {
+    world.list_pilot_b(&owner, &version);
+}
+
+#[given(regex = r"^the entry file is owned by (\S+)$")]
+async fn the_entry_file_is_owned_by(world: &mut CliWorld, owner: String) {
+    world.list_pilot_b(&owner, "1.2.0.1");
+}
+
+#[given(regex = r"^the entry file already lists (\S+)$")]
+async fn the_entry_file_already_lists(world: &mut CliWorld, version: String) {
+    world.list_pilot_b("someone/Serializer", &version);
+}
+
+#[given("the entry file is not TOML")]
+async fn the_entry_file_is_not_toml(world: &mut CliWorld) {
+    std::fs::write(world.entry_file_path(), "name = [").expect("write the entry file");
+}
+
+/// `<file>` is pilot B's file; any other name is a file that is not a package.
+/// With no `--url` given, the url is the file's release under `--github`.
+#[when(
+    regex = r"^I run lvpm index add on (\S+) with --github (\S+?)( and its release url| --url \S+)?$"
+)]
+async fn run_index_add(world: &mut CliWorld, file: String, github: String, url: String) {
+    let file = match file.as_str() {
+        "<file>" => PILOT_B_FILE.to_string(),
+        other => {
+            std::fs::write(world.sandbox.work_dir().join(other), "not a package")
+                .expect("write the file");
+            other.to_string()
+        }
+    };
+    let url = match url.trim().strip_prefix("--url ") {
+        Some(url) => url.to_string(),
+        None => format!("https://github.com/{github}/releases/download/{ADD_TAG}/{file}"),
+    };
+    world.community.packages_before = world.packages_snapshot();
+    world.run(
+        &format!("lvpm index add {PACKAGES_DIR} {file} --github {github} --url {url}"),
+        None,
+    );
+}
+
+#[then(regex = r#"^the command succeeds printing "([^"]+)"$"#)]
+async fn succeeds_printing(world: &mut CliWorld, line: String) {
+    assert_eq!(world.output().exit_code, 0, "{}", world.printed());
+    assert!(
+        world.output().stdout.lines().any(|printed| printed == line),
+        "no line is {line:?} in:\n{}",
+        world.printed()
+    );
+}
+
+/// `<error>` stands for any text; the rest is what the line says.
+#[then(regex = r#"^the command fails with exit code 1 printing "([^"]+)"$"#)]
+async fn fails_printing(world: &mut CliWorld, line: String) {
+    assert_eq!(world.output().exit_code, 1, "{}", world.printed());
+    let report = world.printed();
+    let mut rest = report.as_str();
+    for part in line.split("<error>") {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => panic!("{part:?} of {line:?} is not in:\n{report}"),
+        }
+    }
+}
+
+#[then("the packages folder is unchanged")]
+async fn the_packages_folder_is_unchanged(world: &mut CliWorld) {
+    assert_eq!(world.packages_snapshot(), world.community.packages_before);
+}
+
+#[then(
+    regex = r#"^that file lists github "([^"]+)" and one version with the file's sha256, requires and LabVIEW minimum$"#
+)]
+async fn that_file_lists_pilot_b(world: &mut CliWorld, github: String) {
+    let file = world.written_entry_file();
+    assert_eq!(file.github, github);
+    let [version] = file.versions.as_slice() else {
+        panic!("{file:?}");
+    };
+    assert_eq!(version.version, PILOT_B_VERSION);
+    assert_eq!(version.sha256, sha256_hex(&pilot_b_vip()));
+    assert_eq!(version.requires, [PILOT_B_LISTED_REQUIRES]);
+    assert_eq!(version.labview.as_deref(), Some(PILOT_B_LISTED_LABVIEW));
+    let url = format!("https://github.com/{github}/releases/download/{ADD_TAG}/{PILOT_B_FILE}");
+    assert_eq!(version.url, url);
+}
+
+#[then("the file lists both versions, the old one unchanged")]
+async fn the_file_lists_both_versions(world: &mut CliWorld) {
+    assert_eq!(world.output().exit_code, 0, "{}", world.printed());
+    let file = world.written_entry_file();
+    let versions: Vec<&str> = file.versions.iter().map(|v| v.version.as_str()).collect();
+    assert_eq!(versions, ["1.2.0.1", PILOT_B_VERSION]);
+    let before = String::from_utf8(world.community.packages_before[0].1.clone()).expect("UTF-8");
+    let before = EntryFile::parse(PILOT_B, &before).expect("the entry file before");
+    assert_eq!(file.versions[0], before.versions[0]);
+}
+
+#[then(regex = r#"^the command succeeds and the file's github stays "([^"]+)"$"#)]
+async fn the_file_keeps_its_github(world: &mut CliWorld, github: String) {
+    assert_eq!(world.output().exit_code, 0, "{}", world.printed());
+    assert_eq!(world.written_entry_file().github, github);
 }

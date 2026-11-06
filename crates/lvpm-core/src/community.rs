@@ -57,6 +57,31 @@ pub struct FileVersion {
     pub requires: Vec<String>,
 }
 
+impl FileVersion {
+    /// What an index lists of `package`, as lvpm reads it out of the file
+    /// (`entry_from_bytes`): the file at `url` has `sha256`.
+    pub fn of_package(package: &Entry, url: &str, sha256: &str) -> Self {
+        FileVersion {
+            version: package.version.to_string(),
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+            labview: package.lv_min.map(|min| format!(">={min:?}")),
+            requires: package.requires.iter().map(requirement_text).collect(),
+        }
+    }
+}
+
+/// One requirement as an entry file writes it: `bar >=2`.
+fn requirement_text(requirement: &Requirement) -> String {
+    match &requirement.min {
+        None => requirement.name.clone(),
+        Some(min) => {
+            let operator = if requirement.min_exclusive { ">" } else { ">=" };
+            format!("{} {operator}{min}", requirement.name)
+        }
+    }
+}
+
 /// Why an entry file does not read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EntryFileError {
@@ -604,6 +629,43 @@ github = \"a/x\"
             let why = EntryFile::parse("foo", &text).unwrap_err();
             assert_eq!(why.to_string(), "github: must be owner/repo", "{bad}");
         }
+    }
+
+    #[test]
+    fn a_package_is_listed_as_the_entry_it_is_read_back_as() {
+        let package = Entry {
+            name: "foo".into(),
+            version: Version::parse("1.2.1.16"),
+            requires: parse_requires("bar>=2.0,baz>1.5,qux"),
+            lv_min: parse_lv_gate("LabVIEW>=24.0"),
+            ..Entry::default()
+        };
+
+        let listed = FileVersion::of_package(&package, "u", SHA_A);
+
+        assert_eq!(listed.version, "1.2.1.16");
+        assert_eq!(listed.labview.as_deref(), Some(">=24.0"));
+        assert_eq!(listed.requires, ["bar >=2.0", "baz >1.5", "qux"]);
+        let file = EntryFile {
+            name: "foo".into(),
+            github: "a/x".into(),
+            versions: vec![listed],
+        };
+        let back = EntryFile::parse("foo", &file.write()).unwrap().entries("");
+        assert_eq!(back[0].lv_min, Some(24.0));
+        let floors: Vec<_> = back[0]
+            .requires
+            .iter()
+            .map(|r| (r.name.as_str(), r.min_exclusive, r.min.is_some()))
+            .collect();
+        assert_eq!(
+            floors,
+            [
+                ("bar", false, true),
+                ("baz", true, true),
+                ("qux", false, false)
+            ]
+        );
     }
 
     #[test]

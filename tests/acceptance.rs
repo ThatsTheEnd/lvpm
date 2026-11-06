@@ -75,6 +75,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s4-github-docs.feature",
     "tests/features/build-slices/s6-attestations.feature",
     "tests/features/build-slices/s8-index-install.feature",
+    "tests/features/build-slices/s8-index-add.feature",
     "tests/features/build-slices/s5-lvpm-check.feature",
     "tests/features/build-slices/s5b-lvpm-build-check.feature",
     "tests/features/build-slices/s9-lvpm-build-app.feature",
@@ -192,6 +193,7 @@ impl CliWorld {
     /// normalised output. `input` is what its stdin carries.
     pub fn run(&mut self, command_line: &str, input: Option<&str>) {
         let command_line = self.with_placeholders(command_line);
+        let command_line = self.with_package_file(&command_line);
         let mut words = command_line.split_whitespace();
         assert_eq!(
             words.next(),
