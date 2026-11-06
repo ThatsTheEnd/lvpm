@@ -388,15 +388,7 @@ impl Cache {
             return Ok(sha);
         }
         std::fs::create_dir_all(dest.parent().expect("blob path has a shard dir"))?;
-        static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos();
-        let tmp = self.root.join("tmp").join(format!(
-            "{}-{stamp}-{}",
-            std::process::id(),
-            NEXT_TMP.fetch_add(1, Ordering::Relaxed)
-        ));
+        let tmp = self.staging_path()?;
         let result = (|| -> Result<()> {
             let mut file = std::fs::OpenOptions::new()
                 .write(true)
@@ -428,27 +420,51 @@ impl Cache {
         if std::fs::read(&dest).is_ok_and(|held| held == bytes) {
             return Ok(dest);
         }
-        let blob = self.store(bytes)?;
-        // Link first so that a reader never sees half a file; copy where a
-        // filesystem cannot link.
-        std::fs::remove_file(&dest).ok();
-        if std::fs::hard_link(self.blob_path(&blob), &dest).is_err() {
-            std::fs::copy(self.blob_path(&blob), &dest)
-                .with_context(|| format!("writing {}", dest.display()))?;
-        }
+        let blob = self.blob_path(&self.store(bytes)?);
+        // Never write through `dest`: it may be a link to the blob another
+        // process is reading. Link (copy where a filesystem cannot link) to a
+        // name of our own, so that a reader never sees half a file, and rename it
+        // over `dest`.
+        let staged = self.staging_path()?;
+        let result = (|| -> Result<()> {
+            if std::fs::hard_link(&blob, &staged).is_err() {
+                std::fs::copy(&blob, &staged)
+                    .with_context(|| format!("writing {}", staged.display()))?;
+            }
+            // A rename that loses to another process's is fine: it wrote the same bytes.
+            if let Err(error) = std::fs::rename(&staged, &dest)
+                && !std::fs::read(&dest).is_ok_and(|held| held == bytes)
+            {
+                return Err(error).with_context(|| format!("writing {}", dest.display()));
+            }
+            Ok(())
+        })();
+        std::fs::remove_file(&staged).ok();
+        result?;
         Ok(dest)
     }
 
+    /// A name no other process or thread stages under, in the staging folder.
+    fn staging_path(&self) -> Result<PathBuf> {
+        static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        Ok(self.root.join("tmp").join(format!(
+            "{}-{stamp}-{}",
+            std::process::id(),
+            NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+
     /// The stored bytes for a digest, if they are there and still hash to it.
-    /// Bytes that do not are removed.
+    /// Bytes that do not are a miss and are left: removing them could remove a
+    /// good blob another process has just renamed into place, and `store`
+    /// renames over them.
     pub(crate) fn load(&self, sha: &str) -> Result<Option<Vec<u8>>> {
         Ok(match self.lookup(sha) {
             Stored::Intact(bytes) => Some(bytes),
-            Stored::Corrupt { .. } => {
-                std::fs::remove_file(self.blob_path(sha)).ok();
-                None
-            }
-            Stored::Absent => None,
+            Stored::Corrupt { .. } | Stored::Absent => None,
         })
     }
 
@@ -549,6 +565,45 @@ mod tests {
             c.load(&sha).unwrap().is_none(),
             "bytes that do not hash to their name are not trusted"
         );
+        assert!(
+            c.blob_path(&sha).is_file(),
+            "a miss leaves the file: it may have been replaced by now"
+        );
+        assert_eq!(c.store(b"original").unwrap(), sha, "store replaces it");
+        assert!(c.load(&sha).unwrap().is_some());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn two_threads_making_the_same_json_file_leave_the_blob_whole() {
+        let root = temp_root("json-file-race");
+        let cache = Cache::open(&root).unwrap();
+        for round in 0..200 {
+            let bytes = format!("{{\"round\": {round}}}").into_bytes();
+            let gate = std::sync::Barrier::new(2);
+            let paths: Vec<PathBuf> = std::thread::scope(|scope| {
+                // Two processes, as two caches on one folder: a `Cache` is not `Sync`.
+                let workers: Vec<_> = (0..2)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            let cache = Cache::open(&root).unwrap();
+                            gate.wait();
+                            cache.json_file(&bytes).unwrap()
+                        })
+                    })
+                    .collect();
+                workers.into_iter().map(|w| w.join().unwrap()).collect()
+            });
+            for path in paths {
+                assert_eq!(std::fs::read(path).unwrap(), bytes, "round {round}");
+            }
+            let sha = sha256_hex(&bytes);
+            assert!(
+                matches!(cache.lookup(&sha), Stored::Intact(_)),
+                "round {round}: the shared blob was truncated"
+            );
+        }
+        drop(cache);
         std::fs::remove_dir_all(&root).ok();
     }
 
