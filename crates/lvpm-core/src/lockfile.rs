@@ -39,10 +39,10 @@
 //! sha256 = "..."
 //! md5 = "..."                          # only when the feed lists one
 //! digest = "sha256:..."               # only for an OCI source: the digest of the package's OCI manifest
-//! source = "local"                     # or the feed's index URL, or https://github.com/owner/repo
+//! source = "local"                     # or the feed's index URL, https://github.com/owner/repo, or an oci:// source URL
 //! requires = ["beta"]                  # the locked packages it needs
 //! groups = ["ci", "dev"]               # only when [dependencies] does not need it
-//! signer = "https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"  # GitHub packages with an attestation
+//! signer = "https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"  # GitHub and OCI packages with an attestation
 //! subject = "https://github.com/o/r"   # the repository that built it
 //!
 //! [[unresolved]]                       # a requirement no source lists
@@ -94,7 +94,8 @@ pub struct Lockfile {
 pub struct Inputs {
     /// Whether the public indexes were consulted too.
     pub defaults: bool,
-    /// The hosted `[sources]` index folders, as the manifest lists them.
+    /// The `[sources]` URLs, as the manifest lists them: hosted index folders
+    /// and `oci://` registries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// `[sources] min-age-days`; 0, which is also the absent key, is not written.
@@ -170,7 +171,7 @@ pub struct LockedPackage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     /// The feed's index URL, `https://github.com/{repo}` for a GitHub dependency,
-    /// or [`LOCAL_SOURCE`].
+    /// the `oci://` URL of an OCI source, or [`LOCAL_SOURCE`].
     pub source: String,
     /// The locked packages this one requires, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -179,7 +180,7 @@ pub struct LockedPackage {
     /// `[dev-dependencies]`, sorted; empty when `[dependencies]` needs it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
-    /// The workflow that built a GitHub package's archive, as its attestation
+    /// The workflow that built a GitHub or OCI package, as its attestation
     /// names it; absent when no attestation was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,

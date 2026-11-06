@@ -87,7 +87,9 @@ impl Oci {
     /// writers that attach to one subject at once (this one and the CI that
     /// pushes the Sigstore bundle) may lose one entry. Only a registry without
     /// the API has it. A lost bundle reads as unsigned, which `[policy]`
-    /// refuses, and the write is read back so that a lost entry is an error.
+    /// refuses only when it has `require-signature`. The read-back after the
+    /// write catches only a loss by this very write, not one by a writer that
+    /// overwrites the index afterwards.
     pub fn push_referrer(
         &self,
         repo: &Repo,

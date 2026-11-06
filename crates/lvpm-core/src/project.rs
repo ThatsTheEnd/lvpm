@@ -185,7 +185,8 @@ pub struct Project {
     /// oldest LabVIEW the project is meant for. A venv binds to this version or a newer one; a global
     /// install still takes its target from `--labview-version`.
     pub labview: Option<String>,
-    /// `[sources]`, in file order: a name and an index URL as written.
+    /// `[sources]`, in file order: a name and an index URL or `oci://` registry
+    /// URL as written.
     pub sources: Vec<(String, String)>,
     /// Whether the public indexes are consulted too (`sources.defaults`).
     pub default_sources: bool,

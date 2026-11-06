@@ -15,6 +15,9 @@ name: Publish the package
 # you do not use one. Another project then lists
 #   team = "oci://ghcr.io/acme/lv"
 # under [sources] and pins the package with index = "team".
+# `lvpm publish --to oci://` is in the first lvpm release that ships S7b, and the
+# LVPM_VERSION pin below is older: raise it to that release before you set
+# LVPM_OCI_PREFIX, or the job fails at `lvpm publish`.
 on:
   push:
     tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
@@ -127,7 +130,10 @@ jobs:
       - name: Attest the OCI manifest
         # The signature is of the OCI manifest digest that lvpm publish printed,
         # not of the .lvpkg. push-to-registry attaches it to the package, where
-        # lvpm lock finds it.
+        # lvpm lock finds it. If the SBOM push fails, publish exits 1 after the
+        # package is live, this step is skipped and a rerun is refused: attest by
+        # hand with the name and digest from the publish log (docs/usage.md,
+        # "Signatures on OCI packages").
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ steps.publish.outputs.name }}

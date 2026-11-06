@@ -142,7 +142,8 @@ with `index = "team"`, and a package without that pin never comes from it. It
 takes no part in the first-source-wins order of
 [ADR 4](adr/0004-sources-first-wins-and-pinning.md): a registry has no list of
 its packages to read, so asking it for every name would send one request per
-public package, and ghcr.io answers `403` for a repository that does not exist.
+public package, and ghcr.io answers `403` for a repository that does not exist
+(observed, not documented by ghcr.io).
 [ADR 7](adr/0007-oci-sources-are-explicit.md) has the reasoning. A package's own
 dependencies are not pinned by that: list each one that lives in the registry
 as a direct dependency with `version = "*"` and its own `index`.

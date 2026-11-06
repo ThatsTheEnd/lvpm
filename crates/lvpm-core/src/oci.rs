@@ -3,8 +3,9 @@
 //!
 //! `reference` parses `oci://` URLs, `auth` logs in with the registry's bearer
 //! challenge, `logins` finds the login in the Docker config, `manifest` holds
-//! the manifest, blob and upload calls. Nothing here reads the process
-//! environment.
+//! the manifest, blob and upload calls, `referrers` lists and attaches the
+//! referrers of a manifest (the SBOM, the signature), and `sigstore` reads a
+//! Sigstore bundle. Nothing here reads the process environment.
 //!
 //! A package version is one OCI image manifest: `artifactType`
 //! [`ARTIFACT_TYPE`], an empty config, and one layer, the `.lvpkg` bytes

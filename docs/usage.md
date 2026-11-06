@@ -1202,8 +1202,8 @@ published, it is safe to rerun`; the blobs it uploaded are reused.
 The OCI API has no "create this tag only if it is new", so two publishers of
 one version can still race in the moment between the second check and the
 write. For tag immutability that the registry enforces itself, turn it on where
-the registry has it: Azure Container Registry can lock a tag, and GitLab can
-protect tags.
+the registry has it: some registries can lock or protect tags (see your
+registry's documentation).
 
 **On ghcr.io, a `403` means the token lacks the package scope.** A refused
 upload says `registry ghcr.io refused the upload to acme/lv/acme_lib; run docker
@@ -1229,6 +1229,10 @@ Container Registry). A helper that answers the user name `<token>` gives an
 identity token, which lvpm sends to the registry's token service as a
 refresh token.
 
+A login the registry refuses is printed once per registry when lvpm lists
+packages (`lock`, `install`, `search`, and a `sync` that has to lock first), and
+once per package when `sync --locked` fetches the packages by digest.
+
 A helper runs once per registry per run. If it does not answer within 30
 seconds lvpm stops waiting: set `LVPM_OCI_HELPER_TIMEOUT_SECS` to a whole number
 of seconds, 1 or more, to change that. What a helper prints is never shown, and
@@ -1240,7 +1244,7 @@ neither is a secret from the config. What lvpm says instead:
 - `credential helper docker-credential-<name> for <host> did not answer within <secs>s`
 
 On ghcr.io a repository that does not exist answers `403`, as one you may not
-read does. `lvpm lock` can only say `<package>: registry ghcr.io refused the
+read does (observed behaviour, not one that ghcr.io documents). `lvpm lock` can only say `<package>: registry ghcr.io refused the
 lookup for source "team"; the package is missing or your login cannot read it;
 run docker login ghcr.io`, and does not fall through to another source.
 
@@ -1283,7 +1287,24 @@ The signature is a Sigstore bundle that the publisher's CI attaches with
 has an optional `publish-oci` job that does it: `lvpm publish --to oci://…`,
 then `actions/attest-build-provenance` with `subject-name`, `subject-digest`
 (the OCI manifest digest that `lvpm publish` printed) and
-`push-to-registry: true`. That signs the OCI manifest, not the `.lvpkg`.
+`push-to-registry: true`. That signs the OCI manifest, not the `.lvpkg`. The
+job needs an lvpm release that has `lvpm publish --to oci://`, the first one
+that ships it: the template's `LVPM_VERSION` pin (0.24.0 at the time of writing)
+has none, so raise it first.
+
+If the SBOM push fails, `lvpm publish` exits 1 after the package is live, the
+job's attest step is skipped, and a rerun is refused because the tag exists.
+`gh` cannot sign, so attest by hand: run `actions/attest-build-provenance` once
+in a workflow of that repository with the same permissions as `publish-oci`,
+giving the repository and digest from the publish log:
+
+```yaml
+- uses: actions/attest-build-provenance@v2
+  with:
+    subject-name: ghcr.io/acme/lv/acme_lib   # the published reference, no oci:// or tag
+    subject-digest: sha256:5b2c…             # the OCI manifest digest publish printed
+    push-to-registry: true
+```
 
 `lvpm lock` checks the bundle with `gh attestation verify` against the OCI
 manifest it has already read, under the same [`[policy]`](#policy) as a GitHub

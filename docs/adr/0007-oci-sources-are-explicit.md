@@ -18,8 +18,8 @@ that lists a name wins. That works for an index folder, which is one file that
 lists everything it has. A registry has no catalogue. To ask whether it has a
 name, lvpm sends one request for that name, so searching a registry first would
 send one request per public package. On ghcr.io each of those fails, because
-it answers `403` for a repository that does not exist, the same as for one the
-caller may not read. ADR 4 forbids reading that as "not listed" and trying the
+it answers `403` for a repository that does not exist (observed behaviour, not
+documented by ghcr.io), the same as for one the caller may not read. ADR 4 forbids reading that as "not listed" and trying the
 next source, since that reopens dependency confusion, so a project with an OCI
 source ahead of the public indexes could not resolve at all.
 
