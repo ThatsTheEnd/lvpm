@@ -16,7 +16,7 @@
 
 use crate::http::{Request, accept, accept_loop, response, shut_down};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
@@ -101,6 +101,8 @@ struct Repo {
     releases: Vec<Release>,
     /// The files `contents` serves, by path in the repo.
     files: BTreeMap<String, Vec<u8>>,
+    /// The SHA-256 (hex) of each file the attestations API lists one for.
+    attested: BTreeSet<String>,
 }
 
 /// What every API request (not a download) answers instead of its own reply.
@@ -255,6 +257,27 @@ impl GitHubFake {
         let repo = state.repos.entry(repo.to_string()).or_default();
         repo.files
             .insert(path.to_string(), body.as_bytes().to_vec());
+    }
+
+    /// Stop serving the file `path` of `repo`: a 404 from now on.
+    pub fn remove_file(&self, repo: &str, path: &str) {
+        let mut state = lock(&self.state);
+        let removed = state
+            .repos
+            .entry(repo.to_string())
+            .or_default()
+            .files
+            .remove(path);
+        assert!(removed.is_some(), "{repo} serves no file {path}");
+    }
+
+    /// From now on `GET /repos/{repo}/attestations/sha256:{sha256}` lists an
+    /// attestation for that file, as GitHub does for one a workflow attested;
+    /// any other digest is a 404, which GitHub answers for an unattested file.
+    pub fn add_attestation(&self, repo: &str, sha256: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        repo.attested.insert(sha256.to_ascii_lowercase());
     }
 
     /// Add `release` to `repo`, after the releases it has (newest first).
@@ -428,6 +451,7 @@ fn answer(
                     None => not_found(),
                 },
                 ["contents", path @ ..] => file_reply(found, &path.join("/"), request),
+                ["attestations", subject] => attestations_reply(found, subject),
                 _ => not_found(),
             }
         }
@@ -488,6 +512,22 @@ fn file_reply(repo: &Repo, path: &str, request: &Request) -> Vec<u8> {
             &[],
             &message("ask for application/vnd.github.raw"),
         ),
+    }
+}
+
+/// The attestations of the file with this digest: one when it was added, else
+/// the 404 of a file nothing attested. What the bundle holds is gh's to read.
+fn attestations_reply(repo: &Repo, subject: &str) -> Vec<u8> {
+    let attested = subject
+        .strip_prefix("sha256:")
+        .is_some_and(|sha| repo.attested.contains(&sha.to_ascii_lowercase()));
+    match attested {
+        true => json_reply(
+            "200 OK",
+            &[],
+            &json!({ "attestations": [{ "bundle": {} }] }),
+        ),
+        false => not_found(),
     }
 }
 
@@ -705,6 +745,31 @@ mod tests {
     }
 
     #[test]
+    fn an_attestation_is_listed_for_the_digests_added_and_404_for_any_other() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        let sha = "ab".repeat(32);
+        fake.add_attestation("o/r", &sha.to_ascii_uppercase());
+        let asked = |repo: &str, digest: &str| {
+            let path = format!("/repos/{repo}/attestations/{digest}");
+            get_from(fake.addr, &path, "").status_line
+        };
+        assert_eq!(asked("o/r", &format!("sha256:{sha}")), "HTTP/1.1 200 OK");
+        let other = format!("sha256:{}", "cd".repeat(32));
+        assert_eq!(asked("o/r", &other), "HTTP/1.1 404 Not Found");
+        assert_eq!(asked("o/r", &sha), "HTTP/1.1 404 Not Found");
+        assert_eq!(
+            asked("x/y", &format!("sha256:{sha}")),
+            "HTTP/1.1 404 Not Found"
+        );
+        let listed = get_from(
+            fake.addr,
+            &format!("/repos/o/r/attestations/sha256:{sha}"),
+            "",
+        );
+        assert_eq!(json_of(&listed)["attestations"][0]["bundle"], json!({}));
+    }
+
+    #[test]
     fn a_file_is_served_raw_a_file_not_registered_is_404_and_each_request_is_recorded() {
         let fake = GitHubFake::start(&[("o/r", vec![])]);
         fake.add_file("o/r", "packages/foo.toml", "name = \"foo\"\n");
@@ -727,6 +792,16 @@ mod tests {
                 "/repos/o/r/contents/packages/foo.toml",
             ]
         );
+    }
+
+    #[test]
+    fn a_removed_file_is_404() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "x");
+        fake.remove_file("o/r", "packages/foo.toml");
+        let raw = "Accept: application/vnd.github.raw\r\n";
+        let gone = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(gone.status_line, "HTTP/1.1 404 Not Found");
     }
 
     #[test]

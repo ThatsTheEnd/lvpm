@@ -643,7 +643,14 @@ impl Sandbox {
             }
             // A `gh` on the machine answers `gh auth token` from the user's
             // keyring, which an empty GH_CONFIG_DIR does not hide: none is run.
-            command.env("PATH", path_without_gh(std::env::var_os("PATH")));
+            // Unless the scenario set one (`use_fake_gh`): that holds its fake gh.
+            let sets_path = (self.child_env.lock())
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .any(|(name, _)| name == "PATH");
+            if !sets_path {
+                command.env("PATH", path_without_gh(std::env::var_os("PATH")));
+            }
             if let Some(token) = token {
                 command.env("GH_TOKEN", token);
             }

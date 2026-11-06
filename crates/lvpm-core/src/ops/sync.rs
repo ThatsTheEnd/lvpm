@@ -560,6 +560,7 @@ pub fn fetch_locked(
         return Ok(Vec::new());
     }
     let downloads = Downloads::open(env)?;
+    let names: Vec<String> = wanted.iter().map(|locked| locked.name.clone()).collect();
     let mut searches: Vec<Search> = wanted
         .iter()
         .map(|locked| Search::in_cache(&downloads, locked))
@@ -589,12 +590,12 @@ pub fn fetch_locked(
             }
             continue;
         }
-        let index = match source.index(env, &downloads) {
+        let index = match source.index(env, &downloads, &names) {
             Ok(index) => index,
             // A repo that cannot be read says why; a folder that is gone and a
             // feed that is down hold nothing.
             Err(why) => {
-                if matches!(source, Source::GitHub(..)) {
+                if matches!(source, Source::GitHub(..) | Source::Index(_)) {
                     for search in asking {
                         search.unfetched = Some(Unfetched::plain(format!("{why:#}")));
                     }
@@ -849,6 +850,9 @@ enum Source {
     Folder(PathBuf),
     PublicFeeds,
     Feed(String),
+    /// A community index repo: asked for the locked names, as the lock found its
+    /// packages there.
+    Index(index::IndexFeed),
     /// An OCI source: fetched by digest, never listed, and asked only for the
     /// packages the lock records as from it.
     Oci(index::OciFeed),
@@ -866,28 +870,45 @@ impl Source {
         }
         let (remotes, registries) =
             index::split_sources(project.resolved_sources()?, &project.source_pins);
-        sources.extend(index::folders(&remotes).into_iter().map(Source::Feed));
+        sources.extend(remotes.into_iter().map(|remote| match remote {
+            index::Remote::Hosted(folder) => Source::Feed(folder),
+            index::Remote::Index(feed) => Source::Index(feed),
+        }));
         sources.extend(registries.into_iter().map(Source::Oci));
         Ok(sources)
     }
 
     /// Whether this source may hold the locked package: a package with a
     /// `github` line is in that repo's releases and nowhere else, and one with
-    /// a manifest digest is in the OCI source the lock names and nowhere else.
+    /// a manifest digest is in the OCI source the lock names and nowhere else; one
+    /// whose source is a community index is in that index and nowhere else.
     fn answers_for(&self, project: &Project, locked: &LockedPackage) -> bool {
         let name = &locked.name;
         match self {
             Source::GitHub(own, _) => same_name(own, name),
             Source::Oci(feed) => locked.digest.is_some() && locked.source == feed.url.to_string(),
-            _ => locked.digest.is_none() && !project.github.keys().any(|own| same_name(own, name)),
+            Source::Index(feed) => locked.source == feed.source(),
+            _ => {
+                locked.digest.is_none()
+                    && index::index_repo(&locked.source).is_none()
+                    && !project.github.keys().any(|own| same_name(own, name))
+            }
         }
     }
 
     /// The source's index. A repo's is made from a fresh listing, never the
     /// cached one: a file uploaded again with `--clobber` has a new asset id.
-    fn index(&self, env: &OpEnv, downloads: &Downloads) -> anyhow::Result<Index> {
+    ///
+    /// A community index is asked for `wanted`, the locked names, only.
+    fn index(
+        &self,
+        env: &OpEnv,
+        downloads: &Downloads,
+        wanted: &[String],
+    ) -> anyhow::Result<Index> {
         let (feeds, folders, defaults) = match self {
             Source::GitHub(name, repo) => return github_entries(env, downloads, name, repo),
+            Source::Index(feed) => return index_entries(env, downloads, feed, wanted),
             Source::Imported => (Vec::new(), Vec::new(), false),
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
@@ -913,6 +934,26 @@ impl Source {
             &env.cancel,
         )
     }
+}
+
+/// What the community index `feed` lists under the `wanted` names.
+fn index_entries(
+    env: &OpEnv,
+    downloads: &Downloads,
+    feed: &index::IndexFeed,
+    wanted: &[String],
+) -> anyhow::Result<Index> {
+    let remotes = [index::Remote::Index(feed.clone())];
+    let fetch = |feed: &index::IndexFeed, key: &str| downloads.index_file(feed, key, env.refresh);
+    let sources = index::SourceSet {
+        extra: &remotes,
+        wanted,
+        index_fetch: &fetch,
+        index_parse: crate::community::read_entries,
+        ..index::SourceSet::default()
+    };
+    let (cache, refresh) = (&env.config.cache, env.refresh);
+    index::load(cache, refresh, &sources, &env.oci, env.sink, &env.cancel)
 }
 
 /// The index of `name`'s files in the releases of `repo` that GitHub lists now.

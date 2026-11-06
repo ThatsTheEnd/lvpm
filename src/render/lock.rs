@@ -9,6 +9,7 @@ use lvpm_core::errors::{
     SignatureLookupFailure,
 };
 use lvpm_core::events::{Event, LockChange};
+use lvpm_core::index;
 use lvpm_core::lockfile::{FORMAT_VERSION, StaleReason};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::project::same_name;
@@ -223,11 +224,16 @@ pub(super) fn error_for(error: &LockError, rerun: &str) -> String {
              next: pick a version that runs on LabVIEW {project_year}, or raise labview in \
              lvpm.toml, then run `lvpm lock --upgrade-package {name}@<version>` again"
         ),
-        LockError::PinnedNotListed { package, .. } => format!(
-            "{error}\n\
-             next: list {package} in that source, or remove the index key from {package} in \
-             lvpm.toml, then run {rerun} again"
-        ),
+        LockError::PinnedNotListed { package, feed, .. } => {
+            let searched = index::index_repo(feed)
+                .map(|repo| format!("; searched github:{repo}"))
+                .unwrap_or_default();
+            format!(
+                "{error}{searched}\n\
+                 next: list {package} in that source, or remove the index key from {package} \
+                 in lvpm.toml, then run {rerun} again"
+            )
+        }
         LockError::Cancelled => {
             format!("{error}; lvpm.lock is unchanged\nnext: run {rerun} again")
         }
@@ -319,7 +325,7 @@ fn general_conflict_text(facts: &[&Fact], rerun: &str) -> String {
         .collect();
     let only_unlisted = unlisted.len()
         == (facts.iter())
-            .filter(|fact| !matches!(fact, Fact::OciExplicit { .. }))
+            .filter(|fact| !matches!(fact, Fact::OciExplicit { .. } | Fact::IndexSearched { .. }))
             .count();
     let mut text = match only_unlisted {
         true => "cannot lock:".to_string(),
@@ -1378,6 +1384,48 @@ mod tests {
             )),
             "{text}"
         );
+    }
+
+    #[test]
+    fn the_index_searched_follows_a_package_in_no_source_and_keeps_the_short_heading() {
+        let text = error(&LockError::Conflict(Conflict {
+            facts: vec![
+                Fact::NotListed {
+                    package: "zeta".into(),
+                },
+                Fact::IndexSearched {
+                    repo: "o/idx".into(),
+                },
+            ],
+        }));
+        assert!(
+            text.starts_with(concat!(
+                "cannot lock:\n",
+                "  zeta is in no configured source\n",
+                "  searched github:o/idx\n",
+                "next: look for it"
+            )),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_pinned_package_a_community_index_does_not_list_names_the_index_it_searched() {
+        let pinned = |feed: &str| {
+            error(&LockError::PinnedNotListed {
+                package: "alpha".into(),
+                source_name: "community".into(),
+                feed: feed.into(),
+            })
+        };
+        assert_eq!(
+            pinned("github-index:o/idx"),
+            "alpha is pinned to \"community\" (github-index:o/idx), which does not list it; \
+             other sources are ignored for a pinned package; searched github:o/idx\n\
+             next: list alpha in that source, or remove the index key from alpha in lvpm.toml, \
+             then run `lvpm lock` again"
+        );
+        assert!(!pinned("http://m.example/index.vipr").contains("searched"));
     }
 
     #[test]

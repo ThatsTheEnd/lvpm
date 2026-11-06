@@ -576,10 +576,14 @@ fn resolve(
         &env.cancel,
     )
     .map_err(|why| match why {
-        SolveError::Conflict(conflict) => LockError::Conflict(note_oci_sources(
-            name_source_pins(name_pins(conflict, project, pins), &source_pins),
-            project,
-        )),
+        SolveError::Conflict(conflict) => {
+            let conflict = name_pins(conflict, project, pins);
+            let conflict = name_source_pins(conflict, &source_pins);
+            LockError::Conflict(note_index_sources(
+                note_oci_sources(conflict, project),
+                project,
+            ))
+        }
         SolveError::Cancelled => Cancelled.into(),
     })
 }
@@ -687,6 +691,24 @@ fn note_oci_sources(mut conflict: Conflict, project: &Project) -> Conflict {
         .extend(oci.map(|(name, _)| Fact::OciExplicit {
             source: name.clone(),
         }));
+    conflict
+}
+
+/// `conflict` with a note for each community index when a package is in no
+/// source: it was asked for the package, and does not list it.
+fn note_index_sources(mut conflict: Conflict, project: &Project) -> Conflict {
+    let unlisted = (conflict.facts.iter()).any(|fact| matches!(fact, Fact::NotListed { .. }));
+    if !unlisted {
+        return conflict;
+    }
+    let feeds = project.resolved_sources().unwrap_or_default();
+    let indexes = feeds.iter().filter_map(|(_, feed)| match feed {
+        Feed::Index { owner, repo } => Some(Fact::IndexSearched {
+            repo: format!("{owner}/{repo}"),
+        }),
+        _ => None,
+    });
+    conflict.facts.extend(indexes);
     conflict
 }
 
@@ -873,11 +895,12 @@ fn moved_tag(previous: Option<&Lockfile>, key: &str, entry: &Entry) -> Option<Mo
 }
 
 /// The `source` the lock records for a package from `entry`'s feed: an OCI
-/// source's own URL, which no feed folder contains, or the feed's index URL.
+/// source's own URL, which no feed folder contains, a community index's
+/// `github-index:owner/repo`, or the feed's index URL.
 fn entry_source(entry: &Entry, feeds: &[(String, String)]) -> String {
-    match index::oci_reference(entry) {
-        Some(_) => entry.source.clone(),
-        None => index::source_of(&entry.url, feeds),
+    match index::oci_reference(entry).is_some() || index::index_repo(&entry.source).is_some() {
+        true => entry.source.clone(),
+        false => index::source_of(&entry.url, feeds),
     }
 }
 
@@ -908,11 +931,16 @@ pub(super) fn github_lock_source(repo: &str) -> String {
 }
 
 /// Whether `package`, as the previous lock holds it, is where `entry` comes
-/// from. Only a GitHub entry is told apart: the lock's `source` for any other
-/// is the feed's, which is known only after the run.
+/// from. A GitHub entry and a community index entry are told apart: the lock's
+/// `source` for any other is the feed's, which is known only after the run. The
+/// index's pin was never checked against bytes locked from another source, so
+/// those are not kept for its entry.
 /// shortcut: a package that moves from a repo to a feed keeps its pin; check
 /// the feed's source here when that bites.
 fn from_same_repo(package: &LockedPackage, entry: &Entry) -> bool {
+    if index::index_repo(&entry.source).is_some() {
+        return package.source == entry.source;
+    }
     index::github_repo(entry).is_none_or(|repo| {
         package
             .source
@@ -1172,6 +1200,35 @@ mod tests {
         ));
         assert!(!from_same_repo(&locked("http://feed/index.vipr"), &github));
         assert!(from_same_repo(&locked("http://feed/index.vipr"), &feed));
+    }
+
+    #[test]
+    fn a_locked_package_stands_for_an_index_entry_only_from_the_same_index() {
+        let locked = |source: &str| LockedPackage {
+            name: "pkg".into(),
+            version: "1.0".into(),
+            sha256: "ab".into(),
+            md5: None,
+            digest: None,
+            source: source.into(),
+            requires: Vec::new(),
+            groups: Vec::new(),
+            signer: None,
+            subject: None,
+        };
+        let mut listed = entry(
+            "pkg",
+            "1.0",
+            &[],
+            "http://web/o/r/releases/download/1/pkg.vip",
+        );
+        listed.source = "github-index:o/idx".into();
+
+        assert!(from_same_repo(&locked("github-index:o/idx"), &listed));
+        // Bytes locked from another source were never checked against the index.
+        assert!(!from_same_repo(&locked("http://feed/index.vipr"), &listed));
+        assert!(!from_same_repo(&locked("local"), &listed));
+        assert!(!from_same_repo(&locked("github-index:o/other"), &listed));
     }
 
     /// `alpha` 1.0 as an OCI source lists it, by this manifest digest.
@@ -3311,6 +3368,36 @@ gamma = \"1.0\""
             }],
         };
         assert_eq!(note_oci_sources(other.clone(), &project), other);
+    }
+
+    #[test]
+    fn a_package_in_no_source_gets_a_note_for_each_community_index_and_nothing_else_does() {
+        let text = concat!(
+            "[project]\nlabview = \">=2023\"\n\n",
+            "[sources]\ncommunity = \"github:o/idx\"\nteam = \"oci://r:5000/org\"\n",
+            "mirror = \"http://m.example/\"\ndefaults = false\n\n",
+            "[dependencies]\nalpha = \"*\"\n"
+        );
+        let project = manifest(text);
+        let unlisted = Conflict {
+            facts: vec![Fact::NotListed {
+                package: "alpha".into(),
+            }],
+        };
+        let noted = note_index_sources(unlisted.clone(), &project);
+        assert_eq!(
+            noted.facts[1..],
+            [Fact::IndexSearched {
+                repo: "o/idx".into()
+            }]
+        );
+        let other = Conflict {
+            facts: vec![Fact::Manifest {
+                package: "alpha".into(),
+                wanted: "*".into(),
+            }],
+        };
+        assert_eq!(note_index_sources(other.clone(), &project), other);
     }
 
     #[test]

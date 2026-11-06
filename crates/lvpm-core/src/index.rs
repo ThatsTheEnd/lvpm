@@ -120,7 +120,10 @@ pub const CACHE_SOURCE: &str = "cache";
 /// `github:owner/repo`, which no feed URL does.
 ///
 /// shortcut: the repo rides in a string scheme, not an `Origin` enum; upgrade
-/// when a third kind of source needs more than a repo.
+/// when a source needs more than a repo in its string. The community index is
+/// the third kind, and it does not: the sha256 and the publisher of each of its
+/// entries ride in [`Entry::index_pin`], and the string carries only the
+/// index repo (see [`INDEX_SCHEME`]).
 pub const GITHUB_SCHEME: &str = "github:";
 
 /// What an [`Entry::source`] starts with when a community index repo listed
@@ -136,6 +139,22 @@ pub fn github_source(repo: &str) -> String {
 /// The repo (`owner/repo`) a GitHub entry comes from; `None` for any other.
 pub fn github_repo(entry: &Entry) -> Option<&str> {
     entry.source.strip_prefix(GITHUB_SCHEME)
+}
+
+/// The index repo (`owner/repo`) a source string names, when it is that of an
+/// entry a community index listed (see [`INDEX_SCHEME`]); `None` for any other.
+/// The one place that reads the scheme: an entry's is [`Entry::source`], a locked
+/// package's is `source` in `lvpm.lock`.
+pub fn index_repo(source: &str) -> Option<&str> {
+    source.strip_prefix(INDEX_SCHEME)
+}
+
+/// The repo (`owner/repo`) whose attestation `entry` is checked against: the
+/// repo of a GitHub dependency, or the publisher a community index entry names.
+/// `None` for an entry nobody attests.
+pub fn attesting_repo(entry: &Entry) -> Option<&str> {
+    let publisher = entry.index_pin.as_ref().map(|pin| pin.publisher.as_str());
+    github_repo(entry).or(publisher)
 }
 
 impl Entry {
@@ -1298,6 +1317,28 @@ mod tests {
             entry.source = other.into();
             assert_eq!(github_repo(&entry), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_github_entry_is_attested_by_its_repo_and_an_index_entry_by_its_publisher() {
+        let mut entry = Entry {
+            source: github_source("o/r"),
+            ..Entry::default()
+        };
+        assert_eq!(attesting_repo(&entry), Some("o/r"));
+        assert_eq!(index_repo(&entry.source), None);
+
+        entry.source = "github-index:o/idx".into();
+        assert_eq!(index_repo(&entry.source), Some("o/idx"));
+        assert_eq!(index_repo("github:o/idx"), None);
+        assert_eq!(attesting_repo(&entry), None);
+        entry.index_pin = Some(IndexPin {
+            sha256: "ab".repeat(32),
+            publisher: "someone/Serializer".into(),
+        });
+        assert_eq!(attesting_repo(&entry), Some("someone/Serializer"));
+        // A hosted feed's entry has nobody to ask.
+        assert_eq!(attesting_repo(&Entry::default()), None);
     }
 
     /// A server that answers each connection with the next canned response and

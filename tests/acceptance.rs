@@ -74,6 +74,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s4-github-sync.feature",
     "tests/features/build-slices/s4-github-docs.feature",
     "tests/features/build-slices/s6-attestations.feature",
+    "tests/features/build-slices/s8-index-install.feature",
     "tests/features/build-slices/s5-lvpm-check.feature",
     "tests/features/build-slices/s5b-lvpm-build-check.feature",
     "tests/features/build-slices/s9-lvpm-build-app.feature",
@@ -148,6 +149,8 @@ pub struct CliWorld {
     pub init: steps::init::InitState,
     /// What a GitHub scenario has set up.
     pub github: steps::github::GitHubState,
+    /// What a community-index scenario has set up.
+    pub community: steps::community::CommunityState,
 }
 
 impl CliWorld {
@@ -181,6 +184,7 @@ impl CliWorld {
             listings: Default::default(),
             init: Default::default(),
             github: Default::default(),
+            community: Default::default(),
         }
     }
 

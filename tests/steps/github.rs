@@ -18,20 +18,20 @@ use regex::Regex;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const PILOT_B: &str = "labview_open_source_lib_serializer";
-const PILOT_B_FILE: &str = "labview_open_source_lib_serializer-1.2.1.16.vip";
+pub(super) const PILOT_B: &str = "labview_open_source_lib_serializer";
+pub(super) const PILOT_B_FILE: &str = "labview_open_source_lib_serializer-1.2.1.16.vip";
 const PILOT_B_REPO: &str = "LabVIEW-Open-Source/Serializer";
 /// Pilot B's release: the repo tags the package's version without its build.
-const PILOT_B_TAG: &str = "1.2.1";
+pub(super) const PILOT_B_TAG: &str = "1.2.1";
 const PILOT_B_CONSTRAINT: &str = ">=1.2";
 /// What pilot B needs and the project lists itself.
-const PILOT_B_NEEDS: &str = "labview_open_source_lib_data_manipulation";
+pub(super) const PILOT_B_NEEDS: &str = "labview_open_source_lib_data_manipulation";
 /// What pilot B needs, which the project's `[sources]` feed holds.
-const PILOT_B_DEPENDENCY_FILES: [&str; 2] = [
+pub(super) const PILOT_B_DEPENDENCY_FILES: [&str; 2] = [
     "labview_open_source_lib_data_manipulation-1.6.0.16.vip",
     "labview_open_source_project_lib_labview_open_source_palette-1.0.2.7.vip",
 ];
-const PROJECT_LABVIEW: &str = "2024";
+pub(super) const PROJECT_LABVIEW: &str = "2024";
 /// Where the lock without GitHub dependencies is recorded.
 const GOLDEN_LOCK: &str = "tests/golden/s4-no-github.lock";
 
@@ -48,7 +48,7 @@ pub struct GitHubState {
 
 impl CliWorld {
     /// The fake, started on first use, and the sandbox pointed at it.
-    fn github_fake(&mut self) -> &GitHubFake {
+    pub(super) fn github_fake(&mut self) -> &GitHubFake {
         if self.github.fake.is_none() {
             self.github.fake = Some(GitHubFake::start(&[]));
             self.point_github_at_the_fake();
@@ -198,7 +198,13 @@ fn package_bytes_needing(
 impl CliWorld {
     /// Release `tag` of `repo` holding `files`, which are then what the fake
     /// serves under their names.
-    fn serve(&mut self, repo: &str, tag: &str, files: &[(&str, Vec<u8>)], prerelease: bool) {
+    pub(super) fn serve(
+        &mut self,
+        repo: &str,
+        tag: &str,
+        files: &[(&str, Vec<u8>)],
+        prerelease: bool,
+    ) {
         let mut release = FakeRelease::new(tag);
         for (file, bytes) in files {
             release = release.asset(file, bytes);
@@ -211,7 +217,7 @@ impl CliWorld {
     }
 
     /// What the fake serves under `file`.
-    fn served(&self, file: &str) -> &[u8] {
+    pub(super) fn served(&self, file: &str) -> &[u8] {
         self.github
             .served
             .get(file)

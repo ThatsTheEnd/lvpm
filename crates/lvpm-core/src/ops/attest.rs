@@ -33,7 +33,7 @@ pub(super) struct Attested {
 /// Who is asked about `entry`'s attestation, by where it comes from; `None`
 /// when nobody is.
 fn origin_of(entry: &Entry) -> Option<Origin> {
-    if let Some(repo) = index::github_repo(entry) {
+    if let Some(repo) = index::attesting_repo(entry) {
         return Some(Origin::GitHub {
             repo: repo.to_string(),
         });

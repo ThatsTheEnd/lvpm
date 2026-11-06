@@ -142,7 +142,9 @@ fn respond(behavior: &Behavior, run: &Run) -> Response {
         Behavior::Rejects { stderr } => said("", stderr, 1),
         Behavior::Verifies { repository } => {
             let built_by = repository.strip_prefix(GITHUB).unwrap_or(repository);
-            let (Some(sha), Some(_)) = (&run.artifact_sha256, &run.bundle_sha256) else {
+            // Without `--bundle` gh asks GitHub for the attestation itself.
+            let bundle_read = run.flag("--bundle").is_none() || run.bundle_sha256.is_some();
+            let Some(sha) = run.artifact_sha256.as_ref().filter(|_| bundle_read) else {
                 return said("", "no bundle or no file to verify", 1);
             };
             if run.flag("--repo") != Some(built_by) {
@@ -324,6 +326,21 @@ mod tests {
             result["statement"]["subject"][0]["digest"]["sha256"],
             "ab".repeat(32)
         );
+    }
+
+    #[test]
+    fn a_verify_with_no_bundle_looks_the_attestation_up_and_vouches_for_the_file() {
+        let no_bundle = ["attestation", "verify", "a.lvpkg", "--repo", "o/r"];
+        let mut asked = run(&no_bundle, true);
+        asked.bundle_sha256 = None;
+        let got = respond(&verifies(), &asked);
+        assert_eq!(got.code, 0, "{got:?}");
+        assert!(got.stdout.contains(&"ab".repeat(32)), "{got:?}");
+        let mut other_repo = no_bundle;
+        other_repo[4] = "o/other";
+        let mut asked = run(&other_repo, true);
+        asked.bundle_sha256 = None;
+        assert_eq!(respond(&verifies(), &asked).stderr, WRONG_REPO);
     }
 
     #[test]

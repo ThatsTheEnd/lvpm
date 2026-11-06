@@ -606,6 +606,11 @@ pub enum Fact {
     /// the manifest pins it there. The solver never produces it: `ops::lock`
     /// adds it to a failure that names a package no source lists.
     OciExplicit { source: String },
+    /// `package` is in no source, and the project has the community index
+    /// `repo` (`owner/repo`) among them: it was asked, and does not list it.
+    /// The solver never produces it: `ops::lock` adds it, as it adds
+    /// [`Fact::OciExplicit`].
+    IndexSearched { repo: String },
 }
 
 /// What a failure says of a package pinned to one source: no other source is
@@ -635,7 +640,7 @@ impl Fact {
             Fact::NoVersion { .. } => 3,
             Fact::NotListed { .. } => 4,
             Fact::SourcePinned { .. } => 5,
-            Fact::OciExplicit { .. } => 6,
+            Fact::OciExplicit { .. } | Fact::IndexSearched { .. } => 6,
         }
     }
 }
@@ -720,6 +725,7 @@ impl fmt::Display for Fact {
                 f,
                 "{package} is pinned to \"{source}\" ({feed}); {OTHER_SOURCES_IGNORED}"
             ),
+            Fact::IndexSearched { repo } => write!(f, "searched github:{repo}"),
             Fact::OciExplicit { source } => write!(
                 f,
                 "note: OCI source \"{source}\" is explicit; pin with index = \"{source}\""
@@ -904,7 +910,8 @@ fn concerns_held(fact: &Fact, packages: &[&str], all_held: &[&str], failing: &[&
         | Fact::AllHeldBack(_)
         | Fact::VersionHeldBack { .. }
         | Fact::SourcePinned { .. }
-        | Fact::OciExplicit { .. } => false,
+        | Fact::OciExplicit { .. }
+        | Fact::IndexSearched { .. } => false,
     }
 }
 
