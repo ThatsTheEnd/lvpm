@@ -8,29 +8,33 @@
 //! The race between the second check and the PUT stays open: OCI has no
 //! create-only tag, so the docs tell teams to turn on tag immutability.
 
-use super::Published;
+use super::{Published, SbomReferrer};
 use crate::events::Event;
 use crate::lvpkg;
 use crate::oci::{
     self, ANNOTATION_CREATED, ANNOTATION_LABVIEW, ANNOTATION_REQUIRES, ANNOTATION_TITLE,
     ANNOTATION_VERSION, ARTIFACT_TYPE, Access, EMPTY_CONFIG, EMPTY_CONFIG_TYPE, FeedUrl,
-    LAYER_TYPE, MANIFEST_TYPE, Reference, Repo,
+    LAYER_TYPE, MANIFEST_TYPE, Reference, Repo, SBOM_TYPE,
 };
 use crate::ops::OpEnv;
 use crate::spec::Spec;
 use crate::{cache, timefmt};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Map, Value, json};
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 /// What every failure before the manifest is written ends in.
 const SAFE_TO_RERUN: &str = "nothing was published, it is safe to rerun";
+/// The most of the SBOM that is attached: a package's SBOM is a few KiB, so a
+/// larger one is a package to look at before it is published.
+const MAX_SBOM_BYTES: u64 = 32 * 1024 * 1024;
 /// What a spec's LabVIEW gate starts with; `lvpkg` always writes it so.
 const LABVIEW_GATE: &str = "LabVIEW>=";
 
 pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Published> {
-    let (bytes, spec) = read_package(package).map_err(|why| anyhow!("{why:#}; {SAFE_TO_RERUN}"))?;
+    let (bytes, spec, sbom) =
+        read_package(package).map_err(|why| anyhow!("{why:#}; {SAFE_TO_RERUN}"))?;
     let tag = spec.version.as_str();
     if !oci::valid_tag(tag) {
         bail!("{tag} is not a valid OCI tag; publish a version without \"+\" build metadata");
@@ -71,20 +75,52 @@ pub(super) fn publish(env: &OpEnv, feed: &FeedUrl, package: &Path) -> Result<Pub
     let digest = client
         .put_manifest(&repo, tag, &manifest)
         .map_err(|why| at_the_put(why, &name, &reference))?;
+    // The version is live: whatever the SBOM does from here is reported, not
+    // raised, so the digest of what was published is always printed.
+    let sbom = match sbom {
+        None => SbomReferrer::NoSbom,
+        Some(sbom) => {
+            let subject = oci::Manifest {
+                digest: digest.clone(),
+                bytes: manifest,
+            };
+            match client.push_referrer(&repo, &subject, SBOM_TYPE, &sbom) {
+                Ok(_) => SbomReferrer::Attached,
+                Err(why) => SbomReferrer::Failed(why.to_string()),
+            }
+        }
+    };
     Ok(Published::Oci {
         name: spec.name,
         version: spec.version,
         reference,
         digest,
+        sbom,
     })
 }
 
-/// The package's bytes and the spec inside them.
-fn read_package(package: &Path) -> Result<(Vec<u8>, Spec)> {
+/// The package's bytes, the spec inside them, and its SBOM if it carries one.
+fn read_package(package: &Path) -> Result<(Vec<u8>, Spec, Option<Vec<u8>>)> {
     let bytes = std::fs::read(package).with_context(|| format!("reading {}", package.display()))?;
-    let spec = lvpkg::read(&mut zip::ZipArchive::new(Cursor::new(bytes.as_slice()))?)
-        .with_context(|| format!("reading {}", package.display()))?;
-    Ok((bytes, spec))
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice()))?;
+    // `read` has checked the SBOM entry against RECORD, so what is found is
+    // the one the build wrote.
+    let spec = lvpkg::read(&mut zip).with_context(|| format!("reading {}", package.display()))?;
+    let sbom = sbom_of(&mut zip).with_context(|| format!("reading {}", package.display()))?;
+    Ok((bytes, spec, sbom))
+}
+
+/// The SBOM entry, up to [`MAX_SBOM_BYTES`].
+fn sbom_of(zip: &mut zip::ZipArchive<Cursor<&[u8]>>) -> Result<Option<Vec<u8>>> {
+    let Ok(entry) = zip.by_name(lvpkg::SBOM) else {
+        return Ok(None);
+    };
+    let mut sbom = Vec::new();
+    entry.take(MAX_SBOM_BYTES + 1).read_to_end(&mut sbom)?;
+    if sbom.len() as u64 > MAX_SBOM_BYTES {
+        bail!("{} is larger than {MAX_SBOM_BYTES} bytes", lvpkg::SBOM);
+    }
+    Ok(Some(sbom))
 }
 
 /// The digest of `bytes` once the repository holds them.
@@ -244,6 +280,32 @@ mod tests {
             "registry r:1 is unreachable: closed; the manifest upload did not finish, check \
              whether oci://r:1/t/a:1 exists before rerunning"
         );
+    }
+
+    fn package(sbom: Option<&[u8]>) -> Vec<u8> {
+        let meta = lvpkg::Meta {
+            name: "alpha".into(),
+            version: "1.0.0".into(),
+            labview: ">=2021".into(),
+            vendor: "V".into(),
+            display_name: "A".into(),
+            install_dir: "vi.lib/V/A".into(),
+            dependencies: Vec::new(),
+        };
+        lvpkg::write(&meta, &[("a.vi".into(), b"a vi".to_vec())], sbom).unwrap()
+    }
+
+    #[test]
+    fn a_package_gives_its_sbom_bytes_and_one_without_gives_none() {
+        let read = |bytes: &[u8]| {
+            let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+            sbom_of(&mut zip).unwrap()
+        };
+        assert_eq!(
+            read(&package(Some(b"{\"x\":1}"))),
+            Some(b"{\"x\":1}".to_vec())
+        );
+        assert_eq!(read(&package(None)), None);
     }
 
     fn spec(requires: Option<&str>, lv_gate: Option<&str>) -> Spec {

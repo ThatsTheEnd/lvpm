@@ -61,6 +61,7 @@ const FEATURE_FILES: &[&str] = &[
     "tests/features/build-slices/s7b-oci-feeds.feature",
     "tests/features/build-slices/s7b-oci-install.feature",
     "tests/features/build-slices/s7b-oci-logins.feature",
+    "tests/features/build-slices/s7b-oci-referrers.feature",
     "tests/features/build-slices/s7a-lvpkg.feature",
     "tests/features/build-slices/s10a-lvpm-init.feature",
     "tests/features/build-slices/s10d-unattended.feature",

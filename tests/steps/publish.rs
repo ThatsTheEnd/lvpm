@@ -30,8 +30,8 @@ pub struct PublishState {
     /// The package `lvpm build` wrote, and the repository the scenario last
     /// looked at on the registry, with its manifest.
     package: Option<PathBuf>,
-    repository: String,
-    manifest: Option<serde_json::Value>,
+    pub(super) repository: String,
+    pub(super) manifest: Option<serde_json::Value>,
 }
 
 impl CliWorld {

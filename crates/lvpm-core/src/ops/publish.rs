@@ -46,6 +46,17 @@ impl PublishTarget {
     }
 }
 
+/// What became of the package's SBOM when it was published to an OCI registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SbomReferrer {
+    /// It is a referrer of the package's OCI manifest.
+    Attached,
+    /// The package carries none.
+    NoSbom,
+    /// The package is published and the SBOM is not attached: why, in words.
+    Failed(String),
+}
+
 /// What a publish wrote.
 #[derive(Debug)]
 pub enum Published {
@@ -58,6 +69,7 @@ pub enum Published {
         reference: Reference,
         /// The digest of the OCI manifest, which a signature of the package signs.
         digest: String,
+        sbom: SbomReferrer,
     },
 }
 

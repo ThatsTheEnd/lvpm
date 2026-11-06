@@ -899,13 +899,19 @@ fn run(cli: &Cli) -> Result<Report> {
             app,
             package,
         } => cmd_build(&env, *no_check, *app, *package, cli.json),
-        Cmd::Publish { to } => Ok(Report::said(
-            render::publish::published(&ops::publish::publish(
-                &env,
-                &PublishTarget::from_arg(to)?,
-            )?),
-            "publish",
-        )),
+        Cmd::Publish { to } => {
+            let done = ops::publish::publish(&env, &PublishTarget::from_arg(to)?)?;
+            let text = render::publish::published(&done);
+            // The package is live but its SBOM is not attached: what was
+            // published is printed all the same, and the command fails.
+            match render::publish::sbom_failure(&done) {
+                None => Ok(Report::said(text, "publish")),
+                Some(warning) => {
+                    let result = json!({ "command": "publish", "warning": warning.trim_end() });
+                    Ok(Report::new(text, result)?.warning(warning).failed(true))
+                }
+            }
+        }
         Cmd::Check { dir } => {
             let checked = ops::check::check(&env, dir.as_deref())?;
             let warning = render::check::warnings(&checked, dir.as_deref());
