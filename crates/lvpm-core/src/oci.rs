@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 mod auth;
@@ -327,6 +327,9 @@ impl Repo<'_> {
     }
 }
 
+/// What `credentials` said of a registry: a login, none, or why not.
+type Asked = Result<Option<Credential>, logins::Error>;
+
 /// The OCI side of an operation's environment: one HTTP client for every
 /// registry call, the logins it may use, and the bearer tokens it has been
 /// given.
@@ -341,7 +344,7 @@ pub struct Oci {
     credentials: Credentials,
     /// What `credentials` said of each registry, so a run asks once for each:
     /// a helper may unlock a keyring or fail slowly.
-    logins: Mutex<HashMap<String, Result<Option<Credential>, logins::Error>>>,
+    logins: Mutex<HashMap<String, Arc<OnceLock<Asked>>>>,
 }
 
 impl Default for Oci {
@@ -370,11 +373,14 @@ impl Oci {
     /// The login for `registry`, from `credentials` on the first ask and from
     /// memory after that, a failure included.
     pub fn login_for(&self, registry: &str) -> Result<Option<Credential>, logins::Error> {
-        let mut known = self.logins.lock().unwrap_or_else(PoisonError::into_inner);
-        let found = known
-            .entry(registry.to_string())
-            .or_insert_with(|| (self.credentials)(registry));
-        found.clone()
+        // The map is locked only to find the host's slot, not while a helper runs:
+        // one host's slow helper does not hold up another's, and the slot's
+        // `OnceLock` still runs it once.
+        let slot = {
+            let mut known = self.logins.lock().unwrap_or_else(PoisonError::into_inner);
+            known.entry(registry.to_string()).or_default().clone()
+        };
+        slot.get_or_init(|| (self.credentials)(registry)).clone()
     }
 
     fn client(&self, registry: &str) -> Result<&Client, Error> {
@@ -416,6 +422,11 @@ impl Oci {
         if first.status().as_u16() != 401 {
             return Ok(first);
         }
+        // Only the registry's own challenge may spend its login: a redirect to
+        // another host that answers 401 with a realm of its own must not.
+        if !is_registry(first.url(), repo.registry) {
+            return Ok(first);
+        }
         let Some(challenge) = auth::challenge(first.headers()) else {
             return Ok(first);
         };
@@ -453,6 +464,20 @@ fn base_url(registry: &str) -> String {
         false => "https",
     };
     format!("{scheme}://{registry}")
+}
+
+/// Whether `url` is on `registry` (`host[:port]`).
+fn is_registry(url: &reqwest::Url, registry: &str) -> bool {
+    let (host, port) = match registry.split_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok()),
+        None => (registry, None),
+    };
+    let default = match url.scheme() {
+        "https" => Some(443),
+        "http" => Some(80),
+        _ => None,
+    };
+    url.host_str() == Some(host) && url.port_or_known_default() == port.or(default)
 }
 
 fn is_loopback(host: &str) -> bool {
@@ -669,7 +694,6 @@ mod tests {
 
     #[test]
     fn the_login_of_a_registry_is_asked_once_and_a_failure_is_remembered_too() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         let asked = Arc::new(AtomicUsize::new(0));
         let credentials: Credentials = {
@@ -695,5 +719,43 @@ mod tests {
         let error = Error::from(oci.login_for("b:1").unwrap_err());
         assert!(error.is_host_level());
         assert_eq!(error.registry(), "b:1");
+    }
+
+    #[test]
+    fn a_slow_helper_for_one_host_does_not_hold_up_another() {
+        use std::sync::mpsc;
+        let (release, wait) = mpsc::channel::<()>();
+        let (started, running) = mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        let started = Mutex::new(started);
+        let credentials: Credentials = Arc::new(move |registry| {
+            if registry == "slow:1" {
+                started.lock().unwrap().send(()).ok();
+                wait.lock().unwrap().recv().ok();
+            }
+            Ok(None)
+        });
+        let oci = Arc::new(Oci::with_credentials(credentials));
+        let slow = {
+            let oci = oci.clone();
+            std::thread::spawn(move || oci.login_for("slow:1"))
+        };
+        running.recv().unwrap();
+        // Would never return if the slow host's helper held every lookup.
+        assert_eq!(oci.login_for("quick:1"), Ok(None));
+        release.send(()).unwrap();
+        assert_eq!(slow.join().unwrap(), Ok(None));
+    }
+
+    #[test]
+    fn only_a_url_on_the_registry_itself_may_spend_its_login() {
+        let on = |url: &str, registry: &str| is_registry(&url.parse().unwrap(), registry);
+        assert!(on("https://ghcr.io/v2/", "ghcr.io"));
+        assert!(on("https://ghcr.io:443/v2/", "ghcr.io"));
+        assert!(on("http://127.0.0.1:5000/v2/", "127.0.0.1:5000"));
+        assert!(!on("https://cdn.example/v2/", "ghcr.io"));
+        assert!(!on("https://ghcr.io.evil/v2/", "ghcr.io"));
+        assert!(!on("https://ghcr.io:8443/v2/", "ghcr.io"));
+        assert!(!on("http://127.0.0.1:6000/v2/", "127.0.0.1:5000"));
     }
 }

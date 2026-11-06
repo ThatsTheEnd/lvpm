@@ -85,7 +85,7 @@ pub(super) fn fetch_token(
         .send()
         .map_err(|e| Error::unreachable(registry, &e))?;
     let status = reply.status().as_u16();
-    if let (401 | 403, Some(login)) = (status, login) {
+    if let (401, Some(login)) = (status, login) {
         return Err(Error::LoginRefused {
             registry: registry.to_string(),
             origin: login.origin().to_string(),
@@ -140,11 +140,12 @@ fn realm_url(registry: &str, challenge: &Challenge, wanted: &str) -> Result<Url,
 fn checked_realm(registry: &str, challenge: &Challenge) -> Result<Url, Error> {
     let url = Url::parse(&challenge.realm)
         .map_err(|_| Error::protocol(registry, "named a token realm that is not a URL"))?;
-    // A plain-http realm is for a loopback registry only: a remote registry
-    // must not point lvpm at a service on this machine.
+    // A remote registry must not point lvpm at a service on this machine, nor
+    // send a login in the clear.
+    let realm_host = url.host_str().unwrap_or_default();
     let registry_host = registry.split(':').next().unwrap_or_default();
-    if !super::scheme_allowed(url.scheme(), url.host_str().unwrap_or_default())
-        || (url.scheme() == "http" && !super::is_loopback(registry_host))
+    if !super::scheme_allowed(url.scheme(), realm_host)
+        || (super::is_loopback(realm_host) && !super::is_loopback(registry_host))
     {
         return Err(Error::protocol(
             registry,
@@ -208,7 +209,16 @@ mod tests {
             assert!(realm_url("r", &named(bad), "own").is_err(), "{bad}");
         }
         // A remote registry cannot send lvpm to a service on this machine.
-        assert!(realm_url("ghcr.io", &named("http://127.0.0.1:9/t"), "own").is_err());
+        for realm in [
+            "http://127.0.0.1:9/t",
+            "https://127.0.0.1:9/t",
+            "https://localhost/t",
+        ] {
+            assert!(
+                realm_url("ghcr.io", &named(realm), "own").is_err(),
+                "{realm}"
+            );
+        }
     }
 
     #[test]

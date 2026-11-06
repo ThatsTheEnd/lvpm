@@ -73,6 +73,7 @@ Feature: OCI registry credentials
     And a credential helper that answers "credentials not found in native keychain"
     When I run "lvpm lock"
     Then it fails saying 'alpha: registry <registry> refused the lookup for source "team"; the package is missing or your login cannot read it; run docker login <registry>'
+    And the helper ran once
 
   Scenario Outline: A wrong login is reported with where it came from
     Given the registry requires a login for "team" and refuses "u9"

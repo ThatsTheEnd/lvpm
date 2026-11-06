@@ -9,6 +9,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+/// The longest a run may be given: a year.
+const MAX_LIMIT: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
 /// How a run of a program came out.
 #[derive(Debug)]
 pub enum Ran {
@@ -51,8 +54,9 @@ pub fn run(command: &mut Command, stdin: Option<&[u8]>, limit: Duration, cap: u6
     }
     let stdout = read_capped(child.stdout.take().expect("piped above"), cap);
     let stderr = read_capped(child.stderr.take().expect("piped above"), cap);
-    let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
+    // Capped so a huge limit cannot overflow `Instant`.
+    let deadline = Instant::now() + limit.min(MAX_LIMIT);
+    loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 // One grace covers both readers seeing EOF. Output that has not
@@ -72,6 +76,9 @@ pub fn run(command: &mut Command, stdin: Option<&[u8]>, limit: Duration, cap: u6
                     stderr,
                 };
             }
+            // Asked once more at the deadline, so a run that ends in the last
+            // pause is not called slow.
+            Ok(None) if Instant::now() >= deadline => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(error) => {
                 child.kill().ok();
@@ -107,6 +114,8 @@ mod tests {
     const CAP: u64 = 1024 * 1024;
     /// Set in the copy of the test program that `echoes_stdin` starts.
     const ECHO_VARIABLE: &str = "LVPM_PROCESS_TEST_ECHO";
+    /// Set in the copy of the test program that `hangs` starts.
+    const HANG_VARIABLE: &str = "LVPM_PROCESS_TEST_HANG";
 
     fn cargo(args: &[&str]) -> Command {
         let mut command = Command::new("cargo");
@@ -140,12 +149,37 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_program_is_not_found_and_a_slow_one_timed_out() {
+    fn a_missing_program_is_not_found() {
         let missing = run(&mut Command::new("no-such-program-lvpm"), None, LONG, CAP);
         assert!(matches!(missing, Ran::NotFound), "{missing:?}");
+    }
 
-        let slow = run(&mut cargo(&["--version"]), None, Duration::ZERO, CAP);
+    /// The child half of `a_program_still_running_at_the_limit_is_killed`.
+    #[test]
+    #[allow(clippy::disallowed_methods)] // a test, and the variable is its own
+    fn hangs() {
+        if std::env::var_os(HANG_VARIABLE).is_some() {
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    #[test]
+    fn a_program_still_running_at_the_limit_is_killed() {
+        let me = std::env::current_exe().expect("this test program");
+        let mut command = Command::new(me);
+        command
+            .args(["--exact", "process::tests::hangs", "--nocapture"])
+            .env(HANG_VARIABLE, "1");
+        let started = Instant::now();
+        let slow = run(&mut command, None, Duration::from_millis(300), CAP);
         assert!(matches!(slow, Ran::TimedOut), "{slow:?}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_limit_too_big_for_a_clock_is_no_panic() {
+        let ran = run(&mut cargo(&["--version"]), None, Duration::MAX, CAP);
+        assert!(matches!(ran, Ran::Exited { .. }), "{ran:?}");
     }
 
     #[test]

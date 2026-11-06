@@ -288,13 +288,17 @@ async fn token_request_without_login(world: &mut CliWorld) {
 )]
 async fn token_endpoint_got_login(world: &mut CliWorld, user: String, push: String) {
     let asked = world.registry().token_requests();
-    let secret = world.logins.secrets.get(&user);
+    let secret = world
+        .logins
+        .secrets
+        .get(&user)
+        .expect("a secret the scenario gave this user");
     let logged_in = |ask: &lvpm_testkit::oci::TokenRequest| {
         let pushing = push.is_empty() || ask.scope().ends_with(":pull,push");
         let login = ask.basic_login();
-        let right = login.as_ref().is_some_and(|(have, sent)| {
-            *have == user && secret.is_none_or(|secret| secret == sent)
-        });
+        let right = login
+            .as_ref()
+            .is_some_and(|(have, sent)| *have == user && secret == sent);
         right && pushing
     };
     assert!(asked.iter().any(logged_in), "no such login in {asked:?}");

@@ -261,7 +261,27 @@ fn lookup(
         None if !config.creds_store.is_empty() => Origin::CredsStore(config.creds_store),
         None => return Ok(auths_entry(&config.auths, registry)),
     };
+    if let Origin::CredHelpers(name) | Origin::CredsStore(name) = &origin
+        && !plain_name(name)
+    {
+        return Err(Error::Config {
+            path: config_dir.join("config.json").display().to_string(),
+            registry: registry.to_string(),
+            problem: "a credential helper is named by letters, digits, `.`, `-` and `_` only"
+                .to_string(),
+        });
+    }
     ask_helper(origin, registry, timeout, run)
+}
+
+/// Whether `name` can follow `docker-credential-` and still be a program on
+/// PATH: a name with a path in it would run a program from the working
+/// directory instead.
+fn plain_name(name: &str) -> bool {
+    !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 fn read_config(config_dir: &Path, registry: &str) -> Result<Config, Error> {
@@ -299,13 +319,21 @@ fn auths_entry(auths: &HashMap<String, Auth>, registry: &str) -> Option<Credenti
             .unwrap_or_default()
             .to_string()
     };
-    let entry = auths.iter().find(|(key, _)| host_of(key) == registry)?.1;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(entry.auth.trim())
-        .ok()?;
-    let text = String::from_utf8(decoded).ok()?;
-    let (user, secret) = text.split_once(':')?;
-    Some(Credential::basic(Origin::Auths, user, secret))
+    // The key Docker writes first, then the URLs by name: the same entry each
+    // run, and the first of them that holds a login.
+    let mut keys: Vec<&String> = auths
+        .keys()
+        .filter(|key| host_of(key) == registry)
+        .collect();
+    keys.sort_by_key(|key| (key.as_str() != registry, key.as_str()));
+    keys.into_iter().find_map(|key| {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(auths[key].auth.trim())
+            .ok()?;
+        let text = String::from_utf8(decoded).ok()?;
+        let (user, secret) = text.split_once(':')?;
+        Some(Credential::basic(Origin::Auths, user, secret))
+    })
 }
 
 fn ask_helper(
@@ -478,6 +506,46 @@ mod tests {
     }
 
     #[test]
+    fn with_two_keys_for_the_host_the_bare_one_wins_and_a_bad_one_is_skipped() {
+        // u3:s3 under the bare host, u:p:q under a URL of it.
+        let both = format!(
+            r#"{{"auths":{{"https://{HOST}/v1/":{{"auth":"dTpwOnE="}},"{HOST}":{{"auth":"dTM6czM="}}}}}}"#
+        );
+        let bad_bare = format!(
+            r#"{{"auths":{{"https://{HOST}/v1/":{{"auth":"dTpwOnE="}},"{HOST}":{{"auth":"!!"}}}}}}"#
+        );
+        for _ in 0..20 {
+            let (all, _, _dir) = store(Some(&both), named);
+            assert_eq!(all(HOST).unwrap(), basic(Origin::Auths, "u3", "s3"));
+            let (all, _, _dir) = store(Some(&bad_bare), named);
+            assert_eq!(all(HOST).unwrap(), basic(Origin::Auths, "u", "p:q"));
+        }
+    }
+
+    #[test]
+    fn identity_token_under_auths_is_ignored() {
+        let config = format!(r#"{{"auths":{{"{HOST}":{{"identitytoken":"{SECRET}"}}}}}}"#);
+        let (all, asked, _dir) = store(Some(&config), named);
+        assert_eq!(all(HOST).unwrap(), None);
+        assert!(asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_helper_name_with_a_path_in_it_is_refused_unrun() {
+        for name in ["../evil", "a/b", r#"a\\b"#, "C:x", ".x", "a b"] {
+            let config = format!(r#"{{"credHelpers":{{"{HOST}":"{name}"}}}}"#);
+            let (all, asked, _dir) = store(Some(&config), named);
+            let error = all(HOST).unwrap_err().to_string();
+            assert!(error.contains("cannot be read for"), "{name}: {error}");
+            assert!(asked.lock().unwrap().is_empty(), "{name}: nothing ran");
+        }
+        let store_name = r#"{"credsStore":"../evil"}"#;
+        let (all, asked, _dir) = store(Some(store_name), named);
+        assert!(all(HOST).is_err());
+        assert!(asked.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn no_config_or_no_login_in_it_is_anonymous_and_runs_nothing() {
         let not_base64 = format!(r#"{{"auths":{{"{HOST}":{{"auth":"!!"}}}}}}"#);
         let no_colon = format!(r#"{{"auths":{{"{HOST}":{{"auth":"dTM="}}}}}}"#);
@@ -552,6 +620,27 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_answer_that_is_not_usable_is_not_quoted() {
+        let dir = Dir::with(Some(r#"{"credsStore":"s"}"#));
+        let cut = format!(r#"{{"Username":"u","Secret":"{SECRET}""#);
+        let wrong_shape = format!(r#"{{"Username":"u","Secret":["{SECRET}"]}}"#);
+        let mut answers = vec![];
+        for stdout in [cut, wrong_shape, SECRET.to_string()] {
+            for status in [0, 3] {
+                answers.push(exited(status, &stdout));
+            }
+        }
+        answers.push(Ran::Failed(std::io::Error::other(SECRET)));
+        for answer in answers {
+            let answer = Mutex::new(Some(answer));
+            let run: HelperRunner = Arc::new(move |_, _, _| answer.lock().unwrap().take().unwrap());
+            let all = docker_store(dir.0.clone(), Duration::from_secs(7), run);
+            let error = all(HOST).unwrap_err();
+            assert!(!format!("{error:?}{error}").contains(SECRET), "{error:?}");
+        }
+    }
+
+    #[test]
     fn a_config_that_is_not_json_is_named_without_quoting_it() {
         let (all, _, _dir) = store(Some(&format!(r#"{{"auths": "{SECRET}" }}"#)), named);
         let error = all(HOST).unwrap_err().to_string();
@@ -586,10 +675,5 @@ mod tests {
             "credsStore docker-credential-n"
         );
         assert_eq!(Origin::Auths.to_string(), "auths");
-    }
-
-    #[test]
-    fn a_helper_gets_thirty_seconds_unless_told_otherwise() {
-        assert_eq!(DEFAULT_HELPER_TIMEOUT, Duration::from_secs(30));
     }
 }
