@@ -20,7 +20,7 @@ async fn core_loads_the_index(world: &mut CliWorld) {
     let project = project::read(&manifest).expect("a readable manifest");
     let sink = RecordingSink::default();
     let feeds = project.resolved_sources().expect("the project's sources");
-    let (hosted, registries) = index::split_sources(feeds, &project.source_pins);
+    let (hosted, registries, _) = index::split_sources(feeds, &project.source_pins);
     index::load(
         &world.sandbox.cache_dir(),
         false,

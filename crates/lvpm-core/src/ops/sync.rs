@@ -849,7 +849,7 @@ impl Source {
         if project.default_sources {
             sources.push(Source::PublicFeeds);
         }
-        let (hosted, registries) =
+        let (hosted, registries, _) =
             index::split_sources(project.resolved_sources()?, &project.source_pins);
         sources.extend(hosted.into_iter().map(Source::Feed));
         sources.extend(registries.into_iter().map(Source::Oci));

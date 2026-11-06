@@ -423,7 +423,7 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+    let (hosted, _, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
     let feeds = index::feeds(&hosted, project.default_sources);
     let pins = source_pins(project)?;
     let hashes = hash_archives(env, index, &resolution, previous, moving, &pins, &feeds)?;

@@ -324,7 +324,7 @@ impl<'a> OpEnv<'a> {
         if let Some((_, proj)) = manifest {
             let feeds = proj.resolved_sources()?;
             owners = index::owners(&feeds, &proj.source_pins);
-            (repos, registries) = index::split_sources(feeds, &proj.source_pins);
+            (repos, registries, _) = index::split_sources(feeds, &proj.source_pins);
             defaults = proj.default_sources;
             self.warn_unpinned(&registries);
         }

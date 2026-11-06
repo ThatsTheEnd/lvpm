@@ -108,6 +108,11 @@ pub const CACHE_SOURCE: &str = "cache";
 /// when a third kind of source needs more than a repo.
 pub const GITHUB_SCHEME: &str = "github:";
 
+/// What an [`Entry::source`] starts with when a community index repo listed
+/// it: `github-index:owner/repo`. Never [`GITHUB_SCHEME`], so [`github_repo`]
+/// keeps meaning "a GitHub dependency".
+pub const INDEX_SCHEME: &str = "github-index:";
+
 /// The [`Entry::source`] of a file in `repo`'s (`owner/repo`) releases.
 pub fn github_source(repo: &str) -> String {
     format!("{GITHUB_SCHEME}{repo}")
@@ -463,16 +468,25 @@ pub struct OciFeed {
     pub pinned: Vec<String>,
 }
 
-/// `sources` cut into what the hosted-feed reader takes (the index folders)
-/// and what the OCI reader takes (each OCI feed with its pinned packages).
+/// A community index repo, `github:owner/repo`, from `[sources]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexFeed {
+    pub owner: String,
+    pub repo: String,
+}
+
+/// `sources` cut into what the hosted-feed reader takes (the index folders),
+/// what the OCI reader takes (each OCI feed with its pinned packages) and the
+/// community index repos, each in `[sources]` order.
 pub fn split_sources(
     sources: Vec<(String, Feed)>,
     pins: &BTreeMap<String, String>,
-) -> (Vec<String>, Vec<OciFeed>) {
-    let (mut hosted, mut registries) = (Vec::new(), Vec::new());
+) -> (Vec<String>, Vec<OciFeed>, Vec<IndexFeed>) {
+    let (mut hosted, mut registries, mut indexes) = (Vec::new(), Vec::new(), Vec::new());
     for (name, feed) in sources {
         match feed {
             Feed::Hosted(folder) => hosted.push(folder),
+            Feed::Index { owner, repo } => indexes.push(IndexFeed { owner, repo }),
             Feed::Oci(url) => {
                 let pinned = (pins.iter())
                     .filter(|(_, source)| **source == name)
@@ -482,7 +496,7 @@ pub fn split_sources(
             }
         }
     }
-    (hosted, registries)
+    (hosted, registries, indexes)
 }
 
 /// The OCI manifest an entry from an OCI source is fetched by, which is its
@@ -1828,6 +1842,40 @@ Package.Display Name=A Thing
     }
 
     #[test]
+    fn a_dependency_can_pin_the_index_source() {
+        let project = crate::project::parse(
+            "[sources]\ncommunity = \"github:o/r\"\n\n\
+             [dependencies]\nx = { version = \"*\", index = \"community\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            owners(&project.resolved_sources().unwrap(), &project.source_pins),
+            HashMap::from([("x".to_string(), Some("github-index:o/r".to_string()))])
+        );
+    }
+
+    #[test]
+    fn an_index_source_is_split_out_in_sources_order_and_is_no_hosted_folder() {
+        let index = |owner: &str, repo: &str| Feed::Index {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+        };
+        let sources = vec![
+            ("one".to_string(), index("o", "r")),
+            ("net".to_string(), Feed::Hosted("http://h/x".to_string())),
+            ("two".to_string(), index("o", "s")),
+        ];
+        let (hosted, registries, indexes) = split_sources(sources, &BTreeMap::new());
+        assert_eq!(hosted, ["http://h/x"]);
+        assert!(registries.is_empty());
+        let feed = |owner: &str, repo: &str| IndexFeed {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+        };
+        assert_eq!(indexes, [feed("o", "r"), feed("o", "s")]);
+    }
+
+    #[test]
     fn an_oci_reference_is_neither_a_local_file_nor_a_hosted_download() {
         let reference = format!("oci://r:5000/team/alpha@sha256:{}", "ab".repeat(32));
         assert!(!is_local_url(&reference));
@@ -1851,7 +1899,7 @@ Package.Display Name=A Thing
             ("beta".to_string(), "net".to_string()),
             ("gamma".to_string(), "team".to_string()),
         ]);
-        let (hosted, registries) = split_sources(sources, &pins);
+        let (hosted, registries, _) = split_sources(sources, &pins);
         assert_eq!(hosted, ["http://h/x"]);
         let split: Vec<(&str, String, &[String])> = registries
             .iter()
