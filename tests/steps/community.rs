@@ -432,18 +432,30 @@ async fn succeeds_printing(world: &mut CliWorld, line: String) {
     );
 }
 
-/// `<error>` stands for any text; the rest is what the line says.
+/// `<error>` stands for any text; the stderr line (after the `Error: ` the
+/// front end puts first) starts with what comes before it and ends with what
+/// comes after it.
 #[then(regex = r#"^the command fails with exit code 1 printing "([^"]+)"$"#)]
 async fn fails_printing(world: &mut CliWorld, line: String) {
     assert_eq!(world.output().exit_code, 1, "{}", world.printed());
     let report = world.printed();
-    let mut rest = report.as_str();
-    for part in line.split("<error>") {
-        match rest.find(part) {
-            Some(at) => rest = &rest[at + part.len()..],
-            None => panic!("{part:?} of {line:?} is not in:\n{report}"),
+    let said = |printed: &str| match line.split_once("<error>") {
+        Some((start, end)) => {
+            printed.len() >= start.len() + end.len()
+                && printed.starts_with(start)
+                && printed.ends_with(end)
         }
-    }
+        None => printed == line,
+    };
+    assert!(
+        world
+            .output()
+            .stderr
+            .lines()
+            .any(|printed| said(printed.strip_prefix("Error: ").unwrap_or(printed))),
+        "no line says {line:?} in:
+{report}"
+    );
 }
 
 #[then("the packages folder is unchanged")]

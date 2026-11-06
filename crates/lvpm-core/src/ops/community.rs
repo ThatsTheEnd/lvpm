@@ -6,15 +6,12 @@ use crate::cache::sha256_hex;
 use crate::community::{EntryFile, FileVersion, VersionListed};
 use crate::events::Event;
 use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, check_index_url};
+use crate::github::MAX_ENTRY_BYTES;
 use crate::index::{self, Entry};
 use crate::project::{name_key, split_owner_repo};
 use anyhow::{Context, Result, ensure};
 use std::io::Read;
 use std::path::Path;
-
-/// The most an entry file may be: it is read before it is parsed, and the bot
-/// refuses a larger one in a PR.
-const MAX_ENTRY_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Why `lvpm index add` wrote nothing. The wording is the front end's; the
 /// `Display` here is for a log.
@@ -24,11 +21,17 @@ pub enum AddRefused {
     NotOwnerRepo,
     #[error("{file} is not a package: {error}")]
     NotAPackage { file: String, error: String },
-    #[error("--url is not a release file of {github} on {web}")]
-    UrlNotInReleases { web: String, github: String },
-    #[error("{name} belongs to {owner}, not {github}")]
+    #[error("{name} {version}: --url is not a release file of {github} on {web}")]
+    UrlNotInReleases {
+        name: String,
+        version: String,
+        web: String,
+        github: String,
+    },
+    #[error("{name} {version} belongs to {owner}, not {github}")]
     NotTheOwner {
         name: String,
+        version: String,
         owner: String,
         github: String,
         entry_file: String,
@@ -41,6 +44,15 @@ pub enum AddRefused {
     },
     #[error("{entry_file} does not parse: {error}")]
     EntryFileUnreadable { entry_file: String, error: String },
+    #[error("{name} {version}: {entry_file} would exceed {limit} bytes")]
+    EntryFileTooBig {
+        name: String,
+        version: String,
+        entry_file: String,
+        limit: u64,
+    },
+    #[error("{dir} is not a folder: {error}")]
+    NotAFolder { dir: String, error: String },
 }
 
 /// `lvpm index add`: list `package` (a file at `url`, published from `github`)
@@ -52,6 +64,10 @@ pub enum AddRefused {
 /// ([`check_index_url`]), so a listed version is always installable.
 pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &str) -> Result<()> {
     ensure!(split_owner_repo(github).is_some(), AddRefused::NotOwnerRepo);
+    std::fs::read_dir(entries_dir).map_err(|why| AddRefused::NotAFolder {
+        dir: entries_dir.display().to_string(),
+        error: why.to_string(),
+    })?;
     let (listed, sha256) = read_package(package)?;
     let key = name_key(&listed.name);
     let path = entries_dir.join(format!("{key}.toml"));
@@ -65,6 +81,7 @@ pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &
         file.github.eq_ignore_ascii_case(github),
         AddRefused::NotTheOwner {
             name: listed.name.clone(),
+            version: listed.version.to_string(),
             owner: file.github.clone(),
             github: github.to_string(),
             entry_file,
@@ -77,9 +94,22 @@ pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &
             version: listed.version.to_string(),
             entry_file: entry_file.clone(),
         })?;
-    check_url(&file, &env.github.web_base())?;
+    check_url(&file, &listed, &env.github.web_base())?;
     let text = file.write();
-    EntryFile::parse(&key, &text).map_err(|why| not_a_package(package, why.to_string()))?;
+    ensure!(
+        text.len() as u64 <= MAX_ENTRY_BYTES,
+        AddRefused::EntryFileTooBig {
+            name: listed.name.clone(),
+            version: listed.version.to_string(),
+            entry_file,
+            limit: MAX_ENTRY_BYTES,
+        }
+    );
+    // What was built must read back, or the entry file would be one the index refuses.
+    EntryFile::parse(&key, &text).map_err(|why| AddRefused::EntryFileUnreadable {
+        entry_file: entry_file.clone(),
+        error: why.to_string(),
+    })?;
     write_atomically(&path, text.as_bytes())?;
     env.sink.emit(Event::IndexEntryAdded {
         name: listed.name,
@@ -129,13 +159,9 @@ fn read_entry_file(path: &Path, key: &str, shown: &str) -> Result<Option<EntryFi
         Err(why) if why.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(why) => return Err(why).with_context(|| format!("reading {shown}")),
     };
-    let bytes = read_up_to(file, MAX_ENTRY_FILE_BYTES)
+    let bytes = read_up_to(file, MAX_ENTRY_BYTES)
         .with_context(|| format!("reading {shown}"))?
-        .ok_or_else(|| {
-            unreadable(format!(
-                "the file is larger than {MAX_ENTRY_FILE_BYTES} bytes"
-            ))
-        })?;
+        .ok_or_else(|| unreadable(format!("the file is larger than {MAX_ENTRY_BYTES} bytes")))?;
     let text = String::from_utf8(bytes).map_err(|_| unreadable("the file is not UTF-8".into()))?;
     let file = EntryFile::parse(key, &text).map_err(|why| unreadable(why.to_string()))?;
     Ok(Some(file))
@@ -151,9 +177,11 @@ fn read_up_to(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u8>
 
 /// The newest version of `file` is a release file of its publisher, on the
 /// site at `web`: the rule the consumer applies to it.
-fn check_url(file: &EntryFile, web: &str) -> Result<(), AddRefused> {
+fn check_url(file: &EntryFile, listed: &Entry, web: &str) -> Result<(), AddRefused> {
     let added = file.entries("").pop().expect("a version was just added");
     check_index_url(&added, web).map_err(|_| AddRefused::UrlNotInReleases {
+        name: listed.name.clone(),
+        version: listed.version.to_string(),
         web: web.to_string(),
         github: file.github.clone(),
     })
@@ -332,6 +360,7 @@ Version=\"1.0\"
             why,
             AddRefused::NotTheOwner {
                 name: "foo".into(),
+                version: "1.1".into(),
                 owner: OWNER.into(),
                 github: "other/Fork".into(),
                 entry_file: format!("{packages}/foo.toml"),
@@ -359,6 +388,8 @@ Version=\"1.0\"
             format!("{release}/1.0/../../../../other/Fork/releases/download/1/x.lvpkg"),
             "https://github.com/other/Fork/releases/download/1.0/foo.lvpkg".to_string(),
             format!("{release}/1.0/foo.lvpkg?token=1"),
+            format!("{release}/1.0/sub/foo.lvpkg"),
+            format!("{release}/1.0%2f..%2f..%2fother/foo.lvpkg"),
             "C:\\Users\\x\\foo.lvpkg".to_string(),
             "cache:abc".to_string(),
             "oci://ghcr.io/x/foo:1.0".to_string(),
@@ -368,6 +399,8 @@ Version=\"1.0\"
             assert_eq!(
                 why,
                 AddRefused::UrlNotInReleases {
+                    name: "foo".into(),
+                    version: "1.0".into(),
                     web: "https://github.com".into(),
                     github: OWNER.into()
                 },
@@ -387,6 +420,8 @@ Version=\"1.0\"
         assert_eq!(
             why.downcast::<AddRefused>().unwrap(),
             AddRefused::UrlNotInReleases {
+                name: "foo".into(),
+                version: "1.0".into(),
                 web: "http://127.0.0.1:1".into(),
                 github: OWNER.into()
             }
@@ -436,7 +471,7 @@ Version=\"1.0\"
             "name = \"foo\"
 github = \"{OWNER}\"
 {}",
-            " ".repeat(MAX_ENTRY_FILE_BYTES as usize)
+            " ".repeat(MAX_ENTRY_BYTES as usize)
         );
         let texts: [(&str, Vec<u8>); 3] = [
             ("not TOML", b"name = [".to_vec()),
@@ -493,9 +528,67 @@ Requires=\"bar>=?\"",
 
         let why = index.refused(&package, OWNER, URL);
 
-        let AddRefused::NotAPackage { error, .. } = &why else {
+        let AddRefused::EntryFileUnreadable { entry_file, error } = &why else {
             panic!("{why:?}");
         };
+        assert!(entry_file.ends_with("/foo.toml"), "{entry_file}");
         assert!(error.contains("requires"), "{error}");
+    }
+
+    #[test]
+    fn an_entry_file_that_would_pass_the_limit_is_refused_and_left_as_it_was() {
+        let index = Index::new("add-grown");
+        // One listed version whose requirements fill the file to just under the limit.
+        let listing = |requirements: usize| {
+            let version = FileVersion {
+                version: "0.0.1".into(),
+                url: URL.into(),
+                sha256: "0".repeat(64),
+                labview: None,
+                requires: vec!["bar >=2.0".to_string(); requirements],
+            };
+            EntryFile {
+                name: "foo".into(),
+                github: OWNER.into(),
+                versions: vec![version],
+            }
+        };
+        let (one, two) = (listing(1).write().len(), listing(2).write().len());
+        let fill = (MAX_ENTRY_BYTES as usize - 100 - one) / (two - one) + 1;
+        let file = listing(fill);
+        assert!(file.write().len() < MAX_ENTRY_BYTES as usize);
+        std::fs::write(index.entry_file(), file.write()).unwrap();
+
+        let why = index.refused(&index.package("1.2.1"), OWNER, URL);
+
+        let packages = index.packages().display().to_string();
+        assert_eq!(
+            why,
+            AddRefused::EntryFileTooBig {
+                name: "foo".into(),
+                version: "1.2.1".into(),
+                entry_file: format!("{packages}/foo.toml"),
+                limit: MAX_ENTRY_BYTES,
+            }
+        );
+    }
+
+    #[test]
+    fn a_packages_folder_that_is_not_a_folder_is_refused_naming_it() {
+        let index = Index::new("add-nofolder");
+        let package = index.package("1.0");
+        let env = testing::env(&index.dir);
+        let file = index.dir.join("a-file");
+        std::fs::write(&file, "x").unwrap();
+        for dir in [index.dir.join("missing"), file] {
+            let why = add(&env, &dir, &package, OWNER, URL).unwrap_err();
+
+            let AddRefused::NotAFolder { dir: shown, error } = why.downcast().expect("a refusal")
+            else {
+                panic!("not NotAFolder");
+            };
+            assert_eq!(shown, dir.display().to_string());
+            assert!(!error.is_empty());
+        }
     }
 }

@@ -58,24 +58,34 @@ pub fn check_index_url(entry: &Entry, web: &str) -> Result<(), IndexUrlRefused> 
     })
 }
 
-/// Whether `url` is a file below `<web>/<publisher>/releases/download/`, the
-/// owner and repo compared ignoring ASCII case. The parsed form is the one
-/// compared, so `..` and `%2e%2e` cannot climb out; a url with userinfo, a query
-/// or a fragment, or one with a control character (which a parser would strip),
-/// is no release file.
+/// Whether `url` is `<web>/<publisher>/releases/download/<tag>/<file>`, the
+/// owner and repo compared ignoring ASCII case: exactly one tag and one file
+/// segment, neither empty, `.` or `..`. A `%` after the prefix refuses the url,
+/// since `%2f`, `%5c` and `%2e` would decode to a separator or a dot segment. A
+/// url with userinfo, a query or a fragment, or one with a control character
+/// (which a parser would strip), is no release file.
 fn is_release_file(url: &str, web: &str, publisher: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
     };
     let prefix = format!("{web}/{publisher}/releases/download/");
-    let head = parsed.as_str().get(..prefix.len());
+    let parsed_text = parsed.as_str();
+    let (Some(head), Some(rest)) = (
+        parsed_text.get(..prefix.len()),
+        parsed_text.get(prefix.len()..),
+    ) else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
     !url.chars().any(char::is_control)
         && parsed.username().is_empty()
         && parsed.password().is_none()
         && parsed.query().is_none()
         && parsed.fragment().is_none()
-        && parsed.as_str().len() > prefix.len()
-        && head.is_some_and(|head| head.eq_ignore_ascii_case(&prefix))
+        && head.eq_ignore_ascii_case(&prefix)
+        && !rest.contains('%')
+        && segments.len() == 2
+        && segments.iter().all(|s| !matches!(*s, "" | "." | ".."))
 }
 
 /// Return archive bytes, checking SHA-256 on cache reads and MD5 when advertised.
@@ -837,6 +847,13 @@ mod tests {
             "https://github.com/someone/Serializer/releases/download/",
             "https://github.com/someone/Serializer/releases/download/../../../evil/p.lvpkg",
             "https://github.com/someone/Serializer/releases/download/%2e%2e/%2e%2e/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0/sub/foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0%2f..%2f..%2fb/foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0%5c..%5cfoo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0/",
+            "https://github.com/someone/Serializer/releases/download/1.1.0",
+            "https://github.com/someone/Serializer/releases/download//foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0//foo.lvpkg",
             "https://github.com/someone/Serializer/releases/download/1/p.lvpkg?x=1",
             "https://github.com/someone/Serializer/releases/download/1/p.lvpkg#frag",
             "https://user@github.com/someone/Serializer/releases/download/1/p.lvpkg",

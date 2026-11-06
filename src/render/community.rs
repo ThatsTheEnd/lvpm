@@ -35,17 +35,25 @@ fn add_refusal(why: &AddRefused) -> String {
             format!("{file} is not an .lvpkg: {error}"),
             "pass the package lvpm build made".to_string(),
         ),
-        AddRefused::UrlNotInReleases { web, github } => (
-            format!("--url must be {web}/{github}/releases/download/<tag>/<file>"),
+        AddRefused::UrlNotInReleases {
+            name,
+            version,
+            web,
+            github,
+        } => (
+            format!(
+                "{name} {version}: --url must be {web}/{github}/releases/download/<tag>/<file>"
+            ),
             "pass the release asset's download URL".to_string(),
         ),
         AddRefused::NotTheOwner {
             name,
+            version,
             owner,
             github,
             entry_file,
         } => (
-            format!("{name} belongs to {owner} in {entry_file}, not {github}"),
+            format!("{name} {version} belongs to {owner} in {entry_file}, not {github}"),
             format!("publish from {owner}, or register another name"),
         ),
         AddRefused::AlreadyListed {
@@ -59,6 +67,19 @@ fn add_refusal(why: &AddRefused) -> String {
         AddRefused::EntryFileUnreadable { entry_file, error } => (
             format!("{entry_file} does not parse: {error}"),
             "restore it from the index repo".to_string(),
+        ),
+        AddRefused::EntryFileTooBig {
+            name,
+            version,
+            entry_file,
+            limit,
+        } => (
+            format!("{name} {version}: {entry_file} would exceed {limit} bytes"),
+            "ask the index maintainers to split or prune it".to_string(),
+        ),
+        AddRefused::NotAFolder { dir, error } => (
+            format!("{dir} is not a folder: {error}"),
+            "pass the index repo's packages folder".to_string(),
         ),
     };
     format!("lvpm index: {what}. fix: {fix}")
@@ -102,19 +123,22 @@ mod tests {
             ),
             (
                 AddRefused::UrlNotInReleases {
+                    name: "foo".into(),
+                    version: "1.0".into(),
                     web: "https://github.com".into(),
                     github: "a/x".into(),
                 },
-                "lvpm index: --url must be https://github.com/a/x/releases/download/<tag>/<file>. fix: pass the release asset's download URL",
+                "lvpm index: foo 1.0: --url must be https://github.com/a/x/releases/download/<tag>/<file>. fix: pass the release asset's download URL",
             ),
             (
                 AddRefused::NotTheOwner {
                     name: "foo".into(),
+                    version: "1.0".into(),
                     owner: "a/x".into(),
                     github: "b/y".into(),
                     entry_file: entry_file(),
                 },
-                "lvpm index: foo belongs to a/x in packages/foo.toml, not b/y. fix: publish from a/x, or register another name",
+                "lvpm index: foo 1.0 belongs to a/x in packages/foo.toml, not b/y. fix: publish from a/x, or register another name",
             ),
             (
                 AddRefused::AlreadyListed {
@@ -130,6 +154,22 @@ mod tests {
                     error: "not valid TOML at line 2".into(),
                 },
                 "lvpm index: packages/foo.toml does not parse: not valid TOML at line 2. fix: restore it from the index repo",
+            ),
+            (
+                AddRefused::EntryFileTooBig {
+                    name: "foo".into(),
+                    version: "1.0".into(),
+                    entry_file: entry_file(),
+                    limit: 1048576,
+                },
+                "lvpm index: foo 1.0: packages/foo.toml would exceed 1048576 bytes. fix: ask the index maintainers to split or prune it",
+            ),
+            (
+                AddRefused::NotAFolder {
+                    dir: "packages".into(),
+                    error: "The system cannot find the path specified. (os error 3)".into(),
+                },
+                "lvpm index: packages is not a folder: The system cannot find the path specified. (os error 3). fix: pass the index repo's packages folder",
             ),
         ];
         for (why, line) in rows {
