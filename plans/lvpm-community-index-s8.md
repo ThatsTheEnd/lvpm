@@ -41,19 +41,19 @@ check`) accepts only attested, unchanged, owner-published versions.
 
 ## Acceptance Criteria
 
-- [ ] AC1 *(manual)* A fork of pilot B, renamed to a throwaway package name and set up only by following docs/usage.md "Publish to the community index", opens a PR on `labview-package-manager/package-index` from a tag. `lvpm index check` accepts it, and the PR is merged. The PR body links that PR and the check's output, and lists every step that used a branch build instead of a release.
+- [ ] AC1 *(manual)* A fork of pilot B, renamed to a throwaway package name and set up by following docs/usage.md "Publish to the community index" (except the branch-build substitutions listed in the PR body), opens a PR on `labview-package-manager/package-index` from a tag. `lvpm index check` built from this branch accepts it, and the PR is merged after the user approves. The PR body links that PR and the check's output, and lists every step that used a branch build instead of a release.
 - [ ] AC2 A project with `community = "github:<o>/<r>"` and pilot B as `labview_open_source_lib_serializer = ">=1.2"` locks and syncs pilot B from the index. Its lock entry has `source = "github-index:<o>/<r>"`, the entry's `sha256`, and `signer`/`subject` from the fake `gh`. `sync --locked` installs it again from that lock.
 - [ ] AC3 `lvpm index check` refuses a head that changes an existing version's `sha256`, prints the pinned R3 line with both hashes, and exits 1.
-- [ ] AC4 `lvpm index check` refuses each case of R1, R1b, R2, R3b, R4, R5, R5b, R6 and R6b. It accepts a new name, and a new version of an owned name, that pass every rule (exit 0, `accepted` lines).
-- [ ] AC5 `lvpm index add` creates `packages/<key>.toml`. It appends to the owner's file. It refuses another `--github`, a listed version, a url outside the owner's releases, and a file that is not an `.lvpkg`.
-- [ ] AC6 A name the index does not list (404) resolves from a later source. A name an earlier `[sources]` line lists is not taken from the index, and a name the index lists is taken from it before vipm.io.
+- [ ] AC4 `lvpm index check` refuses each case of R1, R1b, R2, R3b, R4, R5, R5b, R6 and R6b, a non-TOML `packages/bar.toml` (parse), and an entry file over 1 MiB (parse). It accepts a new name, and a new version of an owned name, that pass every rule (exit 0, `accepted` lines).
+- [ ] AC5 `lvpm index add` creates `packages/<key>.toml`. It appends to the owner's file. It refuses another `--github`, a listed version, a url outside the owner's releases, and a file that is not an `.lvpkg`. On any refusal it writes nothing.
+- [ ] AC6 A name the index does not list (404) resolves from a later source. A name an earlier `[sources]` line lists is not taken from the index, and a name the index lists is taken from it before vipm.io. A dependency pinned with `index = "community"` that the index does not list fails naming `searched github:<o>/<r>`, and is not taken from another source.
 - [ ] AC7 A download whose SHA-256 differs from the index entry fails with the pinned line naming both hashes and the hint. Nothing is installed and no lock is written.
-- [ ] AC8 With `[policy] require-signature = true`, an unattested index package is refused with S6's `has no attestation` line, and one attested by another repo is refused as S6 refuses it. Without a policy, an unattested index package installs with no `signer`.
-- [ ] AC9 `github:x`, `github:/r`, `github:o/` and `github:o/r/x` in `[sources]` fail to parse with the pinned line.
+- [ ] AC8 With `[policy] require-signature = true`, an unattested index package is refused with S6's `has no attestation` line, and one attested by another repo is refused with S6's line for that outcome, asserted in full, exit 1. Without a policy, an unattested index package installs with no `signer`.
+- [ ] AC9 A `github:` source parses only when the owner matches `[A-Za-z0-9-]+` and the repo matches `[A-Za-z0-9._-]+` and is not `.` or `..`. `github:x`, `github:/r`, `github:o/`, `github:o/r/x`, `github:../r`, `github:o/..` and `github:o/r?x` fail to parse with the pinned line.
 - [ ] AC10 *(manual, with AC1)* docs/usage.md "Publish to the community index" has the four publisher steps and the consumer's two lines. Anything AC1 needed that the section did not say is added to it.
-- [ ] AC11 Every refusal line names the package, the version when there is one, and a `fix:`. A render test per line pins its full text.
-- [ ] AC12 docs/usage.md documents `github:` sources, that source order matters, and both commands in the command table. The template documents `register`. The README milestone is ticked. build-slices.md S8 names the organisation and its file list matches what changed.
-- [ ] AC13 The template's `register` job has `env: LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}` and `if: env.LVPM_INDEX_TOKEN != ''` on every working step, so it does nothing without the secret. Its one other step has `if: env.LVPM_INDEX_TOKEN == ''` and writes the pinned not-registered line. It writes the PR link, or a pinned `register failed:` line, to `$GITHUB_STEP_SUMMARY`. The `publish` and `publish-oci` jobs never mention `LVPM_INDEX_TOKEN`, and the PR diff leaves them unchanged.
+- [ ] AC11 Every refusal line names its package and version when it has them (R1 and parse name only the path), and carries a `fix:`. A render test per line pins its full text.
+- [ ] AC12 docs/usage.md has a `github:` sources section that says source order matters, and its command table has rows for `lvpm index add` and `lvpm index check`. The template's header comment documents `register`. The README S8 milestone is `- [x]`. build-slices.md S8 names `labview-package-manager` and lists the files this PR changed.
+- [ ] AC13 The template's `register` job has `env: LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}` and `if: env.LVPM_INDEX_TOKEN != ''` on every step that does work, so it does nothing without the secret. The step that writes a `register failed:` line has `if: failure() && env.LVPM_INDEX_TOKEN != ''`. The last step has `if: env.LVPM_INDEX_TOKEN == ''` and writes the pinned not-registered line. On success it writes the PR link to `$GITHUB_STEP_SUMMARY`. The `publish` and `publish-oci` jobs never mention `LVPM_INDEX_TOKEN`, and the PR diff leaves them unchanged.
 
 ### Pinned wording
 
@@ -126,6 +126,9 @@ Feature: S8: the index as a source
       | github:/r     |
       | github:o/     |
       | github:o/r/x  |
+      | github:../r   |
+      | github:o/..   |
+      | github:o/r?x  |
 
   @unit
   Scenario: a dependency can pin the index source
@@ -351,7 +354,7 @@ Feature: S8: installing from the community index
     Examples:
       | attestation                 | text                  |
       | not attested                | has no attestation    |
-      | attested by other/Fork      | other/Fork            |
+      | attested by other/Fork      | S6's full line for a subject of other/Fork |
 
   @cucumber
   Scenario: without a policy an unattested index package installs unsigned
@@ -632,7 +635,8 @@ Feature: S8: publishing to the community index
   @cucumber
   Scenario: the template registers only with a token
     Then the release template has a job "register" that needs "publish"
-    And "register" sets LVPM_INDEX_TOKEN from the secret, and every step but the last has "if: env.LVPM_INDEX_TOKEN != ''"
+    And "register" sets LVPM_INDEX_TOKEN from the secret, and every step but the last two has "if: env.LVPM_INDEX_TOKEN != ''"
+    And the step writing "register failed:" has "if: failure() && env.LVPM_INDEX_TOKEN != ''"
     And the last step of "register" has "if: env.LVPM_INDEX_TOKEN == ''" and writes "not registered in the community index: LVPM_INDEX_TOKEN is not set" to GITHUB_STEP_SUMMARY
     And "register" runs "lvpm index add" and "gh pr create" against LVPM_INDEX_REPO, defaulting to labview-package-manager/package-index
     And "register" writes to GITHUB_STEP_SUMMARY the pinned success line and each pinned "register failed:" line
@@ -649,7 +653,7 @@ Feature: S8: publishing to the community index
 #### Step 6.1: the `register` job
 
 **Complexity**: standard
-**IMPLEMENT**: the job as the spec lists it, with job-level `env` from the secret and `if: env.LVPM_INDEX_TOKEN != ''` on each working step: fork, clone, `lvpm index add`, push a branch named `lvpm/<name>-<version>`, `gh pr create`, and the summary lines. A last step with `if: env.LVPM_INDEX_TOKEN == ''` writes the not-registered line. `publish` and `publish-oci` are not edited. The header comment documents it, as for `publish-oci`.
+**IMPLEMENT**: the job as the spec lists it, with job-level `env` from the secret and `if: env.LVPM_INDEX_TOKEN != ''` on each working step, a failure-summary step with `if: failure() && env.LVPM_INDEX_TOKEN != ''`, and: fork, clone, `lvpm index add`, push a branch named `lvpm/<name>-<version>`, `gh pr create`, and the summary lines. A last step with `if: env.LVPM_INDEX_TOKEN == ''` writes the not-registered line. `publish` and `publish-oci` are not edited. The header comment documents it, as for `publish-oci`.
 **TEST**: the template scenario; full suite green. The review checks the PR diff touches no line of `publish` or `publish-oci`.
 **REFACTOR**: none; the install step is copied, as `publish-oci` copies it.
 **Files**: `.github/workflow-templates/lvpm-release.yml`, `tests/features/build-slices/s8-index-docs.feature`, `tests/steps/community.rs`, `tests/acceptance.rs`
