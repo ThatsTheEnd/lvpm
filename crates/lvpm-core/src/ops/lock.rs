@@ -1131,6 +1131,7 @@ mod tests {
             lv_min: None,
             source: String::new(),
             released: None,
+            index_pin: None,
         }
     }
 

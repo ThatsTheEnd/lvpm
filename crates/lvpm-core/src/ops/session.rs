@@ -274,6 +274,7 @@ mod tests {
             lv_min: None,
             released: None,
             source,
+            index_pin: None,
         }
     }
 

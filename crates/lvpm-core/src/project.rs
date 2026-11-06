@@ -318,19 +318,22 @@ fn without_userinfo(url: &str) -> String {
     format!("{scheme}://{tail}")
 }
 
-/// `github:owner/repo`, with the owner and repo made of what GitHub names
-/// allow, so they are safe in a URL path and a message.
-fn index_feed(name: &str, value: &str) -> Result<Feed> {
+/// `owner/repo`, with the owner and repo made of what GitHub names allow, so
+/// they are safe in a URL path and a message.
+pub(crate) fn split_owner_repo(value: &str) -> Option<(&str, &str)> {
     let owner_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
     let repo_char = |c: char| owner_char(c) || matches!(c, '_' | '.');
-    let named = (value.strip_prefix(GITHUB_SCHEME))
-        .and_then(|rest| rest.split_once('/'))
-        .filter(|(owner, repo)| {
-            !owner.is_empty()
-                && owner.chars().all(owner_char)
-                && !matches!(*repo, "" | "." | "..")
-                && repo.chars().all(repo_char)
-        });
+    value.split_once('/').filter(|(owner, repo)| {
+        !owner.is_empty()
+            && owner.chars().all(owner_char)
+            && !matches!(*repo, "" | "." | "..")
+            && repo.chars().all(repo_char)
+    })
+}
+
+/// `github:owner/repo`.
+fn index_feed(name: &str, value: &str) -> Result<Feed> {
+    let named = (value.strip_prefix(GITHUB_SCHEME)).and_then(split_owner_repo);
     match named {
         Some((owner, repo)) => Ok(Feed::Index {
             owner: owner.to_string(),

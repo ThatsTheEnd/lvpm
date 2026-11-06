@@ -305,6 +305,7 @@ mod tests {
             lv_min: Some(lv_min),
             source: String::new(),
             released: None,
+            index_pin: None,
         }
     }
 

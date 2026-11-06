@@ -295,6 +295,7 @@ mod tests {
             lv_min,
             source: String::new(),
             released: None,
+            index_pin: None,
         };
         assert_eq!(
             needs_newer_labview(&needing(Some(99.0)), &labview_2025),

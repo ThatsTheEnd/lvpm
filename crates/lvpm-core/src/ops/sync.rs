@@ -736,6 +736,7 @@ impl<'a> Search<'a> {
             lv_min: None,
             source: self.locked.source.clone(),
             released: None,
+            index_pin: None,
         };
         let (name, version) = (&self.locked.name, &self.locked.version);
         let fetched = downloads.fetch(&entry);
@@ -816,6 +817,7 @@ impl<'a> Search<'a> {
                 lv_min: None,
                 source: String::new(),
                 released: None,
+                index_pin: None,
             },
             expected_sha256: Some(self.sha256()),
         }

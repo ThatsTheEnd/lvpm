@@ -520,6 +520,7 @@ fn github_entry(fake: &GitHubFake) -> Entry {
         lv_min: None,
         released: None,
         source: index::github_source(REPO),
+        index_pin: None,
     }
 }
 

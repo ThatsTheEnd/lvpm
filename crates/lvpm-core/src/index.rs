@@ -78,7 +78,7 @@ impl Floor {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct Entry {
     pub name: String,
     pub version: Version,
@@ -96,6 +96,21 @@ pub struct Entry {
     /// cached or `.lvpkg` entry and for a date that is missing or unreadable.
     #[serde(skip)]
     pub released: Option<i64>,
+    /// What a community index pins for this entry; `None` for every other
+    /// source.
+    #[serde(skip)]
+    pub index_pin: Option<IndexPin>,
+}
+
+/// What a community index entry file says about one version, beyond what a
+/// hosted listing carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexPin {
+    /// The SHA-256 the download must have, lower-case hex.
+    pub sha256: String,
+    /// The `owner/repo` the entry file names as the package's owner; the repo
+    /// whose attestation is checked.
+    pub publisher: String,
 }
 
 /// The [`Entry::source`] of an archive imported with `lvpm cache add`.
@@ -185,6 +200,7 @@ fn local_entry(entry: LocalEntry, url: String, md5: Option<String>) -> Entry {
         lv_min: entry.lv_min,
         source: String::new(),
         released: None,
+        index_pin: None,
     }
 }
 
@@ -326,6 +342,7 @@ pub(crate) fn entry_from_bytes(path: &Path, bytes: &[u8]) -> Result<Entry> {
         lv_min: spec.lv_gate.as_deref().and_then(parse_lv_gate),
         source: String::new(),
         released: None,
+        index_pin: None,
     })
 }
 
@@ -790,6 +807,7 @@ fn oci_entry(feed: &OciFeed, repository: &str, package: &Package) -> Option<Entr
         lv_min: note(oci::ANNOTATION_LABVIEW).and_then(parse_lv_gate),
         source: feed.url.to_string(),
         released: note(oci::ANNOTATION_CREATED).and_then(crate::released::parse_rfc3339),
+        index_pin: None,
     })
 }
 
@@ -973,6 +991,7 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
             released: kv
                 .get("Package.Release Date")
                 .and_then(|s| crate::released::parse(s)),
+            index_pin: None,
         });
     };
 
@@ -995,7 +1014,7 @@ fn parse_into(body: &str, base_url: &str, out: &mut Vec<Entry>) {
 }
 
 /// `jki_lib_state_machine>=2.0.0,oglib_error>=4.2.0.23`
-fn parse_requires(s: &str) -> Vec<Requirement> {
+pub(crate) fn parse_requires(s: &str) -> Vec<Requirement> {
     s.split(',')
         .filter_map(|part| {
             let part = part.trim();
@@ -1026,7 +1045,7 @@ fn parse_requires(s: &str) -> Vec<Requirement> {
 }
 
 /// `LabVIEW>=20.0` -> 20.0
-fn parse_lv_gate(s: &str) -> Option<f64> {
+pub(crate) fn parse_lv_gate(s: &str) -> Option<f64> {
     // The version follows the first operator: "LabVIEW x64>=20.0" must not read
     // the 64. Of ">=16.0,<=20.0" (either order) the floor is 16; "<=20.0" has none.
     let s = s
@@ -1064,6 +1083,7 @@ mod tests {
             lv_min: None,
             released: None,
             source: github_source("o/r"),
+            index_pin: None,
         };
         assert_eq!(entry.source, "github:o/r");
         assert_eq!(github_repo(&entry), Some("o/r"));
@@ -1669,6 +1689,7 @@ Package.Display Name=A Thing
             lv_min: None,
             source: String::new(),
             released: None,
+            index_pin: None,
         }
     }
 
