@@ -7,9 +7,17 @@
 //! version's position, never a value from the file. No network I/O here: the
 //! file's text is handed in.
 
-use crate::index::{Entry, IndexPin, Requirement, parse_lv_gate, parse_requires};
+use crate::cache::finish_hex;
+use crate::fetch::check_index_url;
+use crate::github::MAX_ENTRY_BYTES;
+use crate::index::{Entry, IndexPin, Requirement, is_file_key, parse_lv_gate, parse_requires};
 use crate::project::{name_key, split_owner_repo};
 use crate::version::Version;
+use anyhow::Context;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 const KEY_NAME: &str = "name";
 const KEY_GITHUB: &str = "github";
@@ -26,6 +34,9 @@ const A_TABLE: &str = "a table";
 
 /// Hex digits in a SHA-256.
 const SHA256_HEX_DIGITS: usize = 64;
+
+/// How much of a file [`Tree::read`] takes at once.
+const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// How much of an unknown key an error repeats.
 const MAX_SHOWN_KEY_CHARS: usize = 32;
@@ -124,6 +135,12 @@ pub struct VersionListed;
 impl EntryFile {
     /// Reads the file `packages/<key>.toml`.
     pub fn parse(key: &str, text: &str) -> Result<Self, EntryFileError> {
+        Self::parse_checking(Some(key), text)
+    }
+
+    /// [`parse`](Self::parse), except that with no `key` the name is not held
+    /// to a file name: the caller compares it.
+    fn parse_checking(key: Option<&str>, text: &str) -> Result<Self, EntryFileError> {
         let table: toml::Table = toml::from_str(text).map_err(|why| EntryFileError::Syntax {
             line: why
                 .span()
@@ -132,7 +149,7 @@ impl EntryFile {
         let top = Scope::new(&table, String::new());
         top.reject_unknown(&TOP_LEVEL_KEYS)?;
         let name = top.required_str(KEY_NAME)?;
-        if name_key(name) != key {
+        if key.is_some_and(|key| name_key(name) != key) {
             return Err(top.error(KEY_NAME, Problem::NameMismatch));
         }
         let mut file = EntryFile {
@@ -185,40 +202,49 @@ impl EntryFile {
 
     /// Appends `version`, unless the file lists it already.
     pub fn add_version(&mut self, version: FileVersion) -> Result<(), VersionListed> {
-        let new = Version::parse(&version.version);
-        if self
-            .versions
-            .iter()
-            .any(|v| Version::parse(&v.version) == new)
-        {
+        if self.listed(&version.version).is_some() {
             return Err(VersionListed);
         }
         self.versions.push(version);
         Ok(())
     }
 
+    /// The version the file lists as `version`, by lvpm's reading of versions
+    /// (`1.0.0.0` is `1.0.0`).
+    pub fn listed(&self, version: &str) -> Option<&FileVersion> {
+        let wanted = Version::parse(version);
+        self.versions
+            .iter()
+            .find(|v| Version::parse(&v.version) == wanted)
+    }
+
     /// One [`Entry`] per version, listed by `source` (`github-index:owner/repo`).
     pub fn entries(&self, source: &str) -> Vec<Entry> {
         self.versions
             .iter()
-            .map(|v| Entry {
-                name: self.name.clone(),
-                version: Version::parse(&v.version),
-                url: v.url.clone(),
-                requires: v
-                    .requires
-                    .iter()
-                    .filter_map(|r| parse_requirement(r))
-                    .collect(),
-                lv_min: v.labview.as_deref().and_then(parse_lv_gate),
-                source: source.to_string(),
-                index_pin: Some(IndexPin {
-                    sha256: v.sha256.clone(),
-                    publisher: self.github.clone(),
-                }),
-                ..Entry::default()
-            })
+            .map(|v| self.entry(v, source))
             .collect()
+    }
+
+    /// `version` of this file, listed by `source`.
+    fn entry(&self, v: &FileVersion, source: &str) -> Entry {
+        Entry {
+            name: self.name.clone(),
+            version: Version::parse(&v.version),
+            url: v.url.clone(),
+            requires: v
+                .requires
+                .iter()
+                .filter_map(|r| parse_requirement(r))
+                .collect(),
+            lv_min: v.labview.as_deref().and_then(parse_lv_gate),
+            source: source.to_string(),
+            index_pin: Some(IndexPin {
+                sha256: v.sha256.clone(),
+                publisher: self.github.clone(),
+            }),
+            ..Entry::default()
+        }
     }
 }
 
@@ -238,6 +264,307 @@ fn parse_requirement(item: &str) -> Option<Requirement> {
     let has_version = |v: &Version| v.raw.starts_with(|c: char| c.is_ascii_digit());
     (!requirement.name.is_empty() && requirement.min.as_ref().is_none_or(has_version))
         .then_some(requirement)
+}
+
+/// What `lvpm index check` finds wrong with a PR without any network: one per
+/// refusal, with the rule it breaks. The wording is the front end's; every
+/// finding names its entry file's `path` (`packages/<key>.toml`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Finding {
+    /// R1: a file that is not `packages/<name>.toml` was added, changed,
+    /// removed or replaced by a link.
+    OutsideEntries { path: String },
+    /// R1b: the file's `name` is not the one its file name says.
+    WrongFileName { path: String, name: String },
+    /// R2: the file names another `github` than the base's.
+    OwnerChanged {
+        path: String,
+        name: String,
+        old: String,
+        new: String,
+    },
+    /// R3: a listed version has another `sha256`; `version` is as the base
+    /// wrote it.
+    VersionChanged {
+        path: String,
+        name: String,
+        version: String,
+        old: String,
+        new: String,
+    },
+    /// R3b: a listed version is gone.
+    VersionRemoved {
+        path: String,
+        name: String,
+        version: String,
+    },
+    /// R4: the version's `url` is not a release file of its `github`.
+    UrlNotReleaseFile {
+        path: String,
+        name: String,
+        version: String,
+        url: String,
+        github: String,
+    },
+    /// The file is too big, is not UTF-8, or does not read as an entry file.
+    /// `error` never quotes the file.
+    Unreadable { path: String, error: String },
+}
+
+/// A version the head lists and the base does not, whose file passed the rules
+/// that need no network: what the network rules check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewVersion {
+    pub path: String,
+    pub name: String,
+    /// The head's `github` for the name.
+    pub github: String,
+    pub version: FileVersion,
+}
+
+/// What [`diff`] makes of two checkouts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Diff {
+    pub findings: Vec<Finding>,
+    pub new_versions: Vec<NewVersion>,
+}
+
+/// A checkout of the index repo, read as data: no code in it runs and no link
+/// in it is followed.
+#[derive(Debug, Clone, Default)]
+pub struct Tree {
+    /// Every path (`/`-separated, relative to the checkout) that is not a
+    /// folder.
+    files: BTreeMap<String, Node>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Node {
+    /// A regular file. `body` is kept only for an entry file within
+    /// [`MAX_ENTRY_BYTES`].
+    File {
+        sha256: String,
+        body: Option<Vec<u8>>,
+    },
+    /// A symbolic link, with where it points; never followed.
+    Link(PathBuf),
+    /// A device, pipe or socket; never opened.
+    Special,
+}
+
+/// Compare two checkouts of the index repo (`base`, then `head`) by the rules
+/// that need no network: R1, R1b, R2, R3, R3b, and an entry file that does not
+/// read. The versions the head adds to a file that passes R1b and R2 are in
+/// [`Diff::new_versions`].
+pub fn diff(base: &Tree, head: &Tree) -> Diff {
+    let mut out = Diff::default();
+    let paths: BTreeSet<&String> = base.files.keys().chain(head.files.keys()).collect();
+    for path in paths {
+        let (before, after) = (base.files.get(path), head.files.get(path));
+        if before == after {
+            continue;
+        }
+        match entry_stem(path) {
+            None => out
+                .findings
+                .push(Finding::OutsideEntries { path: path.clone() }),
+            Some(stem) => out.entry_changed(path, stem, before, after),
+        }
+    }
+    out
+}
+
+/// `x` of `packages/x.toml`: the only paths that can be an entry file.
+fn entry_stem(path: &str) -> Option<&str> {
+    let file = path.strip_prefix("packages/")?;
+    file.strip_suffix(".toml")
+        .filter(|stem| !file.contains('/') && !stem.is_empty())
+}
+
+/// The entry file a node holds: `None` for no file and for a link, which holds
+/// nothing. The error is why the file does not read; it never quotes the file.
+fn read_entry(node: Option<&Node>) -> Result<Option<EntryFile>, String> {
+    match node {
+        None | Some(Node::Link(_) | Node::Special) => Ok(None),
+        Some(Node::File { body: None, .. }) => {
+            Err(format!("the file is larger than {MAX_ENTRY_BYTES} bytes"))
+        }
+        Some(Node::File {
+            body: Some(bytes), ..
+        }) => {
+            let text = std::str::from_utf8(bytes).map_err(|_| "the file is not UTF-8")?;
+            let file = EntryFile::parse_checking(None, text).map_err(|why| why.to_string())?;
+            Ok(Some(file))
+        }
+    }
+}
+
+impl Diff {
+    /// The rules for the changed `packages/<stem>.toml` at `path`.
+    fn entry_changed(
+        &mut self,
+        path: &str,
+        stem: &str,
+        before: Option<&Node>,
+        after: Option<&Node>,
+    ) {
+        let path = || path.to_string();
+        if matches!(after, Some(Node::Link(_) | Node::Special)) {
+            self.findings.push(Finding::OutsideEntries { path: path() });
+        }
+        let (old, new) = match (read_entry(before), read_entry(after)) {
+            (Ok(old), Ok(new)) => (old, new),
+            (Err(error), _) | (Ok(_), Err(error)) => {
+                self.findings.push(Finding::Unreadable {
+                    path: path(),
+                    error,
+                });
+                return;
+            }
+        };
+        if let Some(new) = &new
+            && (name_key(&new.name) != stem || !is_file_key(stem))
+        {
+            self.findings.push(Finding::WrongFileName {
+                path: path(),
+                name: new.name.clone(),
+            });
+            return;
+        }
+        let mut owner_changed = false;
+        if let (Some(old), Some(new)) = (&old, &new)
+            && !old.github.eq_ignore_ascii_case(&new.github)
+        {
+            owner_changed = true;
+            self.findings.push(Finding::OwnerChanged {
+                path: path(),
+                name: old.name.clone(),
+                old: old.github.clone(),
+                new: new.github.clone(),
+            });
+        }
+        if let Some(old) = &old {
+            for listed in &old.versions {
+                let name = old.name.clone();
+                match new.as_ref().and_then(|new| new.listed(&listed.version)) {
+                    None => self.findings.push(Finding::VersionRemoved {
+                        path: path(),
+                        name,
+                        version: listed.version.clone(),
+                    }),
+                    Some(now) if now.sha256 != listed.sha256 => {
+                        self.findings.push(Finding::VersionChanged {
+                            path: path(),
+                            name,
+                            version: listed.version.clone(),
+                            old: listed.sha256.clone(),
+                            new: now.sha256.clone(),
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        if let Some(new) = &new
+            && !owner_changed
+        {
+            for version in &new.versions {
+                if old
+                    .as_ref()
+                    .is_none_or(|old| old.listed(&version.version).is_none())
+                {
+                    self.new_versions.push(NewVersion {
+                        path: path(),
+                        name: new.name.clone(),
+                        github: new.github.clone(),
+                        version: version.clone(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Tree {
+    /// The files under `dir`, without following a link. A top-level `.git` is
+    /// skipped: it is the checkout's, not the repo's.
+    pub fn read(dir: &Path) -> anyhow::Result<Tree> {
+        let mut tree = Tree::default();
+        let mut folders = vec![(dir.to_path_buf(), String::new())];
+        while let Some((folder, prefix)) = folders.pop() {
+            let items = std::fs::read_dir(&folder)
+                .with_context(|| format!("reading {}", folder.display()))?;
+            for item in items {
+                let item = item.with_context(|| format!("reading {}", folder.display()))?;
+                let name = item.file_name().to_string_lossy().into_owned();
+                if prefix.is_empty() && name == ".git" {
+                    continue;
+                }
+                let path = format!("{prefix}{name}");
+                let on_disk = item.path();
+                let kind = item.file_type()?;
+                let node = if kind.is_symlink() {
+                    Node::Link(std::fs::read_link(&on_disk)?)
+                } else if kind.is_dir() {
+                    folders.push((on_disk, format!("{path}/")));
+                    continue;
+                } else if kind.is_file() {
+                    read_file(&on_disk, entry_stem(&path).is_some())
+                        .with_context(|| format!("reading {}", on_disk.display()))?
+                } else {
+                    Node::Special
+                };
+                tree.files.insert(path, node);
+            }
+        }
+        Ok(tree)
+    }
+}
+
+/// The regular file at `path`: its SHA-256, and its bytes when `keep` and no
+/// more than [`MAX_ENTRY_BYTES`]. A file past the cap is read to its end for
+/// the hash, never held.
+fn read_file(path: &Path, keep: bool) -> std::io::Result<Node> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let (mut body, mut size) = (Vec::new(), 0u64);
+    let mut chunk = vec![0u8; READ_CHUNK_BYTES];
+    loop {
+        let read = file.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        hash.update(&chunk[..read]);
+        if keep && size <= MAX_ENTRY_BYTES {
+            body.extend_from_slice(&chunk[..read]);
+        }
+        size += read as u64;
+    }
+    Ok(Node::File {
+        sha256: finish_hex(hash),
+        body: (keep && size <= MAX_ENTRY_BYTES).then_some(body),
+    })
+}
+
+impl NewVersion {
+    /// R4: the version's `url` must be a release file of its `github` on the
+    /// site at `web`.
+    pub fn url_finding(&self, web: &str) -> Option<Finding> {
+        let file = EntryFile {
+            name: self.name.clone(),
+            github: self.github.clone(),
+            versions: Vec::new(),
+        };
+        check_index_url(&file.entry(&self.version, ""), web)
+            .err()
+            .map(|_| Finding::UrlNotReleaseFile {
+                path: self.path.clone(),
+                name: self.name.clone(),
+                version: self.version.version.clone(),
+                url: self.version.url.clone(),
+                github: self.github.clone(),
+            })
+    }
 }
 
 /// A table of the file, with the prefix its keys carry in an error.
@@ -689,5 +1016,408 @@ github = \"a/x\"
             .map(|r| (r.name.as_str(), r.min_exclusive))
             .collect();
         assert_eq!(floors, [("bar", false), ("baz", true)]);
+    }
+
+    const SHA_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const WEB: &str = "https://github.com";
+
+    fn entry_text(name: &str, github: &str, versions: &[(&str, &str)]) -> String {
+        let mut text = format!("name = \"{name}\"\ngithub = \"{github}\"\n");
+        for (version, sha) in versions {
+            text.push_str(&format!(
+                "[[version]]\nversion = \"{version}\"\n\
+                 url = \"{WEB}/{github}/releases/download/{version}/{name}.lvpkg\"\n\
+                 sha256 = \"{sha}\"\n"
+            ));
+        }
+        text
+    }
+
+    impl Tree {
+        fn put(&mut self, path: &str, bytes: &[u8]) {
+            let body = entry_stem(path).map(|_| bytes.to_vec());
+            let sha256 = crate::cache::sha256_hex(bytes);
+            self.files.insert(path.into(), Node::File { sha256, body });
+        }
+
+        fn put_entry(&mut self, path: &str, name: &str, github: &str, versions: &[(&str, &str)]) {
+            self.put(path, entry_text(name, github, versions).as_bytes());
+        }
+
+        fn too_big(&mut self, path: &str) {
+            let sha256 = crate::cache::sha256_hex(path.as_bytes());
+            let node = Node::File { sha256, body: None };
+            self.files.insert(path.into(), node);
+        }
+
+        fn link(&mut self, path: &str) {
+            self.files
+                .insert(path.into(), Node::Link("elsewhere".into()));
+        }
+
+        fn remove(&mut self, path: &str) {
+            self.files.remove(path);
+        }
+    }
+
+    /// `packages/foo.toml` of `a/x` with 1.0.0 and 1.0.1.
+    fn base() -> Tree {
+        let mut tree = Tree::default();
+        tree.put_entry(
+            "packages/foo.toml",
+            "foo",
+            "a/x",
+            &[("1.0.0", SHA_A), ("1.0.1", SHA_B)],
+        );
+        tree.put("README.md", b"an index");
+        tree
+    }
+
+    /// The finding as the scenarios write it: rule, then its fields.
+    fn shown(finding: &Finding) -> String {
+        match finding {
+            Finding::OutsideEntries { path } => format!("R1 {path}"),
+            Finding::WrongFileName { path, name } => format!("R1b {path} {name}"),
+            Finding::OwnerChanged { name, old, new, .. } => format!("R2 {name} {old} {new}"),
+            Finding::VersionChanged {
+                name,
+                version,
+                old,
+                new,
+                ..
+            } => format!("R3 {name} {version} {old} {new}"),
+            Finding::VersionRemoved { name, version, .. } => format!("R3b {name} {version}"),
+            Finding::UrlNotReleaseFile { name, version, .. } => format!("R4 {name} {version}"),
+            Finding::Unreadable { path, .. } => format!("parse {path}"),
+        }
+    }
+
+    fn found(head: &Tree) -> Vec<String> {
+        diff(&base(), head).findings.iter().map(shown).collect()
+    }
+
+    #[test]
+    fn a_pure_rule_refuses() {
+        type Change = fn(&mut Tree);
+        let rows: [(&str, Change, Vec<String>); 12] = [
+            (
+                "adds notes.md",
+                |t| t.put("notes.md", b"hi"),
+                vec!["R1 notes.md".into()],
+            ),
+            (
+                "adds packages/sub/x.toml",
+                |t| t.put("packages/sub/x.toml", b"hi"),
+                vec!["R1 packages/sub/x.toml".into()],
+            ),
+            (
+                "adds packages/x.txt",
+                |t| t.put("packages/x.txt", b"hi"),
+                vec!["R1 packages/x.txt".into()],
+            ),
+            (
+                "adds packages/bar.toml as a symlink",
+                |t| t.link("packages/bar.toml"),
+                vec!["R1 packages/bar.toml".into()],
+            ),
+            (
+                "adds packages/Foo2.toml for name foo2",
+                |t| t.put_entry("packages/Foo2.toml", "foo2", "b/y", &[]),
+                vec!["R1b packages/Foo2.toml foo2".into()],
+            ),
+            (
+                "changes foo's github to b/x",
+                |t| {
+                    t.put_entry(
+                        "packages/foo.toml",
+                        "foo",
+                        "b/x",
+                        &[("1.0.0", SHA_A), ("1.0.1", SHA_B)],
+                    );
+                },
+                vec!["R2 foo a/x b/x".into()],
+            ),
+            (
+                "changes foo's github to A/X",
+                |t| {
+                    t.put_entry(
+                        "packages/foo.toml",
+                        "foo",
+                        "A/X",
+                        &[("1.0.0", SHA_A), ("1.0.1", SHA_B)],
+                    );
+                },
+                vec![],
+            ),
+            (
+                "changes foo 1.0.0's sha256",
+                |t| {
+                    t.put_entry(
+                        "packages/foo.toml",
+                        "foo",
+                        "a/x",
+                        &[("1.0.0", SHA_C), ("1.0.1", SHA_B)],
+                    );
+                },
+                vec![format!("R3 foo 1.0.0 {SHA_A} {SHA_C}")],
+            ),
+            (
+                "writes foo 1.0.0 as 1.0.0.0 with another sha256",
+                |t| {
+                    t.put_entry(
+                        "packages/foo.toml",
+                        "foo",
+                        "a/x",
+                        &[("1.0.0.0", SHA_C), ("1.0.1", SHA_B)],
+                    );
+                },
+                vec![format!("R3 foo 1.0.0 {SHA_A} {SHA_C}")],
+            ),
+            (
+                "removes foo 1.0.0",
+                |t| t.put_entry("packages/foo.toml", "foo", "a/x", &[("1.0.1", SHA_B)]),
+                vec!["R3b foo 1.0.0".into()],
+            ),
+            (
+                "deletes packages/foo.toml",
+                |t| t.remove("packages/foo.toml"),
+                vec!["R3b foo 1.0.0".into(), "R3b foo 1.0.1".into()],
+            ),
+            (
+                "adds an entry file of 2 MiB",
+                |t| t.too_big("packages/big.toml"),
+                vec!["parse packages/big.toml".into()],
+            ),
+        ];
+        for (change, apply, expected) in rows {
+            let mut head = base();
+            apply(&mut head);
+            assert_eq!(found(&head), expected, "{change}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_does_not_read_is_one_finding_that_quotes_nothing() {
+        let secret = "hunter2-do-not-echo";
+        let mut head = base();
+        head.put("packages/bar.toml", format!("{secret} ===").as_bytes());
+        head.put("packages/baz.toml", &[0xff, 0xfe]);
+
+        let found = diff(&base(), &head).findings;
+
+        let paths: Vec<_> = found
+            .iter()
+            .map(|f| match f {
+                Finding::Unreadable { path, error } => {
+                    assert!(!error.contains(secret), "{error}");
+                    path.as_str()
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(paths, ["packages/bar.toml", "packages/baz.toml"]);
+    }
+
+    #[test]
+    fn a_file_swapped_for_a_link_is_refused_and_its_versions_are_gone() {
+        let mut head = base();
+        head.link("packages/foo.toml");
+
+        assert_eq!(
+            found(&head),
+            ["R1 packages/foo.toml", "R3b foo 1.0.0", "R3b foo 1.0.1"]
+        );
+    }
+
+    #[test]
+    fn a_head_equal_to_the_base_has_nothing_to_check() {
+        assert_eq!(diff(&base(), &base()), Diff::default());
+    }
+
+    #[test]
+    fn a_changed_or_removed_file_outside_the_entries_is_refused() {
+        let mut head = base();
+        head.put("README.md", b"an index, edited");
+        assert_eq!(found(&head), ["R1 README.md"]);
+
+        head.remove("README.md");
+        assert_eq!(found(&head), ["R1 README.md"]);
+    }
+
+    #[test]
+    fn a_file_the_pr_leaves_alone_is_not_read() {
+        let mut main = base();
+        main.put("packages/old.toml", b"not toml ===");
+
+        assert_eq!(diff(&main, &main.clone()), Diff::default());
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_a_file_name_is_refused_even_when_the_file_is_named_for_it() {
+        let mut head = base();
+        head.put_entry("packages/a b.toml", "a b", "b/y", &[]);
+
+        assert_eq!(found(&head), ["R1b packages/a b.toml a b"]);
+    }
+
+    #[test]
+    fn several_new_versions_are_each_checked() {
+        let mut head = base();
+        head.put_entry(
+            "packages/foo.toml",
+            "foo",
+            "a/x",
+            &[
+                ("1.0.0", SHA_A),
+                ("1.0.1", SHA_B),
+                ("1.1.0", SHA_C),
+                ("1.2.0", SHA_C),
+            ],
+        );
+
+        let found = diff(&base(), &head);
+
+        assert_eq!(found.findings, []);
+        let versions: Vec<_> = found
+            .new_versions
+            .iter()
+            .map(|n| {
+                (
+                    n.name.as_str(),
+                    n.version.version.as_str(),
+                    n.github.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(versions, [("foo", "1.1.0", "a/x"), ("foo", "1.2.0", "a/x")]);
+        assert_eq!(found.new_versions[0].path, "packages/foo.toml");
+    }
+
+    #[test]
+    fn a_new_name_is_all_new_versions() {
+        let mut head = base();
+        head.put_entry("packages/bar.toml", "bar", "b/y", &[("1.0.0", SHA_A)]);
+
+        let found = diff(&base(), &head);
+
+        assert_eq!(found.findings, []);
+        assert_eq!(found.new_versions.len(), 1);
+        assert_eq!(found.new_versions[0].github, "b/y");
+    }
+
+    #[test]
+    fn the_versions_of_a_refused_file_are_not_checked() {
+        let mut head = base();
+        head.put_entry(
+            "packages/foo.toml",
+            "foo",
+            "b/x",
+            &[("1.0.0", SHA_A), ("1.1.0", SHA_C)],
+        );
+        head.put_entry("packages/Bar.toml", "bar", "b/y", &[("1.0.0", SHA_A)]);
+
+        let found = diff(&base(), &head);
+
+        assert_eq!(found.new_versions, []);
+        assert_eq!(found.findings.len(), 3, "{:?}", found.findings);
+    }
+
+    #[test]
+    fn a_url_is_a_release_file_of_the_owner_or_it_is_refused() {
+        let rows = [
+            ("{web}/a/x/releases/download/1.1.0/foo.lvpkg", true),
+            (
+                "https://example.com/a/x/releases/download/1.1.0/foo.lvpkg",
+                false,
+            ),
+            ("{web}/a/xy/releases/download/1.1.0/foo.lvpkg", false),
+            (
+                "{web}/a/x/releases/download/1.1.0/../../../b/y/foo.lvpkg",
+                false,
+            ),
+            (
+                "{web}/a/x/releases/download/1.1.0%2f..%2f..%2fb/foo.lvpkg",
+                false,
+            ),
+            ("{web}/a/x/releases/download/1.1.0/sub/foo.lvpkg", false),
+            ("{web}/A/X/releases/download/1.1.0/foo.lvpkg", true),
+        ];
+        for (url, accepted) in rows {
+            let url = url.replace("{web}", WEB);
+            let new = NewVersion {
+                path: "packages/foo.toml".into(),
+                name: "foo".into(),
+                github: "a/x".into(),
+                version: FileVersion {
+                    version: "1.1.0".into(),
+                    url: url.clone(),
+                    sha256: SHA_A.into(),
+                    labview: None,
+                    requires: Vec::new(),
+                },
+            };
+
+            let finding = new.url_finding(WEB);
+
+            assert_eq!(finding.is_none(), accepted, "{url}");
+            if !accepted {
+                assert_eq!(
+                    finding,
+                    Some(Finding::UrlNotReleaseFile {
+                        path: "packages/foo.toml".into(),
+                        name: "foo".into(),
+                        version: "1.1.0".into(),
+                        url,
+                        github: "a/x".into(),
+                    })
+                );
+            }
+        }
+    }
+
+    /// Whether the platform let the test make a link (Windows needs a
+    /// privilege for it).
+    fn make_link(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        made.is_ok()
+    }
+
+    #[test]
+    fn a_checkout_is_read_without_following_links_or_keeping_more_than_entries() {
+        let dir = crate::ops::testing::scratch_dir("community-tree");
+        let write = |path: &str, bytes: &[u8]| {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write("packages/foo.toml", b"name = \"foo\"");
+        write(
+            "packages/big.toml",
+            &vec![b' '; MAX_ENTRY_BYTES as usize + 1],
+        );
+        write("packages/sub/x.toml", b"x");
+        write(".git/config", b"x");
+        write("README.md", b"an index");
+        let linked = make_link(&dir.join("README.md"), &dir.join("packages/link.toml"));
+
+        let tree = Tree::read(&dir).unwrap();
+
+        let paths: Vec<_> = tree.files.keys().map(String::as_str).collect();
+        assert!(!paths.iter().any(|p| p.starts_with(".git")), "{paths:?}");
+        assert!(paths.contains(&"packages/sub/x.toml"), "{paths:?}");
+        let body = |path: &str| match &tree.files[path] {
+            Node::File { body, .. } => body.clone(),
+            other => panic!("{path}: {other:?}"),
+        };
+        assert_eq!(body("packages/foo.toml"), Some(b"name = \"foo\"".to_vec()));
+        assert_eq!(body("packages/big.toml"), None);
+        assert_eq!(body("README.md"), None);
+        if linked {
+            assert!(matches!(tree.files["packages/link.toml"], Node::Link(_)));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
