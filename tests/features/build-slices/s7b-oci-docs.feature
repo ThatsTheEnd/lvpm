@@ -7,7 +7,11 @@ Feature: OCI template and docs
     When I read ".github/workflow-templates/lvpm-release.yml"
     Then its attest step uses "actions/attest-build-provenance"
     And that step's "with" has "subject-name", "subject-digest" and "push-to-registry: true"
-    And a job runs "lvpm publish --to oci://"
+    And a job runs "lvpm publish --to"
+
+  Scenario: The release template sends the GitHub token only to ghcr.io
+    When I read ".github/workflow-templates/lvpm-release.yml"
+    Then a job runs "LVPM_OCI_PREFIX is not on ghcr.io"
 
   Scenario Outline: The OCI section of a doc describes OCI sources
     When I read "<doc>"

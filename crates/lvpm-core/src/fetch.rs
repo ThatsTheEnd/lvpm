@@ -84,8 +84,8 @@ pub fn package<'a>(
 }
 
 /// The archive of a package an OCI source lists, `entry.url` being the OCI
-/// manifest's reference by digest: the manifest is read by that digest, and its
-/// one layer is the archive. The cache answers first, by the layer's SHA-256;
+/// manifest's reference by digest: the manifest is read by that digest first, and
+/// its one layer is the archive. Then the cache answers, by the layer's SHA-256;
 /// otherwise the layer is fetched, its digest checked, and kept. Nothing is
 /// read by tag, so a tag that moved changes nothing here.
 ///

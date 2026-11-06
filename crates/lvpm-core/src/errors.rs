@@ -3,9 +3,9 @@
 //! The message of each is neutral: it says what failed and names no lvpm
 //! command; it names a flag only when that flag's value is what is wrong. A
 //! front end words the hint that follows, because only it knows what the user
-//! can type. The GitHub faults are the exception: their texts carry the hint,
-//! because it names `gh` and `GH_TOKEN`, not an lvpm command, so every front
-//! end would word it the same.
+//! can type. GitHub and Docker-login faults (they name `gh`, `GH_TOKEN` or
+//! `docker login`, not an lvpm command) are the exception: their texts carry
+//! the hint, so every front end would word it the same.
 
 use crate::events::SyncStep;
 use crate::github::TokenSource;
@@ -229,8 +229,9 @@ pub struct ListingFailure {
     pub fault: ListingFault,
 }
 
-/// What failed, and no hint: the front end words the way on (see
-/// `src/render/lock.rs`).
+/// What failed, and no lvpm-command hint: the front end words the way on (see
+/// `src/render/lock.rs`). A refusal keeps its `docker login` hint, which names
+/// no lvpm command.
 impl fmt::Display for ListingFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self {

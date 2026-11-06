@@ -426,16 +426,23 @@ fn is_registry(url: &reqwest::Url, registry: &str) -> bool {
         "http" => Some(80),
         _ => None,
     };
-    url.host_str() == Some(host) && url.port_or_known_default() == port.or(default)
+    url.host_str()
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(host))
+        && url.port_or_known_default() == port.or(default)
 }
 
 /// Whether `host` is this machine: `localhost`, or a loopback or unspecified
-/// address (`host_str` writes an IPv6 one in brackets).
+/// address, also as an IPv4-mapped IPv6 one (`host_str` writes an IPv6 one in
+/// brackets).
 fn is_loopback(host: &str) -> bool {
     let ip = host.trim_start_matches('[').trim_end_matches(']');
     host == "localhost"
         || ip
             .parse::<std::net::IpAddr>()
+            .map(|ip| match ip {
+                std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, Into::into),
+                v4 => v4,
+            })
             .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
@@ -557,6 +564,8 @@ mod tests {
             "[::1]",
             "0.0.0.0",
             "[::]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:0.0.0.0]",
         ] {
             assert!(is_loopback(host), "{host}");
         }
@@ -731,5 +740,14 @@ mod tests {
         assert!(!on("https://ghcr.io.evil/v2/", "ghcr.io"));
         assert!(!on("https://ghcr.io:8443/v2/", "ghcr.io"));
         assert!(!on("http://127.0.0.1:6000/v2/", "127.0.0.1:5000"));
+    }
+
+    #[test]
+    fn a_registry_written_in_capitals_still_spends_its_login() {
+        // A URL's host is lowercased when it is parsed; the manifest's is not.
+        let on = |url: &str, registry: &str| is_registry(&url.parse().unwrap(), registry);
+        assert!(on("https://ghcr.io/v2/", "GHCR.io"));
+        assert!(on("https://ghcr.io:8443/v2/", "GHCR.io:8443"));
+        assert!(!on("https://ghcr.io.evil/v2/", "GHCR.io"));
     }
 }

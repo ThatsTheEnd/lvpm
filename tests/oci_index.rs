@@ -3,9 +3,11 @@
 //! live here because `lvpm-testkit` depends on `lvpm-core`.
 
 use lvpm_core::cancel::CancelToken;
+use lvpm_core::config::Config;
 use lvpm_core::errors::{ListingFailures, ListingFault};
 use lvpm_core::index::{self, Index, OciFeed, SourceSet};
 use lvpm_core::oci::{FeedUrl, Oci};
+use lvpm_core::ops::{OpEnv, query};
 use lvpm_core::released;
 use lvpm_testkit::events::RecordingSink;
 use lvpm_testkit::oci::Registry;
@@ -141,7 +143,8 @@ fn a_tag_that_is_no_tag_is_never_asked_for() {
     let loaded = load(&[feed(&registry, &["alpha"])]).unwrap();
     assert_eq!(loaded.entries.len(), 1);
     let asked: Vec<String> = registry.requests().into_iter().map(|r| r.path).collect();
-    assert!(asked.iter().all(|path| !path.contains('#')), "{asked:?}");
+    let manifests: Vec<&String> = asked.iter().filter(|p| p.contains("/manifests/")).collect();
+    assert_eq!(manifests, ["/v2/team/alpha/manifests/1.0.0"], "{asked:?}");
 }
 
 #[test]
@@ -328,4 +331,43 @@ fn a_package_name_a_registry_cannot_hold_is_not_listed_and_asks_nothing() {
     let error = load(&[feed(&registry, &["_lib"])]).err().unwrap();
     assert!(failure_lines(&error)[0].starts_with("_lib: source \"team\""));
     assert!(registry.requests().is_empty());
+}
+
+#[test]
+fn a_catalog_whose_only_sources_are_failing_oci_feeds_is_an_error() {
+    let registry = Registry::start();
+    let host = registry.host();
+    registry.answer("GET", "/v2/a/alpha/tags/list", 500);
+    registry.answer("GET", "/v2/b/beta/tags/list", 500);
+    let cwd = tempfile::tempdir().unwrap();
+    let manifest = format!(
+        "[project]
+labview = \">=2024\"
+
+[sources]
+defaults = false
+a = \"oci://{host}/a\"
+         b = \"oci://{host}/b\"
+
+[dependencies]
+alpha = {{ version = \"*\", index = \"a\" }}
+         beta = {{ version = \"*\", index = \"b\" }}
+"
+    );
+    std::fs::write(cwd.path().join("lvpm.toml"), manifest).unwrap();
+    let config = Config {
+        cache: cwd.path().join("cache"),
+        hooks_run: Vec::new(),
+        local_sources: Vec::new(),
+        venv_dir: ".lv-venv".into(),
+    };
+    let sink = RecordingSink::default();
+    let env = OpEnv::new(&sink, config, Vec::new(), cwd.path().to_path_buf());
+    let error = query::catalog(&env, None).unwrap_err();
+    assert!(
+        format!("{error:#}").starts_with("no package source could be read"),
+        "{error:#}"
+    );
+    let text = format!("{error:#}");
+    assert!(text.contains("alpha:") && text.contains("beta:"), "{text}");
 }

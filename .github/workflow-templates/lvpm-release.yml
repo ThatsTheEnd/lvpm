@@ -114,12 +114,15 @@ jobs:
         env:
           TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
-        run: echo "$TOKEN" | docker login "${OCI_PREFIX%%/*}" --username "$ACTOR" --password-stdin
+        run: |
+          # github.token is for ghcr.io only: it must not go to another registry.
+          case "$OCI_PREFIX" in ghcr.io/*) ;; *) echo "::error::LVPM_OCI_PREFIX is not on ghcr.io; replace this step with your registry's login"; exit 1;; esac
+          echo "$TOKEN" | docker login "${OCI_PREFIX%%/*}" --username "$ACTOR" --password-stdin
       - name: Publish to the registry
         id: publish
         run: |
           set -o pipefail
-          lvpm publish --to oci://${OCI_PREFIX} | tee publish.log
+          lvpm publish --to "oci://${OCI_PREFIX}" | tee publish.log
           # "published <name> <version> to oci://<host>/<repo>:<tag>", then the digest.
           reference=$(awk '/^published/ {print $5}' publish.log)
           # An empty value here would make the attest step fail with a vaguer error.
