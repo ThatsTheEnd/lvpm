@@ -1,5 +1,5 @@
 //! Steps of the `@ghcr` scenarios (S7b, slice 5): `lvpm` against the real
-//! ghcr.io and the test repo `ThatsTheEnd/lvpm-oci-test`, which the user sets
+//! ghcr.io and the test repo `labview-package-manager/lvpm-oci-test`, which the user sets
 //! up (`docs/oci-test-repo-workflow.yml`). They run only with
 //! `LVPM_TEST_GHCR=1`. The project, the lock and the publish run are the OCI
 //! install and publish steps'; there is no fake registry here.
@@ -19,11 +19,11 @@ use std::process::Command;
 
 /// The registry, and where in it the test repo's packages are.
 const GHCR: &str = "ghcr.io";
-const PREFIX: &str = "thatstheend/lvpm-oci-test";
+const PREFIX: &str = "labview-package-manager/lvpm-oci-test";
 /// The `[sources]` name of the test repo.
 const SOURCE: &str = TEAM;
 /// The repository whose workflow publishes and attests the fixture.
-const BUILT_BY: &str = "https://github.com/ThatsTheEnd/lvpm-oci-test";
+const BUILT_BY: &str = "https://github.com/labview-package-manager/lvpm-oci-test";
 /// Where the fixture package is, below the package root.
 const FIXTURE: &str = "tests/fixtures/ghcr-alpha";
 

@@ -234,7 +234,7 @@ rest is split as `github/*` is:
 - [ ] AC5 A Sigstore bundle on the OCI manifest locks with its signer. A failed referrers lookup is an error, never "unsigned". `require-signature` refuses a package without one. `trusted-publishers` accepts a match and refuses a foreign subject. `sync --locked` installs a signed lock without running gh.
 - [ ] AC6 An OCI source is asked only for names pinned to it. 404, unreachable and 401/403 each fail with the literal message and never fall through. All failing pins are reported together.
 - [ ] AC7 Credentials come from `credHelpers`, then `credsStore`, then `auths`; with none, the pull is anonymous. `oci://user:pass@…` is refused at manifest read. No secret appears in any output.
-- [ ] AC8 `@ghcr` scenarios pass against `ThatsTheEnd/lvpm-oci-test` with `LVPM_TEST_GHCR=1`. Evidence goes in the PR.
+- [ ] AC8 `@ghcr` scenarios pass against `labview-package-manager/lvpm-oci-test` with `LVPM_TEST_GHCR=1`. Evidence goes in the PR.
 - [ ] AC9 GitLab and ACR publish and install *(manual, evidence in the PR)*.
 - [ ] AC10 The release template has an OCI publish job and `actions/attest-build-provenance` with `subject-name`, `subject-digest` and `push-to-registry: true`. A test parses the YAML and asserts them.
 - [ ] AC11 `docs/manifest.md`, `docs/usage.md` and ADR 7 document explicit OCI sources, publish, credentials, tag immutability and the downgrade behavior. A test asserts a key phrase in each.
@@ -909,12 +909,12 @@ Feature: OCI referrers
 @ghcr
 Feature: ghcr.io
   These scenarios depend on external state: the user's test repo
-  ThatsTheEnd/lvpm-oci-test, its packages, and a login in the runner's Docker
+  labview-package-manager/lvpm-oci-test, its packages, and a login in the runner's Docker
   credential store. The tag alpha:1.0.0 must never be deleted. They run only
   with LVPM_TEST_GHCR=1.
 
   Scenario: The public test package installs anonymously by digest
-    Given a project pinned to alpha from "oci://ghcr.io/thatstheend/lvpm-oci-test"
+    Given a project pinned to alpha from "oci://ghcr.io/labview-package-manager/lvpm-oci-test"
     And no Docker config
     When I run "lvpm sync"
     Then alpha is installed and the lock records its digest and signer
@@ -923,17 +923,17 @@ Feature: ghcr.io
   Scenario: Republishing the fixed tag is refused
     Given the Docker config of the test runner
     And the fixture package alpha 1.0.0 from tests/fixtures
-    When I run "lvpm publish --to oci://ghcr.io/thatstheend/lvpm-oci-test" for that package
+    When I run "lvpm publish --to oci://ghcr.io/labview-package-manager/lvpm-oci-test" for that package
     Then it fails saying "lvpm-oci-test/alpha:1.0.0 is already published"
 
   Scenario: The private package is refused without credentials
-    Given a project pinned to internal from "oci://ghcr.io/thatstheend/lvpm-oci-test"
+    Given a project pinned to internal from "oci://ghcr.io/labview-package-manager/lvpm-oci-test"
     And no Docker config
     When I run "lvpm lock"
     Then it fails saying "registry ghcr.io refused the lookup"
 
   Scenario: The private package locks with the runner's credentials
-    Given a project pinned to internal from "oci://ghcr.io/thatstheend/lvpm-oci-test"
+    Given a project pinned to internal from "oci://ghcr.io/labview-package-manager/lvpm-oci-test"
     And the Docker config of the test runner
     When I run "lvpm lock"
     Then internal is locked
@@ -966,7 +966,7 @@ Feature: OCI template and docs
 #### Step 5.1: `@ghcr` tag and scenarios
 
 **Complexity**: standard
-**IMPLEMENT**: The harness counts `@ghcr` as not run unless `LVPM_TEST_GHCR=1`, as with `@labview`. `docs/oci-test-repo-workflow.yml` is a draft workflow; the user commits it to `ThatsTheEnd/lvpm-oci-test`. It publishes the fixture with this branch's lvpm and attests with `subject-digest` and `push-to-registry: true`.
+**IMPLEMENT**: The harness counts `@ghcr` as not run unless `LVPM_TEST_GHCR=1`, as with `@labview`. `docs/oci-test-repo-workflow.yml` is a draft workflow; the user commits it to `labview-package-manager/lvpm-oci-test`. It publishes the fixture with this branch's lvpm and attests with `subject-digest` and `push-to-registry: true`.
 **TEST**: Default `cargo test` counts 4 more not run; any assertion on the not-run total is updated in the same step. With the env var and the user's setup, they pass (evidence in the PR).
 **REFACTOR**: Fold the env-flag gating into the existing tag table.
 **Files**: `tests/acceptance.rs`, `tests/steps/sources.rs`, `tests/features/build-slices/s7b-ghcr.feature`, `docs/oci-test-repo-workflow.yml`
@@ -1033,7 +1033,7 @@ changes.
 
 ## Risks & Open Questions
 
-- **User setup needed for Step 4.0 and Slice 5:** repo `ThatsTheEnd/lvpm-oci-test` with Actions, a public package `alpha` (tag `1.0.0`) and a private `internal`. It also needs a classic token with `write:packages,delete:packages` in the Docker credential store via `docker login ghcr.io`. Slices 1–3 do not wait on it. Step 4.0 can fall back to a public image.
+- **User setup needed for Step 4.0 and Slice 5:** repo `labview-package-manager/lvpm-oci-test` with Actions, a public package `alpha` (tag `1.0.0`) and a private `internal`. It also needs a classic token with `write:packages,delete:packages` in the Docker credential store via `docker login ghcr.io`. Slices 1–3 do not wait on it. Step 4.0 can fall back to a public image.
 - **Spike outcome (Step 4.0):** the manifest-file form verifies, so Slice 4 was not re-planned and the cut line was not used. Spike run (2026-11-06, gh 2.100.0, public image `ghcr.io/astral-sh/uv:latest`, index digest `sha256:96f40d39…b490`): `gh attestation verify oci://ghcr.io/astral-sh/uv:latest --repo astral-sh/uv --format json` passes; the subject is `ghcr.io/astral-sh/uv` with that digest, predicate `https://slsa.dev/provenance/v1`, bundle mediaType `application/vnd.dev.sigstore.bundle.v0.3+json`, signer SAN `https://github.com/astral-sh/uv/.github/workflows/publish-docker-image.yml@refs/heads/main`. The Step 4.3 path works: with the manifest bytes saved to a file (sha256 equals the subject digest) and the bundle from `gh attestation download`, `gh attestation verify manifest.json --bundle <bundle> --repo astral-sh/uv --format json` exits 0 offline of the registry, and `--repo astral-sh/ruff` exits 1 with `verifying with issuer "sigstore.dev"`. The bundle must be written byte for byte: re-decoding it as cp1252 corrupts the Rekor checkpoint's em dash and verification fails with the same message. uv does not use `push-to-registry`, so ghcr returned 404 for both `/referrers/<digest>` and the `sha256-<hex>` tag; whether ghcr serves the referrers API stays open until the user's test repo (AC8). gh also has `--bundle-from-oci`, which reads the bundle from the registry. Cut line, had it been needed: S7b ships Slices 1–3, 4.1, 4.2 and 5 without 4.3, and AC5 plus the signature parts of AC8 and AC10 move to a follow-up issue under #57.
 - **ghcr referrers:** ghcr may lack the referrers API. The fallback covers it, and the spike and the `@ghcr` run show which applies.
 - **OID scan:** this is not a full X.509 parse, but gh verifies the result, so a wrong scan fails closed.

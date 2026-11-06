@@ -535,7 +535,7 @@ API is found from the `OCI-Subject` header of the manifest PUT, the fallback
 index is updated without a lock, and a paged referrers answer is an error,
 never "unsigned". A failed SBOM push after the package is live exits 1. The
 GitLab and ACR runs are manual, and the `@ghcr` scenarios run only with
-`LVPM_TEST_GHCR=1` against `ThatsTheEnd/lvpm-oci-test` (its setup is the
+`LVPM_TEST_GHCR=1` against `labview-package-manager/lvpm-oci-test` (its setup is the
 comment in `docs/oci-test-repo-workflow.yml`). The text below is the slice as it
 was planned.
 

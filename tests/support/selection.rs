@@ -29,7 +29,7 @@ pub const PILOT_B_SOURCE_TAG: &str = "pilot-b-source";
 /// A checkout of pilot B at its pinned commit, for the `@pilot-b-source` scenarios.
 pub const PILOT_B_ENV_VAR: &str = "LVPM_TEST_PILOT_B";
 /// A scenario that depends on state outside this repository: the test repo
-/// `ThatsTheEnd/lvpm-oci-test` on ghcr.io and a login in the runner's Docker
+/// `labview-package-manager/lvpm-oci-test` on ghcr.io and a login in the runner's Docker
 /// credential store. It runs only when `LVPM_TEST_GHCR=1`.
 pub const GHCR_TAG: &str = "ghcr";
 pub const GHCR_ENV_VAR: &str = "LVPM_TEST_GHCR";

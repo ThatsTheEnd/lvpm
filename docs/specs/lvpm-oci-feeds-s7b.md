@@ -117,7 +117,7 @@ test can switch off (to exercise the tag-schema fallback), a ghcr mode that
 answers `403 DENIED` for a missing repository, and a write log so "changes
 nothing" is asserted. Scenarios against real ghcr.io are tagged `@ghcr` and
 run only with `LVPM_TEST_GHCR=1`, as `@labview` does; they use the user's test
-repository `ThatsTheEnd/lvpm-oci-test` (a public and a private package), and
+repository `labview-package-manager/lvpm-oci-test` (a public and a private package), and
 its workflow publishes a fixture `.lvpkg` with this branch's lvpm and attests
 it with `push-to-registry: true`. Scenarios live in
 `tests/features/build-slices/s7b-*.feature` (not `tests/features/sources/`) and
@@ -135,7 +135,7 @@ out of scope. Existing folder publish unchanged.
 5. **Signature referrer.** A package with a Sigstore bundle referrer locks with the signer the (faked) gh run reports; with `require-signature = true`, one without a bundle is refused; one whose subject is not in `trusted-publishers` is refused.
 6. **Explicit source.** An `oci://` source is asked only for names pinned to it: a project with an OCI source and an unpinned public dependency sends the registry no request for that name. A pinned name the registry does not list (404) fails naming the package and the source; an unreachable OCI source fails naming it; a `403` (the fake's ghcr mode) fails naming both and saying the registry refused the lookup (missing package or no access). None falls through to another source.
 7. **Credentials.** With a Docker config whose `credHelpers` names a fake helper on the PATH, lvpm sends that helper's credentials to the token realm; with `auths` only, it uses those; with neither, it pulls anonymously. An `oci://user:pass@host/…` source is refused when sources are resolved, naming `[sources]`. *(Amended 2026-11-06; was: when the manifest is read.)*
-8. **ghcr.io** (`@ghcr`, opt-in): against `ThatsTheEnd/lvpm-oci-test`, the public package installs anonymously by digest with its SBOM and signature referrers found; republishing its existing tag is refused; the private package fails anonymously saying the registry refused the lookup and installs with Docker credentials.
+8. **ghcr.io** (`@ghcr`, opt-in): against `labview-package-manager/lvpm-oci-test`, the public package installs anonymously by digest with its SBOM and signature referrers found; republishing its existing tag is refused; the private package fails anonymously saying the registry refused the lookup and installs with Docker credentials.
 9. **GitLab and ACR** *(manual)*: publish and install (ACR after `az acr login`); evidence in the PR.
 10. **Template.** `.github/workflow-templates/lvpm-release.yml` shows the OCI publish and `attest-build-provenance` with `push-to-registry: true`; a test checks the template's keys line by line. *(Amended 2026-11-06.)*
 11. `docs/manifest.md` and `docs/usage.md` document `oci://` sources, `publish --to oci://`, credentials and tag immutability.
