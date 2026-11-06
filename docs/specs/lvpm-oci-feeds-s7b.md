@@ -1,7 +1,7 @@
 <!-- spec-version: 14.0.1 -->
 # Spec: OCI feeds (slice S7b)
 
-**Format:** dev-team specs 14.0.1 · **Status:** approved by the user on 2026-11-05; gate passed; seven stakeholder answers given by the user on 2026-11-05 · **Date:** 2026-11-05 ·
+**Format:** dev-team specs 14.0.1 · **Status:** approved by the user on 2026-11-05; gate passed; seven stakeholder answers given by the user on 2026-11-05; amended by the user on 2026-11-06 (see [Amendments](#amendments-2026-11-06)) · **Date:** 2026-11-05 ·
 **Slice:** [#68](https://github.com/ThatsTheEnd/lvpm/issues/68), [S7b in build-slices.md](../vision/build-slices.md) ·
 **Rules:** [ADR 4](../adr/0004-sources-first-wins-and-pinning.md) (first source wins, pins), [ADR 6](../adr/0006-lvpkg-only-vip-read-only.md) (`.lvpkg`)
 
@@ -19,8 +19,8 @@ The lock records the OCI feed and the manifest digest, so `sync --locked`
 pulls exactly those bytes even if someone re-points the tag. A published
 version is never replaced: publishing a version whose tag exists fails and
 writes nothing. The package's SBOM, and the signature its CI attaches, are
-OCI referrers of the package; install finds them and checks the signature
-under the existing `[policy]`. Registry credentials come from the Docker
+OCI referrers of the package; lock finds the signature and checks it under
+the existing `[policy]`, and install does not read the SBOM. Registry credentials come from the Docker
 credential store (which `docker login` and `az acr login` fill), never from
 `lvpm.toml`.
 
@@ -105,7 +105,11 @@ the token realm. No credentials → anonymous token. An `oci://` URL carrying
 `sha256:…`), present only for OCI packages; `source` is the `oci://` URL.
 `sync --locked` GETs the manifest by that digest, never by tag, then the
 layer, and checks the layer bytes against `sha256`. No `FORMAT_VERSION` bump
-(S4/S7c precedent: absent field, older lvpm ignores it).
+(S4/S7c precedent: absent field, older lvpm ignores it). A tag that moved
+(2026-11-06): a plain `lvpm lock` that finds a locked version at a different
+manifest digest fails, names the package, the version, the locked digest and
+the registry's, and writes nothing; `lvpm lock --upgrade`, or
+`--upgrade-package <name>@<version>`, accepts the new digest.
 
 **Tests.** A loopback fake registry in `lvpm-testkit` (`oci.rs`): in-memory
 repos, tags, blobs, manifests, bearer-token challenge, referrers API that a
@@ -115,8 +119,9 @@ nothing" is asserted. Scenarios against real ghcr.io are tagged `@ghcr` and
 run only with `LVPM_TEST_GHCR=1`, as `@labview` does; they use the user's test
 repository `ThatsTheEnd/lvpm-oci-test` (a public and a private package), and
 its workflow publishes a fixture `.lvpkg` with this branch's lvpm and attests
-it with `push-to-registry: true`. Scenarios in `tests/features/sources/` (or
-a new `oci/` folder) added to `FEATURE_FILES`.
+it with `push-to-registry: true`. Scenarios live in
+`tests/features/build-slices/s7b-*.feature` (not `tests/features/sources/`) and
+are added to `FEATURE_FILES`.
 
 **Constraints.** No new async runtime. No registry hosting. Azure Artifacts
 out of scope. Existing folder publish unchanged.
@@ -126,14 +131,25 @@ out of scope. Existing folder publish unchanged.
 1. **Install by digest.** A package published to the fake registry with `lvpm publish --to oci://127.0.0.1:<port>/team` installs in a second project whose `[sources]` lists that URL as `team` and whose dependency line pins it with `index = "team"`.
 2. **Lock.** That project's lock records `source = "oci://…"` and `digest = "sha256:…"`. After the tag is re-pointed to other bytes, `sync --locked` still installs the locked bytes and requests the manifest by digest, not by tag.
 3. **Existing tag refused.** Publishing a version whose tag exists fails naming the tag, and the fake's write log shows no blob or manifest write.
-4. **SBOM referrer.** After publish, the package manifest has a referrer of artifactType `application/vnd.cyclonedx+json` whose bytes equal the package's `bom.cdx.json`; install finds it with the referrers API on and with it off (tag-schema fallback).
+4. **SBOM referrer.** After publish, the package manifest has a referrer of artifactType `application/vnd.cyclonedx+json` whose bytes equal the package's `bom.cdx.json`; `publish` attaches it as a referrer with the referrers API on and with it off (tag-schema fallback); install does not read it. *(Amended 2026-11-06; was: install finds it.)*
 5. **Signature referrer.** A package with a Sigstore bundle referrer locks with the signer the (faked) gh run reports; with `require-signature = true`, one without a bundle is refused; one whose subject is not in `trusted-publishers` is refused.
 6. **Explicit source.** An `oci://` source is asked only for names pinned to it: a project with an OCI source and an unpinned public dependency sends the registry no request for that name. A pinned name the registry does not list (404) fails naming the package and the source; an unreachable OCI source fails naming it; a `403` (the fake's ghcr mode) fails naming both and saying the registry refused the lookup (missing package or no access). None falls through to another source.
-7. **Credentials.** With a Docker config whose `credHelpers` names a fake helper on the PATH, lvpm sends that helper's credentials to the token realm; with `auths` only, it uses those; with neither, it pulls anonymously. An `oci://user:pass@host/…` source is refused when the manifest is read, naming `[sources]`.
+7. **Credentials.** With a Docker config whose `credHelpers` names a fake helper on the PATH, lvpm sends that helper's credentials to the token realm; with `auths` only, it uses those; with neither, it pulls anonymously. An `oci://user:pass@host/…` source is refused when sources are resolved, naming `[sources]`. *(Amended 2026-11-06; was: when the manifest is read.)*
 8. **ghcr.io** (`@ghcr`, opt-in): against `ThatsTheEnd/lvpm-oci-test`, the public package installs anonymously by digest with its SBOM and signature referrers found; republishing its existing tag is refused; the private package fails anonymously with the pin hint and installs with Docker credentials.
 9. **GitLab and ACR** *(manual)*: publish and install (ACR after `az acr login`); evidence in the PR.
-10. **Template.** `.github/workflow-templates/lvpm-release.yml` shows the OCI publish and `attest-build-provenance` with `push-to-registry: true`.
+10. **Template.** `.github/workflow-templates/lvpm-release.yml` shows the OCI publish and `attest-build-provenance` with `push-to-registry: true`; a test checks the template's keys line by line. *(Amended 2026-11-06.)*
 11. `docs/manifest.md` and `docs/usage.md` document `oci://` sources, `publish --to oci://`, credentials and tag immutability.
+
+## Amendments (2026-11-06)
+
+The user approved these on 2026-11-06, while reviewing the finished slice.
+
+- **AC4:** `publish` attaches the SBOM as a referrer, with the referrers API on and off; install does not read it.
+- **AC10:** a test checks the template's keys line by line.
+- **AC7:** an `oci://user:pass@host/…` source is refused when sources are resolved.
+- **Moved tag:** a plain `lvpm lock` that finds a locked OCI version at another manifest digest fails and writes nothing; `lvpm lock --upgrade` accepts the new digest (see Lock).
+- **Feature files:** the scenarios live in `tests/features/build-slices/s7b-*.feature`.
+- **Deviation, unpinned transitive dependencies:** an OCI package's dependency that is pinned to no source is not an error with a pin hint. As for a package from a hosted source, lock warns `beta, required by alpha, is in no source` and records it as unresolved. Only a direct dependency that no source lists fails.
 
 ## Glossary
 
@@ -164,6 +180,7 @@ out of scope. Existing folder publish unchanged.
 | Version not valid as an OCI tag | `inferable` | inference | lvpm versions are dotted numbers, valid tags; a version that is not fails publish naming it. |
 | Repository name case | `inferable` | inference | OCI requires lowercase; `name_key` is already lowercase. |
 | "Found on install" for SBOM | `inferable` | inference | Observable as AC 4 (referrer present and equal to the package's SBOM). No lock field: nothing downstream reads it. |
+| Moved tag on a plain lock | `requires-stakeholder-input` | human (2026-11-06) | Fail and write nothing; `--upgrade` accepts the new digest. A silent re-hash would take bytes someone re-pointed the tag to. |
 | Delete / unpublish | `inferable` | inference | Out of scope: a published version is never replaced (S2 rule); registry UI deletes. |
 | Proxy, TLS settings | `inferable` | inference | Same reqwest client and settings as hosted feeds. |
 | Error logging of credentials | `inferable` | inference | Tokens never appear in errors or events (as in github/auth.rs). |
