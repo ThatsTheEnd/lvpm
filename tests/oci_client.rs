@@ -114,6 +114,29 @@ fn a_manifest_put_by_tag_is_read_back_by_tag_and_by_digest_and_a_tag_is_then_tak
 }
 
 #[test]
+fn a_tag_that_holds_an_index_or_a_docker_manifest_is_taken() {
+    let registry = Registry::start();
+    let oci = Oci::default();
+    for (tag, media_type) in [
+        ("index", "application/vnd.oci.image.index.v1+json"),
+        (
+            "docker",
+            "application/vnd.docker.distribution.manifest.v2+json",
+        ),
+        (
+            "list",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        ),
+    ] {
+        registry.seed_manifest_of_type(NAME, tag, media_type, b"{}");
+        let found = with(&registry, Access::Push, |repo| {
+            oci.manifest_exists(repo, tag)
+        });
+        assert_eq!(found, Ok(true), "{media_type}");
+    }
+}
+
+#[test]
 fn a_blob_is_uploaded_with_one_post_and_one_put_naming_its_digest() {
     let registry = Registry::start();
     let oci = Oci::default();
@@ -210,8 +233,26 @@ fn a_token_realm_that_fails_is_an_error_naming_the_registry() {
         oci.manifest_exists(repo, "1.0.0")
     })
     .unwrap_err();
-    assert_eq!(why.status_code(), Some(500));
     assert!(why.to_string().contains("the token request"), "{why}");
+    assert!(why.to_string().contains(&registry.host()), "{why}");
+}
+
+#[test]
+fn a_token_realm_status_is_not_the_status_of_the_call_it_served() {
+    // A 404 from the token service is no word on the package: a lock must not
+    // read it as "not listed", nor a fetch as "no longer holds".
+    for status in [404, 500] {
+        let registry = Registry::start();
+        registry.answer("GET", "/token", status);
+        let oci = Oci::default();
+        let why = with(&registry, Access::Pull, |repo| {
+            oci.manifest_exists(repo, "1.0.0")
+        })
+        .unwrap_err();
+        assert_eq!(why.status_code(), None, "{status}: {why}");
+        assert!(!why.is_refused(), "{status}: {why}");
+        assert!(why.to_string().contains(&status.to_string()), "{why}");
+    }
 }
 
 #[test]
@@ -313,6 +354,26 @@ fn an_identity_token_is_traded_for_a_token_by_a_refresh_token_grant() {
     assert_eq!(asked[0].refresh_token(), Some("r1-3c8f2b-token"));
     assert_eq!(asked[0].authorization, None);
     assert_eq!(asked[0].scope(), "repository:team/alpha:pull");
+}
+
+#[test]
+fn a_token_realm_that_redirects_never_gets_the_identity_token_sent_on() {
+    let elsewhere = Registry::start();
+    let registry = Registry::start();
+    registry.require_login("team");
+    registry.redirect_token_realm(&format!("http://{}/token", elsewhere.addr()));
+    let token = Credential::identity(Origin::CredHelpers("lvpmtest".into()), "r1-3c8f2b-token");
+    let (oci, _) = logged_in_with(token);
+    let why = with(&registry, Access::Pull, |repo| {
+        oci.manifest_exists(repo, "1.0.0")
+    })
+    .unwrap_err();
+    assert!(why.to_string().contains("307"), "{why}");
+    assert!(
+        elsewhere.requests().is_empty(),
+        "the other host was asked: {:?}",
+        elsewhere.requests()
+    );
 }
 
 #[test]

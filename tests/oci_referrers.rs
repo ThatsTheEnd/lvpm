@@ -241,6 +241,23 @@ fn a_bundle_is_found_with_the_api_and_without_and_its_bytes_come_back_whole() {
 }
 
 #[test]
+fn a_bundle_larger_than_a_bundle_can_be_is_refused_not_read() {
+    let (registry, subject) = with_package(true);
+    // A bundle is a few KiB; a package layer may be a GiB, which is no bundle.
+    let big = vec![b'x'; 2 * 1024 * 1024];
+    registry.seed_referrer(NAME, &subject.digest, BUNDLE_TYPE, &big);
+    let found = on(&registry, |repo| {
+        Oci::default().sigstore_bundle(repo, &subject.digest)
+    });
+    let why = found.unwrap_err();
+    assert!(matches!(&why, Error::Protocol { .. }), "{why}");
+    assert!(
+        why.to_string().contains("sent more than 1048576 bytes"),
+        "{why}"
+    );
+}
+
+#[test]
 fn a_bundle_lookup_that_fails_is_an_error_never_no_bundle() {
     let (registry, subject) = with_package(true);
     let bundle = registry.seed_referrer(NAME, &subject.digest, BUNDLE_TYPE, b"a bundle");

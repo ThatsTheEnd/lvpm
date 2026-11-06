@@ -17,6 +17,8 @@ use serde_json::Value;
 const SOURCE_REPOSITORY_OID: [u8; 12] = [
     0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x0c,
 ];
+/// A bundle is a few KiB; more is not one.
+const MAX_BUNDLE_BYTES: u64 = 1024 * 1024;
 const GITHUB: &str = "https://github.com/";
 const TAG_BOOLEAN: u8 = 0x01;
 const TAG_OCTET_STRING: u8 = 0x04;
@@ -41,7 +43,9 @@ impl Oci {
         };
         let manifest = self.get_manifest(repo, &referrer.digest)?;
         match bundle_layer(&manifest) {
-            Some(layer) => self.get_blob(repo, &layer).map(Some),
+            Some(layer) => self
+                .get_blob_up_to(repo, &layer, MAX_BUNDLE_BYTES)
+                .map(Some),
             None => Err(Error::protocol(
                 repo.registry,
                 "listed a signature that has no bundle in it",

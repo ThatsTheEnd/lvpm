@@ -61,6 +61,8 @@ fn parse(header: &str) -> Option<Challenge> {
 /// A token for `wanted` scope from the challenge's realm, logged in with
 /// `login` when there is one. A realm that refuses a login says so as
 /// [`Error::LoginRefused`]; one that refuses an anonymous ask is a plain status.
+/// `client` follows no redirect: a `3xx` is the realm's answer like any other, so
+/// that an identity token in the body is never sent on to another host.
 pub(super) fn fetch_token(
     client: &Client,
     registry: &str,
@@ -91,8 +93,16 @@ pub(super) fn fetch_token(
             origin: login.origin().to_string(),
         });
     }
-    if status != 200 {
-        return Err(Error::status(registry, status, "the token request"));
+    match status {
+        200 => {}
+        // The realm saying no to who asked is a refusal, as the registry's own.
+        401 | 403 => return Err(Error::status(registry, status, "the token request")),
+        // Any other status is the token service's, not the registry's word on
+        // the package: a `404` here must not read as "no such repository".
+        _ => {
+            let problem = format!("answered {status} to the token request");
+            return Err(Error::protocol(registry, &problem));
+        }
     }
     let body = super::read_limited(registry, reply, MAX_TOKEN_REPLY_BYTES)?;
     let json: serde_json::Value = serde_json::from_slice(&body)

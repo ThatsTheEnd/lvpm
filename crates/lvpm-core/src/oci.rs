@@ -61,8 +61,9 @@ pub const ANNOTATION_REQUIRES: &str = "dev.lvpm.requires";
 pub const ANNOTATION_LABVIEW: &str = "dev.lvpm.labview";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long one request may take in all. blocking `reqwest` has no timeout
-/// for a stalled read alone, so this bounds the whole exchange.
+/// How long one request may take. blocking `reqwest` applies it to each read
+/// of the body as well as to the wait for the headers, so it ends a stall, not
+/// a slow trickle that keeps sending.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// A blob is the package itself and may be large, so its transfer gets longer.
 const BLOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -359,6 +360,9 @@ type Asked = Result<Option<Credential>, logins::Error>;
 pub struct Oci {
     /// Built on the first call: most commands never talk to a registry.
     client: OnceLock<Client>,
+    /// For the token realm alone, and following no redirect: an identity token
+    /// is in the body of its request, which a `307` would send on.
+    token_client: OnceLock<Client>,
     /// A token per registry and scope, so a run logs in once for each.
     tokens: Mutex<HashMap<(String, String), String>>,
     credentials: Credentials,
@@ -384,6 +388,7 @@ impl Oci {
     pub fn with_credentials(credentials: Credentials) -> Oci {
         Oci {
             client: OnceLock::new(),
+            token_client: OnceLock::new(),
             tokens: Mutex::default(),
             credentials,
             logins: Mutex::default(),
@@ -407,14 +412,16 @@ impl Oci {
         if let Some(client) = self.client.get() {
             return Ok(client);
         }
-        let built = Client::builder()
-            .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .redirect(redirect_policy())
-            .build()
-            .map_err(|e| Error::unreachable(registry, &e))?;
+        let built = build_client(registry, redirect_policy())?;
         Ok(self.client.get_or_init(|| built))
+    }
+
+    fn token_client(&self, registry: &str) -> Result<&Client, Error> {
+        if let Some(client) = self.token_client.get() {
+            return Ok(client);
+        }
+        let built = build_client(registry, reqwest::redirect::Policy::none())?;
+        Ok(self.token_client.get_or_init(|| built))
     }
 
     /// `build`'s request, logged in: with the token held for this repository
@@ -451,7 +458,14 @@ impl Oci {
             return Ok(first);
         };
         let login = self.login_for(repo.registry)?;
-        let token = auth::fetch_token(client, repo.registry, &challenge, &key.1, login.as_ref())?;
+        let realm_client = self.token_client(repo.registry)?;
+        let token = auth::fetch_token(
+            realm_client,
+            repo.registry,
+            &challenge,
+            &key.1,
+            login.as_ref(),
+        )?;
         self.tokens().insert(key, token.clone());
         attempt(Some(token))
     }
@@ -461,18 +475,39 @@ impl Oci {
     }
 }
 
+fn build_client(registry: &str, redirects: reqwest::redirect::Policy) -> Result<Client, Error> {
+    Client::builder()
+        .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(redirects)
+        .build()
+        .map_err(|e| Error::unreachable(registry, &e))
+}
+
 /// Redirects are followed up to reqwest's own limit, but never to plain http
 /// beyond loopback: the package or a token would cross the wire in the clear.
 fn redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
-        let url = attempt.url();
-        match scheme_allowed(url.scheme(), url.host_str().unwrap_or_default())
-            && attempt.previous().len() < 10
-        {
+        match redirect_allowed(attempt.url(), attempt.previous()) {
             true => attempt.follow(),
-            false => attempt.error("a redirect to plain http or too many redirects"),
+            false => attempt.error("a redirect to plain http, to this machine, or too many"),
         }
     })
+}
+
+/// Whether the hop to `next` may be followed, after the URLs in `previous`, the
+/// first of which is the one asked: not to plain http beyond loopback, and not
+/// to loopback unless the chain began there (as `checked_realm` holds the
+/// realm), so that a remote registry cannot aim lvpm at this machine.
+fn redirect_allowed(next: &reqwest::Url, previous: &[reqwest::Url]) -> bool {
+    let host = next.host_str().unwrap_or_default();
+    let began_on_loopback = previous
+        .first()
+        .is_some_and(|first| is_loopback(first.host_str().unwrap_or_default()));
+    scheme_allowed(next.scheme(), host)
+        && (began_on_loopback || !is_loopback(host))
+        && previous.len() < 10
 }
 
 /// `https://registry`, or `http://registry` for the loopback addresses a test
@@ -500,8 +535,14 @@ fn is_registry(url: &reqwest::Url, registry: &str) -> bool {
     url.host_str() == Some(host) && url.port_or_known_default() == port.or(default)
 }
 
+/// Whether `host` is this machine: `localhost`, or a loopback or unspecified
+/// address (`host_str` writes an IPv6 one in brackets).
 fn is_loopback(host: &str) -> bool {
-    host == "127.0.0.1" || host == "localhost"
+    let ip = host.trim_start_matches('[').trim_end_matches(']');
+    host == "localhost"
+        || ip
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
 }
 
 /// Whether a URL of `scheme` to `host` may be called: `https`, and plain
@@ -525,8 +566,18 @@ fn expect(
     }
 }
 
-/// All of `response`'s body, up to `max` bytes.
+/// All of `response`'s body, up to `max` bytes: a body that announces more is
+/// refused unread, and one that does not is cut off at `max`.
 fn read_limited(registry: &str, response: Response, max: u64) -> Result<Vec<u8>, Error> {
+    if response
+        .content_length()
+        .is_some_and(|announced| announced > max)
+    {
+        return Err(Error::protocol(
+            registry,
+            &format!("sent more than {max} bytes"),
+        ));
+    }
     let mut body = Vec::new();
     response
         .take(max + 1)
@@ -581,6 +632,73 @@ mod tests {
         assert!(scheme_allowed("http", "localhost"));
         assert!(!scheme_allowed("http", "ghcr.io"));
         assert!(!scheme_allowed("ftp", "127.0.0.1"));
+    }
+
+    #[test]
+    fn a_body_announced_above_the_cap_is_refused_before_a_byte_is_read() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Announces 9,999,999 bytes, sends five and hangs up: read as far as the
+        // cap, that is a broken connection, not an oversize body.
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let asked = stream.read(&mut [0u8; 1024]).unwrap();
+            assert!(asked > 0, "a request");
+            let head = "HTTP/1.1 200 OK\r\nContent-Length: 9999999\r\n\r\nshort";
+            stream.write_all(head.as_bytes()).unwrap();
+        });
+        let response = Client::new().get(format!("http://{addr}/")).send().unwrap();
+        let refused = read_limited("r:1", response, 100).unwrap_err();
+        server.join().unwrap();
+        assert_eq!(refused, Error::protocol("r:1", "sent more than 100 bytes"));
+    }
+
+    #[test]
+    fn loopback_is_any_loopback_address_and_localhost() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "localhost",
+            "[::1]",
+            "0.0.0.0",
+            "[::]",
+        ] {
+            assert!(is_loopback(host), "{host}");
+        }
+        for host in [
+            "ghcr.io",
+            "127.0.0.1.evil.example",
+            "10.0.0.1",
+            "[2001:db8::1]",
+            "",
+        ] {
+            assert!(!is_loopback(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn a_redirect_reaches_loopback_only_from_a_chain_that_started_there() {
+        let url = |text: &str| text.parse::<reqwest::Url>().unwrap();
+        let hop = |next: &str, from: &[&str]| {
+            let from: Vec<_> = from.iter().map(|text| url(text)).collect();
+            redirect_allowed(&url(next), &from)
+        };
+        // A remote registry cannot send lvpm to a service on this machine.
+        assert!(!hop("http://127.0.0.1:9/b", &["https://ghcr.io/v2/a"]));
+        assert!(!hop("http://[::1]:9/b", &["https://ghcr.io/v2/a"]));
+        assert!(!hop(
+            "http://0.0.0.0:9/b",
+            &["https://ghcr.io/v2/a", "https://cdn.example/b"]
+        ));
+        // A test registry on loopback may.
+        assert!(hop("http://127.0.0.1:9/b", &["http://127.0.0.1:5/v2/a"]));
+        // Remote to remote over https, loopback out to https; never plain http.
+        assert!(hop("https://cdn.example/b", &["https://ghcr.io/v2/a"]));
+        assert!(hop("https://cdn.example/b", &["http://127.0.0.1:5/v2/a"]));
+        assert!(!hop("http://cdn.example/b", &["https://ghcr.io/v2/a"]));
+        let long = vec!["https://ghcr.io/v2/a"; 10];
+        assert!(!hop("https://ghcr.io/v2/a", &long));
     }
 
     #[test]

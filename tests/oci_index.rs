@@ -159,6 +159,66 @@ fn a_manifest_that_is_not_a_package_is_skipped() {
 }
 
 #[test]
+fn a_repository_with_an_sbom_fallback_tag_still_lists_its_package() {
+    let registry = Registry::start();
+    let manifest = seed(&registry, "alpha", "1.0.0");
+    // No referrers API: the SBOM is listed under the `sha256-<hex>` tag.
+    registry.offer_referrers_api(false);
+    registry.seed_referrer(
+        "team/alpha",
+        &manifest,
+        "application/vnd.cyclonedx+json",
+        b"{}",
+    );
+    let loaded = load(&[feed(&registry, &["alpha"])]).unwrap();
+    let versions: Vec<_> = loaded
+        .entries
+        .iter()
+        .map(|e| e.version.to_string())
+        .collect();
+    assert_eq!(versions, ["1.0.0"]);
+    let asked: Vec<String> = registry.requests().into_iter().map(|r| r.path).collect();
+    assert!(
+        asked
+            .iter()
+            .all(|path| !path.contains("/manifests/sha256-")),
+        "{asked:?}"
+    );
+}
+
+#[test]
+fn a_tag_of_another_type_or_one_that_answers_not_found_is_skipped() {
+    let registry = Registry::start();
+    seed(&registry, "alpha", "1.0.0");
+    let index = "application/vnd.oci.image.index.v1+json";
+    registry.seed_manifest_of_type("team/alpha", "multi", index, b"{\"manifests\":[]}");
+    registry.seed_image("team/alpha", "gone");
+    registry.answer("GET", "/v2/team/alpha/manifests/gone", 404);
+    let loaded = load(&[feed(&registry, &["alpha"])]).unwrap();
+    let versions: Vec<_> = loaded
+        .entries
+        .iter()
+        .map(|e| e.version.to_string())
+        .collect();
+    assert_eq!(versions, ["1.0.0"]);
+}
+
+#[test]
+fn a_repository_whose_tags_are_none_of_its_package_is_not_listed() {
+    let registry = Registry::start();
+    registry.seed_image("team/alpha", "latest");
+    let error = load(&[feed(&registry, &["alpha"])]).err().unwrap();
+    let host = registry.host();
+    assert_eq!(
+        failure_lines(&error),
+        [format!(
+            "alpha: source \"team\" (oci://{host}/team) does not list it; check the name, or \
+             publish it with lvpm publish --to oci://{host}/team"
+        )]
+    );
+}
+
+#[test]
 fn a_pin_the_registry_has_nothing_for_is_not_listed() {
     let registry = Registry::start();
     let error = load(&[feed(&registry, &["gamma"])]).err().unwrap();
@@ -206,6 +266,23 @@ fn each_status_a_registry_answers_is_told_apart() {
             (other, _) => panic!("{status}: {other:?}"),
         }
     }
+}
+
+#[test]
+fn a_token_service_that_answers_not_found_is_no_word_on_the_package() {
+    let registry = Registry::start();
+    seed(&registry, "alpha", "1.0.0");
+    registry.answer("GET", "/token", 404);
+    let error = load(&[feed(&registry, &["alpha"])]).err().unwrap();
+    let failures = error.downcast_ref::<ListingFailures>().unwrap();
+    let [failure] = failures.failures() else {
+        panic!("one failure: {failures}");
+    };
+    assert!(
+        matches!(&failure.fault, ListingFault::Unreachable(cause) if cause.contains("404")),
+        "{:?}",
+        failure.fault
+    );
 }
 
 #[test]

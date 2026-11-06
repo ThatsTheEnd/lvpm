@@ -143,6 +143,8 @@ struct State {
     blobs_uploaded: usize,
     /// Answered, after the login, in place of the request's own reply.
     statuses: Vec<(String, String, u16)>,
+    /// Where the token realm sends every ask, with a `307`.
+    token_redirect: Option<String>,
     /// A tag created the moment the first blob is uploaded: (repository, tag).
     tag_after_first_blob: Option<(String, String)>,
     uploads_started: usize,
@@ -232,6 +234,11 @@ impl Registry {
         lock(&self.state)
             .statuses
             .push((method.to_string(), path.to_string(), status));
+    }
+
+    /// From now on the token realm answers every ask with a `307` to `location`.
+    pub fn redirect_token_realm(&self, location: &str) {
+        lock(&self.state).token_redirect = Some(location.to_string());
     }
 
     /// From now on a repository the registry does not hold answers `403
@@ -327,6 +334,27 @@ impl Registry {
         let mut state = lock(&self.state);
         let stored = Stored {
             media_type: IMAGE_MANIFEST.to_string(),
+            bytes: bytes.to_vec(),
+        };
+        store_tag(
+            state.repos.entry(repo.to_string()).or_default(),
+            tag,
+            stored,
+        )
+    }
+
+    /// [`Registry::seed_manifest`] for a manifest of `media_type`, which a
+    /// client gets only when it accepts that type.
+    pub fn seed_manifest_of_type(
+        &self,
+        repo: &str,
+        tag: &str,
+        media_type: &str,
+        bytes: &[u8],
+    ) -> String {
+        let mut state = lock(&self.state);
+        let stored = Stored {
+            media_type: media_type.to_string(),
             bytes: bytes.to_vec(),
         };
         store_tag(
@@ -610,6 +638,9 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
         (method == &request.method && on == path).then_some(*status)
     });
     if matches!(route, Route::Token) {
+        if let Some(location) = &state.token_redirect {
+            return response("307 Temporary Redirect", &[("Location", location)], b"");
+        }
         return match wanted {
             Some(status) => error_reply(status, "UNAVAILABLE", "answered on purpose"),
             None => token(state, request, query, body),
@@ -650,7 +681,7 @@ fn answer(state: &mut State, request: &Request, body: &[u8], addr: SocketAddr) -
     match route {
         Route::Tags(name) => tags(state, name),
         Route::Manifest(name, reference) => match request.method.as_str() {
-            "GET" | "HEAD" => get_manifest(state, name, reference),
+            "GET" | "HEAD" => get_manifest(state, name, reference, request.header("accept")),
             "PUT" => put_manifest(state, request, name, reference, body),
             _ => method_not_allowed(),
         },
@@ -742,12 +773,30 @@ fn tags(state: &State, name: &str) -> Vec<u8> {
     }
 }
 
-fn get_manifest(state: &State, name: &str, reference: &str) -> Vec<u8> {
+/// Whether an `Accept` header lets a manifest of `media_type` through; no header
+/// lets everything through.
+fn accepts(accept: Option<&str>, media_type: &str) -> bool {
+    let Some(accept) = accept else {
+        return true;
+    };
+    accept.split(',').any(|item| {
+        let wanted = item.split(';').next().unwrap_or_default().trim();
+        wanted == media_type || wanted == "*/*"
+    })
+}
+
+fn get_manifest(state: &State, name: &str, reference: &str, accept: Option<&str>) -> Vec<u8> {
     let Some(repo) = state.repos.get(name) else {
         return not_found("NAME_UNKNOWN", "repository name not known to registry");
     };
     let digest = repo.tags.get(reference).map_or(reference, String::as_str);
-    match repo.manifests.get(digest) {
+    // A registry does not serve a media type the client did not ask for: it
+    // answers as if there were no such manifest.
+    match repo
+        .manifests
+        .get(digest)
+        .filter(|stored| accepts(accept, &stored.media_type))
+    {
         Some(stored) => response(
             "200 OK",
             &[
@@ -1318,6 +1367,15 @@ mod tests {
         registry.answer("GET", "/token", 500);
         let token = get_from(registry.addr(), "/token?scope=x", "");
         assert_eq!(token.status_line, "HTTP/1.1 500 Internal Server Error");
+    }
+
+    #[test]
+    fn the_token_realm_can_send_every_ask_elsewhere() {
+        let registry = Registry::start();
+        registry.redirect_token_realm("http://127.0.0.1:9/token");
+        let token = get_from(registry.addr(), "/token?scope=x", "");
+        assert_eq!(token.status_line, "HTTP/1.1 307 Temporary Redirect");
+        assert!(registry.token_requests().is_empty());
     }
 
     #[test]

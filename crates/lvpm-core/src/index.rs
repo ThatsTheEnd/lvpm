@@ -730,14 +730,20 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
         name: &repository,
         access: Access::Pull,
     };
-    let fault = |error: oci::Error| ListingFault::of(&error);
     let mut found = Vec::new();
-    for tag in oci.list_tags(&repo).map_err(fault)? {
+    for tag in oci.list_tags(&repo).map_err(|e| ListingFault::of(&e))? {
         // The registry names the tags: one that is no tag is never put in a URL.
-        if !oci::valid_tag(&tag) {
+        // `sha256-<hex>` is where a registry without the referrers API keeps an
+        // index of referrers, never a package.
+        if !oci::valid_tag(&tag) || tag.starts_with("sha256-") {
             continue;
         }
-        let manifest = oci.get_manifest(&repo, &tag).map_err(fault)?;
+        let manifest = match oci.get_manifest(&repo, &tag) {
+            Ok(manifest) => manifest,
+            // A tag the registry does not serve is not a package of ours.
+            Err(error) if error.status_code() == Some(404) => continue,
+            Err(error) => return Err(ListingFault::of(&error)),
+        };
         let entry = (manifest.package())
             .and_then(|package| oci_entry(feed, &repository, &package))
             // A manifest in this repository speaks for this package only: a
@@ -745,7 +751,11 @@ fn read_pinned(oci: &Oci, feed: &OciFeed, package: &str) -> Result<Vec<Entry>, L
             .filter(|entry| same_name(&entry.name, package));
         found.extend(entry);
     }
-    Ok(found)
+    // Tags, and none of them this package: the source does not list it.
+    match found.is_empty() {
+        true => Err(ListingFault::NotListed),
+        false => Ok(found),
+    }
 }
 
 /// The entry an lvpm package's OCI manifest makes: what its annotations say,

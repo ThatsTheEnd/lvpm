@@ -15,6 +15,16 @@ const DIGEST_HEADER: &str = "Docker-Content-Digest";
 /// `subject` with: the subject's digest.
 const SUBJECT_HEADER: &str = "OCI-Subject";
 const OCTET_STREAM: &str = "application/octet-stream";
+/// Every manifest type a tag may hold. A registry answers `404` to a client
+/// that does not accept the type it holds, so asking for the image manifest
+/// alone makes an index or a Docker image look as if the tag were free; asking
+/// for all of them lets [`Manifest::package`] tell what it got.
+const ANY_MANIFEST: &str = concat!(
+    "application/vnd.oci.image.manifest.v1+json, ",
+    "application/vnd.oci.image.index.v1+json, ",
+    "application/vnd.docker.distribution.manifest.v2+json, ",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+);
 
 /// A manifest read from a registry: its bytes, which hash to its digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,7 +104,7 @@ impl Oci {
         let url = manifest_url(repo, reference);
         let request = format!("HEAD {}:{reference}", repo.name);
         let response = self.send(repo, |client| {
-            client.head(&url).header(ACCEPT, MANIFEST_TYPE)
+            client.head(&url).header(ACCEPT, ANY_MANIFEST)
         })?;
         match response.status().as_u16() {
             404 => Ok(false),
@@ -102,14 +112,15 @@ impl Oci {
         }
     }
 
-    /// The manifest under `reference`, its bytes checked against the digest
-    /// (the reference's own, when it is one, and the header's).
+    /// The manifest under `reference`, whatever its type, its bytes checked
+    /// against the digest (the reference's own, when it is one, and the
+    /// header's).
     pub fn get_manifest(&self, repo: &Repo, reference: &str) -> Result<Manifest, Error> {
-        self.read_manifest(repo, reference, MANIFEST_TYPE)
+        self.read_manifest(repo, reference, ANY_MANIFEST)
     }
 
-    /// [`Oci::get_manifest`] for a manifest of the media type `accept`: an
-    /// index is not served to a client that asks for an image manifest only.
+    /// [`Oci::get_manifest`] for the media types `accept`: an index is not
+    /// served to a client that asks for an image manifest only.
     pub(super) fn read_manifest(
         &self,
         repo: &Repo,
@@ -215,13 +226,24 @@ impl Oci {
         Ok(digest)
     }
 
-    /// The blob, its bytes checked against `digest`.
+    /// The blob, its bytes checked against `digest`: a package layer, which may
+    /// be as large as an archive entry.
     pub fn get_blob(&self, repo: &Repo, digest: &str) -> Result<Vec<u8>, Error> {
+        self.get_blob_up_to(repo, digest, MAX_BLOB_BYTES)
+    }
+
+    /// [`Oci::get_blob`] for a blob that is no larger than `max` bytes.
+    pub(super) fn get_blob_up_to(
+        &self,
+        repo: &Repo,
+        digest: &str,
+        max: u64,
+    ) -> Result<Vec<u8>, Error> {
         let url = blob_url(repo, digest);
         let request = format!("GET {}@{digest}", repo.name);
         let response = self.send(repo, |client| client.get(&url).timeout(BLOB_TIMEOUT))?;
         let response = expect(repo, response, &request, &[200])?;
-        let bytes = read_limited(repo.registry, response, MAX_BLOB_BYTES)?;
+        let bytes = read_limited(repo.registry, response, max)?;
         agree(repo, digest, &digest_of(&bytes))?;
         Ok(bytes)
     }
