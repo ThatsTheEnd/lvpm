@@ -2,7 +2,7 @@
 
 **Created**: 2026-11-06
 **Branch**: claude/community-index-org-migration-0649a1
-**Status**: approved (revision 3; approved by the user on 2026-11-06)
+**Status**: implemented (revision 3; approved by the user on 2026-11-06; PR ThatsTheEnd/lvpm#122)
 **Gherkin persistence**: plan-file-only (only scenarios tagged `@cucumber` go to `tests/features/build-slices/s8-*.feature`, written by the steps themselves)
 **Spec**: [docs/specs/lvpm-community-index-s8.md](../docs/specs/lvpm-community-index-s8.md) · Issue ThatsTheEnd/lvpm#69
 
@@ -764,12 +764,12 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 
 ## Pre-PR Quality Gate
 
-- [ ] `cargo test` passes (unit and cucumber)
-- [ ] `cargo clippy --all-targets -- -D warnings` passes
-- [ ] `cargo fmt --check` passes
-- [ ] `/code-review` passes
-- [ ] docs/usage.md, the template, the README milestone and build-slices.md updated (grep: `- [x]` on the S8 milestone, `labview-package-manager` and the new file list in S8)
-- [ ] The PR body says `Closes #69`, carries the `deviation` label and text, the AC1/AC10 evidence, and the list of branch-build substitutions
+- [x] `cargo test` passes (unit and cucumber)
+- [x] `cargo clippy --all-targets -- -D warnings` passes
+- [x] `cargo fmt --check` passes
+- [x] `/code-review` passes
+- [x] docs/usage.md, the template, the README milestone and build-slices.md updated (grep: `- [x]` on the S8 milestone, `labview-package-manager` and the new file list in S8)
+- [x] The PR body says `Closes #69`, carries the `deviation` label and text, the AC1/AC10 evidence, and the list of branch-build substitutions
 
 ## Skipped (low value)
 
@@ -828,9 +828,9 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 6.2: the docs
 
 #### Wave 7
-- [ ] Slice 7: the index repo and the manual criterion
+- [x] Slice 7: the index repo and the manual criterion
   - [x] Step 7.1: create `labview-package-manager/package-index`
-  - [ ] Step 7.2: run AC1 and AC10 by hand
+  - [x] Step 7.2: run AC1 and AC10 by hand
 
 ## Plan Review Summary
 
