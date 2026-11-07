@@ -33,3 +33,4 @@
   - [5. Core does the work, the CLI the terminal](adr/0005-core-and-cli-split.md)
   - [6. Write .lvpkg only, read .vip](adr/0006-lvpkg-only-vip-read-only.md)
   - [7. OCI sources are explicit](adr/0007-oci-sources-are-explicit.md)
+  - [8. Community index sources take part in first-source-wins](adr/0008-community-index-sources-take-part-in-first-source-wins.md)
