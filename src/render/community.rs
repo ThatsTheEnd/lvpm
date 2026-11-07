@@ -272,18 +272,30 @@ fn not_attested(reason: &NotAttested) -> String {
     }
 }
 
-/// A version the PR's author is not known to own, as the line the user reads.
-/// The values are the PR's, so they are [`untrusted`].
+/// A version the PR's author is not known to own, or an entry file of another
+/// owner that it rewrites, as the line the user reads. The values are the PR's,
+/// so they are [`untrusted`].
 pub fn review_line(review: &NeedsReview) -> String {
     let u = untrusted;
-    let (name, version, owner) = (u(&review.name), u(&review.version), u(&review.owner));
-    let what = match &review.author {
-        Some(author) => format!(
-            "the pull request is from {}, but {name} belongs to {owner}",
-            u(author)
+    let (name, owner) = (u(&review.name), u(&review.owner));
+    let (what, whose) = match &review.version {
+        Some(version) => (
+            format!("{name} {}", u(version)),
+            format!("{name} belongs to {owner}"),
         ),
-        None => format!(
+        None => (
+            name.to_string(),
+            format!("the pull request changes {name}'s file, which belongs to {owner}"),
+        ),
+    };
+    let said = match (&review.author, &review.version) {
+        (Some(author), Some(_)) => format!("the pull request is from {}, but {whose}", u(author)),
+        (Some(author), None) => format!("{whose}, and is from {}", u(author)),
+        (None, Some(_)) => format!(
             "no --author was given, so lvpm cannot tell whether the pull request is from {owner}, who owns {name}"
+        ),
+        (None, None) => format!(
+            "{whose}, and no --author was given, so lvpm cannot tell whether it is from {owner}"
         ),
     };
     let fix = match review.author {
@@ -292,7 +304,7 @@ pub fn review_line(review: &NeedsReview) -> String {
         ),
         None => "pass --author <login>, or wait for a maintainer".to_string(),
     };
-    plain(&format!("review {name} {version}: {what}. fix: {fix}"))
+    plain(&format!("review {what}: {said}. fix: {fix}"))
 }
 
 /// The lines in one fenced code block, whose fence is longer than any run of
@@ -903,7 +915,7 @@ mod tests {
         NeedsReview {
             path: "packages/foo.toml".into(),
             name: "foo".into(),
-            version: "1.1.0".into(),
+            version: Some("1.1.0".into()),
             author: author.map(str::to_string),
             owner: "acme".into(),
         }
@@ -918,6 +930,24 @@ mod tests {
         assert_eq!(
             review_line(&needs_review(None)),
             "review foo 1.1.0: no --author was given, so lvpm cannot tell whether the pull request is from acme, who owns foo. fix: pass --author <login>, or wait for a maintainer"
+        );
+    }
+
+    #[test]
+    fn a_file_of_another_owner_left_for_review_says_the_pr_changes_it() {
+        let file = |author: Option<&str>| NeedsReview {
+            version: None,
+            name: "bar".into(),
+            ..needs_review(author)
+        };
+
+        assert_eq!(
+            review_line(&file(Some("bob"))),
+            "review bar: the pull request changes bar's file, which belongs to acme, and is from bob. fix: open the pull request from acme's account, make your membership of acme public, or wait for a maintainer"
+        );
+        assert_eq!(
+            review_line(&file(None)),
+            "review bar: the pull request changes bar's file, which belongs to acme, and no --author was given, so lvpm cannot tell whether it is from acme. fix: pass --author <login>, or wait for a maintainer"
         );
     }
 

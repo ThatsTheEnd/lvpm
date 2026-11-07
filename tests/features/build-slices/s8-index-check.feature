@@ -98,9 +98,33 @@ Feature: S8: lvpm index check
     Then the command succeeds printing "review foo 1.1.0: no --author was given, so lvpm cannot tell whether the pull request is from a, who owns foo. fix: pass --author <login>, or wait for a maintainer"
 
   Scenario: a refusal wins over an author who does not own the name
-    Given the head changes foo 1.0.0's sha256 from <old> to <new>
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    And the head changes foo 1.0.0's sha256 from <old> to <new>
     When I run "lvpm index check --base base --head head --author bob"
-    Then the command fails with exit code 1 printing exactly "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+    Then the command fails with exit code 1 printing "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+    And no line printed starts with "review "
+
+  Scenario: an owner's new version does not carry another owner's file along
+    Given packages/bar.toml is owned by "b/y" in the base and the head
+    And the head adds foo 1.1.0 with the release's url and sha256
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "review bar: the pull request changes bar's file, which belongs to b, and is from a. fix: open the pull request from b's account, make your membership of b public, or wait for a maintainer"
+    And no line printed starts with "review foo"
+
+  Scenario: an owner may rewrite their own files in the same pull request
+    Given packages/bar.toml is owned by "a/y" in the base and the head
+    And the head adds foo 1.1.0 with the release's url and sha256
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the result's verdict is "merge" and the exit code is 0
+
+  Scenario: a file rewritten with no author is left for a maintainer
+    Given packages/bar.toml is owned by "b/y" in the base and the head
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "review bar: the pull request changes bar's file, which belongs to b, and no --author was given, so lvpm cannot tell whether it is from b. fix: pass --author <login>, or wait for a maintainer"
 
   Scenario: a changed hash for an existing version is rejected
     Given the head changes foo 1.0.0's sha256 from <old> to <new>

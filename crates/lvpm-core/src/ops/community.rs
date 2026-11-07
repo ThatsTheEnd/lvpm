@@ -6,7 +6,7 @@ use super::env::OpEnv;
 use super::session::Downloads;
 use crate::cache::sha256_hex;
 use crate::community::{
-    self, EntryFile, FileVersion, Finding, NeedsReview, NewVersion, NotAttested, Tree,
+    self, ChangedFile, EntryFile, FileVersion, Finding, NeedsReview, NewVersion, NotAttested, Tree,
     VersionListed,
 };
 use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch};
@@ -210,7 +210,8 @@ impl Outcome {
 /// R7: a PR that registers a new name has the public indexes read (NI's and
 /// JKI's, which `defaults = true` reads, through a cache of their own), and the
 /// name is refused when one lists it. A PR that registers none never reads them.
-/// An index that cannot be read fails the check: it is no verdict.
+/// An index that cannot be read, or that lists nothing, fails the check: it is
+/// no verdict.
 pub fn check(
     env: &OpEnv,
     base_dir: &Path,
@@ -252,7 +253,13 @@ fn check_with(
     let mut verdicts: Vec<Outcome> = diff.findings.into_iter().map(Outcome::Refused).collect();
     let mut new_versions = diff.new_versions;
     if new_versions.iter().any(|new| new.new_name) {
-        let taken = community::public_name_findings(&new_versions, &(asks.public_names)()?);
+        let public = (asks.public_names)()?;
+        // An empty list is an index that read as nothing, and would let every name through.
+        ensure!(
+            !public.is_empty(),
+            "the public indexes (NI's and JKI's) listed no name at all, so lvpm cannot check that a new name is free"
+        );
+        let taken = community::public_name_findings(&new_versions, &public);
         // A name that is refused is not downloaded.
         let paths: Vec<String> = taken
             .iter()
@@ -303,7 +310,7 @@ fn check_with(
     }
     // A refusal is the verdict whoever the author is, so nobody is asked.
     if checked.refused.is_empty() {
-        checked.review = needing_review(&accepted, author, asks)?;
+        checked.review = needing_review(&accepted, &diff.changed_files, author, asks)?;
         for review in &checked.review {
             let review = review.clone();
             env.sink.emit(Event::IndexNeedsReview { review });
@@ -312,18 +319,25 @@ fn check_with(
     Ok(checked)
 }
 
-/// R8: the `accepted` versions whose owner `author` is not: the owner's own
-/// login, in any case, or a public member of the organisation that owns it. With
-/// no `author` it is none of them.
+/// R8: the `accepted` versions, and the `changed` entry files that gain none,
+/// whose owner `author` is not: the owner's own login, in any case, or a public
+/// member of the organisation that owns it. With no `author` it is none of them.
 fn needing_review(
     accepted: &[NewVersion],
+    changed: &[ChangedFile],
     author: Option<&str>,
     asks: &Asks,
 ) -> Result<Vec<NeedsReview>> {
+    // A file that gains an accepted version is asked about by that version.
+    let rewritten = changed
+        .iter()
+        .filter(|file| accepted.iter().all(|new| new.path != file.path));
+    let versions = accepted.iter().map(|new| new.needs_review(author));
+    let files = rewritten.map(|file| file.needs_review(author));
     let mut members: HashMap<String, bool> = HashMap::new();
     let mut review = Vec::new();
-    for new in accepted {
-        let owner = new.owner();
+    for asked in versions.chain(files) {
+        let owner = asked.owner.as_str();
         let owns = match author {
             None => false,
             Some(author) if author.eq_ignore_ascii_case(owner) => true,
@@ -339,7 +353,7 @@ fn needing_review(
             },
         };
         if !owns {
-            review.push(new.needs_review(author));
+            review.push(asked);
         }
     }
     Ok(review)
@@ -1067,6 +1081,26 @@ Requires=\"bar>=?\"",
     }
 
     #[test]
+    fn a_refusal_wins_over_a_file_of_another_owner_that_the_pr_rewrites() {
+        let dir = testing::scratch_dir("check-refusal-wins");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        base.list_new("bar", NOT_A_RELEASE);
+        head.list_foo(&["1.0.0", "1.1.0"], SHA_A);
+        // bar.toml is b/y's: the same entry, its name in another case.
+        let bar = std::fs::read_to_string(base.0.join("packages/bar.toml")).unwrap();
+        head.write("packages/bar.toml", &bar.replace("\"bar\"", "\"Bar\""));
+
+        // The author owns neither file; `checked_against` asserts that nothing is left for review.
+        let (refused, _) = checked_against(&base, &head, &[]);
+
+        let [Finding::UrlNotReleaseFile { name, version, .. }] = refused.as_slice() else {
+            panic!("{refused:?}");
+        };
+        assert_eq!((name.as_str(), version.as_str()), ("foo", "1.1.0"));
+    }
+
+    #[test]
     fn public_indexes_that_cannot_be_read_make_the_check_an_error() {
         let dir = testing::scratch_dir("check-public-down");
         let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
@@ -1090,6 +1124,28 @@ Requires=\"bar>=?\"",
         let env = testing::env_on(&sink, &base.0);
         let checked = check(&env, &base.0, &head.0, None).unwrap();
         (checked, sink.events())
+    }
+
+    #[test]
+    fn public_indexes_that_list_nothing_make_the_check_an_error() {
+        let dir = testing::scratch_dir("check-public-empty");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        head.list_foo(&["1.0.0"], SHA_A);
+        head.list_new("bar", NOT_A_RELEASE);
+        let env = testing::env(&dir);
+        let empty = || Ok(BTreeSet::new());
+        let asks = Asks {
+            public_names: &empty,
+            public_member: &no_member_is_asked,
+        };
+
+        let why = check_with(&env, &base.0, &head.0, None, &asks).unwrap_err();
+
+        assert_eq!(
+            why.to_string(),
+            "the public indexes (NI's and JKI's) listed no name at all, so lvpm cannot check that a new name is free"
+        );
     }
 
     #[test]
@@ -1390,7 +1446,7 @@ Requires=\"bar>=?\"",
             .iter()
             .map(|o| accepted_of(&format!("{o}/x")))
             .collect();
-        let review = needing_review(&accepted, author, &asks).unwrap();
+        let review = needing_review(&accepted, &[], author, &asks).unwrap();
         let review = review.into_iter().map(|r| (r.owner, r.author)).collect();
         (review, asked.get())
     }
@@ -1439,6 +1495,93 @@ Requires=\"bar>=?\"",
         assert_eq!(asked, 2);
     }
 
+    /// `packages/bar.toml` of `owner/y`, which a PR rewrites.
+    fn rewritten(owner: &str) -> ChangedFile {
+        ChangedFile {
+            path: "packages/bar.toml".into(),
+            name: "bar".into(),
+            github: format!("{owner}/y"),
+        }
+    }
+
+    /// The (path, version, owner) of what needs review, for `accepted` and
+    /// `changed`, by `author`, and how many lookups it took.
+    fn reviewed_files(
+        accepted: &[NewVersion],
+        changed: &[ChangedFile],
+        author: Option<&str>,
+        members: &[(&str, &str)],
+    ) -> (Vec<(String, Option<String>, String)>, usize) {
+        let asked = std::cell::Cell::new(0);
+        let member = |org: &str, login: &str| {
+            asked.set(asked.get() + 1);
+            Ok(members.contains(&(org, login)))
+        };
+        let asks = Asks {
+            public_names: &|| panic!("public names were asked"),
+            public_member: &member,
+        };
+        let review = needing_review(accepted, changed, author, &asks).unwrap();
+        let review = review.into_iter().map(|r| (r.path, r.version, r.owner));
+        (review.collect(), asked.get())
+    }
+
+    #[test]
+    fn a_file_of_another_owner_that_the_pr_rewrites_is_left_for_review_beside_an_owned_version() {
+        let owned = [accepted_of("acme/x")];
+
+        let (review, _) = reviewed_files(&owned, &[rewritten("other")], Some("acme"), &[]);
+
+        assert_eq!(
+            review,
+            [("packages/bar.toml".to_string(), None, "other".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_owner_of_a_rewritten_file_or_a_public_member_of_its_organisation_may_rewrite_it() {
+        let owned = [accepted_of("acme/x")];
+
+        let (by_owner, asked) = reviewed_files(&owned, &[rewritten("Acme")], Some("acme"), &[]);
+        let (by_member, _) = reviewed_files(
+            &owned,
+            &[rewritten("other")],
+            Some("acme"),
+            &[("other", "acme")],
+        );
+
+        assert_eq!((by_owner, asked), (vec![], 0));
+        assert_eq!(by_member, []);
+    }
+
+    #[test]
+    fn with_no_author_a_rewritten_file_is_left_for_review_and_nobody_is_asked() {
+        let (review, asked) = reviewed_files(&[], &[rewritten("other")], None, &[]);
+
+        assert_eq!((review.len(), asked), (1, 0));
+    }
+
+    #[test]
+    fn a_file_that_gains_an_accepted_version_is_one_review_not_two() {
+        let new = accepted_of("acme/x");
+        let same_file = ChangedFile {
+            path: new.path.clone(),
+            name: "foo".into(),
+            github: "acme/x".into(),
+        };
+
+        let (review, _) = reviewed_files(&[new], &[same_file], Some("bob"), &[]);
+
+        assert_eq!(
+            review,
+            [(
+                "packages/foo.toml".to_string(),
+                Some("1.1.0".to_string()),
+                "acme".to_string()
+            )]
+        );
+    }
+
     #[test]
     fn a_lookup_that_fails_is_an_error_not_a_no() {
         let member = |_: &str, _: &str| Err(anyhow::anyhow!("HTTP 502"));
@@ -1447,7 +1590,7 @@ Requires=\"bar>=?\"",
             public_member: &member,
         };
 
-        let why = needing_review(&[accepted_of("acme/x")], Some("bob"), &asks).unwrap_err();
+        let why = needing_review(&[accepted_of("acme/x")], &[], Some("bob"), &asks).unwrap_err();
 
         assert_eq!(
             format!("{why:#}"),

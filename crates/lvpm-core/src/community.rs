@@ -536,13 +536,50 @@ pub struct NewVersion {
     pub new_name: bool,
 }
 
-/// R8: a new version that the PR's author is not known to own: the PR is not
-/// refused, and not merged either. It waits for a maintainer.
+/// An entry file that is in the base and in the head with other bytes, whatever
+/// the change (a new version, a reordered key, the case of `github`): the PR
+/// touches it, so it may only be its owner's PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    /// The name, as the base writes it.
+    pub name: String,
+    /// The base's `github` for the name.
+    pub github: String,
+}
+
+impl ChangedFile {
+    /// The account or organisation that owns the file's `github`.
+    pub fn owner(&self) -> &str {
+        owner_of(&self.github)
+    }
+
+    /// R8: this file, as one the PR's `author` is not known to own.
+    pub fn needs_review(&self, author: Option<&str>) -> NeedsReview {
+        NeedsReview {
+            path: self.path.clone(),
+            name: self.name.clone(),
+            version: None,
+            author: author.map(str::to_string),
+            owner: self.owner().to_string(),
+        }
+    }
+}
+
+/// The account or organisation of an `owner/repo`.
+fn owner_of(github: &str) -> &str {
+    &github[..github.find('/').unwrap_or(github.len())]
+}
+
+/// R8: a new version, or a change to an entry file, that the PR's author is not
+/// known to own: the PR is not refused, and not merged either. It waits for a
+/// maintainer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NeedsReview {
     pub path: String,
     pub name: String,
-    pub version: String,
+    /// The new version; `None` for a change to a file that adds none.
+    pub version: Option<String>,
     /// The login the PR is from; `None` when the check was not told.
     pub author: Option<String>,
     /// The account or organisation of the version's `github`.
@@ -554,6 +591,8 @@ pub struct NeedsReview {
 pub struct Diff {
     pub findings: Vec<Finding>,
     pub new_versions: Vec<NewVersion>,
+    /// Every entry file in both checkouts whose bytes differ, new version or not.
+    pub changed_files: Vec<ChangedFile>,
 }
 
 /// A checkout of the index repo, read as data: no code in it runs and no link
@@ -607,7 +646,8 @@ impl Node {
 /// Compare two checkouts of the index repo (`base`, then `head`) by the rules
 /// that need no network: R1, R1b, R2, R3, R3b, and an entry file that does not
 /// read. The versions the head adds to a file that passes R1b and R2 are in
-/// [`Diff::new_versions`].
+/// [`Diff::new_versions`], and each file of the base that it rewrites is in
+/// [`Diff::changed_files`].
 pub fn diff(base: &Tree, head: &Tree) -> Diff {
     let mut out = Diff::default();
     let mut entry_files = 0;
@@ -743,6 +783,13 @@ impl Diff {
                 name: old.name.clone(),
                 old: old.github.clone(),
                 new: new.github.clone(),
+            });
+        }
+        if let (Some(old), Some(_)) = (&old, &new) {
+            self.changed_files.push(ChangedFile {
+                path: path(),
+                name: old.name.clone(),
+                github: old.github.clone(),
             });
         }
         let now_listed = new.as_ref().map(EntryFile::by_version);
@@ -892,8 +939,7 @@ impl NewVersion {
 
     /// The account or organisation that owns the version's `github`.
     pub fn owner(&self) -> &str {
-        let slash = self.github.find('/').unwrap_or(self.github.len());
-        &self.github[..slash]
+        owner_of(&self.github)
     }
 
     /// R8: this version, as one the PR's `author` is not known to own.
@@ -902,7 +948,7 @@ impl NewVersion {
         NeedsReview {
             path,
             name,
-            version,
+            version: Some(version),
             author: author.map(str::to_string),
             owner: self.owner().to_string(),
         }
@@ -1882,12 +1928,58 @@ github = \"b/y\"
             NeedsReview {
                 path: "packages/foo.toml".into(),
                 name: "foo".into(),
-                version: "1.1.0".into(),
+                version: Some("1.1.0".into()),
                 author: Some("bob".into()),
                 owner: "Acme".into(),
             }
         );
         assert_eq!(new.needs_review(None).author, None);
+    }
+
+    #[test]
+    fn every_entry_file_the_head_rewrites_is_a_changed_file_whatever_the_change() {
+        let mut main = base();
+        main.put_entry("packages/bar.toml", "bar", "b/y", &[("1.0.0", SHA_A)]);
+        let cosmetic = |text: String| text.replacen("name = \"bar\"", "name = \"Bar\"", 1);
+        let mut head = main.clone();
+        head.put(
+            "packages/bar.toml",
+            cosmetic(entry_text("bar", "b/y", &[("1.0.0", SHA_A)])).as_bytes(),
+        );
+        head.put_entry(
+            "packages/foo.toml",
+            "foo",
+            "a/x",
+            &[("1.0.0", SHA_A), ("1.0.1", SHA_B), ("1.1.0", SHA_C)],
+        );
+
+        let found = diff(&main, &head);
+
+        assert_eq!(found.findings, []);
+        let changed: Vec<_> = found
+            .changed_files
+            .iter()
+            .map(|file| (file.path.as_str(), file.name.as_str(), file.owner()))
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                ("packages/bar.toml", "bar", "b"),
+                ("packages/foo.toml", "foo", "a")
+            ]
+        );
+        assert_eq!(found.new_versions.len(), 1);
+    }
+
+    #[test]
+    fn a_file_that_is_added_removed_or_left_alone_is_not_a_changed_file() {
+        let mut head = base();
+        head.put_entry("packages/bar.toml", "bar", "b/y", &[("1.0.0", SHA_A)]);
+        assert_eq!(diff(&base(), &head).changed_files, []);
+
+        let mut head = base();
+        head.remove("packages/foo.toml");
+        assert_eq!(diff(&base(), &head).changed_files, []);
     }
 
     /// The name keys a public index lists.

@@ -340,7 +340,10 @@ async fn fails_printing_the_manifest_error(world: &mut CliWorld, error: String) 
         .strip_prefix("Error: parsing manifest ")
         .and_then(|rest| rest.strip_suffix(error.as_str()))
         .unwrap_or_else(|| panic!("{line:?} is not a manifest error saying {error:?}"));
-    assert!(path.ends_with("work/"), "the manifest is {path:?}");
+    assert!(
+        path.ends_with("work/") || path.ends_with("work\\"),
+        "the manifest is {path:?}"
+    );
 }
 
 /// S6's whole refusal, as lines (each trimmed, and without the `Error: ` the front end puts first) that follow one another in
@@ -853,6 +856,28 @@ async fn the_head_adds_bar(world: &mut CliWorld, owner: String, built_by: String
     std::fs::write(path, entry.write()).expect("write the entry file");
 }
 
+#[given(regex = r#"^packages/bar\.toml is owned by "([^"]+)" in the base and the head$"#)]
+async fn bar_is_in_both(world: &mut CliWorld, owner: String) {
+    let sha256 = sha256_hex(&vip("bar", "1.0.0", BAR_NEEDS));
+    let version = world.listed_version(&owner, "bar", "1.0.0", &sha256, BAR_LISTED_REQUIRES);
+    let file = EntryFile {
+        name: "bar".into(),
+        github: owner,
+        versions: vec![version],
+    };
+    for checkout in [BASE_DIR, HEAD_DIR] {
+        let path = world.checkout_file(checkout, "packages/bar.toml");
+        std::fs::write(path, file.write()).expect("write the entry file");
+    }
+}
+
+#[given("the head writes the name in packages/bar.toml in another case")]
+async fn the_head_recases_bar(world: &mut CliWorld) {
+    let path = world.checkout_file(HEAD_DIR, "packages/bar.toml");
+    let text = std::fs::read_to_string(&path).expect("the head's bar.toml");
+    std::fs::write(path, text.replace("name = \"bar\"", "name = \"Bar\"")).expect("write it");
+}
+
 #[given("the head adds packages/bar.toml that is not TOML")]
 async fn the_head_adds_a_file_that_is_not_toml(world: &mut CliWorld) {
     let path = world.checkout_file(HEAD_DIR, "packages/bar.toml");
@@ -956,6 +981,14 @@ async fn the_head_equals_the_base(world: &mut CliWorld) {
         files
     };
     assert_eq!(files(HEAD_DIR), files(BASE_DIR));
+}
+
+#[then(regex = r#"^no line printed starts with "([^"]+)"$"#)]
+async fn no_line_starts_with(world: &mut CliWorld, start: String) {
+    let output = world.output();
+    let lines = output.stdout.lines().chain(output.stderr.lines());
+    let found: Vec<&str> = lines.filter(|line| line.starts_with(&start)).collect();
+    assert_eq!(found, Vec::<&str>::new(), "{}", world.printed());
 }
 
 #[then(regex = r#"^the result's verdict is "(merge|refuse|review)" and the exit code is (\d)$"#)]
@@ -1255,6 +1288,20 @@ async fn the_job_writes_the_pinned_lines(_: &mut CliWorld) {
             "the step that says {shell:?} does not write to GITHUB_STEP_SUMMARY"
         );
     }
+}
+
+#[then(
+    regex = r#"^"register" names its branch "([^"]+)", checked with git check-ref-format, and looks the pull request up by it$"#
+)]
+async fn the_branch_is_scoped_to_the_repo_and_tag(_: &mut CliWorld, branch: String) {
+    let job = template_job("register");
+    let has = |text: String| job.iter().any(|line| line.contains(&text));
+    assert!(has(format!("branch=\"{branch}\"")), "no branch={branch}");
+    assert!(has("git check-ref-format \"refs/heads/$branch\"".into()));
+    assert!(
+        has("gh pr list --repo \"$INDEX_REPO\" --head \"$BRANCH\"".into()),
+        "the pull request is not looked up by its branch"
+    );
 }
 
 #[then(regex = r#"^the jobs "([^"]+)" and "([^"]+)" do not mention LVPM_INDEX_TOKEN$"#)]
