@@ -865,6 +865,9 @@ impl IndexAsk<'_> {
         entries: &mut Vec<(usize, Entry)>,
         on_fail: &mut impl FnMut(&str, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
+        if self.feeds.is_empty() {
+            return Ok(());
+        }
         let mut seen = HashSet::new();
         let mut queue = VecDeque::new();
         let mut enqueue = |name: &str, queue: &mut VecDeque<String>| {
@@ -2123,6 +2126,28 @@ Package.URL=bar-3.0.vip
             ]
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn with_no_community_index_nothing_is_asked_and_nothing_is_added() {
+        let fetch = |_: &IndexFeed, key: &str| -> Result<Option<String>> {
+            panic!("asked for {key}");
+        };
+        let ask = IndexAsk {
+            feeds: Vec::new(),
+            fetch: &fetch,
+            parse: parse_listed,
+        };
+        let mut entries = Vec::new();
+        let mut failed = Vec::new();
+        let wanted = ["foo".to_string()];
+        let mut on_fail = |source: &str, _| {
+            failed.push(source.to_string());
+            Ok(())
+        };
+        ask.read(&wanted, &CancelToken::new(), &mut entries, &mut on_fail)
+            .unwrap();
+        assert!(entries.is_empty() && failed.is_empty());
     }
 
     #[test]
