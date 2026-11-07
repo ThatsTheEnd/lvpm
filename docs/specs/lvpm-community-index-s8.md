@@ -177,11 +177,25 @@ scenario and a line in the command table of `docs/usage.md`.
   5. a new version whose download has a different SHA-256, or a name, version,
      LabVIEW minimum or `requires` other than what the package itself says;
   6. a new version whose S6 outcome is not **attested**, or whose attestation
-     subject is another repo than `github`. Matching ignores case.
+     subject is another repo than `github`. Matching ignores case;
+  7. a new name that a public index (NI or JKI, the feeds `defaults = true`
+     reads) lists, compared by name key. Only a name the base has no file for is
+     asked; a new version of a listed name is not. If the public indexes cannot
+     be read the check fails as an error, not as a verdict.
+
+  Rule 8 is not a refusal. `--author <login>` is the PR's author. For each new
+  version the author must own the entry's `github = "owner/repo"`: the login
+  equals `owner` (ASCII case-insensitive), or `owner` is an organisation that
+  lists the author as a public member (`GET /orgs/{owner}/public_members/{author}`:
+  204 yes, 404 no, no token needed). Otherwise, and for every new version when
+  there is no `--author`, the PR is left for a maintainer: not refused, not
+  merged. A refusal wins over this.
 
   With `--json` the result has `command` (`index-check`), `accepted` and
-  `refused` (counts) and `comment`, the text the bot leaves on a refused PR
-  (null when none is refused).
+  `refused` (counts), `verdict` (`merge`, `refuse` or `review`) and `comment`,
+  the text the bot leaves on a PR that is refused or left for review (null for
+  any other). `verdict` is `refuse` when anything is refused; else `review` when
+  the author is not the owner of a version or nothing was accepted; else `merge`.
 
   The check never runs code from the PR: it reads the PR's TOML as data.
   Attestation goes through the existing `verify` module and the `gh` runner,
@@ -192,9 +206,13 @@ scenario and a line in the command table of `docs/usage.md`.
 First come, first served (user, 2026-11-06). The first merged file for a name
 sets its `github` owner, and rule 2 keeps it. Proof of ownership is the
 attestation: only a workflow in the owner repo can attest its releases.
-vipm.io names are not reserved. A project that lists the index after vipm.io
-still gets vipm.io's package under ADR 4. Two PRs that add the same new name
-conflict on the same file, so only the first can merge.
+vipm.io names are reserved for vipm.io (user, 2026-11-07): the index's
+`[sources]` line ranks before the public defaults, so a name registered here
+would be taken from vipm.io for every consumer. Rule 7 refuses a new name that
+NI or JKI lists. A name vipm.io adds later is not removed from the index. Only
+the owner can list: rule 8 leaves a PR from another account for a maintainer.
+Two PRs that add the same new name conflict on the same file, so only the first
+can merge.
 
 ### The index repo
 
@@ -264,9 +282,11 @@ then fails at the bot (rule 3), which is the intended outcome.
 3. `lvpm index check` refuses a head whose entry changes the `sha256` of an
    existing version, names the package, version and both hashes, and exits
    non-zero. Source: issue #69, criterion 3.
-4. `lvpm index check` refuses each of the other cases in rules 1–6, one
+4. `lvpm index check` refuses each of the other cases in rules 1–7, one
    scenario or unit test each, and accepts a new name and a new version of
-   an owned name that pass all rules. Source: inference from "a bot checks
+   an owned name that pass all rules. With rule 8, a PR whose author is not the
+   owner (or a public member of the owning organisation), or that has no
+   `--author`, gets the verdict `review`, and a refusal still wins. Source: inference from "a bot checks
    name, hash and attestation".
 5. `lvpm index add` creates a new entry file; appends a version to the
    owner's existing file; refuses another `--github`; and refuses a version
@@ -334,6 +354,8 @@ then fails at the bot (rule 3), which is the intended outcome.
 | Completeness: index entry CRUD | `inferable` | inference | Create = registration PR; Read = lvpm; Update = append a version only; Delete = refused (out of scope) |
 | Completeness: authn/authz | `inferable` | inference | Reads: S4 token chain. Registration: publisher PAT. Merge: index repo's `GITHUB_TOKEN`. Authority to add versions = attestation from owner repo |
 | Completeness: audit | `inferable` | inference | The index repo's git history and merged PRs are the audit trail |
+| Names that a public index lists (R7) | `requires-stakeholder-input` | human (2026-11-07) | A new name that vipm.io (NI or JKI) lists is refused. Security review: index sources rank ahead of the public indexes, so anyone could register `oglib_error` and hijack it. Public indexes unreadable: the check errors, the bot posts "could not run". New versions of a listed name are not re-checked |
+| Who may list (R8) | `requires-stakeholder-input` | human (2026-11-07) | Only the owner: the PR author's login equals the entry's `github` owner, or the owner is an organisation with the author as a public member. Otherwise the verdict is review (not refused, not merged). No `--author`: review for every new version |
 | `lvpm search` not covering the index | `LOW_VALUE` | inference | Decided out of scope; no criterion |
 
 ## Consistency Gate

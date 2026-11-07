@@ -71,9 +71,11 @@ explicit-only index would also defeat its purpose: a consumer writes
   taken from it before vipm.io and NI.
 - A consumer with a private index repository or a rate-limited network sees a
   failed source, not a missing package. This is deliberate.
-- A first-come owner can publish a name that vipm.io also has. A project that
-  lists the index ahead of the defaults gets the index's package. A project
-  that lists it after, or not at all, does not.
+- An index source ranks ahead of the defaults, so a name vipm.io lists would
+  be taken from the index for every project that lists it. The bot therefore
+  refuses a new name that NI or JKI lists (`lvpm index check`, rule 7), and
+  merges only a PR from the owner (rule 8). A name vipm.io adds after the
+  index has it stays in the index, and the index's package wins.
 - **Downgrade.** lvpm 0.24.0 (the release before S8) refuses a manifest with a
   `github:` source in `[sources]`, in every command that resolves sources, with
   `[sources] community: "github:labview-package-manager/package-index" is not an http:// or https:// index folder`

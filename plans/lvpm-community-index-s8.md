@@ -46,7 +46,8 @@ check`) accepts only attested, unchanged, owner-published versions.
 - [ ] AC1 *(manual)* A fork of pilot B, renamed to a throwaway package name and set up by following docs/usage.md "Publish to the community index" (except the branch-build substitutions listed in the PR body), opens a PR on `labview-package-manager/package-index` from a tag. `lvpm index check` built from this branch accepts it, and the PR is merged after the user approves. The PR body links that PR and the check's output, and lists every step that used a branch build instead of a release.
 - [ ] AC2 A project with `community = "github:<o>/<r>"` and pilot B as `labview_open_source_lib_serializer = ">=1.2"` locks and syncs pilot B from the index. Its lock entry has `source = "github-index:<o>/<r>"`, the entry's `sha256`, and `signer`/`subject` from the fake `gh`. `sync --locked` installs it again from that lock.
 - [ ] AC3 `lvpm index check` refuses a head that changes an existing version's `sha256`, prints the pinned R3 line with both hashes, and exits 1.
-- [ ] AC4 `lvpm index check` refuses each case of R1, R1b, R2, R3b, R4, R5, R5b, R6 and R6b, a non-TOML `packages/bar.toml` (parse), and an entry file over 1 MiB (parse). It accepts a new name, and a new version of an owned name, that pass every rule (exit 0, `accepted` lines).
+- [ ] AC4 `lvpm index check` refuses each case of R1, R1b, R2, R3b, R4, R5, R5b, R6, R6b and R7, a non-TOML `packages/bar.toml` (parse), and an entry file over 1 MiB (parse). It accepts a new name, and a new version of an owned name, that pass every rule (exit 0, `accepted` lines).
+- [ ] AC14 R7: a new name that NI or JKI lists is refused with the pinned line, and not downloaded; a new version of a listed name is not asked of them; public indexes that cannot be read make the check an error (no verdict). R8: with `--author`, a version whose `github` owner is the author (any case) or an organisation listing the author as a public member has verdict `merge`; any other author, and no `--author`, has verdict `review` with a `review ...` line saying why; a refusal wins (`refuse`, exit 1). `--json` carries `verdict` and, for `refuse` and `review`, the comment. `check.yml` passes the author as env data and takes the verdict from lvpm.
 - [ ] AC5 `lvpm index add` creates `packages/<key>.toml`. It appends to the owner's file. It refuses a `--github` that is not `owner/repo`, another `--github`, a listed version, a url outside the owner's releases, and a file that is not an `.lvpkg`. On any refusal it writes nothing.
 - [ ] AC6 A name the index does not list (404) resolves from a later source. A name an earlier `[sources]` line lists is not taken from the index, and a name the index lists is taken from it before vipm.io. A dependency pinned with `index = "community"` that the index does not list fails naming `searched github:<o>/<r>`, and is not taken from another source.
 - [ ] AC7 A download whose SHA-256 differs from the index entry fails with the pinned line naming both hashes and the hint. Nothing is installed and no lock is written.
@@ -78,6 +79,9 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 | R5b | `refused <name> <version>: the package says <field> <actual>, the entry says <entry>. fix: don't replace release files after tagging; push a new tag` |
 | R6 | `refused <name> <version>: not attested (<reason>). fix: build with the lvpm release template, which attests the package` |
 | R6b | `refused <name> <version>: attested by <subject>, not https://github.com/<github>. fix: publish from <github>` |
+| R7 | `refused <name>: vipm.io already lists this name. fix: pick a name that vipm.io does not list` |
+| R8 (review, stdout) | `review <name> <version>: the pull request is from <author>, but <name> belongs to <owner>. fix: open the pull request from <owner>'s account, make your membership of <owner> public, or wait for a maintainer` |
+| R8 (no `--author`) | `review <name> <version>: no --author was given, so lvpm cannot tell whether the pull request is from <owner>, who owns <name>. fix: pass --author <login>, or wait for a maintainer` |
 | R5 (not a package) | `refused <name> <version>: the file is not a package lvpm reads: <error>. fix: build the package with the lvpm release template, then push a new tag` |
 | parse | `refused <path>: does not parse: <error>. fix: register with the lvpm release template instead of editing by hand` |
 | none | `nothing to check` (exit 0) |
@@ -88,7 +92,7 @@ Check (`lvpm index check`). Findings print sorted by path, then version. The pro
 - `<error>` of parse never quotes the file. A file with no `[[version]]` is `lists no version`; a version, labview or requires value that lvpm does not write is `version[<n>].<key>: cannot be read`.
 - A value out of the PR (name, path, version, url, error, hash) shows at most 200 characters, then `…`; a control character, a Unicode format character (Cf, like a bidi override), U+2028 and U+2029 show as `?`.
 - `<reason>` of R6 is S6's outcome text: `no attestation`, an unchecked reason (`gh` could not run), or `does not verify`. Every one refuses: the bot fails closed.
-- With `--json`, `lvpm index check` prints `{"command": "index-check", "accepted": <n>, "refused": <n>, "comment": <text or null>}` as its last line; `comment` is the PR comment below, and `null` when nothing is refused.
+- With `--json`, `lvpm index check` prints `{"command": "index-check", "accepted": <n>, "refused": <n>, "verdict": "merge"|"refuse"|"review", "comment": <text or null>}` as its last line (inside `{"result": ...}`); `verdict` is `refuse` when anything is refused, else `review` when the author is not the owner of a version or nothing was accepted, else `merge`. `comment` is the PR comment below for `refuse`, the review comment (the `review` lines in one fenced block, introduced by `lvpm index check found nothing wrong with this PR, but it does not merge it until a maintainer has looked:`) for a `review` with lines, and `null` otherwise. R7: the public indexes are read only when the PR adds a new name; if they cannot be read the check is an error. R8: `--author <login>`; the owner is the part of `github` before `/`; the author owns it when equal (ASCII case-insensitive) or `GET /orgs/{owner}/public_members/{author}` is 204.
 - The bot's PR comment starts `lvpm index check refused this PR:`, lists the lines, and ends `Fix the cause, push a new tag, and close this PR.` with a link to docs/usage.md "Publish to the community index". The lines are in one fenced code block, one per line, with a fence of at least three backticks and longer than any run of backticks in them. At most 50 lines are listed, then `… and <n> more` as the block's last line.
 
 Add (`lvpm index add`), each refusal exits 1:
@@ -641,6 +645,15 @@ Each outline row that names a fixture other than the Background replaces only th
 **Files**: `crates/lvpm-core/src/ops/community.rs`, `crates/lvpm-core/src/events.rs`, `src/main.rs`, `src/render/community.rs`, `crates/lvpm-testkit/src/github.rs`, `tests/features/build-slices/s8-index-check.feature`, `tests/steps/community.rs`, `tests/acceptance.rs`
 **Commit**: `feat(s8): lvpm index check`
 
+#### Step 5.3: R7 and R8, who may register and list (added 2026-11-07)
+
+**Complexity**: standard
+**IMPLEMENT**: R7: `NewVersion::new_name`, `Finding::NameListedPublicly`, `community::public_name_findings` (pure, over the set of public name keys); `ops::community::check` reads NI and JKI through `index::load` with `defaults = true` and a cache of its own, only for a new name, and fails if they cannot be read. R8: `--author`, `NeedsReview`, `Checked::verdict`, `github::public_member` (`GET /orgs/{org}/public_members/{login}`), `Event::IndexNeedsReview`, `verdict` in the `--json` result; `GitHubFake` serves the endpoint; `check.yml` passes `AUTHOR` as env and uses lvpm's verdict. Docs: README rules, usage.md, spec, ADR 8.
+**TEST**: unit tests in `community.rs`, `ops/community.rs`, `github_client.rs` and the render; the check feature's R7 and R8 scenarios; full suite green.
+**REFACTOR**: the PR comment and the review comment share one fenced-block helper.
+**Files**: `crates/lvpm-core/src/community.rs`, `crates/lvpm-core/src/ops/community.rs`, `crates/lvpm-core/src/github/membership.rs`, `crates/lvpm-core/src/events.rs`, `src/main.rs`, `src/render/community.rs`, `crates/lvpm-testkit/src/github.rs`, `docs/vision/community-index/check.yml`, `docs/vision/community-index/README.md`, `docs/usage.md`, `tests/features/build-slices/s8-index-check.feature`, `tests/steps/community.rs`
+**Commit**: `fix(s8): a new name that a public index lists is refused`, `fix(s8): only the owner's pull request is merged; any other waits for a maintainer`
+
 ### Slice 6: the release template and the docs
 
 **Depends-on:** 5
@@ -795,6 +808,7 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
 - [x] Slice 5: `lvpm index check`, the bot
   - [x] Step 5.1: the pure rules (R1–R3b)
   - [x] Step 5.2: the network rules (R5–R6b), the render and the CLI
+  - [x] Step 5.3: R7 and R8, who may register and list
 
 #### Wave 6
 - [x] Slice 6: the release template and the docs

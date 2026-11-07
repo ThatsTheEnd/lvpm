@@ -30,7 +30,7 @@
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when `--github` is not `owner/repo`, the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, `<package>` is not a package, the entry file does not parse or would pass its size limit, or `<entries-dir>` is not a folder. Do not run it twice at once on one checkout. The `register` job of the release template runs it ([Publish to the community index](#publish-to-the-community-index)) |
-| `lvpm index check --base <dir> --head <dir>` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the comment to leave on a refused PR ([Publish to the community index](#publish-to-the-community-index)) |
+| `lvpm index check --base <dir> --head <dir> [--author <login>]` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets, `<login>` the PR's author. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. A new name that vipm.io lists is refused, and the check fails if the public indexes cannot be read. A version whose owner the author is not (the owner's login, or a public member of the owning organisation) gets a `review ...` line instead, as does every version when there is no `--author`. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the `verdict` (`merge`, `refuse` or `review`) and the comment to leave on a PR that is refused or left for review ([Publish to the community index](#publish-to-the-community-index)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -465,6 +465,13 @@ with no further step:
    work; it was not tested.
 4. Push a tag.
 
+The pull request must come from the owner's account: the account that owns the
+package's repository, or a public member of the organisation that owns it (a
+member makes the membership public in the organisation's People page). The
+`register` job opens it from the account of `LVPM_INDEX_TOKEN`, so save the token
+of such an account. A name that vipm.io already lists cannot be registered:
+pick another `[project]` `name`.
+
 The template's `register` job then runs `lvpm index add` on the package that
 the `publish` job attached to the tag's release, pushes the entry to your fork
 of the index, and opens a pull request. Its summary shows the pull request's
@@ -492,8 +499,11 @@ not set one; this is optional and yours to add:
 **What the bot decides.** A bot in the index repository checks each pull
 request, reading it as data: the name, the file's SHA-256 and the attestation
 that the template's `publish` job made ([`[policy]`](#policy)). It merges a pull request that passes every rule. It
-comments the reasons on one it refuses, and leaves it open. The first
-repository to register a name owns it; only that repository's attested
+comments the reasons on one it refuses, and leaves it open. A pull request
+from an account that is not the owner (or a public member of the owning
+organisation) is not refused and not merged: the bot comments who owns the
+name, and a maintainer decides. A new name that vipm.io lists is refused. The
+first repository to register a name owns it; only that repository's attested
 releases add versions, and a listed version never changes. One pull request
 adds at most 20 versions and 20 entry files, an entry file is at most 1 MiB,
 and a name lvpm cannot install is refused.
