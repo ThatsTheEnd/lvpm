@@ -1038,9 +1038,12 @@ Requires=\"bar>=?\"",
         let dir = testing::scratch_dir("check-cache");
         let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
         base.list_foo(&["1.0.0"], SHA_A);
+        // A server that answers the one download with a 404: no port is trusted to refuse.
+        let web = answering("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let web = web.split("/secret").next().unwrap().to_string();
         let listed = |version: &str| FileVersion {
             version: version.into(),
-            url: format!("http://127.0.0.1:1/a/x/releases/download/{version}/foo.lvpkg"),
+            url: format!("{web}/a/x/releases/download/{version}/foo.lvpkg"),
             sha256: SHA_A.into(),
             labview: None,
             requires: Vec::new(),
@@ -1053,7 +1056,7 @@ Requires=\"bar>=?\"",
         head.write("packages/foo.toml", &file.write());
         let sink = Recorded::default();
         let mut env = testing::env_on(&sink, &dir);
-        env.github.api = "http://127.0.0.1:1".into();
+        env.github.api = web;
         let configured = dir.join("configured-cache");
         env.config.cache = configured.clone();
 
@@ -1070,10 +1073,7 @@ Requires=\"bar>=?\"",
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            said,
-            [("1.1.0".to_string(), "could not connect".to_string())]
-        );
+        assert_eq!(said, [("1.1.0".to_string(), "HTTP 404".to_string())]);
         assert!(!configured.exists(), "the configured cache was opened");
     }
 }
