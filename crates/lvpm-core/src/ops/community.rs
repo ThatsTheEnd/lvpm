@@ -79,39 +79,39 @@ pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &
         dir: entries_dir.display().to_string(),
         error: why.to_string(),
     })?;
-    let (listed, sha256) = read_package(package)?;
-    let key = name_key(&listed.name);
+    let (package, sha256) = read_package(package)?;
+    let key = name_key(&package.name);
     let path = entries_dir.join(format!("{key}.toml"));
     let entry_file = shown_path(entries_dir, &key);
     let mut file = read_entry_file(&path, &key, &entry_file)?.unwrap_or_else(|| EntryFile {
-        name: listed.name.clone(),
+        name: package.name.clone(),
         github: github.to_string(),
         versions: Vec::new(),
     });
     ensure!(
         file.github.eq_ignore_ascii_case(github),
         AddRefused::NotTheOwner {
-            name: listed.name.clone(),
-            version: listed.version.to_string(),
+            name: package.name.clone(),
+            version: package.version.to_string(),
             owner: file.github.clone(),
             github: github.to_string(),
             entry_file,
         }
     );
-    let version = FileVersion::of_package(&listed, url, &sha256);
+    let version = FileVersion::of_package(&package, url, &sha256);
     file.add_version(version)
         .map_err(|VersionListed| AddRefused::AlreadyListed {
-            name: listed.name.clone(),
-            version: listed.version.to_string(),
+            name: package.name.clone(),
+            version: package.version.to_string(),
             entry_file: entry_file.clone(),
         })?;
-    check_url(&file, &listed, &env.github.web_base())?;
+    check_url(&file, &package, &env.github.web_base())?;
     let text = file.write();
     ensure!(
         text.len() as u64 <= MAX_ENTRY_BYTES,
         AddRefused::EntryFileTooBig {
-            name: listed.name.clone(),
-            version: listed.version.to_string(),
+            name: package.name.clone(),
+            version: package.version.to_string(),
             entry_file,
             limit: MAX_ENTRY_BYTES,
         }
@@ -123,8 +123,8 @@ pub fn add(env: &OpEnv, entries_dir: &Path, package: &Path, github: &str, url: &
     })?;
     write_atomically(&path, text.as_bytes())?;
     env.sink.emit(Event::IndexEntryAdded {
-        name: listed.name,
-        version: listed.version.to_string(),
+        name: package.name,
+        version: package.version.to_string(),
         file: entry_file,
     });
     Ok(())
@@ -359,11 +359,11 @@ fn read_up_to(file: std::fs::File, limit: u64) -> std::io::Result<Option<Vec<u8>
 
 /// The newest version of `file` is a release file of its publisher, on the
 /// site at `web`: the rule the consumer applies to it.
-fn check_url(file: &EntryFile, listed: &Entry, web: &str) -> Result<(), AddRefused> {
+fn check_url(file: &EntryFile, package: &Entry, web: &str) -> Result<(), AddRefused> {
     let added = file.entries("").pop().expect("a version was just added");
     check_index_url(&added, web).map_err(|_| AddRefused::UrlNotInReleases {
-        name: listed.name.clone(),
-        version: listed.version.to_string(),
+        name: package.name.clone(),
+        version: package.version.to_string(),
         web: web.to_string(),
         github: file.github.clone(),
     })
