@@ -14,6 +14,9 @@ Feature: S8: publishing to the community index
     And the jobs "publish" and "publish-oci" do not mention LVPM_INDEX_TOKEN
     And the template's header comment documents "register"
 
+  Scenario: the pull request's branch belongs to the publishing repo and its tag
+    Then "register" names its branch "lvpm/$GITHUB_REPOSITORY/$TAG", checked with git check-ref-format, and looks the pull request up by it
+
   Scenario: usage.md tells a publisher and a consumer what to do
     Then docs/usage.md has a section "Publish to the community index" with four numbered steps naming lvpm.toml, lvpm-release.yml, LVPM_INDEX_TOKEN and a tag
     And the section names the token type "classic" with "public_repo", and says who closes a refused PR
