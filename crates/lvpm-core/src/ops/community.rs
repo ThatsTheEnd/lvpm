@@ -283,9 +283,7 @@ fn check_with(
         }
     }
     verdicts.sort_by_key(Outcome::place);
-    if verdicts.is_empty() {
-        env.sink.emit(Event::IndexNothingToCheck);
-    }
+    let nothing_to_check = verdicts.is_empty();
     let mut checked = Checked {
         accepted: 0,
         refused: Vec::new(),
@@ -315,6 +313,10 @@ fn check_with(
             let review = review.clone();
             env.sink.emit(Event::IndexNeedsReview { review });
         }
+    }
+    // A rewritten file with no new version is left for review, not "nothing to check".
+    if nothing_to_check && checked.review.is_empty() {
+        env.sink.emit(Event::IndexNothingToCheck);
     }
     Ok(checked)
 }
@@ -369,9 +371,20 @@ fn public_names(env: &OpEnv, cache: &Path) -> Result<BTreeSet<String>> {
     };
     let loaded = index::load(cache, true, &sources, &env.oci, &NullSink, &env.cancel)
         .context("reading the public indexes, to check that a new name is not listed there")?;
-    Ok((loaded.entries.iter())
-        .map(|entry| name_key(&entry.name))
-        .collect())
+    let feeds: Vec<&str> = index::SOURCES.iter().map(|(url, _)| *url).collect();
+    names_of_every_feed(&loaded.entries, &feeds)
+}
+
+/// The names `entries` list, an error when one of `feeds` lists none: a feed
+/// that read as empty would let every name it lists through R7.
+fn names_of_every_feed(entries: &[Entry], feeds: &[&str]) -> Result<BTreeSet<String>> {
+    for feed in feeds {
+        ensure!(
+            entries.iter().any(|entry| entry.source == *feed),
+            "the public index {feed} listed no name at all, so lvpm cannot check that a new name is free"
+        );
+    }
+    Ok(entries.iter().map(|entry| name_key(&entry.name)).collect())
 }
 
 /// [`network_findings`] with the download cache in `dir`, which is removed
@@ -1145,6 +1158,31 @@ Requires=\"bar>=?\"",
         assert_eq!(
             why.to_string(),
             "the public indexes (NI's and JKI's) listed no name at all, so lvpm cannot check that a new name is free"
+        );
+    }
+
+    #[test]
+    fn a_public_feed_that_lists_nothing_is_an_error_even_when_another_lists_names() {
+        let listed = |source: &str| Entry {
+            name: "Foo".to_string(),
+            version: Version::parse("1.0.0"),
+            url: String::new(),
+            md5: None,
+            display_name: None,
+            requires: Vec::new(),
+            lv_min: None,
+            source: source.to_string(),
+            released: None,
+            index_pin: None,
+        };
+
+        let names = names_of_every_feed(&[listed("ni"), listed("jki")], &["ni", "jki"]).unwrap();
+        let why = names_of_every_feed(&[listed("ni")], &["ni", "jki"]).unwrap_err();
+
+        assert_eq!(names, BTreeSet::from(["foo".to_string()]));
+        assert_eq!(
+            why.to_string(),
+            "the public index jki listed no name at all, so lvpm cannot check that a new name is free"
         );
     }
 

@@ -237,7 +237,7 @@ jobs:
           # One branch per repo and tag, so a re-run of this tag replaces it, and no other tag or
           # repo does (two repos of one account share the fork and may share a tag name).
           branch="lvpm/$GITHUB_REPOSITORY/$TAG"
-          git check-ref-format "refs/heads/$branch" || { echo "::error::the tag $TAG cannot be part of a branch name"; exit 1; }
+          git check-ref-format "refs/heads/$branch" || { echo "::error::lvpm/$GITHUB_REPOSITORY/$TAG is not a valid branch name (the repository or the tag)"; exit 1; }
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"

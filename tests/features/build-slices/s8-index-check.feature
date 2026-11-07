@@ -125,6 +125,7 @@ Feature: S8: lvpm index check
     And the head writes the name in packages/bar.toml in another case
     When I run "lvpm index check --base base --head head"
     Then the command succeeds printing "review bar: the pull request changes bar's file, which belongs to b, and no --author was given, so lvpm cannot tell whether it is from b. fix: pass --author <login>, or wait for a maintainer"
+    And no line printed starts with "nothing to check"
 
   Scenario: a changed hash for an existing version is rejected
     Given the head changes foo 1.0.0's sha256 from <old> to <new>

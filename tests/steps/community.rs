@@ -735,6 +735,9 @@ async fn a_base_index(world: &mut CliWorld, owner: String) {
         let path = world.checkout_file(checkout, "packages/foo.toml");
         std::fs::write(path, file.write()).expect("write the entry file");
     }
+    // The fixture JKI feed lists nothing, which `index check` refuses to trust.
+    let jki = public_listing("jki_listed");
+    world.sandbox.feed().serve(JKI_FEED_INDEX, jki.into_bytes());
 }
 
 #[given(

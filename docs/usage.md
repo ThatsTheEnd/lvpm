@@ -492,7 +492,9 @@ request from the owner's account, so the token's account decides who merges:
 - A repository owned by your own account: use your own classic token
   (`public_repo` and `workflow`), and keep the secret in a GitHub Environment
   with a deployment protection rule, such as a required reviewer, and name
-  that environment on the `register` job. Or accept that a maintainer merges
+  that environment on the `register` job. Also limit the environment's
+  deployment branches and tags to your release tags (for example `v*`), so a
+  workflow on another branch cannot use the secret. Or accept that a maintainer merges
   the pull request by hand: a pull request from any other account, a machine
   account included, is left for a maintainer.
 - A repository owned by an organisation: a machine account with no other
