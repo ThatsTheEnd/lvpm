@@ -6,7 +6,7 @@ Feature: S8: installing from the community index
 
   Background:
     Given a fake GitHub whose index labview-package-manager/package-index lists pilot B, published by "someone/Serializer"
-    And someone/Serializer's release serves pilot B's file and its dependency data_manipulation is in the project's local folder
+    And someone/Serializer's release serves pilot B's file and its dependency data_manipulation is in the project's hosted folder
 
   Scenario: a project installs pilot B by name through the index
     Given pilot B's release is attested by someone/Serializer
@@ -29,7 +29,7 @@ Feature: S8: installing from the community index
     Given the release serves other bytes for pilot B's file
     And the pilot B project with community = "github:labview-package-manager/package-index" in [sources] and pilot B as a plain dependency
     When I run "lvpm sync --prefix dest"
-    Then the command fails naming pilot B, both hashes and "but the index lists"
+    Then the command fails printing the line "the file of labview_open_source_lib_serializer 1.2.1.16 from github-index:labview-package-manager/package-index has sha256 <actual>, but the index lists <entry>"
     And the hint says "report this to the package's owner, someone/Serializer; lvpm installed nothing"
     And no lvpm.lock is written and pilot B is not installed
 
@@ -38,12 +38,12 @@ Feature: S8: installing from the community index
     And the pilot B project with community = "github:labview-package-manager/package-index" in [sources] and pilot B as a plain dependency
     And the manifest has [policy] require-signature = true
     When I run "lvpm lock"
-    Then the command fails with exit code 1 naming "<text>"
+    Then the command fails with exit code 1 and stderr has these lines in a row: "<lines>"
 
     Examples:
-      | attestation                | text                                                                                                              |
-      | not attested               | labview_open_source_lib_serializer 1.2.1.16 from github.com/someone/Serializer has no attestation                  |
-      | attested by other/Fork     | the attestation of labview_open_source_lib_serializer 1.2.1.16 from github.com/someone/Serializer does not verify: |
+      | attestation            | lines |
+      | not attested           | lvpm refused 1 package: // labview_open_source_lib_serializer 1.2.1.16 from github.com/someone/Serializer has no attestation // hint: ask the publisher to build with the lvpm release template |
+      | attested by other/Fork | lvpm refused 1 package: // the attestation of labview_open_source_lib_serializer 1.2.1.16 from github.com/someone/Serializer does not verify: // verifying with issuer "sigstore.dev" // hint: if gh's reason is a network error, try again; otherwise report this to the publisher, the archive may have been tampered with. lvpm refuses it whatever [policy] says |
 
   Scenario: without a policy an unattested index package installs unsigned
     Given pilot B's release is not attested
@@ -55,10 +55,25 @@ Feature: S8: installing from the community index
     Given the index lists nothing
     And the project with community = "github:labview-package-manager/package-index" in [sources] and data_manipulation as a plain dependency
     When I run "lvpm lock"
-    Then data_manipulation is locked from the local folder
+    Then data_manipulation is locked from the hosted folder
 
   Scenario: a dependency pinned to the index that it does not list fails
     Given data_manipulation is pinned with index = "community" and the index does not list it
     When I run "lvpm lock"
     Then the command fails naming data_manipulation and "searched github:labview-package-manager/package-index"
-    And data_manipulation is not taken from the local folder
+    And data_manipulation is not taken from the hosted folder
+
+  Scenario Outline: a github: source that is not owner/repo fails when the manifest is read
+    Given the project with community = "<value>" in [sources] and data_manipulation as a plain dependency
+    When I run "lvpm lock"
+    Then the command fails with exit code 1 printing the manifest error "lvpm.toml: [sources] community: "<value>" is not github:owner/repo"
+
+    Examples:
+      | value        |
+      | github:x     |
+      | github:/r    |
+      | github:o/    |
+      | github:o/r/x |
+      | github:../r  |
+      | github:o/..  |
+      | github:o/r?x |

@@ -16,7 +16,33 @@ Feature: S8: lvpm index check
     Given the head adds foo 1.1.0 with the release's url and sha256
     When I run "lvpm index check --base base --head head"
     Then the command succeeds printing "accepted foo 1.1.0"
-    And the release file of foo 1.1.0 was downloaded without a token
+    And the release file of foo 1.1.0 was downloaded without the token the API requests carried
+
+  Scenario: with no GitHub token nothing is sent with one, and the attestation cannot be checked
+    Given no GitHub token is set
+    And the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command fails with exit code 1 printing exactly "refused foo 1.1.0: not attested (lvpm has no GitHub token). fix: build with the lvpm release template, which attests the package"
+    And the release file of foo 1.1.0 was downloaded
+    And no request to GitHub carried an Authorization header
+
+  Scenario: two new versions of one package are each downloaded once and each accepted
+    Given foo 1.2.0 is released and attested by a/x
+    And the head adds the releases of foo 1.1.0 and foo 1.2.0 with their urls and sha256
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "accepted foo 1.2.0"
+    And the release files of foo 1.1.0 and foo 1.2.0 were each downloaded once
+
+  Scenario: the JSON result carries the counts, the verdict and the comment
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the last line is the only one with a "result" key and it is {"command":"index-check","accepted":1,"refused":0,"verdict":"merge","comment":null}
+
+  Scenario: the JSON result of a refused PR carries the comment to post
+    Given the head adds notes.md
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the last line is the only one with a "result" key and it is {"command":"index-check","accepted":0,"refused":1,"verdict":"refuse","comment":"lvpm index check refused this PR:\n\n```\nrefused notes.md: only .toml files directly under packages/ may change. fix: remove this change\n```\n\nHow to publish to the community index: https://github.com/ThatsTheEnd/lvpm/blob/main/docs/usage.md#publish-to-the-community-index\n\nFix the cause, push a new tag, and close this PR."}
 
   Scenario: a new name is accepted
     Given the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
@@ -27,7 +53,7 @@ Feature: S8: lvpm index check
     Given the <index> index lists bar
     And the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
     When I run "lvpm index check --base base --head head"
-    Then the command fails with exit code 1 printing "refused bar: vipm.io already lists this name. fix: pick a name that vipm.io does not list"
+    Then the command fails with exit code 1 printing exactly "refused bar: vipm.io already lists this name. fix: pick a name that vipm.io does not list"
 
     Examples:
       | index |
@@ -74,28 +100,28 @@ Feature: S8: lvpm index check
   Scenario: a refusal wins over an author who does not own the name
     Given the head changes foo 1.0.0's sha256 from <old> to <new>
     When I run "lvpm index check --base base --head head --author bob"
-    Then the command fails with exit code 1 printing "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+    Then the command fails with exit code 1 printing exactly "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
 
   Scenario: a changed hash for an existing version is rejected
     Given the head changes foo 1.0.0's sha256 from <old> to <new>
     When I run "lvpm index check --base base --head head"
-    Then the command fails with exit code 1 printing "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+    Then the command fails with exit code 1 printing exactly "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
 
   Scenario Outline: a network rule refuses with a fix
     Given <fixture>
     And the head adds foo 1.1.0 <entry>
     When I run "lvpm index check --base base --head head"
-    Then the command fails with exit code 1 printing "<line>"
+    Then the command fails with exit code 1 printing exactly "<line>"
 
     Examples:
       | fixture                                       | entry                                  | line                                                                                                                                                                             |
-      | the Background                                | with a url on example.com              | refused foo 1.1.0: https://example.com/a/x/releases/download/1.1.0/foo-1.1.0.vip is not a release file of a/x. fix: upload the package to a release of a/x                        |
-      | the Background                                | with another sha256                    | refused foo 1.1.0: the file has sha256 <file-sha256>, the entry says <entry-sha256>. fix: don't replace release files after tagging; push a new tag                              |
+      | foo 1.1.0's release is attested by a/x                              | with a url on example.com              | refused foo 1.1.0: https://example.com/a/x/releases/download/1.1.0/foo-1.1.0.vip is not a release file of a/x. fix: upload the package to a release of a/x                        |
+      | foo 1.1.0's release is attested by a/x                              | with another sha256                    | refused foo 1.1.0: the file has sha256 <file-sha256>, the entry says <entry-sha256>. fix: don't replace release files after tagging; push a new tag                              |
       | the release file of foo 1.1.0 answers 404     | with the release's url and sha256      | refused foo 1.1.0: the file could not be downloaded: HTTP 404. fix: check the release is published and public, then push a new tag                                                |
-      | the Background                                | whose requires differ from the package | refused foo 1.1.0: the package says requires bar >=2.0, the entry says bar >=3.0. fix: don't replace release files after tagging; push a new tag                                 |
-      | the Background                                | whose labview differs from the package | refused foo 1.1.0: the package says labview >=20.0, the entry says >=21.0. fix: don't replace release files after tagging; push a new tag                                         |
-      | the Background                                | named foo but the package says bar     | refused foo 1.1.0: the package says name bar, the entry says foo. fix: don't replace release files after tagging; push a new tag                                                  |
-      | the Background                                | whose version differs from the package | refused foo 1.1.0: the package says version 1.1.1, the entry says 1.1.0. fix: don't replace release files after tagging; push a new tag                                           |
+      | foo 1.1.0's release is attested by a/x                              | whose requires differ from the package | refused foo 1.1.0: the package says requires bar >=2.0, the entry says bar >=3.0. fix: don't replace release files after tagging; push a new tag                                 |
+      | foo 1.1.0's release is attested by a/x                              | whose labview differs from the package | refused foo 1.1.0: the package says labview >=20.0, the entry says >=21.0. fix: don't replace release files after tagging; push a new tag                                         |
+      | foo 1.1.0's release is attested by a/x                              | named foo but the package says bar     | refused foo 1.1.0: the package says name bar, the entry says foo. fix: don't replace release files after tagging; push a new tag                                                  |
+      | foo 1.1.0's release is attested by a/x                              | whose version differs from the package | refused foo 1.1.0: the package says version 1.1.1, the entry says 1.1.0. fix: don't replace release files after tagging; push a new tag                                           |
       | foo 1.1.0's release has no attestation        | with the release's url and sha256      | refused foo 1.1.0: not attested (no attestation). fix: build with the lvpm release template, which attests the package                                                            |
       | gh cannot run                                 | with the release's url and sha256      | refused foo 1.1.0: not attested (gh is not installed). fix: build with the lvpm release template, which attests the package                                                      |
       | foo 1.1.0's attestation does not verify       | with the release's url and sha256      | refused foo 1.1.0: not attested (does not verify). fix: build with the lvpm release template, which attests the package                                                          |
