@@ -486,12 +486,13 @@ async fn the_entry_file_already_lists(world: &mut CliWorld, version: String) {
     world.list_pilot_b("someone/Serializer", &version);
 }
 
-/// A package whose name no platform can install, as a `.vip`.
+/// A package whose name no platform can install, as a `.vip`. The file is not
+/// `con.vip`: Windows opens that as the console device, and reading it blocks.
 #[given("a package named con")]
 async fn a_package_named_con(world: &mut CliWorld) {
     let work = world.sandbox.work_dir();
     std::fs::create_dir_all(&work).expect("create the working directory");
-    std::fs::write(work.join("con.vip"), vip("con", "1.0", &[])).expect("write the package");
+    std::fs::write(work.join("named-con.vip"), vip("con", "1.0", &[])).expect("write the package");
 }
 
 #[given("the entry file is not TOML")]
