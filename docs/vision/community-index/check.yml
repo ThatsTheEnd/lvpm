@@ -9,6 +9,15 @@ name: Check the pull request
 # pull_request_target runs this file as it is on the target branch, with a
 # token that can merge. Nothing from the pull request is executed or sourced:
 # its files are checked out as data into head/ and only lvpm reads them.
+#
+# head/ is the merge GitHub would make (refs/pull/<n>/merge: the index's tip plus
+# the pull request), not the pull request's own commit. A branch cut before the
+# index's tip then differs from base/ only in the files it changed. If the pull
+# request conflicts with the index there is no merge, and the job fails at that
+# checkout; the publisher re-runs the register job, which updates the branch.
+#
+# LVPM_VERSION below is a guess: confirm it is the release that ships S8 when
+# that release is cut. Until then the repository variable LVPM_GIT_REV is set.
 
 on:
   pull_request_target:
@@ -22,8 +31,8 @@ permissions: {}
 
 env:
   # The lvpm that checks. `lvpm index check` is in the first release that ships
-  # S8; until then the repository variable LVPM_GIT_REV names an lvpm commit to
-  # build instead.
+  # S8, expected to be 0.25.0 and to be confirmed when it is cut; until then the
+  # repository variable LVPM_GIT_REV names an lvpm commit to build instead.
   LVPM_VERSION: "0.25.0"
 
 jobs:
@@ -41,13 +50,32 @@ jobs:
           ref: ${{ github.event.pull_request.base.ref }}
           path: base
           persist-credentials: false
-      - name: Check out the pull request, as data
+      - name: Check out the pull request's merge, as data
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          # From this repository, never the fork: the merge is made here. Depth 2
+          # keeps both parents, which the next step compares.
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 2
           path: head
           persist-credentials: false
+      - name: Check the merge is of this head and this tip
+        working-directory: ${{ runner.temp }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          # GitHub makes the merge a moment after a push, so it can be of an older
+          # head or tip. rev-parse only reads commit ids; nothing in head/ runs.
+          merged_tip=$(git -C "$GITHUB_WORKSPACE/head" rev-parse 'HEAD^1' 2> /dev/null || true)
+          merged_head=$(git -C "$GITHUB_WORKSPACE/head" rev-parse 'HEAD^2' 2> /dev/null || true)
+          tip=$(git -C "$GITHUB_WORKSPACE/base" rev-parse HEAD)
+          if [ "$merged_head" != "$HEAD_SHA" ] || [ "$merged_tip" != "$tip" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "lvpm index check could not check this pull request: GitHub's merge of it is not of the index's current tip and this branch yet. fix: re-run the register job of this tag's workflow run, which updates this pull request, or ask a maintainer to check it again."
+            exit 1
+          fi
       - name: Install lvpm
         if: vars.LVPM_GIT_REV == ''
         working-directory: ${{ runner.temp }}
@@ -98,8 +126,13 @@ jobs:
             gh pr comment "$PR" --repo "$REPO" --body-file comment.md
             exit 1
           elif [ "$accepted" -gt 0 ]; then
-            # Merge exactly the commit that was checked.
-            gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"
+            # --match-head-commit pins the branch's head: GitHub refuses if it moved
+            # since the check. The squash itself lands on the index's tip as it is
+            # now, which can have moved too.
+            if ! gh pr merge "$PR" --repo "$REPO" --squash --match-head-commit "$HEAD_SHA"; then
+              gh pr comment "$PR" --repo "$REPO" --body "lvpm index check: the index changed while this was checked, so this pull request was not merged. fix: re-run the register job of this tag's workflow run, which updates this pull request, or ask a maintainer to merge it."
+              exit 1
+            fi
           else
             gh pr comment "$PR" --repo "$REPO" --body "lvpm index check: nothing to check. This pull request adds no version, so a maintainer reviews it."
           fi

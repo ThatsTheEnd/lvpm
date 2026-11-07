@@ -230,7 +230,7 @@ pub struct IndexFileTooLarge {
 /// index's, and unchecked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "the file of {name} {version} from {index} is not in the releases of {publisher};      fix: the index must list a url under github.com/{publisher}/releases/download/"
+    "the file of {name} {version} from {index} is not in the releases of {publisher}; fix: the index must list a url under github.com/{publisher}/releases/download/"
 )]
 pub struct IndexUrlRefused {
     pub name: String,
@@ -825,6 +825,20 @@ mod tests {
         for (fault, text) in table {
             assert_eq!(github(fault), format!("pkg (github.com/o/r): {text}"));
         }
+    }
+
+    #[test]
+    fn a_refused_index_url_says_its_fix_after_one_space() {
+        let refused = IndexUrlRefused {
+            name: "foo".into(),
+            version: "1.0".into(),
+            index: "github-index:o/r".into(),
+            publisher: "a/x".into(),
+        };
+        assert_eq!(
+            refused.to_string(),
+            "the file of foo 1.0 from github-index:o/r is not in the releases of a/x; fix: the index must list a url under github.com/a/x/releases/download/"
+        );
     }
 
     #[test]
