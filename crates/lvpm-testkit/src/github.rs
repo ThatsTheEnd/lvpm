@@ -306,6 +306,14 @@ impl GitHubFake {
         members.insert(login.to_ascii_lowercase());
     }
 
+    /// Whether the attestations API lists one for the file with this digest in
+    /// `repo`.
+    pub fn lists_attestation(&self, repo: &str, sha256: &str) -> bool {
+        let state = lock(&self.state);
+        let repo = state.repos.get(repo);
+        repo.is_some_and(|repo| repo.attested.contains(&sha256.to_ascii_lowercase()))
+    }
+
     /// Add `release` to `repo`, after the releases it has (newest first).
     pub fn add_release(&self, repo: &str, release: FakeRelease) {
         lock(&self.state).add_release(repo, release);

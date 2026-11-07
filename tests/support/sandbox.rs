@@ -540,6 +540,16 @@ impl Sandbox {
         vars.push((name.to_string(), value.to_string()));
     }
 
+    /// From now on, run the children without `name` in their environment, though
+    /// an earlier step of the scenario (such as [`Sandbox::use_fake_gh`]) set it.
+    pub fn remove_child_env(&self, name: &str) {
+        let mut vars = self
+            .child_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        vars.retain(|(set, _)| set != name);
+    }
+
     /// From now on, run the children against the GitHub API at `api`, with
     /// `token` as `GH_TOKEN` when there is one. Nothing else reaches them.
     pub fn set_github(&self, api: &str, token: Option<&str>) {
