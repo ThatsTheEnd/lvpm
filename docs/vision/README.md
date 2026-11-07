@@ -71,7 +71,7 @@ Each one is usable on its own. Ticks mean done.
 - [ ] CI publishing: OIDC, Sigstore signatures, SLSA provenance, consumer policy
 
 **M4 — community**
-- [ ] A federated community index (git, PR-registered, bot-verified)
+- [x] A federated community index (git, PR-registered, bot-verified)
 - [ ] `lvpm convert` for mirroring VIPM packages into internal feeds
 
 ## Details

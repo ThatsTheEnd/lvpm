@@ -201,7 +201,9 @@ pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Res
         phase: Phase::Resolve,
     });
     env.sink.emit(Event::IndexesLoading);
-    let idx = env.load_index(found.as_ref())?;
+    let names: Vec<String> = wanted.iter().map(|(name, _)| name.clone()).collect();
+    let asked = super::env::wanted_names(found.as_ref().map(|(_, project)| project), &names);
+    let idx = env.load_index(found.as_ref(), &asked)?;
     env.sink.emit(Event::IndexesLoaded {
         versions: idx.entries.len(),
     });
@@ -1111,6 +1113,7 @@ mod tests {
                         lv_min: None,
                         source: String::new(),
                         released: None,
+                        index_pin: None,
                     },
                     expected_sha256: expected_sha256.map(str::to_string),
                 }],

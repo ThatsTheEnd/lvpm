@@ -8,6 +8,10 @@ Accepted 2026-10-26, ahead of the upstream alignment meeting on 2026-10-30, so
 the slices can be built now. If the meeting changes it, a new ADR supersedes
 this one.
 
+Amended by [ADR 8](0008-community-index-sources-take-part-in-first-source-wins.md)
+on 2026-11-07: a `github:` community index is a source in this order, and a
+`404` for a name reads as "not listed".
+
 ## Context
 
 `[sources]` in `lvpm.toml` lists hosted index folders, loaded after the

@@ -24,6 +24,7 @@ fn entry(registry: &Registry, manifest: &str) -> Entry {
         lv_min: None,
         source: format!("oci://{}/team", registry.host()),
         released: None,
+        index_pin: None,
     }
 }
 

@@ -1,0 +1,179 @@
+Feature: S8: lvpm index check
+  The community index's bot runs lvpm index check on each PR. It accepts a
+  version only when the version is new, its url is a release file of the
+  name's owner, the file is the one the entry describes, and the owner's own
+  workflow attested it. Every other change is refused with the reason and a
+  fix. Where a line below shows <file-sha256> or <entry-sha256>, it stands for
+  the SHA-256 of the file the release serves and the one the head's entry
+  says; <old> and <new> stand for the two SHA-256 values of the step that
+  changes one.
+
+  Background:
+    Given a base index where packages/foo.toml is owned by "a/x" with version 1.0.0
+    And a fake GitHub where a/x's releases hold foo 1.0.0 and foo 1.1.0, attested by a/x
+
+  Scenario: a new version from the owner is accepted
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the release file of foo 1.1.0 was downloaded without the token the API requests carried
+
+  Scenario: with no GitHub token nothing is sent with one, and the attestation cannot be checked
+    Given no GitHub token is set
+    And the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command fails with exit code 1 printing exactly "refused foo 1.1.0: not attested (lvpm has no GitHub token). fix: build with the lvpm release template, which attests the package"
+    And the release file of foo 1.1.0 was downloaded
+    And no request to GitHub carried an Authorization header
+
+  Scenario: two new versions of one package are each downloaded once and each accepted
+    Given foo 1.2.0 is released and attested by a/x
+    And the head adds the releases of foo 1.1.0 and foo 1.2.0 with their urls and sha256
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "accepted foo 1.2.0"
+    And the release files of foo 1.1.0 and foo 1.2.0 were each downloaded once
+
+  Scenario: the JSON result carries the counts, the verdict and the comment
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the last line is the only one with a "result" key and it is {"command":"index-check","accepted":1,"refused":0,"verdict":"merge","comment":null}
+
+  Scenario: the JSON result of a refused PR carries the comment to post
+    Given the head adds notes.md
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the last line is the only one with a "result" key and it is {"command":"index-check","accepted":0,"refused":1,"verdict":"refuse","comment":"lvpm index check refused this PR:\n\n```\nrefused notes.md: only .toml files directly under packages/ may change. fix: remove this change\n```\n\nHow to publish to the community index: https://github.com/ThatsTheEnd/lvpm/blob/main/docs/usage.md#publish-to-the-community-index\n\nFix the cause, push a new tag, and close this PR."}
+
+  Scenario: a new name is accepted
+    Given the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "accepted bar 1.0.0"
+
+  Scenario Outline: a new name that a public index lists is refused
+    Given the <index> index lists bar
+    And the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing exactly "refused bar: vipm.io already lists this name. fix: pick a name that vipm.io does not list"
+
+    Examples:
+      | index |
+      | NI    |
+      | JKI   |
+
+  Scenario: a new version of a name that a public index lists is not checked against it
+    Given the NI index lists foo
+    And the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "accepted foo 1.1.0"
+
+  Scenario: a new name is not accepted when the public indexes cannot be read
+    Given the public indexes are unreachable
+    And the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
+    When I run "lvpm index check --base base --head head"
+    Then the command fails without a verdict, naming the public indexes
+
+  Scenario Outline: the pull request's author decides whether it is merged
+    Given alice is a public member of a
+    And the head adds foo 1.1.0 <entry>
+    When I run "lvpm --json index check --base base --head head --author <author>"
+    Then the result's verdict is "<verdict>" and the exit code is <code>
+
+    Examples:
+      | author | entry                             | verdict | code |
+      | a      | with the release's url and sha256 | merge   | 0    |
+      | A      | with the release's url and sha256 | merge   | 0    |
+      | alice  | with the release's url and sha256 | merge   | 0    |
+      | bob    | with the release's url and sha256 | review  | 0    |
+      | bob    | with another sha256               | refuse  | 1    |
+
+  Scenario: a version of another account is left for a maintainer, with the reason
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head --author bob"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "review foo 1.1.0: the pull request is from bob, but foo belongs to a. fix: open the pull request from a's account, make your membership of a public, or wait for a maintainer"
+
+  Scenario: with no author every new version is left for a maintainer, and the output says why
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "review foo 1.1.0: no --author was given, so lvpm cannot tell whether the pull request is from a, who owns foo. fix: pass --author <login>, or wait for a maintainer"
+
+  Scenario: a refusal wins over an author who does not own the name
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    And the head changes foo 1.0.0's sha256 from <old> to <new>
+    When I run "lvpm index check --base base --head head --author bob"
+    Then the command fails with exit code 1 printing "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+    And no line printed starts with "review "
+
+  Scenario: an owner's new version does not carry another owner's file along
+    Given packages/bar.toml is owned by "b/y" in the base and the head
+    And the head adds foo 1.1.0 with the release's url and sha256
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm index check --base base --head head --author a"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "review bar: the pull request changes bar's file, which belongs to b, and is from a. fix: open the pull request from b's account, make your membership of b public, or wait for a maintainer"
+    And no line printed starts with "review foo"
+
+  Scenario: an owner may rewrite their own files in the same pull request
+    Given packages/bar.toml is owned by "a/y" in the base and the head
+    And the head adds foo 1.1.0 with the release's url and sha256
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm --json index check --base base --head head --author a"
+    Then the result's verdict is "merge" and the exit code is 0
+
+  Scenario: a file rewritten with no author is left for a maintainer
+    Given packages/bar.toml is owned by "b/y" in the base and the head
+    And the head writes the name in packages/bar.toml in another case
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "review bar: the pull request changes bar's file, which belongs to b, and no --author was given, so lvpm cannot tell whether it is from b. fix: pass --author <login>, or wait for a maintainer"
+    And no line printed starts with "nothing to check"
+
+  Scenario: a changed hash for an existing version is rejected
+    Given the head changes foo 1.0.0's sha256 from <old> to <new>
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing exactly "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+
+  Scenario Outline: a network rule refuses with a fix
+    Given <fixture>
+    And the head adds foo 1.1.0 <entry>
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing exactly "<line>"
+
+    Examples:
+      | fixture                                       | entry                                  | line                                                                                                                                                                             |
+      | foo 1.1.0's release is attested by a/x                              | with a url on example.com              | refused foo 1.1.0: https://example.com/a/x/releases/download/1.1.0/foo-1.1.0.vip is not a release file of a/x. fix: upload the package to a release of a/x                        |
+      | foo 1.1.0's release is attested by a/x                              | with another sha256                    | refused foo 1.1.0: the file has sha256 <file-sha256>, the entry says <entry-sha256>. fix: don't replace release files after tagging; push a new tag                              |
+      | the release file of foo 1.1.0 answers 404     | with the release's url and sha256      | refused foo 1.1.0: the file could not be downloaded: HTTP 404. fix: check the release is published and public, then push a new tag                                                |
+      | foo 1.1.0's release is attested by a/x                              | whose requires differ from the package | refused foo 1.1.0: the package says requires bar >=2.0, the entry says bar >=3.0. fix: don't replace release files after tagging; push a new tag                                 |
+      | foo 1.1.0's release is attested by a/x                              | whose labview differs from the package | refused foo 1.1.0: the package says labview >=20.0, the entry says >=21.0. fix: don't replace release files after tagging; push a new tag                                         |
+      | foo 1.1.0's release is attested by a/x                              | named foo but the package says bar     | refused foo 1.1.0: the package says name bar, the entry says foo. fix: don't replace release files after tagging; push a new tag                                                  |
+      | foo 1.1.0's release is attested by a/x                              | whose version differs from the package | refused foo 1.1.0: the package says version 1.1.1, the entry says 1.1.0. fix: don't replace release files after tagging; push a new tag                                           |
+      | foo 1.1.0's release has no attestation        | with the release's url and sha256      | refused foo 1.1.0: not attested (no attestation). fix: build with the lvpm release template, which attests the package                                                            |
+      | gh cannot run                                 | with the release's url and sha256      | refused foo 1.1.0: not attested (gh is not installed). fix: build with the lvpm release template, which attests the package                                                      |
+      | foo 1.1.0's attestation does not verify       | with the release's url and sha256      | refused foo 1.1.0: not attested (does not verify). fix: build with the lvpm release template, which attests the package                                                          |
+      | foo 1.1.0 is attested by b/x                  | with the release's url and sha256      | refused foo 1.1.0: attested by https://github.com/b/x, not https://github.com/a/x. fix: publish from a/x                                                                          |
+
+  Scenario: an attestation by the owner spelled in another case is accepted
+    Given foo 1.1.0 is attested by A/X
+    And the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "accepted foo 1.1.0"
+
+  Scenario: a file that does not parse is refused
+    Given the head adds packages/bar.toml that is not TOML
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing "refused packages/bar.toml: does not parse: <error>. fix: register with the lvpm release template instead of editing by hand"
+
+  Scenario: an entry file over 1 MiB is refused as one that does not parse
+    Given the head adds packages/big.toml of 2 MiB
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing "refused packages/big.toml: does not parse: the file is larger than 1048576 bytes. fix: register with the lvpm release template instead of editing by hand"
+
+  Scenario: several findings print sorted by path, then version
+    Given the head changes foo 1.0.0's sha256 and adds notes.md
+    When I run "lvpm index check --base base --head head"
+    Then the output is the notes.md line, then the foo line, and the exit code is 1
+
+  Scenario: no change is nothing to check
+    Given the head equals the base
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "nothing to check"

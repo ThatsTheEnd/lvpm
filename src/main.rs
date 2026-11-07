@@ -415,6 +415,10 @@ enum Cmd {
     /// Import package archives into the shared cache.
     #[command(subcommand)]
     Cache(CacheCmd),
+    /// Work on a community index: a GitHub repo of `packages/<name>.toml`
+    /// entry files, which a project lists as `github:owner/repo` in `[sources]`.
+    #[command(subcommand)]
+    Index(IndexCmd),
     /// Build what lvpm.toml describes: the library as dist/<name>-<version>.lvpkg
     /// and the application its build specification names.
     ///
@@ -546,6 +550,55 @@ enum CacheCmd {
     Add {
         /// A `.vip`, `.ogp` or `.lvpkg` file, or a directory holding them.
         path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum IndexCmd {
+    /// List a package's file in an entry file of the index checkout
+    /// ENTRIES_DIR (`packages/`): creates `<name>.toml` for a new name, or
+    /// appends the version to the file its owner already has.
+    ///
+    /// Refuses, and writes nothing, when the name belongs to another
+    /// --github, the version is listed, or --url is not a file of
+    /// --github's GitHub releases.
+    Add {
+        /// The folder of entry files, `packages/` of the index repo; it must exist.
+        entries_dir: PathBuf,
+        /// The package file `lvpm build` made.
+        package: PathBuf,
+        /// The repo that publishes the package, owner/repo.
+        #[arg(long, value_name = "OWNER/REPO")]
+        github: String,
+        /// Where the package file is downloaded from: the release asset's URL.
+        #[arg(long)]
+        url: String,
+    },
+    /// The index bot's verdict on a PR: checks the PR's checkout HEAD against
+    /// BASE, a checkout of the index it targets.
+    ///
+    /// Prints `accepted <name> <version>` for each new version that passes
+    /// every rule, and a `refused ...` line with a fix for each rule it
+    /// breaks; exits 1 if there is any. Reads the checkouts as data, runs
+    /// nothing of the PR, and downloads each new version from its owner's
+    /// releases, with no token, to check its hash, its metadata and its
+    /// attestation (which needs `gh` and a GitHub token). A new name that
+    /// vipm.io already lists is refused. With --json the result carries the
+    /// verdict (`merge`, `refuse` or `review`) and the comment to leave on a
+    /// PR that is refused or left for review.
+    Check {
+        /// A checkout of the index the PR targets.
+        #[arg(long, value_name = "DIR")]
+        base: PathBuf,
+        /// A checkout of the PR.
+        #[arg(long, value_name = "DIR")]
+        head: PathBuf,
+        /// The login the PR is from. A new version is its author's own when the
+        /// author is the owner of its `github`, or a public member of the
+        /// organisation that owns it. Any other PR is left for a maintainer, as
+        /// is one with no --author.
+        #[arg(long, value_name = "LOGIN")]
+        author: Option<String>,
     },
 }
 
@@ -855,6 +908,21 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Cache(CacheCmd::Add { path }) => {
             let imports = ops::query::cache_add(&env, path)?;
             Report::new(render::query::cache_add(&imports), &imports)
+        }
+        Cmd::Index(IndexCmd::Add {
+            entries_dir,
+            package,
+            github,
+            url,
+        }) => {
+            ops::community::add(&env, entries_dir, package, github, url)
+                .map_err(render::community::add_error)?;
+            Ok(Report::done("index-add"))
+        }
+        Cmd::Index(IndexCmd::Check { base, head, author }) => {
+            let checked = ops::community::check(&env, base, head, author.as_deref())?;
+            Report::new(String::new(), render::community::check_result(&checked))
+                .map(|report| report.failed(!checked.refused.is_empty()))
         }
         Cmd::Config(ConfigCmd::Set { key, values }) => {
             ops::query::config_set(&env, key, values)?;

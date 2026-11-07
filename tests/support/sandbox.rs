@@ -540,6 +540,16 @@ impl Sandbox {
         vars.push((name.to_string(), value.to_string()));
     }
 
+    /// From now on, run the children without `name` in their environment, though
+    /// an earlier step of the scenario (such as [`Sandbox::use_fake_gh`]) set it.
+    pub fn remove_child_env(&self, name: &str) {
+        let mut vars = self
+            .child_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        vars.retain(|(set, _)| set != name);
+    }
+
     /// From now on, run the children against the GitHub API at `api`, with
     /// `token` as `GH_TOKEN` when there is one. Nothing else reaches them.
     pub fn set_github(&self, api: &str, token: Option<&str>) {
@@ -643,7 +653,14 @@ impl Sandbox {
             }
             // A `gh` on the machine answers `gh auth token` from the user's
             // keyring, which an empty GH_CONFIG_DIR does not hide: none is run.
-            command.env("PATH", path_without_gh(std::env::var_os("PATH")));
+            // Unless the scenario set one (`use_fake_gh`): that holds its fake gh.
+            let sets_path = (self.child_env.lock())
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .any(|(name, _)| name == "PATH");
+            if !sets_path {
+                command.env("PATH", path_without_gh(std::env::var_os("PATH")));
+            }
             if let Some(token) = token {
                 command.env("GH_TOKEN", token);
             }

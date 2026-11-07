@@ -14,7 +14,8 @@ use super::snapshot::restoring_on_failure;
 use super::sync::{Search, Unfetched};
 use crate::cache::{now, sha256_hex};
 use crate::errors::{
-    ArchiveFailure, ArchiveFault, Cancelled, ListingFailures, LockError, MovedTag,
+    ArchiveFailure, ArchiveFault, Cancelled, IndexHashMismatch, ListingFailures, LockError,
+    MovedTag,
 };
 use crate::events::{Event, LockChange};
 use crate::index::{self, Entry, Index};
@@ -423,8 +424,8 @@ fn relock_in(
     let gate = lv_gate(labview)?;
     let preferences = preferences(previous, moving);
     let resolution = resolve(env, project, index, &preferences, pins, moving, gate)?;
-    let (hosted, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
-    let feeds = index::feeds(&hosted, project.default_sources);
+    let (remotes, _) = index::split_sources(project.resolved_sources()?, &project.source_pins);
+    let feeds = index::feeds(&index::folders(&remotes), project.default_sources);
     let pins = source_pins(project)?;
     let hashes = hash_archives(env, index, &resolution, previous, moving, &pins, &feeds)?;
     let attested = attest_archives(env, &resolution, &hashes, previous, &project.policy)?;
@@ -482,23 +483,41 @@ pub(super) fn load_index(
     previous: Option<&Lockfile>,
     moving: &Moving,
 ) -> Result<Index, LockError> {
-    let index = env.load_index(manifest).map_err(|why| -> LockError {
-        if why.is::<Cancelled>() {
-            return Cancelled.into();
-        }
-        match why.downcast::<ListingFailures>() {
-            Ok(failures) => LockError::OciListing(failures.into_failures()),
-            Err(why) => why.into(),
-        }
-    })?;
-    match manifest {
+    let mut wanted = super::env::wanted_names(manifest.map(|(_, project)| project), &[]);
+    // The GitHub dependencies are read first, so that what their files require
+    // is asked of the community indexes with the rest.
+    let github = match manifest {
         // No GitHub dependency: no cache is opened for one.
         Some((_, project)) if !project.github.is_empty() => {
             let downloads = Downloads::open(env)?;
-            github_index::with_github(env, &downloads, project, previous, moving, index)
+            let only = Index {
+                entries: Vec::new(),
+            };
+            let read = github_index::with_github(env, &downloads, project, previous, moving, only)?;
+            let required = read.entries.iter().flat_map(|entry| &entry.requires);
+            wanted.extend(required.map(|requirement| requirement.name.clone()));
+            Some((project, read))
         }
-        _ => Ok(index),
+        _ => None,
+    };
+    let mut index = env
+        .load_index(manifest, &wanted)
+        .map_err(|why| -> LockError {
+            if why.is::<Cancelled>() {
+                return Cancelled.into();
+            }
+            match why.downcast::<ListingFailures>() {
+                Ok(failures) => LockError::OciListing(failures.into_failures()),
+                Err(why) => why.into(),
+            }
+        })?;
+    if let Some((project, read)) = github {
+        // A GitHub dependency comes from its repo and from nowhere else.
+        let own = |entry: &Entry| (project.github.keys()).any(|name| same_name(&entry.name, name));
+        index.entries.retain(|entry| !own(entry));
+        index.entries.extend(read.entries);
     }
+    Ok(index)
 }
 
 /// The manifest of the project the command runs in.
@@ -572,10 +591,14 @@ fn resolve(
         &env.cancel,
     )
     .map_err(|why| match why {
-        SolveError::Conflict(conflict) => LockError::Conflict(note_oci_sources(
-            name_source_pins(name_pins(conflict, project, pins), &source_pins),
-            project,
-        )),
+        SolveError::Conflict(conflict) => {
+            let conflict = name_pins(conflict, project, pins);
+            let conflict = name_source_pins(conflict, &source_pins);
+            LockError::Conflict(note_index_sources(
+                note_oci_sources(conflict, project),
+                project,
+            ))
+        }
         SolveError::Cancelled => Cancelled.into(),
     })
 }
@@ -686,6 +709,24 @@ fn note_oci_sources(mut conflict: Conflict, project: &Project) -> Conflict {
     conflict
 }
 
+/// `conflict` with a note for each community index when a package is in no
+/// source: it was asked for the package, and does not list it.
+fn note_index_sources(mut conflict: Conflict, project: &Project) -> Conflict {
+    let unlisted = (conflict.facts.iter()).any(|fact| matches!(fact, Fact::NotListed { .. }));
+    if !unlisted {
+        return conflict;
+    }
+    let feeds = project.resolved_sources().unwrap_or_default();
+    let indexes = feeds.iter().filter_map(|(_, feed)| match feed {
+        Feed::Index { owner, repo } => Some(Fact::IndexSearched {
+            repo: format!("{owner}/{repo}"),
+        }),
+        _ => None,
+    });
+    conflict.facts.extend(indexes);
+    conflict
+}
+
 /// `conflict` with each fact that only a pin asked for named as one. The
 /// solver reads a pin as one more manifest line; a fact stays a manifest fact
 /// when `project` has a line that says the same.
@@ -756,6 +797,7 @@ fn hash_archives(
     let mut failures = Vec::new();
     let mut not_as_locked = Vec::new();
     let mut moved = Vec::new();
+    let mut differing = Vec::new();
     let pin_of = |entry: &Entry| pins.iter().find(|pin| same_name(pin.package, &entry.name));
     for (position, (key, entry)) in resolution.packages.iter().enumerate() {
         if env.cancel.is_cancelled() {
@@ -807,6 +849,10 @@ fn hash_archives(
                 hashes.insert(key.clone(), sha256_hex(&bytes));
             }
             Err(why) if why.is::<Cancelled>() => return Err(Cancelled.into()),
+            Err(why) if why.is::<IndexHashMismatch>() => differing.push(
+                why.downcast::<IndexHashMismatch>()
+                    .expect("checked by is above"),
+            ),
             Err(why) => {
                 let oci_manifest = index::oci_reference(entry);
                 let digest = oci_manifest.as_ref().and_then(Reference::digest);
@@ -817,7 +863,7 @@ fn hash_archives(
                         pin.source,
                         digest,
                     ),
-                    _ => Unfetched::plain(format!("{why:#}")),
+                    _ => Unfetched::of_download(&why),
                 };
                 failures.push(ArchiveFailure {
                     name: entry.name.clone(),
@@ -828,15 +874,18 @@ fn hash_archives(
             }
         }
     }
-    match (
-        moved.is_empty(),
-        not_as_locked.is_empty(),
-        failures.is_empty(),
-    ) {
-        (false, _, _) => Err(LockError::TagMoved(moved)),
-        (true, false, _) => Err(LockError::LockedArchives(not_as_locked)),
-        (true, true, false) => Err(LockError::ArchivesUnavailable(failures)),
-        (true, true, true) => Ok(hashes),
+    if !moved.is_empty() {
+        return Err(LockError::TagMoved(moved));
+    }
+    if !not_as_locked.is_empty() {
+        return Err(LockError::LockedArchives(not_as_locked));
+    }
+    if !differing.is_empty() {
+        return Err(LockError::IndexFilesDiffer(differing));
+    }
+    match failures.is_empty() {
+        true => Ok(hashes),
+        false => Err(LockError::ArchivesUnavailable(failures)),
     }
 }
 
@@ -861,11 +910,12 @@ fn moved_tag(previous: Option<&Lockfile>, key: &str, entry: &Entry) -> Option<Mo
 }
 
 /// The `source` the lock records for a package from `entry`'s feed: an OCI
-/// source's own URL, which no feed folder contains, or the feed's index URL.
+/// source's own URL, which no feed folder contains, a community index's
+/// `github-index:owner/repo`, or the feed's index URL.
 fn entry_source(entry: &Entry, feeds: &[(String, String)]) -> String {
-    match index::oci_reference(entry) {
-        Some(_) => entry.source.clone(),
-        None => index::source_of(&entry.url, feeds),
+    match index::oci_reference(entry).is_some() || index::index_repo(&entry.source).is_some() {
+        true => entry.source.clone(),
+        false => index::source_of(&entry.url, feeds),
     }
 }
 
@@ -896,11 +946,16 @@ pub(super) fn github_lock_source(repo: &str) -> String {
 }
 
 /// Whether `package`, as the previous lock holds it, is where `entry` comes
-/// from. Only a GitHub entry is told apart: the lock's `source` for any other
-/// is the feed's, which is known only after the run.
+/// from. A GitHub entry and a community index entry are told apart: the lock's
+/// `source` for any other is the feed's, which is known only after the run. The
+/// index's pin was never checked against bytes locked from another source, so
+/// those are not kept for its entry.
 /// shortcut: a package that moves from a repo to a feed keeps its pin; check
 /// the feed's source here when that bites.
 fn from_same_repo(package: &LockedPackage, entry: &Entry) -> bool {
+    if index::index_repo(&entry.source).is_some() {
+        return package.source.eq_ignore_ascii_case(&entry.source);
+    }
     index::github_repo(entry).is_none_or(|repo| {
         package
             .source
@@ -1131,6 +1186,7 @@ mod tests {
             lv_min: None,
             source: String::new(),
             released: None,
+            index_pin: None,
         }
     }
 
@@ -1159,6 +1215,37 @@ mod tests {
         ));
         assert!(!from_same_repo(&locked("http://feed/index.vipr"), &github));
         assert!(from_same_repo(&locked("http://feed/index.vipr"), &feed));
+    }
+
+    #[test]
+    fn a_locked_package_stands_for_an_index_entry_only_from_the_same_index() {
+        let locked = |source: &str| LockedPackage {
+            name: "pkg".into(),
+            version: "1.0".into(),
+            sha256: "ab".into(),
+            md5: None,
+            digest: None,
+            source: source.into(),
+            requires: Vec::new(),
+            groups: Vec::new(),
+            signer: None,
+            subject: None,
+        };
+        let mut listed = entry(
+            "pkg",
+            "1.0",
+            &[],
+            "http://web/o/r/releases/download/1/pkg.vip",
+        );
+        listed.source = "github-index:o/idx".into();
+
+        assert!(from_same_repo(&locked("github-index:o/idx"), &listed));
+        // Bytes locked from another source were never checked against the index.
+        assert!(!from_same_repo(&locked("http://feed/index.vipr"), &listed));
+        assert!(!from_same_repo(&locked("local"), &listed));
+        assert!(!from_same_repo(&locked("github-index:o/other"), &listed));
+        // GitHub spells repos in any case; so does a manifest's index line.
+        assert!(from_same_repo(&locked("github-index:O/IDX"), &listed));
     }
 
     /// `alpha` 1.0 as an OCI source lists it, by this manifest digest.
@@ -3298,6 +3385,36 @@ gamma = \"1.0\""
             }],
         };
         assert_eq!(note_oci_sources(other.clone(), &project), other);
+    }
+
+    #[test]
+    fn a_package_in_no_source_gets_a_note_for_each_community_index_and_nothing_else_does() {
+        let text = concat!(
+            "[project]\nlabview = \">=2023\"\n\n",
+            "[sources]\ncommunity = \"github:o/idx\"\nteam = \"oci://r:5000/org\"\n",
+            "mirror = \"http://m.example/\"\ndefaults = false\n\n",
+            "[dependencies]\nalpha = \"*\"\n"
+        );
+        let project = manifest(text);
+        let unlisted = Conflict {
+            facts: vec![Fact::NotListed {
+                package: "alpha".into(),
+            }],
+        };
+        let noted = note_index_sources(unlisted.clone(), &project);
+        assert_eq!(
+            noted.facts[1..],
+            [Fact::IndexSearched {
+                repo: "o/idx".into()
+            }]
+        );
+        let other = Conflict {
+            facts: vec![Fact::Manifest {
+                package: "alpha".into(),
+                wanted: "*".into(),
+            }],
+        };
+        assert_eq!(note_index_sources(other.clone(), &project), other);
     }
 
     #[test]

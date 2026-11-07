@@ -36,6 +36,10 @@ pub enum Behavior {
     /// The bundle verifies: the artifact was built by this repository, as its
     /// URL (`https://github.com/o/r`).
     Verifies { repository: String },
+    /// A gh that vouches for the file whatever `--repo` it is given, and names
+    /// `repository` as its builder: what a caller must still check, since
+    /// nothing says gh ties its verdict to `--repo`.
+    VerifiesAnyRepo { repository: String },
     /// Verification fails: gh exits 1 and says this.
     Rejects { stderr: String },
 }
@@ -46,6 +50,9 @@ impl Behavior {
             Behavior::Verifies { repository } => {
                 json!({ "does": "verifies", "repository": repository })
             }
+            Behavior::VerifiesAnyRepo { repository } => {
+                json!({ "does": "verifies any repo", "repository": repository })
+            }
             Behavior::Rejects { stderr } => json!({ "does": "rejects", "stderr": stderr }),
         }
     }
@@ -54,6 +61,9 @@ impl Behavior {
         let text = |key: &str| value[key].as_str().map(str::to_string);
         Some(match value["does"].as_str()? {
             "verifies" => Behavior::Verifies {
+                repository: text("repository")?,
+            },
+            "verifies any repo" => Behavior::VerifiesAnyRepo {
                 repository: text("repository")?,
             },
             "rejects" => Behavior::Rejects {
@@ -140,12 +150,15 @@ fn respond(behavior: &Behavior, run: &Run) -> Response {
     }
     match behavior {
         Behavior::Rejects { stderr } => said("", stderr, 1),
-        Behavior::Verifies { repository } => {
+        Behavior::Verifies { repository } | Behavior::VerifiesAnyRepo { repository } => {
             let built_by = repository.strip_prefix(GITHUB).unwrap_or(repository);
-            let (Some(sha), Some(_)) = (&run.artifact_sha256, &run.bundle_sha256) else {
+            // Without `--bundle` gh asks GitHub for the attestation itself.
+            let bundle_read = run.flag("--bundle").is_none() || run.bundle_sha256.is_some();
+            let Some(sha) = run.artifact_sha256.as_ref().filter(|_| bundle_read) else {
                 return said("", "no bundle or no file to verify", 1);
             };
-            if run.flag("--repo") != Some(built_by) {
+            let any_repo = matches!(behavior, Behavior::VerifiesAnyRepo { .. });
+            if !any_repo && run.flag("--repo") != Some(built_by) {
                 return said("", WRONG_REPO, 1);
             }
             let workflow = format!("{repository}/.github/workflows/release.yml@refs/tags/v1.0.0");
@@ -327,6 +340,21 @@ mod tests {
     }
 
     #[test]
+    fn a_verify_with_no_bundle_looks_the_attestation_up_and_vouches_for_the_file() {
+        let no_bundle = ["attestation", "verify", "a.lvpkg", "--repo", "o/r"];
+        let mut asked = run(&no_bundle, true);
+        asked.bundle_sha256 = None;
+        let got = respond(&verifies(), &asked);
+        assert_eq!(got.code, 0, "{got:?}");
+        assert!(got.stdout.contains(&"ab".repeat(32)), "{got:?}");
+        let mut other_repo = no_bundle;
+        other_repo[4] = "o/other";
+        let mut asked = run(&other_repo, true);
+        asked.bundle_sha256 = None;
+        assert_eq!(respond(&verifies(), &asked).stderr, WRONG_REPO);
+    }
+
+    #[test]
     fn gh_refuses_what_real_gh_refuses() {
         let mut other_repo = VERIFY;
         other_repo[6] = "o/other";
@@ -357,6 +385,23 @@ mod tests {
             stderr: "nope".into(),
         };
         assert_eq!(respond(&rejected, &run(&VERIFY, true)), said("", "nope", 1));
+    }
+
+    #[test]
+    fn a_gh_that_verifies_any_repo_names_its_builder_whatever_repo_is_asked() {
+        let mut other_repo = VERIFY;
+        other_repo[6] = "o/other";
+        let lax = Behavior::VerifiesAnyRepo {
+            repository: "https://github.com/o/r".into(),
+        };
+
+        let got = respond(&lax, &run(&other_repo, true));
+
+        assert_eq!(got.code, 0, "{got:?}");
+        let entries: Value = serde_json::from_str(&got.stdout).unwrap();
+        let certificate = &entries[0]["verificationResult"]["signature"]["certificate"];
+        assert_eq!(certificate["sourceRepositoryURI"], "https://github.com/o/r");
+        assert_eq!(Behavior::from_json(&lax.to_json()), Some(lax));
     }
 
     #[test]

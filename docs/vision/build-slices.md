@@ -564,7 +564,7 @@ Decide in `/specs`: OCI media types; Rust OCI client or `oras`; how a refused ex
 ### Slice S8: Federated community index
 
 **Depends-on:** S6
-**Files:** `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/project.rs`
+**Files:** `.github/workflow-templates/lvpm-release.yml`, `Cargo.lock`, `crates/lvpm-core/Cargo.toml`, `crates/lvpm-core/src/community.rs`, `crates/lvpm-core/src/errors.rs`, `crates/lvpm-core/src/events.rs`, `crates/lvpm-core/src/fetch.rs`, `crates/lvpm-core/src/github.rs`, `crates/lvpm-core/src/github/api.rs`, `crates/lvpm-core/src/github/contents.rs`, `crates/lvpm-core/src/index.rs`, `crates/lvpm-core/src/lib.rs`, `crates/lvpm-core/src/lockfile.rs`, `crates/lvpm-core/src/ops/attest.rs`, `crates/lvpm-core/src/ops/community.rs`, `crates/lvpm-core/src/ops/env.rs`, `crates/lvpm-core/src/ops/github_index.rs`, `crates/lvpm-core/src/ops/install.rs`, `crates/lvpm-core/src/ops/lock.rs`, `crates/lvpm-core/src/ops/mod.rs`, `crates/lvpm-core/src/ops/query.rs`, `crates/lvpm-core/src/ops/session.rs`, `crates/lvpm-core/src/ops/staging.rs`, `crates/lvpm-core/src/ops/sync.rs`, `crates/lvpm-core/src/project.rs`, `crates/lvpm-core/src/solve.rs`, `crates/lvpm-core/src/version.rs`, `crates/lvpm-testkit/src/gh.rs`, `crates/lvpm-testkit/src/github.rs`, `crates/lvpm-tui/src/app.rs`, `crates/lvpm-tui/src/browse.rs`, `crates/lvpm-tui/src/detail.rs`, `docs/specs/lvpm-community-index-s8.md`, `docs/usage.md`, `docs/vision/README.md`, `docs/vision/build-slices.md`, `docs/vision/community-index/README.md`, `docs/vision/community-index/check.yml`, `plans/lvpm-community-index-s8.md`, `src/main.rs`, `src/render/community.rs`, `src/render/lock.rs`, `src/render/mod.rs`, `src/render/query.rs`, `tests/acceptance.rs`, `tests/features/build-slices/s8-index-add.feature`, `tests/features/build-slices/s8-index-check.feature`, `tests/features/build-slices/s8-index-docs.feature`, `tests/features/build-slices/s8-index-install.feature`, `tests/github_client.rs`, `tests/github_index.rs`, `tests/oci_fetch.rs`, `tests/oci_index.rs`, `tests/steps/community.rs`, `tests/steps/docs.rs`, `tests/steps/github.rs`, `tests/steps/in_process.rs`, `tests/steps/install.rs`, `tests/steps/mod.rs`, `tests/steps/solver.rs`, `tests/support/sandbox.rs`
 
 Goal: open-source discovery and name ownership with no single owner.
 
@@ -573,7 +573,7 @@ In scope:
 - Registration by pull request, opened by a release Action; a bot checks name, hash and attestation.
 - lvpm reads the index as a feed.
 
-Out of scope: hosting decisions (who owns the index organisation).
+Out of scope: moving lvpm's own repository into the organisation.
 
 Acceptance criteria:
 - [ ] *(manual)* A tag in pilot B's fork opens an index PR; the bot verifies and merges it.
@@ -582,7 +582,7 @@ Acceptance criteria:
 
 Demo: a third party's library joins the index through a PR.
 
-Decide in `/specs`: the index organisation. Start this conversation in the community at S4, not here.
+Decided in `/specs` (2026-11-06): the index is `labview-package-manager/package-index`, in the `labview-package-manager` organisation. Moving lvpm's own repository there is a separate step after S8 merges.
 
 ### Slice S9: Application builds and SBOM
 

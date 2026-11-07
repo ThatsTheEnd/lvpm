@@ -7,7 +7,9 @@ use lvpm_core::cache::Cache;
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::errors::{GitHubError, GitHubFault};
 use lvpm_core::fetch;
-use lvpm_core::github::{GitHubAuth, Listing, download_error, releases, releases_cached};
+use lvpm_core::github::{
+    GitHubAuth, Listing, download_error, public_member, releases, releases_cached,
+};
 use lvpm_core::index::{self, Entry};
 use lvpm_testkit::github::{DOWNLOAD_HOST, FakeRelease, GitHubFake, PRIVATE_TOKEN};
 use reqwest::blocking::Client;
@@ -520,6 +522,7 @@ fn github_entry(fake: &GitHubFake) -> Entry {
         lv_min: None,
         released: None,
         source: index::github_source(REPO),
+        index_pin: None,
     }
 }
 
@@ -639,4 +642,50 @@ fn a_feed_file_is_downloaded_with_no_token_and_no_octet_stream_accept() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].authorization, None);
     assert_ne!(seen[0].accept.as_deref(), Some(OCTET_STREAM), "{seen:?}");
+}
+
+fn member(fake: &GitHubFake, org: &str, login: &str) -> Result<bool, GitHubFault> {
+    public_member(
+        &Client::new(),
+        &fake.api_url(),
+        org,
+        login,
+        &GitHubAuth::anonymous(),
+    )
+}
+
+#[test]
+fn a_public_member_is_a_yes_and_anyone_else_a_no() {
+    let fake = GitHubFake::start(&[]);
+    fake.add_public_member("acme", "alice");
+
+    assert_eq!(member(&fake, "acme", "alice"), Ok(true));
+    assert_eq!(member(&fake, "acme", "bob"), Ok(false));
+    assert_eq!(member(&fake, "a-user-account", "alice"), Ok(false));
+}
+
+#[test]
+fn a_name_that_cannot_be_a_login_is_a_no_and_asks_nothing() {
+    let fake = GitHubFake::start(&[]);
+    fake.add_public_member("acme", "alice");
+
+    for (org, login) in [
+        ("acme", "../alice"),
+        ("..", "alice"),
+        ("acme", "a/b"),
+        ("", "x"),
+    ] {
+        assert_eq!(member(&fake, org, login), Ok(false), "{org} {login}");
+    }
+    assert_eq!(fake.requests(), []);
+}
+
+#[test]
+fn an_answer_that_is_neither_a_yes_nor_a_no_is_a_fault() {
+    let fake = GitHubFake::start(&[]);
+    fake.fail_with(502);
+
+    let fault = member(&fake, "acme", "alice").unwrap_err();
+
+    assert!(matches!(fault, GitHubFault::Unreadable { .. }), "{fault:?}");
 }

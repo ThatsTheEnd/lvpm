@@ -10,6 +10,7 @@ compile_error!("lvpm supports Windows and Linux; macOS is on the roadmap (docs/r
 
 pub mod application;
 pub mod cache;
+pub mod community;
 pub mod config;
 pub mod distribution;
 pub mod errors;

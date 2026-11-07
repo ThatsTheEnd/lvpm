@@ -29,6 +29,7 @@ async fn core_loads_the_index(world: &mut CliWorld) {
             local: &[],
             defaults: project.default_sources,
             oci: &registries,
+            ..index::SourceSet::default()
         },
         &Oci::default(),
         &sink,

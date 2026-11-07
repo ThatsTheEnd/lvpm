@@ -112,6 +112,10 @@ pub enum LockError {
     /// asked next. Nothing was written.
     #[error("{} pinned package(s) could not be listed", .0.len())]
     OciListing(Vec<ListingFailure>),
+    /// Files whose SHA-256 is not the one their community index lists, all of
+    /// them. Nothing was written.
+    #[error("{} downloaded file(s) differ from the index", .0.len())]
+    IndexFilesDiffer(Vec<IndexHashMismatch>),
     /// There is no lock where it should be.
     #[error("there is no lvpm.lock at {}", .path.display())]
     NoLock { path: PathBuf },
@@ -190,6 +194,65 @@ pub struct AttestationRefusal {
     pub version: String,
     pub origin: Origin,
     pub kind: Refusal,
+}
+
+/// A file whose SHA-256 is not the one a community index lists for it. Nothing
+/// of it was kept.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the file of {name} {version} from {index} has sha256 {actual}, but the index lists {pinned}"
+)]
+pub struct IndexHashMismatch {
+    pub name: String,
+    pub version: String,
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// The `owner/repo` the entry file names as the package's owner.
+    pub publisher: String,
+    /// The SHA-256 the index lists.
+    pub pinned: String,
+    /// The SHA-256 the file has.
+    pub actual: String,
+}
+
+/// A community index entry's file that is longer than the download limit. Only
+/// the limit was read, and nothing of it was kept.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the file of {name} {version} is larger than the download limit of {limit} bytes")]
+pub struct IndexFileTooLarge {
+    pub name: String,
+    pub version: String,
+    pub limit: u64,
+}
+
+/// A community index entry whose `url` is not a file of its publisher's
+/// releases, so nothing was read from it. The url is not kept: it is the
+/// index's, and unchecked.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the file of {name} {version} from {index} is not in the releases of {publisher}; fix: the index must list a url under github.com/{publisher}/releases/download/"
+)]
+pub struct IndexUrlRefused {
+    pub name: String,
+    pub version: String,
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// The `owner/repo` the entry file names as the package's owner.
+    pub publisher: String,
+}
+
+/// A community index repo that cannot be read, as its repo itself answers: it
+/// is not there, is private to this caller, or GitHub could not say. Its source
+/// fails, and no later source stands in for it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the community index {index} cannot be read: {why}. fix: spell it as owner/repo as on GitHub in [sources], or remove it"
+)]
+pub struct IndexRepoUnreachable {
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// What the repo answered, in its own words.
+    pub why: String,
 }
 
 /// A locked OCI version that its source now lists at another manifest digest.
@@ -776,6 +839,20 @@ mod tests {
         for (fault, text) in table {
             assert_eq!(github(fault), format!("pkg (github.com/o/r): {text}"));
         }
+    }
+
+    #[test]
+    fn a_refused_index_url_says_its_fix_after_one_space() {
+        let refused = IndexUrlRefused {
+            name: "foo".into(),
+            version: "1.0".into(),
+            index: "github-index:o/r".into(),
+            publisher: "a/x".into(),
+        };
+        assert_eq!(
+            refused.to_string(),
+            "the file of foo 1.0 from github-index:o/r is not in the releases of a/x; fix: the index must list a url under github.com/a/x/releases/download/"
+        );
     }
 
     #[test]

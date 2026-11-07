@@ -43,7 +43,8 @@ pub fn resolvable<'e>(versions: &'e [Entry], target: Option<&LvTarget>) -> Optio
 /// of each, by name. All of them: a front end that shows fewer says so itself.
 pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
     let manifest = env.manifest_for(None, None)?;
-    let index = env.load_index(manifest.as_ref())?;
+    // A search asks the community indexes for nothing: they have no catalogue.
+    let index = env.load_index(manifest.as_ref(), &[])?;
     Ok(index.search(query).into_iter().cloned().collect())
 }
 
@@ -52,9 +53,19 @@ pub fn search(env: &OpEnv, query: &str) -> Result<Vec<Entry>> {
 /// A source that cannot be read is named in `failed` and the others are still
 /// listed; when every source fails and nothing is imported, so does this.
 pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
+    catalog_asking(env, query, None)
+}
+
+/// [`catalog`], with the community indexes asked for the manifest's
+/// dependencies and `own`, and what those require; `None` asks for nothing, as
+/// [`catalog`] does, the indexes having no catalogue.
+fn catalog_asking(env: &OpEnv, query: Option<&str>, own: Option<&[String]>) -> Result<Catalog> {
     let manifest = env.manifest_for(None, None)?;
+    let wanted = own.map_or_else(Vec::new, |own| {
+        super::env::wanted_names(manifest.as_ref().map(|(_, project)| project), own)
+    });
     let mut failed = Vec::new();
-    let loaded = env.load_index_each(manifest.as_ref(), |source, error| {
+    let loaded = env.load_index_each(manifest.as_ref(), &wanted, |source, error| {
         match error.downcast_ref::<ListingFailures>() {
             // Every OCI feed fails in one error; each is a source of its own.
             Some(listing) => {
@@ -125,7 +136,7 @@ pub struct Catalog {
 pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
     let arg = PackageArg::parse(package)?;
     let constraint = arg.read_constraint()?;
-    let catalog = catalog(env, Some(&arg.name))?;
+    let catalog = catalog_asking(env, Some(&arg.name), Some(std::slice::from_ref(&arg.name)))?;
     let versions: Vec<Entry> = catalog
         .entries
         .into_iter()
@@ -175,6 +186,8 @@ pub fn info(env: &OpEnv, package: &str) -> Result<PackageInfo> {
 /// The archive of `entry`, downloaded into the cache unless it is on hand;
 /// a download says so first.
 fn archive_bytes(env: &OpEnv, entry: &Entry) -> Result<Vec<u8>> {
+    // Before the cache or a local file is read: an index's url is its own to write.
+    fetch::check_index_url(entry, &env.github.web_base())?;
     // No HTTP client is built when the cache already has it.
     if let Some(bytes) = fetch::on_hand(&Cache::open(&env.config.cache)?, entry)? {
         return Ok(bytes);
@@ -295,6 +308,7 @@ mod tests {
             lv_min,
             source: String::new(),
             released: None,
+            index_pin: None,
         };
         assert_eq!(
             needs_newer_labview(&needing(Some(99.0)), &labview_2025),
@@ -586,5 +600,32 @@ mod tests {
         let why = info(&env, "alpha@").unwrap_err().to_string();
         assert_eq!(why, "a constraint is expected after \"@\" in \"alpha@\"");
         let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn info_reads_nothing_from_an_index_entry_whose_url_is_not_its_publishers_release() {
+        let scratch = std::env::temp_dir().join(format!("lvpm-query-index-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let file = scratch.join("local.lvpkg");
+        std::fs::write(&file, b"bytes").unwrap();
+        let env = env_with(
+            &scratch.join("cache").to_string_lossy(),
+            ".lv-venv",
+            Vec::new(),
+        );
+        let mut listed = Entry {
+            name: "alpha".into(),
+            version: crate::version::Version::parse("1.0"),
+            url: file.to_string_lossy().into_owned(),
+            source: "github-index:o/r".into(),
+            ..Entry::default()
+        };
+        listed.index_pin = Some(index::IndexPin {
+            sha256: crate::cache::sha256_hex(b"bytes"),
+            publisher: "someone/alpha".into(),
+        });
+        let why = archive_bytes(&env, &listed).unwrap_err();
+        assert!(why.is::<crate::errors::IndexUrlRefused>(), "{why:#}");
+        std::fs::remove_dir_all(scratch).ok();
     }
 }
