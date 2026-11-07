@@ -180,10 +180,7 @@ pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
     for (i, new) in diff.new_versions.into_iter().enumerate() {
         let found = match new.url_finding(&web) {
             Some(url) => vec![url],
-            None => {
-                let downloads = Downloads::open_in(env, &run.path().join(i.to_string()))?;
-                network_findings(&downloads, &new, &mut packages)?
-            }
+            None => findings_in(env, &run.path().join(i.to_string()), &new, &mut packages)?,
         };
         match found.is_empty() {
             true => verdicts.push(Verdict::Accepted(new)),
@@ -214,6 +211,21 @@ pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
         }
     }
     Ok(checked)
+}
+
+/// [`network_findings`] with the download cache in `dir`, which is removed
+/// before the next version is read: a PR may add many files of the most an
+/// index may hold, and none is kept past its own verdict.
+fn findings_in(
+    env: &OpEnv,
+    dir: &Path,
+    new: &NewVersion,
+    packages: &mut Packages,
+) -> Result<Vec<Finding>> {
+    let found = network_findings(&Downloads::open_in(env, dir)?, new, packages)?;
+    // A folder that stays is cleaned with the run's, so a failure here is not the verdict's.
+    std::fs::remove_dir_all(dir).ok();
+    Ok(found)
 }
 
 /// The package files read so far: by SHA-256, what lvpm made of the file, or
@@ -982,6 +994,43 @@ Requires=\"bar>=?\"",
         for (what, why, said) in rows {
             assert_eq!(download_failure(&why), said, "{what}: {why:#}");
         }
+    }
+
+    #[test]
+    fn a_versions_download_folder_is_gone_once_its_findings_are_read() {
+        let dir = testing::scratch_dir("check-run-folder");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        let web = answering("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        let web = web.split("/secret").next().unwrap().to_string();
+        let listed = |version: &str| FileVersion {
+            version: version.into(),
+            url: format!("{web}/a/x/releases/download/{version}/foo.lvpkg"),
+            sha256: SHA_A.into(),
+            labview: None,
+            requires: Vec::new(),
+        };
+        let file = EntryFile {
+            name: "foo".into(),
+            github: "a/x".into(),
+            versions: vec![listed("1.0.0"), listed("1.1.0")],
+        };
+        head.write("packages/foo.toml", &file.write());
+        let diff = community::diff(&Tree::read(&base.0).unwrap(), &Tree::read(&head.0).unwrap());
+        let [new] = diff.new_versions.as_slice() else {
+            panic!("{:?}", diff.new_versions);
+        };
+        let mut env = testing::env(&dir);
+        env.github.api = web;
+        let folder = dir.join("run").join("0");
+
+        let found = findings_in(&env, &folder, new, &mut HashMap::new()).unwrap();
+
+        let [Finding::NotDownloaded { error, .. }] = found.as_slice() else {
+            panic!("{found:?}");
+        };
+        assert_eq!(error, "HTTP 404");
+        assert!(!folder.exists(), "the version's download folder was kept");
     }
 
     #[test]
