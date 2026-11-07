@@ -815,11 +815,10 @@ pub enum FeedOutcome {
     Downloaded,
 }
 
-/// Drops every event, for unit tests that do not look at progress.
-#[cfg(test)]
+/// Drops every event: for unit tests that do not look at progress, and for a
+/// read whose progress is not part of what the command prints.
 pub(crate) struct NullSink;
 
-#[cfg(test)]
 impl EventSink for NullSink {
     fn emit(&self, _event: Event) {}
 }

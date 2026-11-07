@@ -95,6 +95,10 @@ pub fn refusal_line(finding: &Finding) -> String {
             format!("{}: {} is not a name lvpm can install", u(path), u(name)),
             "register another name".to_string(),
         ),
+        Finding::NameListedPublicly { name, .. } => (
+            format!("{}: vipm.io already lists this name", u(name)),
+            "pick a name that vipm.io does not list".to_string(),
+        ),
         Finding::TooManyVersions { versions } => (
             format!("this PR: it adds {versions} versions, more than {MAX_NEW_VERSIONS_PER_PR}"),
             format!("register at most {MAX_NEW_VERSIONS_PER_PR} versions per PR"),
@@ -590,6 +594,13 @@ mod tests {
                     name: "con".into(),
                 },
                 "refused packages/con.toml: con is not a name lvpm can install. fix: register another name".into(),
+            ),
+            (
+                Finding::NameListedPublicly {
+                    path: "packages/oglib_error.toml".into(),
+                    name: "oglib_error".into(),
+                },
+                "refused oglib_error: vipm.io already lists this name. fix: pick a name that vipm.io does not list".into(),
             ),
             (
                 Finding::TooManyVersions { versions: 21 },

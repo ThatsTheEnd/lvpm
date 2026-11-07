@@ -23,6 +23,29 @@ Feature: S8: lvpm index check
     When I run "lvpm index check --base base --head head"
     Then the command succeeds printing "accepted bar 1.0.0"
 
+  Scenario Outline: a new name that a public index lists is refused
+    Given the <index> index lists bar
+    And the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
+    When I run "lvpm index check --base base --head head"
+    Then the command fails with exit code 1 printing "refused bar: vipm.io already lists this name. fix: pick a name that vipm.io does not list"
+
+    Examples:
+      | index |
+      | NI    |
+      | JKI   |
+
+  Scenario: a new version of a name that a public index lists is not checked against it
+    Given the NI index lists foo
+    And the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "accepted foo 1.1.0"
+
+  Scenario: a new name is not accepted when the public indexes cannot be read
+    Given the public indexes are unreachable
+    And the head adds packages/bar.toml owned by "b/y", whose release is attested by b/y
+    When I run "lvpm index check --base base --head head"
+    Then the command fails without a verdict, naming the public indexes
+
   Scenario: a changed hash for an existing version is rejected
     Given the head changes foo 1.0.0's sha256 from <old> to <new>
     When I run "lvpm index check --base base --head head"

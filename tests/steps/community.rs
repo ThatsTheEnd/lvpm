@@ -8,6 +8,7 @@ use super::github::{
 };
 use super::lock::sha256_hex;
 use crate::CliWorld;
+use crate::support::feed::{JKI_FEED_INDEX, NI_FEED_DIR};
 use crate::support::fixtures::{FixturePackage, Payload};
 use crate::support::pilots::{check_checksums, pilots_dir};
 use crate::support::project::MANIFEST_FILE;
@@ -778,6 +779,45 @@ async fn the_head_changes_the_hash_and_adds_notes(world: &mut CliWorld) {
     change_foo_sha256(world);
     let path = world.checkout_file(HEAD_DIR, "notes.md");
     std::fs::write(path, "notes").expect("write the file");
+}
+
+/// What a public index lists of `name`, in the listing format both feeds use.
+fn public_listing(name: &str) -> String {
+    format!("[Package {name}-1.0]\nPackage.URL=packages/{name}-1.0.vip\n")
+}
+
+#[given(regex = r"^the (NI|JKI) index lists (\S+)$")]
+async fn a_public_index_lists(world: &mut CliWorld, index: String, name: String) {
+    let feed = world.sandbox.feed();
+    match index.as_str() {
+        "NI" => feed.publish(NI_FEED_DIR, &public_listing(&name)),
+        _ => feed.serve(JKI_FEED_INDEX, public_listing(&name).into_bytes()),
+    }
+}
+
+#[given("the public indexes are unreachable")]
+async fn the_public_indexes_are_unreachable(world: &mut CliWorld) {
+    world.sandbox.feed().go_down();
+}
+
+#[then("the command fails without a verdict, naming the public indexes")]
+async fn fails_without_a_verdict(world: &mut CliWorld) {
+    assert_eq!(world.output().exit_code, 1, "{}", world.printed());
+    let output = world.output();
+    assert_eq!(output.stdout, "", "{}", world.printed());
+    assert!(
+        output.stderr.contains("reading the public indexes"),
+        "{}",
+        world.printed()
+    );
+    assert!(
+        !output
+            .stderr
+            .lines()
+            .any(|line| line.starts_with("refused ")),
+        "{}",
+        world.printed()
+    );
 }
 
 #[given("the head equals the base")]

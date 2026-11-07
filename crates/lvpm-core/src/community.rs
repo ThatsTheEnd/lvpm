@@ -457,6 +457,10 @@ pub enum Finding {
         subject: String,
         github: String,
     },
+    /// R7: the PR registers a new name that a public index (vipm.io) lists. A
+    /// source of the index ranks before the public ones, so the name would be
+    /// taken from here for everyone.
+    NameListedPublicly { path: String, name: String },
 }
 
 /// Why a file is not attested (R6). Every reason refuses: the bot fails closed.
@@ -490,6 +494,7 @@ impl Finding {
             | Finding::NotAPackage { path, .. }
             | Finding::PackageDiffers { path, .. }
             | Finding::NotAttested { path, .. }
+            | Finding::NameListedPublicly { path, .. }
             | Finding::AttestedByOther { path, .. } => path,
         }
     }
@@ -503,6 +508,7 @@ impl Finding {
             | Finding::TooManyVersions { .. }
             | Finding::TooManyFiles { .. }
             | Finding::OwnerChanged { .. }
+            | Finding::NameListedPublicly { .. }
             | Finding::Unreadable { .. } => None,
             Finding::VersionChanged { version, .. }
             | Finding::VersionRemoved { version, .. }
@@ -526,6 +532,8 @@ pub struct NewVersion {
     /// The head's `github` for the name.
     pub github: String,
     pub version: FileVersion,
+    /// The base has no entry file for the name: the PR registers it.
+    pub new_name: bool,
 }
 
 /// What [`diff`] makes of two checkouts.
@@ -608,6 +616,25 @@ pub fn diff(base: &Tree, head: &Tree) -> Diff {
     }
     out.limit_the_work(entry_files);
     out
+}
+
+/// R7: a finding for each entry file among `new_versions` that registers a new
+/// name which a public index lists. `public` holds the [`name_key`] of every
+/// name the public indexes list; names compare by key, as the index finds them.
+/// A new version of a name the base already has is never checked.
+pub fn public_name_findings(
+    new_versions: &[NewVersion],
+    public: &BTreeSet<String>,
+) -> Vec<Finding> {
+    let mut seen = BTreeSet::new();
+    let added = new_versions.iter().filter(|new| new.new_name);
+    let listed = added.filter(|new| public.contains(&name_key(&new.name)));
+    (listed.filter(|new| seen.insert(new.path.as_str())))
+        .map(|new| Finding::NameListedPublicly {
+            path: new.path.clone(),
+            name: new.name.clone(),
+        })
+        .collect()
 }
 
 /// `x` of `packages/x.toml`: the only paths that can be an entry file.
@@ -749,6 +776,7 @@ impl Diff {
                         name: new.name.clone(),
                         github: new.github.clone(),
                         version: version.clone(),
+                        new_name: old.is_none(),
                     });
                 }
             }
@@ -1791,6 +1819,77 @@ github = \"b/y\"
         assert_eq!(found.findings, []);
         assert_eq!(found.new_versions.len(), 1);
         assert_eq!(found.new_versions[0].github, "b/y");
+        assert!(found.new_versions[0].new_name);
+    }
+
+    #[test]
+    fn a_new_version_of_a_listed_name_is_not_a_new_name() {
+        let mut head = base();
+        head.put_entry(
+            "packages/foo.toml",
+            "foo",
+            "a/x",
+            &[("1.0.0", SHA_A), ("1.0.1", SHA_B), ("1.1.0", SHA_C)],
+        );
+
+        let found = diff(&base(), &head);
+
+        let [new] = found.new_versions.as_slice() else {
+            panic!("{:?}", found.new_versions);
+        };
+        assert!(!new.new_name);
+    }
+
+    /// The name keys a public index lists.
+    fn public(keys: &[&str]) -> BTreeSet<String> {
+        keys.iter().map(|key| key.to_string()).collect()
+    }
+
+    fn adding(path: &str, name: &str, new_name: bool, versions: &[&str]) -> Vec<NewVersion> {
+        versions
+            .iter()
+            .map(|version| NewVersion {
+                path: path.into(),
+                name: name.into(),
+                new_name,
+                ..listed(version, None, &[])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_new_name_that_a_public_index_lists_is_refused_once_for_its_file() {
+        let added = adding(
+            "packages/oglib_error.toml",
+            "OGLib_Error",
+            true,
+            &["1.0.0", "1.1.0"],
+        );
+
+        let found = public_name_findings(&added, &public(&["oglib_error"]));
+
+        assert_eq!(
+            found,
+            [Finding::NameListedPublicly {
+                path: "packages/oglib_error.toml".into(),
+                name: "OGLib_Error".into(),
+            }]
+        );
+        assert_eq!(found[0].version(), None);
+    }
+
+    #[test]
+    fn a_new_name_no_public_index_lists_is_not_refused() {
+        let added = adding("packages/foo.toml", "foo", true, &["1.0.0"]);
+
+        assert_eq!(public_name_findings(&added, &public(&["bar"])), []);
+    }
+
+    #[test]
+    fn a_new_version_of_a_name_the_index_already_lists_is_never_checked_against_the_public_ones() {
+        let added = adding("packages/foo.toml", "foo", false, &["1.1.0"]);
+
+        assert_eq!(public_name_findings(&added, &public(&["foo"])), []);
     }
 
     #[test]
@@ -1843,6 +1942,7 @@ github = \"b/y\"
                     labview: None,
                     requires: Vec::new(),
                 },
+                new_name: false,
             };
 
             let finding = new.url_finding(WEB);
@@ -1876,6 +1976,7 @@ github = \"b/y\"
                 labview: labview.map(str::to_string),
                 requires: requires.iter().map(|r| r.to_string()).collect(),
             },
+            new_name: false,
         }
     }
 

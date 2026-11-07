@@ -9,7 +9,7 @@ use crate::community::{
     self, EntryFile, FileVersion, Finding, NewVersion, NotAttested, Tree, VersionListed,
 };
 use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch};
-use crate::events::Event;
+use crate::events::{Event, NullSink};
 use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, Rejected, check_index_url};
 use crate::github::MAX_ENTRY_BYTES;
 use crate::index::{self, Entry};
@@ -17,7 +17,7 @@ use crate::project::{name_key, split_owner_repo};
 use crate::verify::{Accepted, Policy, Refusal, decide};
 use crate::version::Version;
 use anyhow::{Context, Result, ensure};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::Path;
 
@@ -140,17 +140,17 @@ pub struct Checked {
 }
 
 /// A version the PR adds that passed every rule, or a refusal.
-enum Verdict {
+enum Outcome {
     Accepted(NewVersion),
     Refused(Finding),
 }
 
-impl Verdict {
+impl Outcome {
     /// Where it sorts: by entry file, then version as lvpm reads versions.
     fn place(&self) -> (String, Option<Version>) {
         let (path, version) = match self {
-            Verdict::Accepted(new) => (new.path.as_str(), Some(new.version.version.as_str())),
-            Verdict::Refused(finding) => (finding.path(), finding.version()),
+            Outcome::Accepted(new) => (new.path.as_str(), Some(new.version.version.as_str())),
+            Outcome::Refused(finding) => (finding.path(), finding.version()),
         };
         (path.to_string(), version.map(Version::parse))
     }
@@ -169,25 +169,58 @@ impl Verdict {
 /// Each download goes through a cache of its own, in a folder this run makes and
 /// removes, so that R5 always fetches the url and never finds the file a
 /// cache from another run holds. A package file is read once per SHA-256.
+///
+/// R7: a PR that registers a new name has the public indexes read (NI's and
+/// JKI's, which `defaults = true` reads, through a cache of their own), and the
+/// name is refused when one lists it. A PR that registers none never reads them.
+/// An index that cannot be read fails the check: it is no verdict.
 pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
+    let public_names = || {
+        let cache = tempfile::Builder::new()
+            .prefix("lvpm-index-check-public")
+            .tempdir()?;
+        public_names(env, cache.path())
+    };
+    check_with(env, base_dir, head_dir, &public_names)
+}
+
+/// [`check`], with `public_names` reading the name key of every name the public
+/// indexes list; it is called at most once, and only for a new name.
+fn check_with(
+    env: &OpEnv,
+    base_dir: &Path,
+    head_dir: &Path,
+    public_names: &dyn Fn() -> Result<BTreeSet<String>>,
+) -> Result<Checked> {
     let diff = community::diff(&Tree::read(base_dir)?, &Tree::read(head_dir)?);
     let web = env.github.web_base();
-    let mut verdicts: Vec<Verdict> = diff.findings.into_iter().map(Verdict::Refused).collect();
+    let mut verdicts: Vec<Outcome> = diff.findings.into_iter().map(Outcome::Refused).collect();
+    let mut new_versions = diff.new_versions;
+    if new_versions.iter().any(|new| new.new_name) {
+        let taken = community::public_name_findings(&new_versions, &public_names()?);
+        // A name that is refused is not downloaded.
+        let paths: Vec<String> = taken
+            .iter()
+            .map(|finding| finding.path().to_string())
+            .collect();
+        new_versions.retain(|new| !paths.contains(&new.path));
+        verdicts.extend(taken.into_iter().map(Outcome::Refused));
+    }
     let run = tempfile::Builder::new()
         .prefix("lvpm-index-check")
         .tempdir()?;
     let mut packages = HashMap::new();
-    for (i, new) in diff.new_versions.into_iter().enumerate() {
+    for (i, new) in new_versions.into_iter().enumerate() {
         let found = match new.url_finding(&web) {
             Some(url) => vec![url],
             None => findings_in(env, &run.path().join(i.to_string()), &new, &mut packages)?,
         };
         match found.is_empty() {
-            true => verdicts.push(Verdict::Accepted(new)),
-            false => verdicts.extend(found.into_iter().map(Verdict::Refused)),
+            true => verdicts.push(Outcome::Accepted(new)),
+            false => verdicts.extend(found.into_iter().map(Outcome::Refused)),
         }
     }
-    verdicts.sort_by_key(Verdict::place);
+    verdicts.sort_by_key(Outcome::place);
     if verdicts.is_empty() {
         env.sink.emit(Event::IndexNothingToCheck);
     }
@@ -197,20 +230,35 @@ pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
     };
     for verdict in verdicts {
         match verdict {
-            Verdict::Accepted(new) => {
+            Outcome::Accepted(new) => {
                 checked.accepted += 1;
                 env.sink.emit(Event::IndexVersionAccepted {
                     name: new.name,
                     version: new.version.version,
                 });
             }
-            Verdict::Refused(finding) => {
+            Outcome::Refused(finding) => {
                 checked.refused.push(finding.clone());
                 env.sink.emit(Event::IndexRefused { finding });
             }
         }
     }
     Ok(checked)
+}
+
+/// The [`name_key`] of every name the public indexes (NI's and JKI's) list,
+/// read afresh through the cache in `cache`. Silent: the bot's output is its
+/// verdict lines.
+fn public_names(env: &OpEnv, cache: &Path) -> Result<BTreeSet<String>> {
+    let sources = index::SourceSet {
+        defaults: true,
+        ..index::SourceSet::default()
+    };
+    let loaded = index::load(cache, true, &sources, &env.oci, &NullSink, &env.cancel)
+        .context("reading the public indexes, to check that a new name is not listed there")?;
+    Ok((loaded.entries.iter())
+        .map(|entry| name_key(&entry.name))
+        .collect())
 }
 
 /// [`network_findings`] with the download cache in `dir`, which is removed
@@ -808,6 +856,119 @@ Requires=\"bar>=?\"",
             };
             self.write("packages/foo.toml", &file.write());
         }
+    }
+
+    impl Checkout {
+        /// `packages/<name>.toml`, owned by `b/y`, listing 1.0.0 at `url`.
+        fn list_new(&self, name: &str, url: &str) {
+            let file = EntryFile {
+                name: name.into(),
+                github: "b/y".into(),
+                versions: vec![FileVersion {
+                    version: "1.0.0".into(),
+                    url: url.into(),
+                    sha256: SHA_A.into(),
+                    labview: None,
+                    requires: Vec::new(),
+                }],
+            };
+            self.write(
+                &format!("packages/{}.toml", name.to_lowercase()),
+                &file.write(),
+            );
+        }
+    }
+
+    /// The URL of a file that is no release file: R4 refuses it before any download.
+    const NOT_A_RELEASE: &str = "https://example.com/x.lvpkg";
+
+    /// [`check_with`] where the public indexes list `listed` (name keys), and
+    /// the names asked: the refusals and the number of times they were read.
+    fn checked_against(
+        base: &Checkout,
+        head: &Checkout,
+        listed: &[&str],
+    ) -> (Vec<Finding>, std::cell::Cell<usize>) {
+        let reads = std::cell::Cell::new(0);
+        let public = || {
+            reads.set(reads.get() + 1);
+            Ok(listed.iter().map(|key| key.to_string()).collect())
+        };
+        let mut env = testing::env(&base.0);
+        // No url the heads list is under this web base: R4 refuses each, and nothing is downloaded.
+        env.github.api = "http://127.0.0.1:1".into();
+        let checked = check_with(&env, &base.0, &head.0, &public).unwrap();
+        (checked.refused, reads)
+    }
+
+    #[test]
+    fn a_new_name_that_a_public_index_lists_is_refused_and_not_downloaded() {
+        let dir = testing::scratch_dir("check-public-listed");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        head.list_foo(&["1.0.0"], SHA_A);
+        head.list_new("OGLib_Error", NOT_A_RELEASE);
+
+        let (refused, reads) = checked_against(&base, &head, &["oglib_error"]);
+
+        // The url would be a finding of its own, had the version gone on to be checked.
+        assert_eq!(
+            refused,
+            [Finding::NameListedPublicly {
+                path: "packages/oglib_error.toml".into(),
+                name: "OGLib_Error".into()
+            }]
+        );
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn a_new_name_no_public_index_lists_goes_on_to_the_other_rules() {
+        let dir = testing::scratch_dir("check-public-free");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        head.list_foo(&["1.0.0"], SHA_A);
+        head.list_new("bar", NOT_A_RELEASE);
+
+        let (refused, _) = checked_against(&base, &head, &["baz"]);
+
+        let [Finding::UrlNotReleaseFile { name, .. }] = refused.as_slice() else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(name, "bar");
+    }
+
+    #[test]
+    fn a_new_version_of_a_listed_name_does_not_read_the_public_indexes() {
+        let dir = testing::scratch_dir("check-public-existing");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        head.list_foo(&["1.0.0", "1.1.0"], SHA_A);
+
+        let (refused, reads) = checked_against(&base, &head, &["foo"]);
+
+        assert_eq!(reads.get(), 0);
+        assert!(
+            refused
+                .iter()
+                .all(|finding| !matches!(finding, Finding::NameListedPublicly { .. })),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn public_indexes_that_cannot_be_read_make_the_check_an_error() {
+        let dir = testing::scratch_dir("check-public-down");
+        let (base, head) = (Checkout::new(&dir, "base"), Checkout::new(&dir, "head"));
+        base.list_foo(&["1.0.0"], SHA_A);
+        head.list_foo(&["1.0.0"], SHA_A);
+        head.list_new("bar", NOT_A_RELEASE);
+        let env = testing::env(&dir);
+        let down = || Err(anyhow::anyhow!("fetching the NI index: connection refused"));
+
+        let why = check_with(&env, &base.0, &head.0, &down).unwrap_err();
+
+        assert!(why.to_string().contains("connection refused"), "{why:#}");
     }
 
     fn checked(base: &Checkout, head: &Checkout) -> (Checked, Vec<Event>) {
