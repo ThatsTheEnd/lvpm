@@ -318,6 +318,13 @@ pub(crate) fn installable_name(name: &str) -> bool {
             .any(|device| stem.eq_ignore_ascii_case(device))
 }
 
+/// The file name `packages/<key>.toml` an index lists `name` in: `None` when
+/// that cannot be a file name, or lvpm could not install the package.
+pub(crate) fn listable_key(name: &str) -> Option<String> {
+    let key = name_key(name);
+    (is_file_key(&key) && installable_name(name)).then_some(key)
+}
+
 /// The entries of `packages/<key>.toml` as `text`, with no source yet: what the
 /// reader of the sources is handed to parse an index file, and labels the
 /// entries itself.
@@ -1058,8 +1065,7 @@ impl<'a> Scope<'a> {
     fn requires(&self) -> Result<Vec<String>, EntryFileError> {
         let items = self.str_list(KEY_REQUIRES)?;
         let installable = |item: &String| {
-            parse_requirement(item)
-                .is_some_and(|r| is_file_key(&name_key(&r.name)) && installable_name(&r.name))
+            parse_requirement(item).is_some_and(|r| listable_key(&r.name).is_some())
         };
         if items.iter().all(installable) {
             Ok(items)

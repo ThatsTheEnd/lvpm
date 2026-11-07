@@ -314,11 +314,8 @@ fn read_package(path: &Path) -> Result<(Entry, String)> {
     let entry = index::entry_from_bytes(path, &bytes)
         .map_err(|why| not_a_package(path, format!("{why:#}")))?;
     ensure!(
-        index::is_file_key(&name_key(&entry.name)),
-        not_a_package(
-            path,
-            format!("its name {:?} cannot be an entry file's name", entry.name)
-        )
+        community::listable_key(&entry.name).is_some(),
+        not_a_package(path, format!("its name {:?} cannot be listed", entry.name))
     );
     Ok((entry, sha256_hex(&bytes)))
 }
@@ -697,6 +694,17 @@ github = \"{OWNER}\"
             assert!(error.contains("name"), "{name:?}: {error}");
         }
         assert!(!index.dir.join("evil.toml").exists());
+    }
+
+    #[test]
+    fn a_package_whose_name_is_a_device_name_is_refused_as_not_listable() {
+        let index = Index::new("add-device-name");
+        let why = index.refused(&index.vip("con", ""), OWNER, URL);
+
+        let AddRefused::NotAPackage { error, .. } = &why else {
+            panic!("{why:?}");
+        };
+        assert_eq!(error, "its name \"con\" cannot be listed");
     }
 
     #[test]
