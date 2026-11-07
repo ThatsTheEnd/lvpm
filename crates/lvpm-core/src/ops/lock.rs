@@ -483,8 +483,24 @@ pub(super) fn load_index(
     previous: Option<&Lockfile>,
     moving: &Moving,
 ) -> Result<Index, LockError> {
-    let wanted = super::env::wanted_names(manifest.map(|(_, project)| project), &[]);
-    let index = env
+    let mut wanted = super::env::wanted_names(manifest.map(|(_, project)| project), &[]);
+    // The GitHub dependencies are read first, so that what their files require
+    // is asked of the community indexes with the rest.
+    let github = match manifest {
+        // No GitHub dependency: no cache is opened for one.
+        Some((_, project)) if !project.github.is_empty() => {
+            let downloads = Downloads::open(env)?;
+            let only = Index {
+                entries: Vec::new(),
+            };
+            let read = github_index::with_github(env, &downloads, project, previous, moving, only)?;
+            let required = read.entries.iter().flat_map(|entry| &entry.requires);
+            wanted.extend(required.map(|requirement| requirement.name.clone()));
+            Some((project, read))
+        }
+        _ => None,
+    };
+    let mut index = env
         .load_index(manifest, &wanted)
         .map_err(|why| -> LockError {
             if why.is::<Cancelled>() {
@@ -495,14 +511,13 @@ pub(super) fn load_index(
                 Err(why) => why.into(),
             }
         })?;
-    match manifest {
-        // No GitHub dependency: no cache is opened for one.
-        Some((_, project)) if !project.github.is_empty() => {
-            let downloads = Downloads::open(env)?;
-            github_index::with_github(env, &downloads, project, previous, moving, index)
-        }
-        _ => Ok(index),
+    if let Some((project, read)) = github {
+        // A GitHub dependency comes from its repo and from nowhere else.
+        let own = |entry: &Entry| (project.github.keys()).any(|name| same_name(&entry.name, name));
+        index.entries.retain(|entry| !own(entry));
+        index.entries.extend(read.entries);
     }
+    Ok(index)
 }
 
 /// The manifest of the project the command runs in.

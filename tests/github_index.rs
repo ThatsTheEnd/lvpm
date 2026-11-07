@@ -600,6 +600,63 @@ Bar = \">=1.0\"
     assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
 }
 
+/// The package file of `name` at 1.0 requiring each of `requires`.
+fn package(name: &str, requires: &[&str]) -> Vec<u8> {
+    let meta = lvpm_core::lvpkg::Meta {
+        name: name.into(),
+        version: "1.0".into(),
+        labview: ">=2024".into(),
+        vendor: "acme".into(),
+        display_name: name.into(),
+        install_dir: format!("vi.lib/acme/{name}"),
+        dependencies: requires
+            .iter()
+            .map(|r| (r.to_string(), "*".into()))
+            .collect(),
+    };
+    lvpm_core::lvpkg::write(&meta, &[("a.vi".to_string(), b"a".to_vec())], None).unwrap()
+}
+
+#[test]
+fn what_a_github_dependency_requires_is_asked_of_the_community_index() {
+    use lvpm_testkit::github::FakeRelease;
+    use sha2::{Digest, Sha256};
+    let bar = package("bar", &[]);
+    let release = |file: &str, bytes: &[u8]| vec![FakeRelease::new("v1").asset(file, bytes)];
+    let fake = GitHubFake::start(&[
+        (REPO, vec![]),
+        ("g/foo", release("foo-1.0.lvpkg", &package("foo", &["bar"]))),
+        ("a/x", release("bar-1.0.lvpkg", &bar)),
+    ]);
+    fake.add_file(
+        REPO,
+        "packages/bar.toml",
+        &format!(
+            "name = \"bar\"
+github = \"a/x\"
+
+[[version]]
+version = \"1.0\"
+url = \"{}/a/x/releases/download/v1/bar-1.0.lvpkg\"
+sha256 = \"{}\"
+",
+            fake.api_url(),
+            Sha256::digest(&bar)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        ),
+    );
+    let dir = project("foo = { github = \"g/foo\", version = \"*\" }\n");
+    let sink = RecordingSink::default();
+
+    let locked = lock::lock(&env(dir.path(), &sink, &fake)).unwrap();
+
+    let names: Vec<&str> = locked.packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["bar", "foo"]);
+    assert_eq!(asked(&fake), ["packages/foo.toml", "packages/bar.toml"]);
+}
+
 #[test]
 fn a_name_passed_to_add_is_asked() {
     let fake = index_with(&[]);
