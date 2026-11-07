@@ -40,10 +40,13 @@ every tag adds a version with no further step:
    `lvpm build` needs today.
 2. Copy `lvpm-release.yml` into `.github/workflows/`.
 3. Create a GitHub token that can fork and open pull requests on public repos,
-   and save it as the repo secret `LVPM_INDEX_TOKEN`. A classic token with the
-   `public_repo` scope is expected to work, because fine-grained tokens cannot
-   open PRs on another owner's repo. Build confirms which token works, and the
-   docs name only that one.
+   and save it as the repo secret `LVPM_INDEX_TOKEN`. A classic personal access
+   token with the `public_repo` and `workflow` scopes is the tested choice. The
+   `workflow` scope is needed because the PR branch starts at the index's tip:
+   once the index has a workflow file the publisher's fork lacks, GitHub
+   refuses the push of a token without it. A fine-grained token may not work.
+   The docs also recommend a dedicated machine account for the token, and,
+   optionally, a GitHub Environment with a deployment protection rule.
 4. Push a tag.
 
 What the maintainer then sees:
@@ -91,7 +94,11 @@ community = "github:labview-package-manager/package-index"
 - **One file per name** (user, 2026-11-06). For each package name it
   resolves, lvpm asks the index for `packages/<name>.toml`, where `<name>` is
   `project::name_key` of the name. A 404 means the index does not list the
-  name, and the next source is asked. lvpm never lists the whole repo.
+  name, and the next source is asked. lvpm never lists the whole repo. A
+  missing or forbidden index repo fails the source instead; the first 404 of
+  an index in a run checks that the repo exists. Why a `github:` source takes
+  part in first-source-wins, and what that costs, is in
+  [ADR 8](../adr/0008-community-index-sources-take-part-in-first-source-wins.md).
 - The file is read through lvpm's existing GitHub client: the contents API
   (`GET {api}/repos/{owner}/{repo}/contents/packages/{name}.toml`, raw media
   type), the API from `GITHUB_API_URL`, and the token chain of S4. So a private
@@ -172,6 +179,10 @@ scenario and a line in the command table of `docs/usage.md`.
   6. a new version whose S6 outcome is not **attested**, or whose attestation
      subject is another repo than `github`. Matching ignores case.
 
+  With `--json` the result has `command` (`index-check`), `accepted` and
+  `refused` (counts) and `comment`, the text the bot leaves on a refused PR
+  (null when none is refused).
+
   The check never runs code from the PR: it reads the PR's TOML as data.
   Attestation goes through the existing `verify` module and the `gh` runner,
   so tests stub `gh` as S6's tests do.
@@ -193,13 +204,16 @@ user is asked before each push to it. It holds:
 - `packages/`, empty at first;
 - a README for maintainers: how to register, the rules above, and how to
   set `LVPM_INDEX_TOKEN`;
-- `.github/workflows/check.yml`, the bot. It runs on `pull_request_target`,
-  checks out `main` and the PR head as data (`persist-credentials: false`),
-  installs a pinned lvpm release checked against `SHA256SUMS` (as the release
-  template does), runs `lvpm index check`, and on success merges with
-  `gh pr merge --squash` using the repo's `GITHUB_TOKEN`
-  (`contents: write`, `pull-requests: write`). On a refusal it comments the
-  check's refusal lines on the PR with `gh pr comment` and fails the run.
+- `.github/workflows/check.yml`, the bot. It runs on `pull_request_target` for
+  PRs to `main`, in two jobs. `check` has a read-only `GITHUB_TOKEN`: it checks
+  out `main` and the PR's merge (`refs/pull/<n>/merge`, so a branch older than
+  `main` is compared only on the files it changed) as data
+  (`persist-credentials: false`), installs a pinned lvpm release checked against
+  `SHA256SUMS` (or a pinned SHA-256, as the release template does), runs
+  `lvpm index check`, and hands over a verdict. `merge` has the write token
+  (`contents: write`, `pull-requests: write`) and no checkout: on success it
+  runs `gh pr merge --squash`, and on a refusal it comments the check's refusal
+  lines on the PR with `gh pr comment` and fails the run.
 
 The workflow can only run after an lvpm release ships `lvpm index check`.
 Until then, the manual criterion is shown by running `lvpm index check` from
@@ -210,15 +224,19 @@ this PR's build against a real PR on the index (see the acceptance criteria).
 `.github/workflow-templates/lvpm-release.yml` gets a third job, `register`,
 after `publish`. Its steps do nothing when the repo has no
 `LVPM_INDEX_TOKEN` secret, so existing users see no change. The secret is a
-fine-grained token of the publisher that can fork and open PRs on public repos
-(user, 2026-11-06). The job:
+classic token of the publisher with the `public_repo` and `workflow` scopes
+(see the publisher journey). The job env holds only `HAS_INDEX_TOKEN`, whether
+the secret is set; the token itself goes as `GH_TOKEN` to the steps that fork,
+push and open the PR. The job:
 
 1. downloads the `.lvpkg` that `publish` attached;
 2. forks the index (the repository variable `LVPM_INDEX_REPO`, default
-   `labview-package-manager/package-index`) and clones the fork;
+   `labview-package-manager/package-index`) and clones the index itself, not the
+   fork, so the branch starts at the index's current tip;
 3. runs `lvpm index add` with the asset's download URL and
    `--github ${{ github.repository }}`;
-4. pushes a branch and opens the PR with `gh pr create`.
+4. commits on a branch named `lvpm/<tag>`, pushes it to the fork (a re-run of
+   the tag replaces it), and opens the PR with `gh pr create`.
 
 The `--clobber` upload of `publish` stays. A re-pushed tag with new bytes
 then fails at the bot (rule 3), which is the intended outcome.
@@ -303,7 +321,7 @@ then fails at the bot (rule 3), which is the intended outcome.
 | Name ownership vs vipm.io names | `requires-stakeholder-input` | human | First come, first served; no reserved names |
 | Who creates the index repo | `requires-stakeholder-input` | human | Created during build; ask before each push |
 | What a publisher must do, and what they see | `requires-stakeholder-input` | human | Four steps in docs/usage.md, proven by following them for criterion 1; refusals are commented on the PR with a fix (user, 2026-11-06) |
-| Which token type opens the index PR | `inferable` | inference | Classic `public_repo` expected; fine-grained tokens are limited to repos the token's owner selects. Build confirms it in criterion 1 and the docs name the one that worked |
+| Which token type opens the index PR | `inferable` | inference | Classic with `public_repo` and `workflow` is the tested choice (`workflow`: the branch starts at the index's tip, which may hold workflow files the fork lacks). A fine-grained token may not work. The docs name the one that worked |
 | Transport for `packages/<name>.toml` | `inferable` | inference | The existing GitHub client (contents API, `GITHUB_API_URL`, S4 token chain) gives private indexes, auth and the loopback test hook for free. Alternative raw.githubusercontent.com has no test hook. Predictability: both work; the client is what S4/S6 tests already fake. Risk: anonymous API rate limit (60/h) on large resolves; the token chain lifts it |
 | Bot logic in Rust as `lvpm index check` | `inferable` | inference | Criterion 3 must be a `cargo test` (slice rules), and the hash, package reading and S6 verification already live in `lvpm-core` |
 | `Entry::source` spelling for index entries | `inferable` | inference | Must differ from `github:` (taken by S4 entries); exact string left to the plan |
