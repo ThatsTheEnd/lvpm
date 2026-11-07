@@ -820,9 +820,10 @@ const RELEASE_TEMPLATE: &str = ".github/workflow-templates/lvpm-release.yml";
 
 /// The pinned summary lines of the `register` job, as the spec words them. A
 /// `<placeholder>` is the shell variable of that name in the template.
-const REGISTER_LINES: [&str; 5] = [
+const REGISTER_LINES: [&str; 6] = [
     "registered <name> <version>: <url>. The index bot checks it, then merges it or comments the reasons it refused. A PR with no verdict waits for a maintainer.",
     "register failed: the token was refused. fix: save a classic token with public_repo as LVPM_INDEX_TOKEN",
+    "register failed: the token cannot push workflow files. fix: add the workflow scope to the classic token saved as LVPM_INDEX_TOKEN",
     "register failed: <name> <version> is already listed. fix: push a new tag",
     "register failed: <name> belongs to <owner>. fix: publish from <owner>, or register another name",
     "register failed: <step> failed. fix: see the job log, then re-run the job",

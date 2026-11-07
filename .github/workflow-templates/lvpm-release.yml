@@ -23,12 +23,14 @@ name: Publish the package
 # (docs/usage.md, "Publish to the community index") by opening a pull request on
 # labview-package-manager/package-index; the repository variable LVPM_INDEX_REPO
 # names another index. It does something only when the repository secret
-# LVPM_INDEX_TOKEN is set, a classic token with the public_repo scope that forks
-# the index and opens the PR; without it the job's summary says it did not
-# register. Delete the job if you do not list your package. `lvpm index add` is
-# in the first lvpm release that ships S8, and the LVPM_VERSION pin below is
-# older: raise it to that release before you set LVPM_INDEX_TOKEN, or the job
-# fails at `lvpm index add`.
+# LVPM_INDEX_TOKEN is set, a classic token with the public_repo and workflow
+# scopes that forks the index and opens the PR. The workflow scope is needed
+# because the branch starts at the index's tip, which holds a workflow file
+# that your fork may not have yet, and GitHub refuses that push without it.
+# Without the secret the job's summary says it did not register. Delete the job
+# if you do not list your package. `lvpm index add` is in the first lvpm release
+# that ships S8, and the LVPM_VERSION pin below is older: raise it to that
+# release before you set LVPM_INDEX_TOKEN, or the job fails at `lvpm index add`.
 on:
   push:
     tags: ['*'] # narrow it, e.g. ['v*'], if you push tags that are not releases
@@ -220,15 +222,18 @@ jobs:
           package=$(ls "$RUNNER_TEMP"/package/*.lvpkg)
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$package")"
           err="$RUNNER_TEMP/add.err"
+          # git keeps no empty folder, so an index with no entry yet has no packages/.
+          mkdir -p "$RUNNER_TEMP/index/packages"
           out=$(lvpm index add "$RUNNER_TEMP/index/packages" "$package" --github "$GITHUB_REPOSITORY" --url "$url" 2> "$err") || { cat "$err" >&2; exit 1; }
           echo "$out"
-          # "added <name> <version> to packages/<key>.toml". The two words become a
-          # branch name and a command argument, so they must be plain.
+          # "added <name> <version> to packages/<key>.toml". The two words go into a
+          # command argument and a summary line, so they must be plain.
           read -r _ name version _ <<< "$out"
           pattern='^[A-Za-z0-9._-]+$'
           [[ $name =~ $pattern && $version =~ $pattern ]] || { echo "::error::cannot read the name and version from: $out"; exit 1; }
-          branch="lvpm/$name-$version"
-          git check-ref-format --branch "$branch" > /dev/null
+          # One branch per tag, so a re-run of this tag replaces it and no other tag does.
+          branch="lvpm/$TAG"
+          git check-ref-format "refs/heads/$branch" || { echo "::error::the tag $TAG cannot be part of a branch name"; exit 1; }
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
@@ -248,7 +253,9 @@ jobs:
           cd "$RUNNER_TEMP/index"
           git add packages
           git -c "user.name=$LOGIN" -c "user.email=$LOGIN@users.noreply.github.com" commit --quiet -m "Add $NAME $VERSION"
-          # The branch is this tag's alone, so a re-run replaces it.
+          # The branch is this tag's alone (lvpm/<tag>), so a re-run replaces it. It
+          # starts at the index's tip, so GitHub refuses the push of a token without
+          # the workflow scope once the index has a workflow file the fork lacks.
           git push --force "https://github.com/$FORK.git" "HEAD:refs/heads/$BRANCH" 2>> "$err" || fail
           # A re-run finds the PR it opened before.
           url=$(gh pr list --repo "$INDEX_REPO" --head "$BRANCH" --state open --json url,headRepositoryOwner --jq '[.[] | select(.headRepositoryOwner.login == env.LOGIN)][0].url // empty' 2>> "$err") || fail
@@ -264,7 +271,11 @@ jobs:
           STEPS: ${{ toJSON(steps) }}
         run: |
           {
-            if grep -qE 'HTTP (401|403)' "$RUNNER_TEMP/gh.err" 2> /dev/null; then
+            # git's push refusal ("refusing to allow ... without `workflow` scope") can
+            # come with an HTTP 403, so this is asked first.
+            if grep -q 'refusing to allow' "$RUNNER_TEMP/gh.err" 2> /dev/null; then
+              echo "register failed: the token cannot push workflow files. fix: add the workflow scope to the classic token saved as LVPM_INDEX_TOKEN"
+            elif grep -qE 'HTTP (401|403)' "$RUNNER_TEMP/gh.err" 2> /dev/null; then
               echo "register failed: the token was refused. fix: save a classic token with public_repo as LVPM_INDEX_TOKEN"
             elif listed=$(sed -nE 's/.*lvpm index: ([^ ]+ [^ ]+) is already listed in .*/\1/p' "$RUNNER_TEMP/add.err" 2> /dev/null | head -n 1) && [ -n "$listed" ]; then
               read -r name version <<< "$listed"
