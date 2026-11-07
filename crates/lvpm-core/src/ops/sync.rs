@@ -10,6 +10,7 @@
 use super::env::OpEnv;
 use super::github_index;
 use super::hook_policy::HookAllow;
+use super::index_files::IndexFiles;
 use super::install::{
     Applied, InstallOptions, InstallPlan, PlannedPackage, announce_target, apply, finish,
     order_dependencies_first,
@@ -915,7 +916,7 @@ impl Source {
     ) -> anyhow::Result<Index> {
         let (feeds, folders, defaults) = match self {
             Source::GitHub(name, repo) => return github_entries(env, downloads, name, repo),
-            Source::Index(feed) => return index_entries(env, downloads, feed, wanted),
+            Source::Index(feed) => return index_entries(env, feed, wanted),
             Source::Imported => (Vec::new(), Vec::new(), false),
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
@@ -944,14 +945,10 @@ impl Source {
 }
 
 /// What the community index `feed` lists under the `wanted` names.
-fn index_entries(
-    env: &OpEnv,
-    downloads: &Downloads,
-    feed: &index::IndexFeed,
-    wanted: &[String],
-) -> anyhow::Result<Index> {
+fn index_entries(env: &OpEnv, feed: &index::IndexFeed, wanted: &[String]) -> anyhow::Result<Index> {
     let remotes = [index::Remote::Index(feed.clone())];
-    let fetch = |feed: &index::IndexFeed, key: &str| downloads.index_file(feed, key, env.refresh);
+    let files = IndexFiles::open(&env.config.cache, &env.github, env.refresh)?;
+    let fetch = |feed: &index::IndexFeed, key: &str| files.read(feed, key);
     let sources = index::SourceSet {
         extra: &remotes,
         wanted,

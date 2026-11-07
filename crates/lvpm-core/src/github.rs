@@ -17,7 +17,7 @@ pub mod release_file;
 
 pub use api::{Listing, ReleaseFile, download_error, releases, releases_cached};
 pub use auth::{GitHubAuth, TokenSource, gh_auth_token};
-pub use contents::{MAX_ENTRY_BYTES, contents_cached};
+pub use contents::{MAX_ENTRY_BYTES, contents_cached, repo_visible};
 
 /// The API GitHub itself answers on.
 pub const DEFAULT_API: &str = "https://api.github.com";

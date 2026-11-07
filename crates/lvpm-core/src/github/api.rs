@@ -246,7 +246,7 @@ fn request_accepting(
 }
 
 /// One API call for JSON: the body, and the `Link` header.
-fn get(
+pub(super) fn get(
     client: &Client,
     url: &str,
     auth: &GitHubAuth,

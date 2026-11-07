@@ -11,6 +11,7 @@ use lvpm_core::github::{GitHub, GitHubAuth, contents_cached};
 use lvpm_core::index::{self, Entry, IndexFeed, OciFeed, Remote, SourceSet};
 use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::oci::Oci;
+use lvpm_core::ops::index_files::IndexFiles;
 use lvpm_core::ops::install::InstallOptions;
 use lvpm_core::ops::{OpEnv, add_remove, install, lock, query};
 use lvpm_testkit::events::RecordingSink;
@@ -287,9 +288,11 @@ impl<'a> Setup<'a> {
     }
 }
 
+/// The files of the index asked for; its one request about the repo itself, after
+/// a 404, is not one of them.
 fn asked(fake: &GitHubFake) -> Vec<String> {
     let all = fake.requests().into_iter().map(|r| r.path);
-    all.map(|p| p.trim_start_matches("/repos/o/r/contents/").to_string())
+    all.filter_map(|p| Some(p.strip_prefix("/repos/o/r/contents/")?.to_string()))
         .collect()
 }
 
@@ -459,6 +462,69 @@ fn a_404_is_cached_too() {
     setup.read(&["foo"]);
     setup.read(&["foo"]);
     assert_eq!(fake.requests().len(), 1);
+}
+
+/// `wanted` read through [`IndexFiles`], as a command reads them.
+fn read_through_index_files(setup: &Setup, wanted: &[&str]) -> Read {
+    let github = GitHub {
+        api: setup.fake.api_url(),
+        ..GitHub::default()
+    };
+    let files = IndexFiles::open(setup.cache, &github, false).unwrap();
+    setup.read_with(wanted, &|feed, key| files.read(feed, key))
+}
+
+#[test]
+fn an_index_repo_that_is_not_there_fails_its_source_instead_of_listing_nothing() {
+    let fake = index_with(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut setup = Setup::new(&fake, dir.path());
+    setup.remotes = vec![Remote::Index(IndexFeed {
+        owner: "o".into(),
+        repo: "typo".into(),
+    })];
+    let read = read_through_index_files(&setup, &["foo"]);
+    assert_eq!(
+        read.failed,
+        [(
+            "github-index:o/typo".to_string(),
+            "the community index github-index:o/typo cannot be read: not found. If it is private, run gh auth login or set GH_TOKEN. fix: spell it as owner/repo as on GitHub in [sources], or remove it".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_private_index_repo_read_without_a_token_fails_its_source() {
+    let fake = index_with(&[("foo", &[])]);
+    fake.make_private(REPO);
+    let dir = tempfile::tempdir().unwrap();
+    let read = read_through_index_files(&Setup::new(&fake, dir.path()), &["foo"]);
+    assert_eq!(read.names(), Vec::<String>::new());
+    let [(source, why)] = read.failed.as_slice() else {
+        panic!("{:?}", read.failed);
+    };
+    assert_eq!(source, "github-index:o/r");
+    assert!(
+        why.starts_with("the community index github-index:o/r cannot be read: not found"),
+        "{why}"
+    );
+}
+
+#[test]
+fn an_index_repo_that_lacks_two_names_is_asked_about_itself_once() {
+    let fake = index_with(&[]);
+    let dir = tempfile::tempdir().unwrap();
+    let read = read_through_index_files(&Setup::new(&fake, dir.path()), &["foo", "bar"]);
+    assert_eq!(read.failed, []);
+    let paths: Vec<String> = fake.requests().into_iter().map(|r| r.path).collect();
+    assert_eq!(
+        paths,
+        [
+            "/repos/o/r/contents/packages/foo.toml",
+            "/repos/o/r",
+            "/repos/o/r/contents/packages/bar.toml"
+        ]
+    );
 }
 
 /// A project that takes `dependencies` (lines of `[dependencies]`) and has the

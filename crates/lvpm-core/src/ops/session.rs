@@ -93,22 +93,6 @@ impl Downloads {
         github::releases_cached(cache, client, api, repo, name, auth, refresh)
     }
 
-    /// The text of `packages/<key>.toml` in a community index repo, or `None`
-    /// when it has no such file; see [`github::contents_cached`].
-    pub(super) fn index_file(
-        &self,
-        feed: &index::IndexFeed,
-        key: &str,
-        refresh: bool,
-    ) -> Result<Option<String>> {
-        let repo = format!("{}/{}", feed.owner, feed.repo);
-        let path = format!("packages/{key}.toml");
-        let (cache, client, github) = (&self.cache, &self.client, &self.github);
-        let limit = github::MAX_ENTRY_BYTES;
-        let (api, auth) = (&github.api, &github.auth);
-        github::contents_cached(cache, client, api, &repo, &path, auth, refresh, limit)
-    }
-
     /// The attestation outcome for the archive of `repo` (`owner/repo`) held in
     /// the cache under `sha256`; see [`github::attestation::outcome`].
     pub(super) fn attestation(&self, repo: &str, sha256: &str) -> Outcome {

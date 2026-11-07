@@ -3,7 +3,7 @@
 //!
 //! The answers are cached by URL, a 404 too: asking again is `--refresh`'s job.
 
-use super::api::get_accepting;
+use super::api::{get, get_accepting};
 use super::auth::GitHubAuth;
 use crate::cache::{Cache, SourceState};
 use crate::errors::GitHubFault;
@@ -56,6 +56,19 @@ pub fn contents_cached(
     };
     cache.record(&url, CACHE_KIND, api, &state)?;
     Ok(answer)
+}
+
+/// Whether `repo` (`owner/repo`) is there and visible to the caller, asked of
+/// the API about the repo itself, never of a file in it: a 404 on a file cannot
+/// tell a repo that lacks the file from one that is missing or private.
+pub fn repo_visible(
+    client: &Client,
+    api: &str,
+    repo: &str,
+    auth: &GitHubAuth,
+) -> Result<(), GitHubFault> {
+    let url = format!("{}/repos/{repo}", api.trim_end_matches('/'));
+    get(client, &url, auth).map(|_| ())
 }
 
 /// What the cache holds for `url`: `Some(None)` is a recorded 404. A body that

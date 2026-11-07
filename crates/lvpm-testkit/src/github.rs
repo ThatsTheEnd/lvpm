@@ -1,6 +1,7 @@
 //! A loopback HTTP server standing in for GitHub's releases API.
 //!
-//! It serves `GET /repos/{owner}/{repo}/releases` (paged by `per_page`, with a
+//! It serves `GET /repos/{owner}/{repo}` (the repo itself, when the caller may
+//! see it), `GET /repos/{owner}/{repo}/releases` (paged by `per_page`, with a
 //! `Link: rel="next"`), each release's draft and pre-release flags, and its
 //! assets, and `GET /repos/{owner}/{repo}/contents/{path}` for the files a test
 //! registers with [`GitHubFake::add_file`] (raw, for `Accept:
@@ -469,6 +470,7 @@ fn answer(
                 Err(refusal) => return refusal,
             };
             match rest {
+                [] => json_reply("200 OK", &[], &json!({ "full_name": slug })),
                 ["releases"] => listing(found, &slug, query, addr),
                 ["releases", "assets", id] => match asset_in(found, id) {
                     Some(asset) => asset_reply(asset, &slug, request.header("accept"), addr),

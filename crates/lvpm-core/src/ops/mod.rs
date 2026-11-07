@@ -12,6 +12,7 @@ pub mod env;
 mod github_index;
 pub mod hook_policy;
 pub mod hooks;
+pub mod index_files;
 pub mod init;
 pub mod install;
 pub mod launch_cmd;

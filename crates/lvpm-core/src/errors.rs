@@ -241,6 +241,20 @@ pub struct IndexUrlRefused {
     pub publisher: String,
 }
 
+/// A community index repo that cannot be read, as its repo itself answers: it
+/// is not there, is private to this caller, or GitHub could not say. Its source
+/// fails, and no later source stands in for it.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "the community index {index} cannot be read: {why}. fix: spell it as owner/repo as on GitHub in [sources], or remove it"
+)]
+pub struct IndexRepoUnreachable {
+    /// The index, `github-index:owner/repo`.
+    pub index: String,
+    /// What the repo answered, in its own words.
+    pub why: String,
+}
+
 /// A locked OCI version that its source now lists at another manifest digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MovedTag {

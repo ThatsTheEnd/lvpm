@@ -7,7 +7,7 @@
 //! and *which indexes* it sees is the first thing every operation does, so it
 //! is the first thing here.
 
-use super::session::Downloads;
+use super::index_files::IndexFiles;
 use crate::cancel::CancelToken;
 use crate::config::Config;
 use crate::events::{Event, EventSink};
@@ -340,9 +340,11 @@ impl<'a> OpEnv<'a> {
         let has_index = remotes
             .iter()
             .any(|remote| matches!(remote, index::Remote::Index(_)));
-        let downloads = has_index.then(|| Downloads::open(self)).transpose()?;
-        let fetch = |feed: &index::IndexFeed, key: &str| match &downloads {
-            Some(downloads) => downloads.index_file(feed, key, self.refresh),
+        let files = has_index
+            .then(|| IndexFiles::open(&self.config.cache, &self.github, self.refresh))
+            .transpose()?;
+        let fetch = |feed: &index::IndexFeed, key: &str| match &files {
+            Some(files) => files.read(feed, key),
             None => Ok(None),
         };
         let sources = index::SourceSet {
