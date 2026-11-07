@@ -793,13 +793,13 @@ As the template: `trivial` skips inline review, `standard` gets spec-compliance 
   - [x] Step 5.2: the network rules (R5–R6b), the render and the CLI
 
 #### Wave 6
-- [ ] Slice 6: the release template and the docs
-  - [ ] Step 6.1: the `register` job
-  - [ ] Step 6.2: the docs
+- [x] Slice 6: the release template and the docs
+  - [x] Step 6.1: the `register` job
+  - [x] Step 6.2: the docs
 
 #### Wave 7
 - [ ] Slice 7: the index repo and the manual criterion
-  - [ ] Step 7.1: create `labview-package-manager/package-index`
+  - [x] Step 7.1: create `labview-package-manager/package-index`
   - [ ] Step 7.2: run AC1 and AC10 by hand
 
 ## Plan Review Summary
