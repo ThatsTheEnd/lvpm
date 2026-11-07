@@ -29,7 +29,7 @@
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
-| `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, or `<package>` is not a package; the `register` job of the release template runs it ([Publish to the community index](#publish-to-the-community-index)) |
+| `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when `--github` is not `owner/repo`, the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, `<package>` is not a package, the entry file does not parse or would pass its size limit, or `<entries-dir>` is not a folder. Do not run it twice at once on one checkout. The `register` job of the release template runs it ([Publish to the community index](#publish-to-the-community-index)) |
 | `lvpm index check --base <dir> --head <dir>` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the comment to leave on a refused PR ([Publish to the community index](#publish-to-the-community-index)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
@@ -449,16 +449,20 @@ To register a package, do these four steps once. Every later tag adds a version
 with no further step:
 
 1. Give the repository an `lvpm.toml` with `[project]` and `[distribution]`, as
-   `lvpm build` needs ([Building a package](#building-a-package)). The
-   `[project]` `name` is the package's name in the index.
+   `lvpm build` needs ([Building a package](#building-a-package)):
+   `[distribution]` must set `vendor` and `display-name`. The `[project]`
+   `name` is the package's name in the index.
 2. Copy
    [`lvpm-release.yml`](https://github.com/ThatsTheEnd/lvpm/blob/main/.github/workflow-templates/lvpm-release.yml)
    into `.github/workflows/` of the repository ([GitHub dependencies](#github-dependencies)).
 3. Save a GitHub token as the repository's Actions secret `LVPM_INDEX_TOKEN`.
-   Use a **classic** personal access token with the `public_repo` scope. The
-   `register` job forks the index and opens a pull request from your account;
-   a fine-grained token cannot open a pull request on another owner's
-   repository.
+   Use a **classic** personal access token with the `public_repo` and
+   `workflow` scopes. The `register` job forks the index and opens a pull
+   request from your account. The `workflow` scope is needed because the
+   branch starts at the index's tip: once the index has a workflow file that
+   your fork lacks, GitHub refuses the push of a token without it. A classic
+   token with these scopes is the tested choice. A fine-grained token may not
+   work; it was not tested.
 4. Push a tag.
 
 The template's `register` job then runs `lvpm index add` on the package that
@@ -470,7 +474,8 @@ LVPM_INDEX_TOKEN is not set`, so a repository that copied the template before
 this step existed sees no change. The `LVPM_VERSION` of the template must be
 an lvpm release that has `lvpm index add`; raise it if the job fails there. To
 register in another index, set the repository variable `LVPM_INDEX_REPO` to
-its `owner/repo`.
+its `owner/repo`. If your package's repository is itself a fork, GitHub turns
+Actions off in it: enable them in its Actions tab, or the tag runs nothing.
 
 **What the bot decides.** A bot in the index repository checks each pull
 request, reading it as data: the name, the file's SHA-256 and the attestation
@@ -478,18 +483,20 @@ that the template's `publish` job made ([`[policy]`](#policy)). It merges a pull
 comments the reasons on one it refuses, and leaves it open. The first
 repository to register a name owns it; only that repository's attested
 releases add versions, and a listed version never changes. One pull request
-adds at most 20 versions and 20 entry files, and a name lvpm cannot install is
-refused.
+adds at most 20 versions and 20 entry files, an entry file is at most 1 MiB,
+and a name lvpm cannot install is refused.
 
 **Who closes a refused PR.** The publisher closes it and replaces it by
 pushing a new tag: the fix is a new version, which opens a new pull request on
-its own branch, `lvpm/<name>-<version>`. A maintainer of the index can close a
-stale one.
+its own branch, `lvpm/<tag>`. Re-running the `register` job of a tag replaces
+that branch and so updates its pull request. A maintainer of the index can
+close a stale one.
 
 When the job fails, its summary says why in a line that starts `register
 failed:` and ends with what to do: save a classic token with `public_repo`,
-push a new tag for a version that is already listed, publish from the
-repository that owns the name, or read the job log.
+add the `workflow` scope to the token, push a new tag for a version that is
+already listed, publish from the repository that owns the name, or read the
+job log.
 
 A consumer adds two lines and nothing else:
 
