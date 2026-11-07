@@ -795,6 +795,11 @@ async fn a_public_index_lists(world: &mut CliWorld, index: String, name: String)
     }
 }
 
+#[given(regex = r"^(\S+) is a public member of (\S+)$")]
+async fn is_a_public_member(world: &mut CliWorld, login: String, org: String) {
+    world.github_fake().add_public_member(&org, &login);
+}
+
 #[given("the public indexes are unreachable")]
 async fn the_public_indexes_are_unreachable(world: &mut CliWorld) {
     world.sandbox.feed().go_down();
@@ -822,6 +827,15 @@ async fn fails_without_a_verdict(world: &mut CliWorld) {
 
 #[given("the head equals the base")]
 async fn the_head_equals_the_base(_: &mut CliWorld) {}
+
+#[then(regex = r#"^the result's verdict is "(merge|refuse|review)" and the exit code is (\d)$"#)]
+async fn the_verdict_is(world: &mut CliWorld, verdict: String, code: i32) {
+    let output = world.output();
+    assert_eq!(output.exit_code, code, "{}", world.printed());
+    let last = output.stdout.lines().last().expect("a result line");
+    let line: serde_json::Value = serde_json::from_str(last).expect("the last line is JSON");
+    assert_eq!(line["result"]["verdict"], verdict, "{last}");
+}
 
 #[then("the release file of foo 1.1.0 was downloaded without a token")]
 async fn the_release_file_was_downloaded_without_a_token(world: &mut CliWorld) {

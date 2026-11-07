@@ -536,6 +536,19 @@ pub struct NewVersion {
     pub new_name: bool,
 }
 
+/// R8: a new version that the PR's author is not known to own: the PR is not
+/// refused, and not merged either. It waits for a maintainer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NeedsReview {
+    pub path: String,
+    pub name: String,
+    pub version: String,
+    /// The login the PR is from; `None` when the check was not told.
+    pub author: Option<String>,
+    /// The account or organisation of the version's `github`.
+    pub owner: String,
+}
+
 /// What [`diff`] makes of two checkouts.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diff {
@@ -875,6 +888,24 @@ impl NewVersion {
             versions: Vec::new(),
         };
         file.entry(&self.version, "")
+    }
+
+    /// The account or organisation that owns the version's `github`.
+    pub fn owner(&self) -> &str {
+        let slash = self.github.find('/').unwrap_or(self.github.len());
+        &self.github[..slash]
+    }
+
+    /// R8: this version, as one the PR's `author` is not known to own.
+    pub fn needs_review(&self, author: Option<&str>) -> NeedsReview {
+        let (path, name, version) = self.at();
+        NeedsReview {
+            path,
+            name,
+            version,
+            author: author.map(str::to_string),
+            owner: self.owner().to_string(),
+        }
     }
 
     /// What a finding about this version names: its entry file, the package and
@@ -1838,6 +1869,25 @@ github = \"b/y\"
             panic!("{:?}", found.new_versions);
         };
         assert!(!new.new_name);
+    }
+
+    #[test]
+    fn the_owner_of_a_version_is_the_account_of_its_github_and_a_review_names_both() {
+        let mut new = listed("1.1.0", None, &[]);
+        new.github = "Acme/Tools".into();
+
+        assert_eq!(new.owner(), "Acme");
+        assert_eq!(
+            new.needs_review(Some("bob")),
+            NeedsReview {
+                path: "packages/foo.toml".into(),
+                name: "foo".into(),
+                version: "1.1.0".into(),
+                author: Some("bob".into()),
+                owner: "Acme".into(),
+            }
+        );
+        assert_eq!(new.needs_review(None).author, None);
     }
 
     /// The name keys a public index lists.

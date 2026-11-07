@@ -180,6 +180,7 @@ impl Renderer {
             Event::IndexEntryAdded { .. }
             | Event::IndexVersionAccepted { .. }
             | Event::IndexRefused { .. }
+            | Event::IndexNeedsReview { .. }
             | Event::IndexNothingToCheck => community::render(self, event),
         }
     }

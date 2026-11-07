@@ -46,6 +46,36 @@ Feature: S8: lvpm index check
     When I run "lvpm index check --base base --head head"
     Then the command fails without a verdict, naming the public indexes
 
+  Scenario Outline: the pull request's author decides whether it is merged
+    Given alice is a public member of a
+    And the head adds foo 1.1.0 <entry>
+    When I run "lvpm --json index check --base base --head head --author <author>"
+    Then the result's verdict is "<verdict>" and the exit code is <code>
+
+    Examples:
+      | author | entry                             | verdict | code |
+      | a      | with the release's url and sha256 | merge   | 0    |
+      | A      | with the release's url and sha256 | merge   | 0    |
+      | alice  | with the release's url and sha256 | merge   | 0    |
+      | bob    | with the release's url and sha256 | review  | 0    |
+      | bob    | with another sha256               | refuse  | 1    |
+
+  Scenario: a version of another account is left for a maintainer, with the reason
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head --author bob"
+    Then the command succeeds printing "accepted foo 1.1.0"
+    And the command succeeds printing "review foo 1.1.0: the pull request is from bob, but foo belongs to a. fix: open the pull request from a's account, make your membership of a public, or wait for a maintainer"
+
+  Scenario: with no author every new version is left for a maintainer, and the output says why
+    Given the head adds foo 1.1.0 with the release's url and sha256
+    When I run "lvpm index check --base base --head head"
+    Then the command succeeds printing "review foo 1.1.0: no --author was given, so lvpm cannot tell whether the pull request is from a, who owns foo. fix: pass --author <login>, or wait for a maintainer"
+
+  Scenario: a refusal wins over an author who does not own the name
+    Given the head changes foo 1.0.0's sha256 from <old> to <new>
+    When I run "lvpm index check --base base --head head --author bob"
+    Then the command fails with exit code 1 printing "refused foo 1.0.0: already listed with sha256 <old>, now <new>. fix: listed versions cannot change; publish a new version"
+
   Scenario: a changed hash for an existing version is rejected
     Given the head changes foo 1.0.0's sha256 from <old> to <new>
     When I run "lvpm index check --base base --head head"

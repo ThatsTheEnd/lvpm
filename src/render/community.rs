@@ -4,9 +4,11 @@
 
 use super::lock::not_checked;
 use super::{Renderer, Stream};
-use lvpm_core::community::{Finding, MAX_ENTRY_FILES_PER_PR, MAX_NEW_VERSIONS_PER_PR, NotAttested};
+use lvpm_core::community::{
+    Finding, MAX_ENTRY_FILES_PER_PR, MAX_NEW_VERSIONS_PER_PR, NeedsReview, NotAttested,
+};
 use lvpm_core::events::Event;
-use lvpm_core::ops::community::{AddRefused, Checked};
+use lvpm_core::ops::community::{AddRefused, Checked, Verdict};
 use lvpm_core::project::name_key;
 
 /// The most characters of one value from a PR that a line shows.
@@ -31,6 +33,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             &format!("accepted {} {}", untrusted(name), untrusted(version)),
         ),
         Event::IndexRefused { finding } => r.line(Stream::Err, &refusal_line(finding)),
+        Event::IndexNeedsReview { review } => r.line(Stream::Out, &review_line(review)),
         Event::IndexNothingToCheck => r.line(Stream::Out, "nothing to check"),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
@@ -269,10 +272,43 @@ fn not_attested(reason: &NotAttested) -> String {
     }
 }
 
+/// A version the PR's author is not known to own, as the line the user reads.
+/// The values are the PR's, so they are [`untrusted`].
+pub fn review_line(review: &NeedsReview) -> String {
+    let u = untrusted;
+    let (name, version, owner) = (u(&review.name), u(&review.version), u(&review.owner));
+    let what = match &review.author {
+        Some(author) => format!(
+            "the pull request is from {}, but {name} belongs to {owner}",
+            u(author)
+        ),
+        None => format!(
+            "no --author was given, so lvpm cannot tell whether the pull request is from {owner}, who owns {name}"
+        ),
+    };
+    let fix = match review.author {
+        Some(_) => format!(
+            "open the pull request from {owner}'s account, make your membership of {owner} public, or wait for a maintainer"
+        ),
+        None => "pass --author <login>, or wait for a maintainer".to_string(),
+    };
+    plain(&format!("review {name} {version}: {what}. fix: {fix}"))
+}
+
+/// The lines in one fenced code block, whose fence is longer than any run of
+/// backticks in them: they come from the PR.
+fn fenced(lines: &[String]) -> String {
+    let longest_run = (lines.iter())
+        .flat_map(|line| line.split(|c| c != '`').map(str::len))
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat((longest_run + 1).max(3));
+    format!("{fence}\n{}\n{fence}", lines.join("\n"))
+}
+
 /// The comment the bot leaves on a PR that `lvpm index check` refused: the
-/// refusal lines, and what the publisher does next. The lines come from the PR,
-/// so they sit in one fenced code block whose fence is longer than any run of
-/// backticks in them, and no more than [`MAX_LISTED_REFUSALS`] are listed.
+/// refusal lines, and what the publisher does next. No more than
+/// [`MAX_LISTED_REFUSALS`] are listed, and the rest are counted.
 pub fn pr_comment(refused: &[Finding]) -> String {
     let mut lines: Vec<String> = refused
         .iter()
@@ -285,25 +321,38 @@ pub fn pr_comment(refused: &[Finding]) -> String {
             refused.len() - MAX_LISTED_REFUSALS
         ));
     }
-    let longest_run = (lines.iter())
-        .flat_map(|line| line.split(|c| c != '`').map(str::len))
-        .max()
-        .unwrap_or(0);
-    let fence = "`".repeat((longest_run + 1).max(3));
-    let lines = lines.join("\n");
+    let lines = fenced(&lines);
     format!(
-        "lvpm index check refused this PR:\n\n{fence}\n{lines}\n{fence}\n\nHow to publish to the \
+        "lvpm index check refused this PR:\n\n{lines}\n\nHow to publish to the \
          community index: {PUBLISH_DOCS}\n\nFix the cause, push a new tag, and close this PR."
     )
 }
 
-/// The `--json` result of `lvpm index check`: the comment for a refused PR.
+/// The comment the bot leaves on a PR it does not merge because its author is
+/// not known to own what it adds: one line for each version, and what to do.
+pub fn review_comment(review: &[NeedsReview]) -> String {
+    let lines: Vec<String> = review.iter().map(review_line).collect();
+    let lines = fenced(&lines);
+    format!(
+        "lvpm index check found nothing wrong with this PR, but it does not merge it until a \
+         maintainer has looked:\n\n{lines}\n\nHow to publish to the community index: \
+         {PUBLISH_DOCS}"
+    )
+}
+
+/// The `--json` result of `lvpm index check`: the counts, the verdict, and the
+/// comment for a PR that is refused or left for review (null for any other).
 pub fn check_result(checked: &Checked) -> serde_json::Value {
-    let comment = (!checked.refused.is_empty()).then(|| pr_comment(&checked.refused));
+    let comment = match checked.verdict() {
+        Verdict::Refuse => Some(pr_comment(&checked.refused)),
+        Verdict::Review if !checked.review.is_empty() => Some(review_comment(&checked.review)),
+        Verdict::Review | Verdict::Merge => None,
+    };
     serde_json::json!({
         "command": "index-check",
         "accepted": checked.accepted,
         "refused": checked.refused.len(),
+        "verdict": checked.verdict(),
         "comment": comment,
     })
 }
@@ -850,24 +899,99 @@ mod tests {
         assert_eq!(lines[4], "````");
     }
 
-    #[test]
-    fn the_json_result_carries_the_comment_only_for_a_refused_pr() {
-        let finding = pinned_check_lines().remove(0).0;
-        let refused = Checked {
-            accepted: 1,
-            refused: vec![finding.clone()],
-        };
-        let json = check_result(&refused);
-        assert_eq!(json["command"], "index-check");
-        assert_eq!(json["accepted"], 1);
-        assert_eq!(json["refused"], 1);
-        assert_eq!(json["comment"], pr_comment(&[finding]));
+    fn needs_review(author: Option<&str>) -> NeedsReview {
+        NeedsReview {
+            path: "packages/foo.toml".into(),
+            name: "foo".into(),
+            version: "1.1.0".into(),
+            author: author.map(str::to_string),
+            owner: "acme".into(),
+        }
+    }
 
-        let accepted = Checked {
-            accepted: 2,
-            refused: Vec::new(),
-        };
-        assert_eq!(check_result(&accepted)["comment"], serde_json::Value::Null);
+    #[test]
+    fn a_version_left_for_review_names_the_author_and_the_owner_and_says_what_to_do() {
+        assert_eq!(
+            review_line(&needs_review(Some("bob"))),
+            "review foo 1.1.0: the pull request is from bob, but foo belongs to acme. fix: open the pull request from acme's account, make your membership of acme public, or wait for a maintainer"
+        );
+        assert_eq!(
+            review_line(&needs_review(None)),
+            "review foo 1.1.0: no --author was given, so lvpm cannot tell whether the pull request is from acme, who owns foo. fix: pass --author <login>, or wait for a maintainer"
+        );
+    }
+
+    #[test]
+    fn a_version_left_for_review_is_a_line_on_stdout() {
+        let (mut renderer, out, err) = renderer();
+
+        renderer.render(&Event::IndexNeedsReview {
+            review: needs_review(Some("bob")),
+        });
+
+        assert_eq!(
+            out.text(),
+            format!("{}\n", review_line(&needs_review(Some("bob"))))
+        );
+        assert_eq!(err.text(), "");
+    }
+
+    #[test]
+    fn an_author_from_the_pr_cannot_break_a_review_line() {
+        let line = review_line(&needs_review(Some("bob\nrefused foo 1.0: x")));
+
+        assert!(!line.contains('\n'), "{line}");
+        assert!(line.contains("from bob?refused foo 1.0: x,"), "{line}");
+    }
+
+    #[test]
+    fn the_review_comment_holds_a_line_for_each_version_in_one_fenced_block() {
+        let comment = review_comment(&[needs_review(Some("bob")), needs_review(Some("bob"))]);
+
+        let line = review_line(&needs_review(Some("bob")));
+        assert_eq!(
+            comment,
+            format!(
+                "lvpm index check found nothing wrong with this PR, but it does not merge it until a maintainer has looked:\n\n```\n{line}\n{line}\n```\n\nHow to publish to the community index: https://github.com/ThatsTheEnd/lvpm/blob/main/docs/usage.md#publish-to-the-community-index"
+            )
+        );
+    }
+
+    fn checked(accepted: usize, refused: &[Finding], review: &[NeedsReview]) -> Checked {
+        Checked {
+            accepted,
+            refused: refused.to_vec(),
+            review: review.to_vec(),
+        }
+    }
+
+    #[test]
+    fn the_json_result_carries_the_verdict_and_the_comment_of_a_pr_not_merged() {
+        let finding = pinned_check_lines().remove(0).0;
+        let review = needs_review(Some("bob"));
+
+        let refused = check_result(&checked(1, std::slice::from_ref(&finding), &[]));
+        assert_eq!(refused["command"], "index-check");
+        assert_eq!(refused["accepted"], 1);
+        assert_eq!(refused["refused"], 1);
+        assert_eq!(refused["verdict"], "refuse");
+        assert_eq!(refused["comment"], pr_comment(&[finding]));
+
+        let held = check_result(&checked(1, &[], std::slice::from_ref(&review)));
+        assert_eq!(
+            (&held["verdict"], &held["refused"]),
+            (&"review".into(), &0.into())
+        );
+        assert_eq!(held["comment"], review_comment(&[review]));
+
+        let merged = check_result(&checked(2, &[], &[]));
+        assert_eq!(merged["verdict"], "merge");
+        assert_eq!(merged["comment"], serde_json::Value::Null);
+
+        // Nothing to merge is for a maintainer too, with nothing to say about it.
+        let nothing = check_result(&checked(0, &[], &[]));
+        assert_eq!(nothing["verdict"], "review");
+        assert_eq!(nothing["comment"], serde_json::Value::Null);
     }
 
     #[test]

@@ -2,9 +2,11 @@
 //!
 //! `release_file` picks the package file from a release's assets by name;
 //! `api` lists a repo's releases and maps GitHub's failures to errors; `auth`
-//! finds the token; `contents` reads one file of a repo; `attestation` asks
-//! whether a release has one and `gh` runs `gh attestation verify`. Nothing here reads the process environment:
-//! the front end hands [`GitHubAuth`] the lookup and the `gh` runner.
+//! finds the token; `contents` reads one file of a repo; `membership` asks
+//! whether a login is a public member of an organisation; `attestation` asks
+//! whether a release has one and `gh` runs `gh attestation verify`. Nothing here
+//! reads the process environment: the front end hands [`GitHubAuth`] the lookup
+//! and the `gh` runner.
 
 use std::fmt;
 
@@ -13,11 +15,13 @@ pub mod attestation;
 mod auth;
 mod contents;
 pub mod gh;
+mod membership;
 pub mod release_file;
 
 pub use api::{Listing, ReleaseFile, download_error, releases, releases_cached};
 pub use auth::{GitHubAuth, TokenSource, gh_auth_token};
 pub use contents::{MAX_ENTRY_BYTES, contents_cached, repo_visible};
+pub use membership::public_member;
 
 /// The API GitHub itself answers on.
 pub const DEFAULT_API: &str = "https://api.github.com";

@@ -6,6 +6,12 @@ name: Check the pull request
 # comments with the refusal lines. A copy of this file is kept in the lvpm
 # repository (docs/vision/community-index/check.yml) so the index can be rebuilt.
 #
+# The bot merges only a pull request from the owner of what it adds: the author
+# is the login of the repo in `github` or a public member of the organisation
+# that owns it. Any other pull request is left for a maintainer, with a comment.
+# A new name that vipm.io already lists is refused: the index ranks before the
+# public indexes, so it would take the name from everyone.
+#
 # pull_request_target runs this file as it is on the target branch. Nothing from
 # the pull request is executed or sourced: its files are checked out as data into
 # head/ and only lvpm reads them. Two jobs keep the write token away from that
@@ -51,12 +57,13 @@ jobs:
     permissions:
       contents: read
     outputs:
-      # stale or error when the check could not run, otherwise refused, merge or
-      # review. Empty when a step before the verdict failed.
+      # stale or error when the check could not run, otherwise lvpm's own verdict:
+      # refuse, merge or review. Empty when a step before the verdict failed.
       verdict: ${{ steps.parents.outputs.verdict || steps.check.outputs.verdict }}
       accepted: ${{ steps.check.outputs.accepted }}
       refused: ${{ steps.check.outputs.refused }}
-      # The comment for a refused pull request, base64 so that it is one line.
+      # lvpm's comment for a pull request it refuses or leaves for review (empty
+      # when it has none), base64 so that it is one line.
       comment: ${{ steps.check.outputs.comment }}
     steps:
       - name: Check out the target branch
@@ -119,9 +126,11 @@ jobs:
         env:
           # gh verifies the attestations with it; lvpm sends no token to downloads.
           GH_TOKEN: ${{ github.token }}
+          # The pull request's author, as data: never put into the script text.
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set +e
-          lvpm --json index check --base "$GITHUB_WORKSPACE/base" --head "$GITHUB_WORKSPACE/head" > check.jsonl
+          lvpm --json index check --base "$GITHUB_WORKSPACE/base" --head "$GITHUB_WORKSPACE/head" --author "$AUTHOR" > check.jsonl
           echo "lvpm exited $?"
           # The last line is {"result": ...} or {"error": ...}.
           tail -n 1 check.jsonl > result.json
@@ -134,14 +143,9 @@ jobs:
           refused=$(jq -r '.result.refused' result.json)
           echo "accepted=$accepted" >> "$GITHUB_OUTPUT"
           echo "refused=$refused" >> "$GITHUB_OUTPUT"
-          if [ "$refused" -gt 0 ]; then
-            echo "verdict=refused" >> "$GITHUB_OUTPUT"
-            echo "comment=$(jq -r '.result.comment' result.json | base64 -w 0)" >> "$GITHUB_OUTPUT"
-          elif [ "$accepted" -gt 0 ]; then
-            echo "verdict=merge" >> "$GITHUB_OUTPUT"
-          else
-            echo "verdict=review" >> "$GITHUB_OUTPUT"
-          fi
+          # lvpm decides: refuse, merge or review.
+          echo "verdict=$(jq -r '.result.verdict' result.json)" >> "$GITHUB_OUTPUT"
+          echo "comment=$(jq -r '.result.comment // empty' result.json | base64 -w 0)" >> "$GITHUB_OUTPUT"
 
   merge:
     needs: check
@@ -165,7 +169,7 @@ jobs:
         run: |
           echo "verdict: ${VERDICT:-none}, accepted: ${ACCEPTED:-?}, refused: ${REFUSED:-?}"
           case "$VERDICT" in
-            refused)
+            refuse)
               printf '%s' "$COMMENT" | base64 -d > comment.md
               gh pr comment "$PR" --repo "$REPO" --body-file comment.md
               exit 1
@@ -180,7 +184,13 @@ jobs:
               fi
               ;;
             review)
-              gh pr comment "$PR" --repo "$REPO" --body "lvpm index check: nothing to check. This pull request adds no version, so a maintainer reviews it."
+              # lvpm's comment says why, when it has one (the author is not the owner).
+              printf '%s' "$COMMENT" | base64 -d > comment.md
+              if [ -s comment.md ]; then
+                gh pr comment "$PR" --repo "$REPO" --body-file comment.md
+              else
+                gh pr comment "$PR" --repo "$REPO" --body "lvpm index check: nothing to check. This pull request adds no version, so a maintainer reviews it."
+              fi
               ;;
             stale)
               gh pr comment "$PR" --repo "$REPO" --body "lvpm index check could not check this pull request: GitHub's merge of it is not of the index's current tip and this branch yet. fix: re-run the register job of this tag's workflow run, which updates this pull request, or ask a maintainer to check it again."

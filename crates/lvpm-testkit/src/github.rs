@@ -11,6 +11,8 @@
 //! *name*, so a client's redirect policy sees a cross-host hop. `/download/{id}`
 //! serves the bytes. `GET /{owner}/{repo}/releases/download/{tag}/{file}` serves
 //! a release file the way the web site does, for a public repo.
+//! `GET /orgs/{org}/public_members/{login}` answers 204 for a member a test
+//! registers with [`GitHubFake::add_public_member`] and 404 for anyone else.
 //!
 //! Each failure GitHub can answer with is a mode a test switches on, and every
 //! request is logged, so a test can say what was asked and with which token.
@@ -171,6 +173,8 @@ struct State {
     /// The fault is answered to requests with no `Authorization` only.
     fault_for_anonymous_only: bool,
     repos: BTreeMap<String, Repo>,
+    /// The public members of each organisation, by login (lower case).
+    orgs: BTreeMap<String, BTreeSet<String>>,
     assets_issued: u64,
     log: Vec<LoggedRequest>,
 }
@@ -290,6 +294,16 @@ impl GitHubFake {
             repo.attested.remove(&sha256.to_ascii_lowercase()),
             "{sha256} has no attestation"
         );
+    }
+
+    /// From now on `GET /orgs/{org}/public_members/{login}` answers 204: `login`
+    /// is a public member of the organisation `org`, as GitHub says it of one
+    /// whose membership is public. Any other login is a 404, which is also what a
+    /// user account that is no organisation answers.
+    pub fn add_public_member(&self, org: &str, login: &str) {
+        let mut state = lock(&self.state);
+        let members = state.orgs.entry(org.to_ascii_lowercase()).or_default();
+        members.insert(login.to_ascii_lowercase());
     }
 
     /// Add `release` to `repo`, after the releases it has (newest first).
@@ -481,6 +495,21 @@ fn answer(
                 _ => not_found(),
             }
         }
+        ["orgs", org, "public_members", login] => {
+            if let Some(fault) = &state.fault
+                && (request.header("authorization").is_none() || !state.fault_for_anonymous_only)
+            {
+                return fault.reply();
+            }
+            let member = state
+                .orgs
+                .get(&org.to_ascii_lowercase())
+                .is_some_and(|members| members.contains(&login.to_ascii_lowercase()));
+            match member {
+                true => response("204 No Content", &[], b""),
+                false => not_found(),
+            }
+        }
         [owner, repo, "releases", "download", tag, file] => {
             // The web site's address for a release file: public, no token read.
             let slug = format!("{owner}/{repo}");
@@ -654,6 +683,35 @@ mod tests {
 
     fn pkg_release(tag: &str) -> FakeRelease {
         FakeRelease::new(tag).asset(&format!("pkg-{tag}.lvpkg"), b"bytes")
+    }
+
+    #[test]
+    fn a_public_member_is_a_204_and_anyone_else_a_404() {
+        let fake = GitHubFake::start(&[]);
+        fake.add_public_member("Acme", "Alice");
+        let status = |path: &str| get_from(fake.addr, path, "").status_line;
+
+        assert_eq!(
+            status("/orgs/acme/public_members/alice"),
+            "HTTP/1.1 204 No Content"
+        );
+        assert_eq!(
+            status("/orgs/ACME/public_members/ALICE"),
+            "HTTP/1.1 204 No Content"
+        );
+        assert_eq!(
+            status("/orgs/acme/public_members/bob"),
+            "HTTP/1.1 404 Not Found"
+        );
+        assert_eq!(
+            status("/orgs/other/public_members/alice"),
+            "HTTP/1.1 404 Not Found"
+        );
+        fake.fail_with(502);
+        assert_eq!(
+            status("/orgs/acme/public_members/alice"),
+            "HTTP/1.1 502 Bad Gateway"
+        );
     }
 
     #[test]

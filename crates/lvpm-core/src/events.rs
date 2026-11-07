@@ -8,7 +8,7 @@
 //! enumerated values. Work that prints a line in two parts is a begin event and
 //! an end event, so the front end owns the half-written line.
 
-use crate::community::Finding;
+use crate::community::{Finding, NeedsReview};
 use crate::git::GitOutcome;
 use crate::released;
 use crate::verify::NotChecked;
@@ -550,6 +550,9 @@ pub enum Event {
     IndexVersionAccepted { name: String, version: String },
     /// `lvpm index check` refuses the PR for this one `finding`.
     IndexRefused { finding: Finding },
+    /// `lvpm index check` passed the version, but its PR's author is not known
+    /// to own it: a maintainer has to look.
+    IndexNeedsReview { review: NeedsReview },
     /// The PR changes nothing `lvpm index check` has a rule for.
     IndexNothingToCheck,
 }

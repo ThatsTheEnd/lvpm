@@ -6,12 +6,13 @@ use super::env::OpEnv;
 use super::session::Downloads;
 use crate::cache::sha256_hex;
 use crate::community::{
-    self, EntryFile, FileVersion, Finding, NewVersion, NotAttested, Tree, VersionListed,
+    self, EntryFile, FileVersion, Finding, NeedsReview, NewVersion, NotAttested, Tree,
+    VersionListed,
 };
 use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch};
 use crate::events::{Event, NullSink};
 use crate::fetch::{MAX_INDEX_DOWNLOAD_BYTES, Rejected, check_index_url};
-use crate::github::MAX_ENTRY_BYTES;
+use crate::github::{self, MAX_ENTRY_BYTES};
 use crate::index::{self, Entry};
 use crate::project::{name_key, split_owner_repo};
 use crate::verify::{Accepted, Policy, Refusal, decide};
@@ -137,6 +138,42 @@ pub struct Checked {
     pub accepted: usize,
     /// Every refusal, by entry file, then version.
     pub refused: Vec<Finding>,
+    /// R8: the accepted versions the PR's author is not known to own. Empty
+    /// when anything is refused: a refusal is the verdict, and no one is asked.
+    pub review: Vec<NeedsReview>,
+}
+
+/// What the bot does with a PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Every new version passed, and the author owns each: merge.
+    Merge,
+    /// A rule is broken: comment the reasons, leave the PR open.
+    Refuse,
+    /// Nothing is broken, but a maintainer has to look: no version was added,
+    /// or the author is not known to own one.
+    Review,
+}
+
+impl Checked {
+    pub fn verdict(&self) -> Verdict {
+        if !self.refused.is_empty() {
+            Verdict::Refuse
+        } else if !self.review.is_empty() || self.accepted == 0 {
+            Verdict::Review
+        } else {
+            Verdict::Merge
+        }
+    }
+}
+
+/// What the check asks of the world outside the PR's two checkouts.
+struct Asks<'a> {
+    /// The [`name_key`] of every name the public indexes list.
+    public_names: &'a dyn Fn() -> Result<BTreeSet<String>>,
+    /// Whether the login is a public member of the organisation.
+    public_member: &'a dyn Fn(&str, &str) -> Result<bool>,
 }
 
 /// A version the PR adds that passed every rule, or a refusal.
@@ -174,30 +211,48 @@ impl Outcome {
 /// JKI's, which `defaults = true` reads, through a cache of their own), and the
 /// name is refused when one lists it. A PR that registers none never reads them.
 /// An index that cannot be read fails the check: it is no verdict.
-pub fn check(env: &OpEnv, base_dir: &Path, head_dir: &Path) -> Result<Checked> {
+pub fn check(
+    env: &OpEnv,
+    base_dir: &Path,
+    head_dir: &Path,
+    author: Option<&str>,
+) -> Result<Checked> {
     let public_names = || {
         let cache = tempfile::Builder::new()
             .prefix("lvpm-index-check-public")
             .tempdir()?;
         public_names(env, cache.path())
     };
-    check_with(env, base_dir, head_dir, &public_names)
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let public_member = |org: &str, login: &str| {
+        let (api, auth) = (&env.github.api, &env.github.auth);
+        Ok(github::public_member(&client, api, org, login, auth)?)
+    };
+    let asks = Asks {
+        public_names: &public_names,
+        public_member: &public_member,
+    };
+    check_with(env, base_dir, head_dir, author, &asks)
 }
 
-/// [`check`], with `public_names` reading the name key of every name the public
-/// indexes list; it is called at most once, and only for a new name.
+/// [`check`], with `asks` answering for the world outside the checkouts:
+/// `public_names` at most once, and only for a new name, `public_member` once
+/// for each organisation that owns an accepted version the author does not.
 fn check_with(
     env: &OpEnv,
     base_dir: &Path,
     head_dir: &Path,
-    public_names: &dyn Fn() -> Result<BTreeSet<String>>,
+    author: Option<&str>,
+    asks: &Asks,
 ) -> Result<Checked> {
     let diff = community::diff(&Tree::read(base_dir)?, &Tree::read(head_dir)?);
     let web = env.github.web_base();
     let mut verdicts: Vec<Outcome> = diff.findings.into_iter().map(Outcome::Refused).collect();
     let mut new_versions = diff.new_versions;
     if new_versions.iter().any(|new| new.new_name) {
-        let taken = community::public_name_findings(&new_versions, &public_names()?);
+        let taken = community::public_name_findings(&new_versions, &(asks.public_names)()?);
         // A name that is refused is not downloaded.
         let paths: Vec<String> = taken
             .iter()
@@ -227,15 +282,18 @@ fn check_with(
     let mut checked = Checked {
         accepted: 0,
         refused: Vec::new(),
+        review: Vec::new(),
     };
+    let mut accepted = Vec::new();
     for verdict in verdicts {
         match verdict {
             Outcome::Accepted(new) => {
                 checked.accepted += 1;
                 env.sink.emit(Event::IndexVersionAccepted {
-                    name: new.name,
-                    version: new.version.version,
+                    name: new.name.clone(),
+                    version: new.version.version.clone(),
                 });
+                accepted.push(new);
             }
             Outcome::Refused(finding) => {
                 checked.refused.push(finding.clone());
@@ -243,7 +301,48 @@ fn check_with(
             }
         }
     }
+    // A refusal is the verdict whoever the author is, so nobody is asked.
+    if checked.refused.is_empty() {
+        checked.review = needing_review(&accepted, author, asks)?;
+        for review in &checked.review {
+            let review = review.clone();
+            env.sink.emit(Event::IndexNeedsReview { review });
+        }
+    }
     Ok(checked)
+}
+
+/// R8: the `accepted` versions whose owner `author` is not: the owner's own
+/// login, in any case, or a public member of the organisation that owns it. With
+/// no `author` it is none of them.
+fn needing_review(
+    accepted: &[NewVersion],
+    author: Option<&str>,
+    asks: &Asks,
+) -> Result<Vec<NeedsReview>> {
+    let mut members: HashMap<String, bool> = HashMap::new();
+    let mut review = Vec::new();
+    for new in accepted {
+        let owner = new.owner();
+        let owns = match author {
+            None => false,
+            Some(author) if author.eq_ignore_ascii_case(owner) => true,
+            Some(author) => match members.get(&owner.to_ascii_lowercase()) {
+                Some(member) => *member,
+                None => {
+                    let member = (asks.public_member)(owner, author).with_context(|| {
+                        format!("asking GitHub whether {author} is a public member of {owner}")
+                    })?;
+                    members.insert(owner.to_ascii_lowercase(), member);
+                    member
+                }
+            },
+        };
+        if !owns {
+            review.push(new.needs_review(author));
+        }
+    }
+    Ok(review)
 }
 
 /// The [`name_key`] of every name the public indexes (NI's and JKI's) list,
@@ -882,6 +981,11 @@ Requires=\"bar>=?\"",
     /// The URL of a file that is no release file: R4 refuses it before any download.
     const NOT_A_RELEASE: &str = "https://example.com/x.lvpkg";
 
+    /// A membership lookup for a test where nobody should be asked.
+    fn no_member_is_asked(org: &str, login: &str) -> Result<bool> {
+        panic!("{login} was asked about {org}");
+    }
+
     /// [`check_with`] where the public indexes list `listed` (name keys), and
     /// the names asked: the refusals and the number of times they were read.
     fn checked_against(
@@ -897,7 +1001,13 @@ Requires=\"bar>=?\"",
         let mut env = testing::env(&base.0);
         // No url the heads list is under this web base: R4 refuses each, and nothing is downloaded.
         env.github.api = "http://127.0.0.1:1".into();
-        let checked = check_with(&env, &base.0, &head.0, &public).unwrap();
+        let asks = Asks {
+            public_names: &public,
+            public_member: &no_member_is_asked,
+        };
+        let checked = check_with(&env, &base.0, &head.0, Some("stranger"), &asks).unwrap();
+        // Refused, so the author is not asked about.
+        assert_eq!(checked.review, []);
         (checked.refused, reads)
     }
 
@@ -965,8 +1075,12 @@ Requires=\"bar>=?\"",
         head.list_new("bar", NOT_A_RELEASE);
         let env = testing::env(&dir);
         let down = || Err(anyhow::anyhow!("fetching the NI index: connection refused"));
+        let asks = Asks {
+            public_names: &down,
+            public_member: &no_member_is_asked,
+        };
 
-        let why = check_with(&env, &base.0, &head.0, &down).unwrap_err();
+        let why = check_with(&env, &base.0, &head.0, None, &asks).unwrap_err();
 
         assert!(why.to_string().contains("connection refused"), "{why:#}");
     }
@@ -974,7 +1088,7 @@ Requires=\"bar>=?\"",
     fn checked(base: &Checkout, head: &Checkout) -> (Checked, Vec<Event>) {
         let sink = Recorded::default();
         let env = testing::env_on(&sink, &base.0);
-        let checked = check(&env, &base.0, &head.0).unwrap();
+        let checked = check(&env, &base.0, &head.0, None).unwrap();
         (checked, sink.events())
     }
 
@@ -988,6 +1102,7 @@ Requires=\"bar>=?\"",
         let (checked, events) = checked(&base, &head);
 
         assert_eq!(events, [Event::IndexNothingToCheck]);
+        assert_eq!(checked.verdict(), Verdict::Review);
         assert_eq!((checked.accepted, checked.refused), (0, vec![]));
     }
 
@@ -1061,7 +1176,7 @@ Requires=\"bar>=?\"",
         let head = Checkout::new(&dir, "head");
         let env = testing::env(&dir);
 
-        let why = check(&env, &dir.join("no-base"), &head.0).unwrap_err();
+        let why = check(&env, &dir.join("no-base"), &head.0, None).unwrap_err();
 
         assert!(why.to_string().contains("no-base"), "{why:#}");
     }
@@ -1222,7 +1337,7 @@ Requires=\"bar>=?\"",
         env.config.cache = configured.clone();
 
         // The listing of 1.0.0 is changed too (url): the new 1.1.0 is what gets downloaded.
-        check(&env, &base.0, &head.0).unwrap();
+        check(&env, &base.0, &head.0, None).unwrap();
 
         let said: Vec<_> = sink
             .events()
@@ -1236,5 +1351,145 @@ Requires=\"bar>=?\"",
             .collect();
         assert_eq!(said, [("1.1.0".to_string(), "HTTP 404".to_string())]);
         assert!(!configured.exists(), "the configured cache was opened");
+    }
+
+    /// The version 1.1.0 of foo, owned by `github`.
+    fn accepted_of(github: &str) -> NewVersion {
+        NewVersion {
+            path: "packages/foo.toml".into(),
+            name: "foo".into(),
+            github: github.into(),
+            version: FileVersion {
+                version: "1.1.0".into(),
+                url: URL.into(),
+                sha256: SHA_A.into(),
+                labview: None,
+                requires: Vec::new(),
+            },
+            new_name: false,
+        }
+    }
+
+    /// The versions among `owners` that `author` does not own, given who is a
+    /// public member of what, and how many lookups it took.
+    fn reviewed(
+        owners: &[&str],
+        author: Option<&str>,
+        members: &[(&str, &str)],
+    ) -> (Vec<(String, Option<String>)>, usize) {
+        let asked = std::cell::Cell::new(0);
+        let member = |org: &str, login: &str| {
+            asked.set(asked.get() + 1);
+            Ok(members.contains(&(org, login)))
+        };
+        let asks = Asks {
+            public_names: &|| panic!("public names were asked"),
+            public_member: &member,
+        };
+        let accepted: Vec<NewVersion> = owners
+            .iter()
+            .map(|o| accepted_of(&format!("{o}/x")))
+            .collect();
+        let review = needing_review(&accepted, author, &asks).unwrap();
+        let review = review.into_iter().map(|r| (r.owner, r.author)).collect();
+        (review, asked.get())
+    }
+
+    #[test]
+    fn the_owner_is_the_author_whatever_the_case_and_nobody_is_asked() {
+        let (review, asked) = reviewed(&["Acme"], Some("aCME"), &[]);
+
+        assert_eq!((review, asked), (vec![], 0));
+    }
+
+    #[test]
+    fn a_public_member_of_the_owning_organisation_is_the_owner() {
+        let (review, asked) = reviewed(&["acme"], Some("alice"), &[("acme", "alice")]);
+
+        assert_eq!((review, asked), (vec![], 1));
+    }
+
+    #[test]
+    fn an_author_who_is_not_a_member_leaves_the_version_for_review() {
+        let (review, _) = reviewed(&["acme"], Some("bob"), &[("acme", "alice")]);
+
+        assert_eq!(review, [("acme".to_string(), Some("bob".to_string()))]);
+    }
+
+    #[test]
+    fn with_no_author_every_version_is_left_for_review_and_nobody_is_asked() {
+        let (review, asked) = reviewed(&["acme", "other"], None, &[("acme", "alice")]);
+
+        assert_eq!(
+            review,
+            [("acme".to_string(), None), ("other".to_string(), None)]
+        );
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn an_organisation_is_asked_once_however_many_versions_it_owns() {
+        let (review, asked) = reviewed(
+            &["acme", "acme", "other", "acme"],
+            Some("alice"),
+            &[("acme", "alice")],
+        );
+
+        assert_eq!(review, [("other".to_string(), Some("alice".to_string()))]);
+        assert_eq!(asked, 2);
+    }
+
+    #[test]
+    fn a_lookup_that_fails_is_an_error_not_a_no() {
+        let member = |_: &str, _: &str| Err(anyhow::anyhow!("HTTP 502"));
+        let asks = Asks {
+            public_names: &|| panic!("public names were asked"),
+            public_member: &member,
+        };
+
+        let why = needing_review(&[accepted_of("acme/x")], Some("bob"), &asks).unwrap_err();
+
+        assert_eq!(
+            format!("{why:#}"),
+            "asking GitHub whether bob is a public member of acme: HTTP 502"
+        );
+    }
+
+    #[test]
+    fn the_verdict_is_refuse_over_review_over_merge() {
+        let finding = Finding::OutsideEntries { path: "x".into() };
+        let review = accepted_of("acme/x").needs_review(Some("bob"));
+        let checked = |accepted, refused: &[&Finding], review: &[&NeedsReview]| Checked {
+            accepted,
+            refused: refused.iter().map(|f| (*f).clone()).collect(),
+            review: review.iter().map(|r| (*r).clone()).collect(),
+        };
+
+        let rows = [
+            (
+                "a refusal, and an author to review",
+                checked(1, &[&finding], &[&review]),
+                Verdict::Refuse,
+            ),
+            (
+                "a refusal alone",
+                checked(0, &[&finding], &[]),
+                Verdict::Refuse,
+            ),
+            (
+                "an author who is not the owner",
+                checked(1, &[], &[&review]),
+                Verdict::Review,
+            ),
+            (
+                "nothing accepted and nothing refused",
+                checked(0, &[], &[]),
+                Verdict::Review,
+            ),
+            ("accepted and owned", checked(2, &[], &[]), Verdict::Merge),
+        ];
+        for (what, checked, verdict) in rows {
+            assert_eq!(checked.verdict(), verdict, "{what}");
+        }
     }
 }

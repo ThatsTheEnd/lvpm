@@ -582,8 +582,10 @@ enum IndexCmd {
     /// breaks; exits 1 if there is any. Reads the checkouts as data, runs
     /// nothing of the PR, and downloads each new version from its owner's
     /// releases, with no token, to check its hash, its metadata and its
-    /// attestation (which needs `gh` and a GitHub token). With --json the
-    /// result carries the comment to leave on a refused PR.
+    /// attestation (which needs `gh` and a GitHub token). A new name that
+    /// vipm.io already lists is refused. With --json the result carries the
+    /// verdict (`merge`, `refuse` or `review`) and the comment to leave on a
+    /// PR that is refused or left for review.
     Check {
         /// A checkout of the index the PR targets.
         #[arg(long, value_name = "DIR")]
@@ -591,6 +593,12 @@ enum IndexCmd {
         /// A checkout of the PR.
         #[arg(long, value_name = "DIR")]
         head: PathBuf,
+        /// The login the PR is from. A new version is its author's own when the
+        /// author is the owner of its `github`, or a public member of the
+        /// organisation that owns it. Any other PR is left for a maintainer, as
+        /// is one with no --author.
+        #[arg(long, value_name = "LOGIN")]
+        author: Option<String>,
     },
 }
 
@@ -911,8 +919,8 @@ fn run(cli: &Cli) -> Result<Report> {
                 .map_err(render::community::add_error)?;
             Ok(Report::done("index-add"))
         }
-        Cmd::Index(IndexCmd::Check { base, head }) => {
-            let checked = ops::community::check(&env, base, head)?;
+        Cmd::Index(IndexCmd::Check { base, head, author }) => {
+            let checked = ops::community::check(&env, base, head, author.as_deref())?;
             Report::new(String::new(), render::community::check_result(&checked))
                 .map(|report| report.failed(!checked.refused.is_empty()))
         }
