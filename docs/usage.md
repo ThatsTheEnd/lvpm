@@ -30,7 +30,7 @@
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
 | `lvpm index add <entries-dir> <package> --github <owner/repo> --url <url>` | List a package's file in `<entries-dir>/<name>.toml` of a community index checkout: a new file for a new name, or one more version in the file its owner has. Refuses, and writes nothing, when `--github` is not `owner/repo`, the name belongs to another repo, the version is listed, `--url` is not a file of the owner's GitHub releases, `<package>` is not a package, the entry file does not parse or would pass its size limit, or `<entries-dir>` is not a folder. Do not run it twice at once on one checkout. The `register` job of the release template runs it ([Publish to the community index](#publish-to-the-community-index)) |
-| `lvpm index check --base <dir> --head <dir> [--author <login>]` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets, `<login>` the PR's author. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. A new name that vipm.io lists is refused, and the check fails if the public indexes cannot be read. A version whose owner the author is not (the owner's login, or a public member of the owning organisation) gets a `review ...` line instead, as does every version when there is no `--author`. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the `verdict` (`merge`, `refuse` or `review`) and the comment to leave on a PR that is refused or left for review ([Publish to the community index](#publish-to-the-community-index)) |
+| `lvpm index check --base <dir> --head <dir> [--author <login>]` | The community index bot's verdict on a PR: `<head>` is the PR's checkout, `<base>` the index it targets, `<login>` the PR's author. Prints `accepted <name> <version>` for each new version that passes every rule and a `refused ...` line with a `fix:` for each rule it breaks, and exits 1 if there is any. A new name that vipm.io lists is refused, and the check fails if the public indexes cannot be read or list nothing. A version whose owner the author is not (the owner's login, or a public member of the owning organisation) gets a `review ...` line instead, and so does an entry file of another owner that the PR rewrites in any way (a reordered key, the case of `name`), as does every version and rewritten file when there is no `--author`. Reads the checkouts as data and runs nothing of the PR; downloads each new version from its owner's releases with no token, and needs `gh` and a GitHub token to check its attestation. With `--json` the result carries the `verdict` (`merge`, `refuse` or `review`) and the comment to leave on a PR that is refused or left for review ([Publish to the community index](#publish-to-the-community-index)) |
 | `lvpm vi-probe` / `lvpm vi-run` / `lvpm vi-save` / `lvpm app-probe` | VI Server primitives, for diagnosis (see [VI Server](labview-integration.md#vi-server))                                                                            |
 
 Flags that apply to every command:
@@ -485,11 +485,20 @@ its `owner/repo`. If your package's repository is itself a fork, GitHub turns
 Actions off in it: enable them in its Actions tab, or the tag runs nothing.
 
 **Protect the token.** A classic `public_repo` token can write to every
-public repository its account can. Make it with a dedicated machine account
-that has no other repositories, not with your own. You can also keep the secret
-in a GitHub Environment with a deployment protection rule, such as a required
-reviewer, and name that environment on the `register` job. The template does
-not set one; this is optional and yours to add:
+public repository its account can, and with `workflow` it can push workflow
+files to every public repository you can push to. The bot merges only a pull
+request from the owner's account, so the token's account decides who merges:
+
+- A repository owned by your own account: use your own classic token
+  (`public_repo` and `workflow`), and keep the secret in a GitHub Environment
+  with a deployment protection rule, such as a required reviewer, and name
+  that environment on the `register` job. Or accept that a maintainer merges
+  the pull request by hand: a pull request from any other account, a machine
+  account included, is left for a maintainer.
+- A repository owned by an organisation: a machine account with no other
+  repositories works, once it is a public member of the organisation.
+
+The template does not set an environment; it is optional and yours to add:
 
 ```yaml
   register:
@@ -502,17 +511,20 @@ that the template's `publish` job made ([`[policy]`](#policy)). It merges a pull
 comments the reasons on one it refuses, and leaves it open. A pull request
 from an account that is not the owner (or a public member of the owning
 organisation) is not refused and not merged: the bot comments who owns the
-name, and a maintainer decides. A new name that vipm.io lists is refused. The
-first repository to register a name owns it; only that repository's attested
+name, and a maintainer decides. So is a pull request that also rewrites an
+entry file of another owner, whatever the change. A new name that vipm.io
+lists is refused. The first repository to register a name owns it; only that repository's attested
 releases add versions, and a listed version never changes. One pull request
 adds at most 20 versions and 20 entry files, an entry file is at most 1 MiB,
 and a name lvpm cannot install is refused.
 
 **Who closes a refused PR.** The publisher closes it and replaces it by
 pushing a new tag: the fix is a new version, which opens a new pull request on
-its own branch, `lvpm/<tag>`. Re-running the `register` job of a tag replaces
-that branch and so updates its pull request. A maintainer of the index can
-close a stale one.
+its own branch, `lvpm/<owner>/<repo>/<tag>` (the repository that publishes,
+and the tag, so two repositories of one account never replace each other's
+pull request). Re-running the `register` job of a tag replaces that branch
+and so updates its pull request. A maintainer of the index can close a stale
+one.
 
 When the job fails, its summary says why in a line that starts `register
 failed:` and ends with what to do: save a classic token with `public_repo`,
@@ -1247,8 +1259,10 @@ community = "github:labview-package-manager/package-index"
 ```
 
 Source order matters, because the first source that lists a name wins (see
-above). A name listed by an earlier `[sources]` entry comes from that entry,
-not from the index. A name the index lists comes from it before the public NI
+above). List your private or company feeds before `community`: the index is
+open to registrations, so a name that a feed of yours lists must be found in
+that feed first, never in the index. A name listed by an earlier `[sources]`
+entry comes from that entry, not from the index. A name the index lists comes from it before the public NI
 and JKI indexes, which are read last. A name the index does not list is looked
 up in the next source. A dependency pinned with `index = "community"` is taken
 from the index or fails with `searched github:labview-package-manager/package-index`.

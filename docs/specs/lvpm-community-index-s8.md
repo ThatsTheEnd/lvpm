@@ -181,21 +181,25 @@ scenario and a line in the command table of `docs/usage.md`.
   7. a new name that a public index (NI or JKI, the feeds `defaults = true`
      reads) lists, compared by name key. Only a name the base has no file for is
      asked; a new version of a listed name is not. If the public indexes cannot
-     be read the check fails as an error, not as a verdict.
+     be read, or list no name at all, the check fails as an error, not as a
+     verdict.
 
   Rule 8 is not a refusal. `--author <login>` is the PR's author. For each new
-  version the author must own the entry's `github = "owner/repo"`: the login
-  equals `owner` (ASCII case-insensitive), or `owner` is an organisation that
-  lists the author as a public member (`GET /orgs/{owner}/public_members/{author}`:
-  204 yes, 404 no, no token needed). Otherwise, and for every new version when
-  there is no `--author`, the PR is left for a maintainer: not refused, not
-  merged. A refusal wins over this.
+  version, and for each entry file that is in the base and the head with other
+  bytes (even a reordered key or the case of `name`), the author must own the
+  entry's `github = "owner/repo"` as the base has it: the login equals `owner`
+  (ASCII case-insensitive), or `owner` is an organisation that lists the
+  author as a public member (`GET /orgs/{owner}/public_members/{author}`: 204
+  yes, 404 no, no token needed). Otherwise, and for every new version and
+  rewritten file when there is no `--author`, the PR is left for a maintainer:
+  not refused, not merged. A refusal wins over this.
 
   With `--json` the result has `command` (`index-check`), `accepted` and
   `refused` (counts), `verdict` (`merge`, `refuse` or `review`) and `comment`,
   the text the bot leaves on a PR that is refused or left for review (null for
   any other). `verdict` is `refuse` when anything is refused; else `review` when
-  the author is not the owner of a version or nothing was accepted; else `merge`.
+  the author is not the owner of a version or of a rewritten file, or nothing
+  was accepted; else `merge`.
 
   The check never runs code from the PR: it reads the PR's TOML as data.
   Attestation goes through the existing `verify` module and the `gh` runner,
@@ -229,8 +233,8 @@ user is asked before each push to it. It holds:
   (`persist-credentials: false`), installs a pinned lvpm release checked against
   `SHA256SUMS` (or a pinned SHA-256, as the release template does), runs
   `lvpm index check`, and hands over a verdict. `merge` has the write token
-  (`contents: write`, `pull-requests: write`) and no checkout: on success it
-  runs `gh pr merge --squash`, and on a refusal it comments the check's refusal
+  (`contents: write`, `pull-requests: write`) and no checkout: on a `merge` verdict from a `check` job that
+  succeeded it runs `gh pr merge --squash`, and on a refusal it comments the check's refusal
   lines on the PR with `gh pr comment` and fails the run.
 
 The workflow can only run after an lvpm release ships `lvpm index check`.
@@ -253,7 +257,8 @@ push and open the PR. The job:
    fork, so the branch starts at the index's current tip;
 3. runs `lvpm index add` with the asset's download URL and
    `--github ${{ github.repository }}`;
-4. commits on a branch named `lvpm/<tag>`, pushes it to the fork (a re-run of
+4. commits on a branch named `lvpm/<owner>/<repo>/<tag>` (the publishing repo and the
+   tag, so two repos of one account never replace each other's PR), pushes it to the fork (a re-run of
    the tag replaces it), and opens the PR with `gh pr create`.
 
 The `--clobber` upload of `publish` stays. A re-pushed tag with new bytes
@@ -285,8 +290,9 @@ then fails at the bot (rule 3), which is the intended outcome.
 4. `lvpm index check` refuses each of the other cases in rules 1–7, one
    scenario or unit test each, and accepts a new name and a new version of
    an owned name that pass all rules. With rule 8, a PR whose author is not the
-   owner (or a public member of the owning organisation), or that has no
-   `--author`, gets the verdict `review`, and a refusal still wins. Source: inference from "a bot checks
+   owner (or a public member of the owning organisation) of a version it adds
+   or of an entry file it rewrites, or that has no `--author`, gets the verdict
+   `review`, and a refusal still wins. Source: inference from "a bot checks
    name, hash and attestation".
 5. `lvpm index add` creates a new entry file; appends a version to the
    owner's existing file; refuses another `--github`; and refuses a version
@@ -354,8 +360,8 @@ then fails at the bot (rule 3), which is the intended outcome.
 | Completeness: index entry CRUD | `inferable` | inference | Create = registration PR; Read = lvpm; Update = append a version only; Delete = refused (out of scope) |
 | Completeness: authn/authz | `inferable` | inference | Reads: S4 token chain. Registration: publisher PAT. Merge: index repo's `GITHUB_TOKEN`. Authority to add versions = attestation from owner repo |
 | Completeness: audit | `inferable` | inference | The index repo's git history and merged PRs are the audit trail |
-| Names that a public index lists (R7) | `requires-stakeholder-input` | human (2026-11-07) | A new name that vipm.io (NI or JKI) lists is refused. Security review: index sources rank ahead of the public indexes, so anyone could register `oglib_error` and hijack it. Public indexes unreadable: the check errors, the bot posts "could not run". New versions of a listed name are not re-checked |
-| Who may list (R8) | `requires-stakeholder-input` | human (2026-11-07) | Only the owner: the PR author's login equals the entry's `github` owner, or the owner is an organisation with the author as a public member. Otherwise the verdict is review (not refused, not merged). No `--author`: review for every new version |
+| Names that a public index lists (R7) | `requires-stakeholder-input` | human (2026-11-07) | A new name that vipm.io (NI or JKI) lists is refused. Security review: index sources rank ahead of the public indexes, so anyone could register `oglib_error` and hijack it. Public indexes unreadable or empty: the check errors, the bot posts "could not run". New versions of a listed name are not re-checked |
+| Who may list (R8) | `requires-stakeholder-input` | human (2026-11-07) | Only the owner: the PR author's login equals the entry's `github` owner, or the owner is an organisation with the author as a public member. Otherwise the verdict is review (not refused, not merged). The same holds for an entry file the PR rewrites without adding a version to it (security review: a cosmetic edit to another owner's file is a change to what they publish). No `--author`: review for every new version and rewritten file |
 | `lvpm search` not covering the index | `LOW_VALUE` | inference | Decided out of scope; no criterion |
 
 ## Consistency Gate
