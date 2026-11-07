@@ -477,6 +477,18 @@ register in another index, set the repository variable `LVPM_INDEX_REPO` to
 its `owner/repo`. If your package's repository is itself a fork, GitHub turns
 Actions off in it: enable them in its Actions tab, or the tag runs nothing.
 
+**Protect the token.** A classic `public_repo` token can write to every
+public repository its account can. Make it with a dedicated machine account
+that has no other repositories, not with your own. You can also keep the secret
+in a GitHub Environment with a deployment protection rule, such as a required
+reviewer, and name that environment on the `register` job. The template does
+not set one; this is optional and yours to add:
+
+```yaml
+  register:
+    environment: package-index
+```
+
 **What the bot decides.** A bot in the index repository checks each pull
 request, reading it as data: the name, the file's SHA-256 and the attestation
 that the template's `publish` job made ([`[policy]`](#policy)). It merges a pull request that passes every rule. It
