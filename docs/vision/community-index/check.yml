@@ -21,12 +21,16 @@ name: Check the pull request
 #
 # head/ is the merge GitHub would make (refs/pull/<n>/merge: the index's tip plus
 # the pull request), not the pull request's own commit. A branch cut before the
-# index's tip then differs from base/ only in the files it changed. If the pull
-# request conflicts with the index there is no merge, and the job fails at that
-# checkout; the publisher re-runs the register job, which updates the branch.
+# index's tip then differs from base/ only in the files it changed. If there is
+# no merge (the pull request conflicts with the index, or GitHub has not made it
+# yet) that checkout is allowed to fail, the verdict is `stale` and the publisher
+# gets a comment to re-run the register job, which updates the branch.
 #
 # LVPM_VERSION below is a guess: confirm it is the release that ships S8 when
 # that release is cut. Until then the repository variable LVPM_GIT_REV is set.
+# LVPM_SHA256 must be pinned before the bot runs from a release: while it is
+# empty the archive is checked only against SHA256SUMS from the same download,
+# which whoever replaces the archive replaces too.
 
 on:
   pull_request_target:
@@ -74,6 +78,9 @@ jobs:
           path: base
           persist-credentials: false
       - name: Check out the pull request's merge, as data
+        id: merge-ref
+        # No merge ref (a conflict, or not made yet) is a verdict of its own, below.
+        continue-on-error: true
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           # From this repository, never the fork: the merge is made here. Depth 2
@@ -86,13 +93,14 @@ jobs:
         id: parents
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_REF: ${{ steps.merge-ref.outcome }}
         run: |
           # GitHub makes the merge a moment after a push, so it can be of an older
           # head or tip. rev-parse only reads commit ids; nothing in head/ runs.
           merged_tip=$(git -C "$GITHUB_WORKSPACE/head" rev-parse 'HEAD^1' 2> /dev/null || true)
           merged_head=$(git -C "$GITHUB_WORKSPACE/head" rev-parse 'HEAD^2' 2> /dev/null || true)
           tip=$(git -C "$GITHUB_WORKSPACE/base" rev-parse HEAD)
-          if [ "$merged_head" != "$HEAD_SHA" ] || [ "$merged_tip" != "$tip" ]; then
+          if [ "$MERGE_REF" = failure ] || [ "$merged_head" != "$HEAD_SHA" ] || [ "$merged_tip" != "$tip" ]; then
             echo "verdict=stale" >> "$GITHUB_OUTPUT"
           fi
       - name: Install lvpm
@@ -117,6 +125,10 @@ jobs:
         env:
           REV: ${{ vars.LVPM_GIT_REV }}
         run: |
+          if [[ ! "$REV" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "error: LVPM_GIT_REV must be a full commit id (40 lower-case hex digits)" >&2
+            exit 1
+          fi
           cargo install --locked --git https://github.com/ThatsTheEnd/lvpm --rev "$REV" --root "$RUNNER_TEMP/lvpm" lvpm
           echo "$RUNNER_TEMP/lvpm/bin" >> "$GITHUB_PATH"
       - name: Check
@@ -149,7 +161,8 @@ jobs:
 
   merge:
     needs: check
-    if: always() && needs.check.result != 'cancelled'
+    # Not when the run was cancelled (a newer push replaced it); a failed check still comments.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -159,6 +172,7 @@ jobs:
       - name: Merge or comment
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECK_RESULT: ${{ needs.check.result }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
@@ -168,6 +182,10 @@ jobs:
           COMMENT: ${{ needs.check.outputs.comment }}
         run: |
           echo "verdict: ${VERDICT:-none}, accepted: ${ACCEPTED:-?}, refused: ${REFUSED:-?}"
+          # A verdict from a check job that did not succeed is not one to merge on.
+          if [ "$VERDICT" = merge ] && [ "$CHECK_RESULT" != success ]; then
+            VERDICT=error
+          fi
           case "$VERDICT" in
             refuse)
               printf '%s' "$COMMENT" | base64 -d > comment.md
@@ -193,7 +211,7 @@ jobs:
               fi
               ;;
             stale)
-              gh pr comment "$PR" --repo "$REPO" --body "lvpm index check could not check this pull request: GitHub's merge of it is not of the index's current tip and this branch yet. fix: re-run the register job of this tag's workflow run, which updates this pull request, or ask a maintainer to check it again."
+              gh pr comment "$PR" --repo "$REPO" --body "lvpm index check could not check this pull request: GitHub has no merge of it with the index's current tip (it is not made yet, or the pull request conflicts), or the merge is of an older tip or branch. fix: re-run the register job of this tag's workflow run, which updates this pull request, or ask a maintainer to check it again."
               exit 1
               ;;
             *)
