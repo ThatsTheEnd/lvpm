@@ -1196,43 +1196,47 @@ labview = ">=20.0"
 {}",
                     file("")
                 ),
-                "own",
+                "own: unknown key",
             ),
             (
                 "a version without sha256",
                 file("").replace(&sha, ""),
-                "sha256",
+                "version[1].sha256: missing",
             ),
             (
                 "a sha256 that is not 64 hex digits",
                 file("").replace(SHA_A, "abc"),
-                "sha256",
+                "version[1].sha256: must be 64 hex digits",
             ),
             (
                 "name bar",
                 file("").replace("name = \"foo\"", "name = \"bar\""),
-                "name",
+                "name: does not match the file name",
             ),
             (
                 "version 1.0.0 listed twice",
                 file("").replace("\"1.1.0\"", "\"1.0.0\""),
-                "version",
+                "version[2].version: listed twice",
             ),
-            ("github a", file("").replace("a/x\"", "a\""), "github"),
+            (
+                "github a",
+                file("").replace("a/x\"", "a\""),
+                "github: must be owner/repo",
+            ),
             (
                 "labview twenty",
                 file("").replace(">=20.0", "twenty"),
-                "labview",
+                "version[2].labview: cannot be read",
             ),
             (
                 "requires bar >=?",
                 file("").replace("bar >=2", "bar >=?"),
-                "requires",
+                "version[2].requires: cannot be read",
             ),
         ];
-        for (change, text, key) in rows {
+        for (change, text, said) in rows {
             let why = EntryFile::parse("foo", &text).expect_err(change);
-            assert!(why.to_string().contains(key), "{change}: {why}");
+            assert_eq!(why.to_string(), said, "{change}");
         }
     }
 
@@ -1945,18 +1949,24 @@ github = \"b/y\"
         );
     }
 
-    /// Whether the platform let the test make a link (Windows needs a
-    /// privilege for it).
-    fn make_link(target: &Path, link: &Path) -> bool {
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(target, link);
-        #[cfg(windows)]
-        let made = std::os::windows::fs::symlink_file(target, link);
-        made.is_ok()
+    // Unix only: Windows makes a link only for a user with a privilege, and a test
+    // that skips itself there says nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_a_checkout_is_a_link_and_is_not_followed() {
+        let dir = crate::ops::testing::scratch_dir("community-link");
+        std::fs::create_dir_all(dir.join("packages")).unwrap();
+        std::fs::write(dir.join("README.md"), b"an index").unwrap();
+        std::os::unix::fs::symlink(dir.join("README.md"), dir.join("packages/link.toml")).unwrap();
+
+        let tree = Tree::read(&dir).unwrap();
+
+        assert!(matches!(tree.files["packages/link.toml"], Node::Link(_)));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_checkout_is_read_without_following_links_or_keeping_more_than_entries() {
+    fn a_checkout_is_read_keeping_no_more_than_entries() {
         let dir = crate::ops::testing::scratch_dir("community-tree");
         let write = |path: &str, bytes: &[u8]| {
             let path = dir.join(path);
@@ -1971,8 +1981,6 @@ github = \"b/y\"
         write("packages/sub/x.toml", b"x");
         write(".git/config", b"x");
         write("README.md", b"an index");
-        let linked = make_link(&dir.join("README.md"), &dir.join("packages/link.toml"));
-
         let tree = Tree::read(&dir).unwrap();
 
         let paths: Vec<_> = tree.files.keys().map(String::as_str).collect();
@@ -1985,9 +1993,6 @@ github = \"b/y\"
         assert_eq!(body("packages/foo.toml"), Some(b"name = \"foo\"".to_vec()));
         assert_eq!(tree.files["packages/big.toml"], Node::TooBig);
         assert_eq!(body("README.md"), None);
-        if linked {
-            assert!(matches!(tree.files["packages/link.toml"], Node::Link(_)));
-        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
