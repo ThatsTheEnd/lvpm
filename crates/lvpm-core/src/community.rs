@@ -210,6 +210,7 @@ impl EntryFile {
             Some(toml::Value::Array(tables)) => tables,
             Some(_) => return Err(top.error(KEY_VERSION, Problem::WrongType(A_LIST_OF_TABLES))),
         };
+        let mut seen = BTreeSet::new();
         for (i, value) in tables.iter().enumerate() {
             let prefix = format!("{KEY_VERSION}[{}]", i + 1);
             let toml::Value::Table(version) = value else {
@@ -217,8 +218,12 @@ impl EntryFile {
             };
             let scope = Scope::new(version, format!("{prefix}."));
             scope.reject_unknown(&VERSION_KEYS)?;
-            file.add_version(scope.file_version()?)
-                .map_err(|VersionListed| scope.error(KEY_VERSION, Problem::Duplicate))?;
+            let version = scope.file_version()?;
+            // Not `add_version`, which reads every listed version again.
+            if !seen.insert(Version::parse(&version.version)) {
+                return Err(scope.error(KEY_VERSION, Problem::Duplicate));
+            }
+            file.versions.push(version);
         }
         if file.versions.is_empty() {
             return Err(EntryFileError::NoVersion);
@@ -267,6 +272,13 @@ impl EntryFile {
         self.versions
             .iter()
             .find(|v| Version::parse(&v.version) == wanted)
+    }
+
+    /// The versions the file lists by lvpm's reading of them: one lookup for
+    /// many asks of [`listed`](Self::listed).
+    fn by_version(&self) -> BTreeMap<Version, &FileVersion> {
+        let read = |v: &'_ FileVersion| Version::parse(&v.version);
+        self.versions.iter().map(|v| (read(v), v)).collect()
     }
 
     /// One [`Entry`] per version, listed by `source` (`github-index:owner/repo`).
@@ -693,10 +705,12 @@ impl Diff {
                 new: new.github.clone(),
             });
         }
+        let now_listed = new.as_ref().map(EntryFile::by_version);
         if let Some(old) = &old {
             for listed in &old.versions {
                 let name = old.name.clone();
-                match new.as_ref().and_then(|new| new.listed(&listed.version)) {
+                let now = now_listed.as_ref();
+                match now.and_then(|now| now.get(&Version::parse(&listed.version)).copied()) {
                     None => self.findings.push(Finding::VersionRemoved {
                         path: path(),
                         name,
@@ -724,10 +738,11 @@ impl Diff {
         if let Some(new) = &new
             && !owner_changed
         {
+            let was_listed = old.as_ref().map(EntryFile::by_version);
             for version in &new.versions {
-                if old
+                if was_listed
                     .as_ref()
-                    .is_none_or(|old| old.listed(&version.version).is_none())
+                    .is_none_or(|was| !was.contains_key(&Version::parse(&version.version)))
                 {
                     self.new_versions.push(NewVersion {
                         path: path(),
@@ -2291,7 +2306,12 @@ github = \"b/y\"
 
         let over = diff(&base(), &many_versions(MAX_NEW_VERSIONS_PER_PR + 1));
 
-        assert_eq!(over.findings, [Finding::TooManyVersions { versions: 21 }]);
+        assert_eq!(
+            over.findings,
+            [Finding::TooManyVersions {
+                versions: MAX_NEW_VERSIONS_PER_PR + 1
+            }]
+        );
         assert_eq!(over.new_versions, []);
     }
 
@@ -2315,8 +2335,12 @@ github = \"b/y\"
         assert_eq!(
             over.findings,
             [
-                Finding::TooManyVersions { versions: 21 },
-                Finding::TooManyFiles { files: 21 }
+                Finding::TooManyVersions {
+                    versions: MAX_ENTRY_FILES_PER_PR + 1
+                },
+                Finding::TooManyFiles {
+                    files: MAX_ENTRY_FILES_PER_PR + 1
+                }
             ]
         );
         assert_eq!(over.new_versions, []);
