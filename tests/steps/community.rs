@@ -888,7 +888,7 @@ async fn the_template_has_a_job_that_needs(_: &mut CliWorld, job: String, needs:
 }
 
 #[then(
-    regex = r#"^"([^"]+)" sets LVPM_INDEX_TOKEN from the secret, and every step but the last two has "([^"]+)"$"#
+    regex = r#"^"([^"]+)" sets HAS_INDEX_TOKEN from the secret, never the token itself, and every step but the last two has "([^"]+)"$"#
 )]
 async fn the_job_sets_the_token_and_guards_its_steps(
     _: &mut CliWorld,
@@ -897,8 +897,14 @@ async fn the_job_sets_the_token_and_guards_its_steps(
 ) {
     let lines = template_job(&job);
     assert!(
-        lines.contains(&"      LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}".to_string()),
-        "job {job} does not set LVPM_INDEX_TOKEN from the secret"
+        lines.contains(&"      HAS_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN != '' }}".to_string()),
+        "job {job} does not set HAS_INDEX_TOKEN from the secret"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("      LVPM_INDEX_TOKEN:")),
+        "job {job} puts the token itself in its env"
     );
     let steps = job_steps(&lines);
     assert!(steps.len() > 2, "job {job} has only {} steps", steps.len());

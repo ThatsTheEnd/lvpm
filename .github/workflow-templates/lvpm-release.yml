@@ -27,6 +27,8 @@ name: Publish the package
 # scopes that forks the index and opens the PR. The workflow scope is needed
 # because the branch starts at the index's tip, which holds a workflow file
 # that your fork may not have yet, and GitHub refuses that push without it.
+# Only the two steps that fork, push and open the PR get the token; the job
+# itself only knows, as HAS_INDEX_TOKEN, whether the secret is set.
 # Without the secret the job's summary says it did not register. Delete the job
 # if you do not list your package. `lvpm index add` is in the first lvpm release
 # that ships S8, and the LVPM_VERSION pin below is older: raise it to that
@@ -161,17 +163,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Reading the package from the tag's release needs contents: read. The index
-    # token is the only other credential, and only the steps that need it get it
-    # as GH_TOKEN.
+    # token is the only other credential. It is not in the job's env: only the
+    # two steps that fork, push and open the PR get it, as GH_TOKEN. The job's env
+    # holds only whether it is set.
     permissions:
       contents: read
     env:
-      LVPM_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
+      HAS_INDEX_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN != '' }}
       INDEX_REPO: ${{ vars.LVPM_INDEX_REPO || 'labview-package-manager/package-index' }}
     steps:
       - name: Install lvpm
         id: install-lvpm
-        if: env.LVPM_INDEX_TOKEN != ''
+        if: env.HAS_INDEX_TOKEN == 'true'
         working-directory: ${{ runner.temp }}
         run: |
           archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
@@ -183,7 +186,7 @@ jobs:
           echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
       - name: Get the package
         id: get-the-package
-        if: env.LVPM_INDEX_TOKEN != ''
+        if: env.HAS_INDEX_TOKEN == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -193,7 +196,7 @@ jobs:
           test "$(ls "$RUNNER_TEMP/package" | wc -l)" -eq 1
       - name: Fork the index
         id: fork-the-index
-        if: env.LVPM_INDEX_TOKEN != ''
+        if: env.HAS_INDEX_TOKEN == 'true'
         env:
           GH_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
         run: |
@@ -215,7 +218,7 @@ jobs:
           echo "fork=$fork" >> "$GITHUB_OUTPUT"
       - name: Add the entry
         id: add-the-entry
-        if: env.LVPM_INDEX_TOKEN != ''
+        if: env.HAS_INDEX_TOKEN == 'true'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -239,7 +242,7 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
       - name: Open the pull request
         id: open-the-pull-request
-        if: env.LVPM_INDEX_TOKEN != ''
+        if: env.HAS_INDEX_TOKEN == 'true'
         env:
           GH_TOKEN: ${{ secrets.LVPM_INDEX_TOKEN }}
           LOGIN: ${{ steps.fork-the-index.outputs.login }}
@@ -265,7 +268,7 @@ jobs:
           name=$NAME version=$VERSION
           echo "registered $name $version: $url. The index bot checks it, then merges it or comments the reasons it refused. A PR with no verdict waits for a maintainer." >> "$GITHUB_STEP_SUMMARY"
       - name: Say why it failed
-        if: failure() && env.LVPM_INDEX_TOKEN != ''
+        if: failure() && env.HAS_INDEX_TOKEN == 'true'
         env:
           # The step that failed is the one whose outcome is "failure".
           STEPS: ${{ toJSON(steps) }}
@@ -292,6 +295,6 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Say it did not register
-        if: env.LVPM_INDEX_TOKEN == ''
+        if: env.HAS_INDEX_TOKEN != 'true'
         run: |
           echo "not registered in the community index: LVPM_INDEX_TOKEN is not set" >> "$GITHUB_STEP_SUMMARY"
