@@ -495,6 +495,14 @@ fn install_one(
             entry.name, entry.version
         )
     })?;
+    // The feed's name becomes hook and record paths: the archive must agree with it.
+    anyhow::ensure!(
+        crate::project::same_name(&spec.name, &entry.name),
+        "the archive of {} {} names the package {:?}",
+        entry.name,
+        entry.version,
+        spec.name
+    );
     let mut plan = install::plan(&roots, &spec, &mut zip)?;
     // The old version goes only once the new archive has been read and
     // planned: a refused archive leaves it installed.
@@ -1212,6 +1220,16 @@ mod tests {
             manifest.archive_sha256.as_deref(),
             Some(scratch.sha256.as_str())
         );
+    }
+
+    #[test]
+    fn an_archive_that_names_another_package_than_the_feed_is_refused() {
+        let scratch = Scratch::new("feed-name-mismatch");
+        let mut plan = scratch.plan(None);
+        plan.entries[0].entry.name = "../../escape".into();
+        let why = apply_plan(&scratch, &plan).unwrap_err();
+        assert!(format!("{why:#}").contains("names the package"), "{why:#}");
+        assert!(!scratch.root.join("escape-PreInstall.vi").exists());
     }
 
     #[test]
