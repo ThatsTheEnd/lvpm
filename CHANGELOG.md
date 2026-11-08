@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.25.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.24.0...v0.25.0) (2026-11-08)
+
+
+### Features
+
+* port Flydroid/lvpm main (8e8bd7e..bdaf82d): linkfix, dependency uninstall, venv layout ([63df621](https://github.com/ThatsTheEnd/lvpm/commit/63df621a119f766147aaee017bda06f9966e044d))
+* **s7b:** OCI feeds ([#121](https://github.com/ThatsTheEnd/lvpm/issues/121)) ([c98e2a3](https://github.com/ThatsTheEnd/lvpm/commit/c98e2a3032bd15ce61beab8704ab81ab1a7b80c8))
+* **s8:** federated community index ([#122](https://github.com/ThatsTheEnd/lvpm/issues/122)) ([c941b4e](https://github.com/ThatsTheEnd/lvpm/commit/c941b4e2617d8bea2b96e6c74dd718cf1bdebb3f))
+* **s9:** application builds and SBOM ([#119](https://github.com/ThatsTheEnd/lvpm/issues/119)) ([2db838e](https://github.com/ThatsTheEnd/lvpm/commit/2db838e4582c25e85542841795c58c93220d0e1b))
+
 ## [0.24.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.23.0...v0.24.0) (2026-11-04)
 
 
