@@ -8,7 +8,7 @@
 use crate::ops::staging::Staging;
 use crate::spec::Spec;
 use crate::target::{LvTarget, Roots, TokenClass};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -236,7 +236,14 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
         bail!("the `spec` member is larger than {MAX_SPEC_BYTES} bytes");
     }
     // spec files are latin-1-ish; lossy is fine for the fields we read.
-    crate::spec::parse(&String::from_utf8_lossy(&buf))
+    let spec = crate::spec::parse(&String::from_utf8_lossy(&buf))?;
+    // The name becomes a file name (record, hook VIs), so no path may hide in it.
+    ensure!(
+        !spec.name.is_empty() && !spec.name.contains(['/', '\\', ':']) && !spec.name.contains(".."),
+        "the archive's spec names the package {:?}, which is not a file name",
+        spec.name
+    );
+    Ok(spec)
 }
 
 /// A package entry's content, at most `cap` bytes. The size in the
@@ -671,6 +678,18 @@ mod tests {
     fn a_spec_member_is_read_and_parsed() {
         let read = read_spec(&mut archive_with_spec(SPEC)).unwrap();
         assert_eq!(read.name, "alpha");
+    }
+
+    #[test]
+    fn a_spec_whose_name_is_a_path_is_refused() {
+        for name in ["../../x", "a/b", "a\\b", ".."] {
+            let text = format!("[Package]\nName={name}\nVersion=1.0\n");
+            let why = read_spec(&mut archive_with_spec(text.as_bytes())).unwrap_err();
+            assert!(
+                format!("{why:#}").contains("names the package"),
+                "{name}: {why:#}"
+            );
+        }
     }
 
     #[test]

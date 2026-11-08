@@ -50,6 +50,10 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
 
     // One VI Server connection for the whole sweep, and one palette refresh at
     // the end — the hooks are per package, the rebuild is not.
+    let bound = match &dest {
+        Destination::Venv(v) => Some(v.manifest_path()),
+        _ => None,
+    };
     let mut session = InstallSession::new(dest);
     let mut removed = 0usize;
     let mut failed: Vec<(String, anyhow::Error)> = Vec::new();
@@ -57,7 +61,8 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
         match uninstall_one(env, &mut session, name) {
             Ok(files) => removed += files,
             Err(e) => {
-                if package.is_none() && names.len() > 1 {
+                // A named package reports its own error; its dependencies are named.
+                if names.len() > 1 && package.is_none_or(|p| !same_name(p, name)) {
                     env.sink.emit(Event::UninstallFailed {
                         name: name.clone(),
                         error: format!("{e:#}"),
@@ -99,7 +104,7 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
             .join(", ")
     );
     if let (Some(name), false) = (package, all) {
-        say_if_still_listed(env, name);
+        say_if_still_listed(env, bound.as_deref(), name);
     }
     Ok(())
 }
@@ -107,8 +112,8 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
 /// A package taken out of the destination but still listed in the project's
 /// manifest comes back with the next sync: say how to take it out for good.
 /// A manifest that cannot be read has nothing to say.
-fn say_if_still_listed(env: &OpEnv, package: &str) {
-    let Ok(Some((_, project))) = env.manifest_for(None, None) else {
+fn say_if_still_listed(env: &OpEnv, bound: Option<&Path>, package: &str) {
+    let Ok(Some((_, project))) = env.manifest_for(None, bound) else {
         return;
     };
     let found = project.tables().find_map(|(table, entries)| {

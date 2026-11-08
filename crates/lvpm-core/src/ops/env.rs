@@ -276,7 +276,7 @@ impl<'a> OpEnv<'a> {
     }
 
     /// The manifest a command belongs to: `explicit` (`--manifest`) names it;
-    /// else `bound`, the manifest of the venv in effect; else `--project`'s; else
+    /// else `bound`, the manifest of the venv in effect (missing: none); else `--project`'s; else
     /// the nearest `lvpm.toml` at or above the working directory. None is fine
     /// — a package can be installed without a project.
     pub fn manifest_for(
@@ -302,7 +302,7 @@ impl<'a> OpEnv<'a> {
     }
 
     /// Read a manifest file. A `vipm.toml` goes through the VIPM conversion; it
-    /// is only ever reached through `--manifest`, never discovered.
+    /// is reached through `--manifest` or a venv bound to it, never discovered.
     pub fn read_manifest(&self, path: &Path) -> Result<Project> {
         match crate::vipm_interop::is_toml(path) {
             true => crate::vipm_interop::read_toml(path, self.sink),

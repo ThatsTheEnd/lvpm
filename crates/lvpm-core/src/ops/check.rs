@@ -173,15 +173,18 @@ fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckEr
     }
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     env.check_bitness(&bound.target)?;
+    let file = bound
+        .manifest
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     let (_, manifest) = env
         .manifest_for(None, Some(&bound.manifest))?
-        .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
+        .ok_or_else(|| anyhow!("no {file} in {}", bound.repo.display()))?;
     if matches!(scope, Scope::Members) && manifest.distribution.is_none() {
-        return Err(anyhow!(
-            "no [distribution] in {}: nothing says which VIs are the library",
-            project::FILE_NAME
-        )
-        .into());
+        return Err(
+            anyhow!("no [distribution] in {file}: nothing says which VIs are the library").into(),
+        );
     }
     let minimum = manifest
         .labview
