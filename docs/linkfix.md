@@ -156,7 +156,7 @@ behavior. Use `--relink` when an actual LabVIEW load/save pass is needed.
 The automated checks have different scopes:
 
 - The local CLI integration test builds a fixture `.vip` containing a
-  library XML file and the real [Relink Packages.vi](../tools/Relink%20Packages.vi).
+  library XML file and the real [Relink Packages.vi](https://github.com/ThatsTheEnd/lvpm/blob/main/tools/Relink%20Packages.vi).
   It checks the default, opt-out, legacy flag, dry-run, unchanged archive,
   and preservation of an existing unrelated file. It also checks that
   `--relink` skips linkfix, including in dry runs. It does not launch LabVIEW.
