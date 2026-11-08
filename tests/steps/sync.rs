@@ -61,8 +61,12 @@ struct Installed {
 
 /// The packages installed in `dest`, by name.
 fn installed_in(dest: &Path) -> Vec<Installed> {
-    let dir = dest.join(INSTALLED_DIR);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    records_in(&dest.join(INSTALLED_DIR))
+}
+
+/// The install records in `dir`: `<dest>/.lvpm/installed`, or a venv's `<venv>/installed`.
+fn records_in(dir: &Path) -> Vec<Installed> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut packages: Vec<Installed> = entries
@@ -797,7 +801,7 @@ async fn replaced_and_named(world: &mut CliWorld, name: String, version: String,
 
 #[then("the venv's lvpm-installed packages equal the lock")]
 async fn the_venv_equals_the_lock(world: &mut CliWorld) {
-    let installed: Vec<(String, String)> = installed_in(&world.sandbox.venv_dir())
+    let installed: Vec<(String, String)> = records_in(&world.sandbox.venv_dir().join("installed"))
         .into_iter()
         .map(|package| (package.name, package.version))
         .collect();
