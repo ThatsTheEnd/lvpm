@@ -7,18 +7,19 @@
 | `lvpm init`                                          | Start a project here: write an `lvpm.toml` and a `.gitignore`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
 | `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
-| `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, relink, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
+| `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, run linkfix, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
 | `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
-| `lvpm uninstall <name>` / `--all`                    | Remove exactly the files that were installed and prune empty folders                                                                         |
+| `lvpm uninstall <name>` / `--all` / `--with-deps` / `--keep-deps` | Remove exactly the files that were installed and prune empty folders. A named package can take the dependencies nothing else needs with it: it asks, and a script passes `--with-deps` or `--keep-deps` ([Uninstalling](#uninstalling)) |
 | `lvpm list`                                          | What lvpm has installed into the selected target, and which hooks it did not run                                                             |
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
 | `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; takes no options                                                                   |
+| `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
@@ -50,9 +51,10 @@ Flags that apply to every command:
 changes nothing; `--no-deps` skips dependencies and `--allow-downgrade`
 permits replacing an installed package with an older version (both only for
 an install that is not a sync or an `add`: a lock always holds the full set);
-`--no-relink` skips the
-relink pass and `--relink` forces it where it is off by default (a headless
-LabVIEW, see [CI in a container](ci-docker.md)); `--hooks` runs the install
+linkfix runs over the LabVIEW files the install wrote and `--no-linkfix`
+skips it ([Linkfix](#linkfix)); `--relink` runs LabVIEW's load-and-save relink
+pass instead of linkfix (the hidden `--no-relink` is accepted and ignored);
+`--hooks` runs the install
 hooks of every package for this command, where they are off by default
 (see [Install hooks](#install-hooks); a headless LabVIEW runs none without
 it). `--relink-timeout <SECS>`
@@ -638,10 +640,18 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
 - `lvpm launch [<lvproj>]` starts a LabVIEW on the venv: a copy of the
   target's `LabVIEW.ini` with the venv mounted and VI Server on a port of its
   own, handed over with `-pref`. Your primary LabVIEW, if open, is untouched.
+  `--ini KEY=VALUE` (repeatable) writes extra keys into the venv's
+  `labview.ini` first, for diagnosis: `--ini NIER=True` for a crash minidump,
+  `--ini DPrintfLogging=True` for a verbose log. They stay in that ini until
+  you remove them; the installation's `LabVIEW.ini` is never touched.
 
 How it works: the venv directory is an [LVAddons](https://labviewwiki.org/wiki/LVAddons)
-location, one addon per package, each mirroring the LabVIEW install dir
-under `<pkg>/1/`. A LabVIEW started with `LVAddons.AdditionalLocations`
+location (its `packages/` folder), one addon per package, each mirroring the
+LabVIEW install dir under `packages/<pkg>/1/`. The binding (`venv.json`), the
+install records (`installed/`) and the venv LabVIEW's own state
+(`labview.ini`, `objcache/`, `data/`, `temp/`) sit beside it. A venv made by
+an older lvpm, with these under `.lvpm/`, is refused: close its LabVIEW, run
+`lvpm venv remove` and `lvpm venv create`, then `lvpm install`. A LabVIEW started with `LVAddons.AdditionalLocations`
 pointing there overlays them onto its own tree, so a package in the venv
 resolves as `<vilib>/...` exactly as a globally installed one would. The VIs
 you write against it link portably, and `C:\Program Files` never changes.
@@ -656,6 +666,53 @@ Two things follow from LabVIEW reading an addon's contents at launch:
 - The real installation always wins over the overlay: a package installed
   both globally and in the venv loads from the global copy, whatever its
   version. Keep the target installation clean of what the venv provides.
+
+### Linkfix
+
+`install`, `sync` and `add` run linkfix after the files are copied and
+before the PostInstall hooks. It edits only the LabVIEW files that install
+wrote into the LabVIEW tree, and needs no LabVIEW:
+
+- it repairs owner paths, relative paths, build-machine absolute paths and
+  library qualifiers, so the VIs find each other where they were installed;
+- it separates compiled code from source, so LabVIEW does not ask to save
+  files it only loaded.
+
+```console
+linkfix: preparing installed files (repair links and separate compiled code; no LabVIEW needed)
+
+120 LabVIEW files looked at: 87 changed, 33 already clean, 0 skipped
+```
+
+A file whose layout linkfix does not know is skipped and reported, not
+guessed. A failed pass is a warning: the files stay as copied. `--no-linkfix`
+skips the pass; `--relink` runs LabVIEW's relink pass instead.
+
+`lvpm linkfix` runs the same edits on demand, over every package in the venv
+or over a LabVIEW-shaped `--tree <DIR>`. `--dry-run` changes nothing,
+`--verbose` names every changed and skipped file, `--fix owner,paths` picks
+methods (`owner`, `paths`, `qualifiers`, `source-only`; all by default),
+`--keep-compiled-code` leaves compiled code embedded, and `--report <file>`
+writes a JSON report of each file. See [linkfix](linkfix.md) for what each
+method changes.
+
+### Uninstalling
+
+`lvpm uninstall <name>` removes the package's files. When it has
+dependencies that no other installed package and no entry of `lvpm.toml`
+needs, it asks whether to remove them too:
+
+```console
+remove unshared dependencies (alpha) too? [y/N]
+```
+
+`--with-deps` removes them and `--keep-deps` keeps them, without asking.
+Without a terminal to ask, one of the two is required. A dependency that
+stays is named with the reason, and uninstall warns when the package is
+declared in `lvpm.toml` (it does not edit the manifest) or other installed
+packages still require it. A package installed by an older lvpm has no
+dependency list; removing dependencies is then refused until it is
+reinstalled, and `--keep-deps` still works.
 
 ### The resave
 
@@ -673,8 +730,8 @@ resave (2/2) oglib_string ... already saved in LabVIEW 2026, skipped
 - It costs one LabVIEW start per run and about 40 to 85 seconds per package,
   mostly the cold load of its VIs. A package whose VIs are all saved in the
   venv's LabVIEW version already is skipped, and starts no LabVIEW.
-- `--no-relink` and headless installs skip only the relink. The resave
-  still runs, and the relink line says so. `--dry-run` lists the packages with
+- The relink pass is off unless `--relink` is given. The resave still
+  runs, and the relink line says so. `--dry-run` lists the packages with
   VIs it may resave, including ones the version check will skip, and starts
   no LabVIEW.
 - A failed resave is a warning, not an error: the package is still
