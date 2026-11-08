@@ -109,7 +109,7 @@ stderr:
 #[then(expr = "the venv holds {word} in its add-on folder and no staging folder")]
 async fn landed_without_staging(world: &mut CliWorld, package: String) {
     let venv = world.sandbox.venv_dir();
-    let folder = venv.join(&package);
+    let folder = venv.join("packages").join(&package);
     assert!(folder.is_dir(), "{} is missing", folder.display());
     let staging = venv.with_file_name(".lv-venv.staging");
     assert!(!staging.exists(), "{} is left behind", staging.display());
