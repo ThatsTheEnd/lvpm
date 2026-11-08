@@ -1,7 +1,8 @@
 # The command-line interface
 
 > **This fork (2026-10-30).** Came in with the upstream merge and describes
-> upstream's CLI at `39a5aaf`. This fork's command reference is
+> upstream's CLI (last synced at `bdaf82d`), so flags such as `install --manifest`
+> and `--no-hooks` are upstream's. This fork's command reference is
 > [usage.md](usage.md); the `main.rs` split it mentions is done here as ADR 5.
 
 What `lvpm`'s interface is today, what has to change before it is called
@@ -36,14 +37,14 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   install [<pkg>[@ver]] [--manifest FILE] [--dry-run] [--no-deps]
           [--no-linkfix] [--relink] [--no-hooks | --hooks] [--allow-downgrade]
           [--relink-timeout SECS] [--relink-progress NAME] [--keep-open]
-  uninstall <pkg> | --all
+  uninstall <pkg> [--with-deps | --keep-deps] | --all
   relink <pkg> | --all          [--relink-timeout] [--relink-progress] [--keep-open]
   linkfix [--tree DIR] [--dry-run] [--verbose] [--keep-compiled-code]
      [--fix owner,paths,qualifiers,source-only] [--report FILE]
   run-hooks <pkg> | --all       [--timeout SECS]
   refresh                       [--timeout SECS]
   start                         [--wait SECS]
-  launch [<lvproj>]
+  launch [<lvproj>] [--ini KEY=VALUE]...
   venv create | status | remove [-y]
   config get <key> | set <key> [<value>...]
   cache add <path>

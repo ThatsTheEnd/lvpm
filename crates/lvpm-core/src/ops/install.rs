@@ -184,14 +184,14 @@ impl std::fmt::Display for Req {
 pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Result<()> {
     let dest = env.destination()?;
     let store = dest.store();
-    let repo = match &dest {
-        Destination::Venv(v) => Some(v.repo.clone()),
+    let bound = match &dest {
+        Destination::Venv(v) => Some(v.manifest_path()),
         _ => None,
     };
 
     // The project this install belongs to, if any: its `[sources]` count even
     // when a single package is named.
-    let found = env.manifest_for(None, repo.as_deref())?;
+    let found = env.manifest_for(None, bound.as_deref())?;
     let Some(package) = package else {
         bail!("give a package name, or --manifest <FILE>");
     };

@@ -10,7 +10,7 @@ repo root (the two VI Server tools sit one level up, in `tools/`). None of
 them needs LabVIEW or VIPM; only the probe VIs in `tools/linkfix/probes/` do. They read lvpm's own data through
 `tools/linkfix/lvpmdata.py`:
 
-- **Install records:** `<venv>/.lvpm/installed/<package>.json` give each
+- **Install records:** `<venv>/installed/<package>.json` give each
   installed file's absolute path.
 - **Package cache:** `%LOCALAPPDATA%\lvpm\cache\lvpm-cache.db` plus the
   content store hold the original archives.
@@ -101,7 +101,7 @@ package at a time in its linkfixed form, and launch until it crashes.
    `robocopy <scratch>\<pkg> <venv store>\<pkg> /MIR`. Robocopy's exit code
    1 means files were copied. Hash one changed file to confirm the swap.
 3. **Clear the venv's compile cache and autosave:** delete
-   `<store>\.lvpm\objcache` and `<store>\.lvpm\data\LVAutoSave`. Delete each
+   `<store>\objcache` and `<store>\data\LVAutoSave`. Delete each
    folder by its literal path; a wildcard delete is refused.
 4. **Launch with the debug ini keys.** Only one LabVIEW may run per venv.
    ```
@@ -111,7 +111,7 @@ package at a time in its linkfixed form, and launch until it crashes.
 5. **Read the result.** Run `crashdump.py --venv <venv>` **right away**:
    - A ~16 MB dump with the same repeating frames is the same crash.
    - 1–4 MB dumps are warnings, not crashes.
-   - No new dump, and `<store>\.lvpm\labview.ini` rewritten at close, means
+   - No new dump, and `<store>\labview.ini` rewritten at close, means
      LabVIEW closed cleanly. A venv LabVIEW writes its ini back only on a
      clean exit.
    - The user saying "it closed" isn't enough: check the dump.
@@ -126,7 +126,7 @@ package at a time in its linkfixed form, and launch until it crashes.
   dumps vanished). Copy the dump out, or run `crashdump.py`, before the next
   launch.
 - **Dump location:** a venv LabVIEW writes reports under
-  `<store>\.lvpm\data\LVInternalReports\LabVIEW\<version>\`, not the user's
+  `<store>\data\LVInternalReports\LabVIEW\<version>\`, not the user's
   `Documents\LabVIEW Data`.
 - **Two LabVIEW versions:** a LabVIEW update between rounds shifts the
   `LabVIEW.exe` and `mgcore` offsets slightly. The `dfir_*.dll` offsets have

@@ -57,13 +57,18 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
         match uninstall_one(env, &mut session, name) {
             Ok(files) => removed += files,
             Err(e) => {
-                if names.len() > 1 {
+                if package.is_none() && names.len() > 1 {
                     env.sink.emit(Event::UninstallFailed {
                         name: name.clone(),
                         error: format!("{e:#}"),
                     });
                 }
                 failed.push((name.clone(), e));
+                // A named package's dependencies follow it: removing them after a
+                // failure would break what stays installed.
+                if package.is_some() {
+                    break;
+                }
             }
         }
     }
@@ -77,7 +82,7 @@ pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependenci
         &InstallOptions::default(),
     )?;
 
-    if names.len() == 1
+    if (package.is_some() || names.len() == 1)
         && let Some((_, e)) = failed.pop()
     {
         return Err(e);
@@ -170,24 +175,30 @@ fn with_dependencies(
     let old = install::records_without_dependencies(&dest.store())?;
     if let Some(p) = old.first().filter(|_| !matches!(deps, Dependencies::Keep)) {
         bail!(
-            "reading installation record {} (dependency list required):              reinstall it, or pass --keep-deps",
+            "reading installation record {} (dependency list required): reinstall it, or pass --keep-deps",
             p.display()
         );
     }
     let installed = install::list_installed(&dest.store())?;
     // Only a venv is bound to a project; a machine-wide install has none.
-    let manifest = match dest {
-        Destination::Venv(v) => Some(v.repo.join(project::FILE_NAME)).filter(|p| p.is_file()),
+    let path = match dest {
+        Destination::Venv(v) => Some(v.manifest_path()).filter(|p| p.is_file()),
         _ => None,
     };
-    let roots: Vec<String> = match &manifest {
-        Some(path) => project::read(path)?
+    let roots: Vec<String> = match &path {
+        Some(path) => env
+            .read_manifest(path)?
             .tables()
             .flat_map(|(_, lines)| lines.iter().map(|(name, _)| name.clone()))
             .collect(),
         None => Vec::new(),
     };
-    let manifest = project::FILE_NAME.to_string();
+    let manifest = path
+        .as_deref()
+        .and_then(Path::file_name)
+        .map_or(project::FILE_NAME.into(), |n| {
+            n.to_string_lossy().into_owned()
+        });
     let plan = dependency::removal_plan(&installed, package, &roots)?;
     if plan.project_declared {
         env.sink.emit(Event::UninstallDeclaredInProject {

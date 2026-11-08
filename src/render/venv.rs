@@ -87,6 +87,7 @@ mod tests {
 
     fn venv() -> Venv {
         Venv {
+            manifest: None,
             repo: PathBuf::from("proj"),
             dir: PathBuf::from("proj").join(".lv-venv"),
             target: LvTarget {

@@ -174,7 +174,7 @@ fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckEr
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     env.check_bitness(&bound.target)?;
     let (_, manifest) = env
-        .manifest_for(None, Some(&bound.repo))?
+        .manifest_for(None, Some(&bound.manifest))?
         .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
     if matches!(scope, Scope::Members) && manifest.distribution.is_none() {
         return Err(anyhow!(

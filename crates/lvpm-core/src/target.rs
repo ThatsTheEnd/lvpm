@@ -10,7 +10,7 @@
 // `config`); the rest of core is handed what it needs.
 #![allow(clippy::disallowed_methods)]
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use serde::Serialize;
 use std::path::{Component, Path, PathBuf};
 
@@ -568,10 +568,13 @@ impl Roots {
 
         // Specs spell the tail with either separator, and only Windows takes
         // both: on Linux `addons\Foo` would be one directory of that name.
-        Ok(rest
-            .split(['/', '\\'])
-            .filter(|c| !c.is_empty())
-            .fold(base, |p, c| p.join(c)))
+        let parts: Vec<&str> = rest.split(['/', '\\']).filter(|c| !c.is_empty()).collect();
+        // `..` that stays inside the venv can still escape the shallower staging folder.
+        ensure!(
+            !parts.iter().any(|c| *c == "." || *c == ".."),
+            "Target Dir {target_dir:?} must not contain `.` or `..`"
+        );
+        Ok(parts.into_iter().fold(base, |p, c| p.join(c)))
     }
 
     /// Manifests live beside the thing they describe: inside the venv or the
@@ -929,6 +932,14 @@ mod tests {
             .join("Foo");
         assert_eq!(r.expand("<vi.lib>/addons/Foo").unwrap(), want);
         assert_eq!(r.expand("<vi.lib>\\addons\\Foo\\").unwrap(), want);
+    }
+
+    #[test]
+    fn a_target_dir_may_not_climb_with_dot_dot() {
+        let r = Roots::scratch(Path::new("/tmp/box"));
+        assert!(r.expand("<vi.lib>/../../../..").is_err());
+        assert!(r.expand("<vi.lib>\\addons\\..\\x").is_err());
+        assert!(r.expand("<vi.lib>/./addons").is_err());
     }
 
     #[test]

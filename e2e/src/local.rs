@@ -85,11 +85,7 @@ pub fn trials() -> Vec<Trial> {
             uninstall_project_dependencies,
         ),
         (
-            "uninstall: old bindings require recreation",
-            uninstall_old_binding,
-        ),
-        (
-            "uninstall: explicit VIPM manifest protects project dependencies",
+            "uninstall: a venv bound to vipm.toml protects its dependencies",
             uninstall_vipm_manifest,
         ),
         (
@@ -505,11 +501,11 @@ fn uninstall_project_dependencies() -> Check {
     let path = venv().join("lvpm.toml");
     let original = std::fs::read_to_string(&path).map_err(fail)?;
     let result = (|| {
-        for table in ["dependencies", "dependencies.test"] {
+        for table in ["dependencies", "dependency-groups.test"] {
             let manifest = if table == "dependencies" {
                 original.replace("[dependencies]", "[dependencies]\nlvpm_e2e_private = \"*\"")
             } else {
-                format!("{original}\n[dependencies.test]\nlvpm_e2e_private = \"*\"\n")
+                format!("{original}\n[dependency-groups.test]\nlvpm_e2e_private = \"*\"\n")
             };
             std::fs::write(&path, manifest).map_err(fail)?;
             ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"])?;
@@ -533,30 +529,6 @@ fn uninstall_project_dependencies() -> Check {
     result
 }
 
-fn uninstall_old_binding() -> Check {
-    ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"])?;
-    let path = venv_dir()?.join("venv.json");
-    let original = std::fs::read(&path).map_err(fail)?;
-    let result = (|| {
-        let mut binding: serde_json::Value = serde_json::from_slice(&original).map_err(fail)?;
-        binding
-            .as_object_mut()
-            .ok_or("venv binding is not an object")?
-            .remove("manifest");
-        std::fs::write(&path, serde_json::to_vec_pretty(&binding).map_err(fail)?).map_err(fail)?;
-        let failed = lvpm(&venv(), &["uninstall", "lvpm_e2e_root", "--with-deps"])
-            .try_failure()
-            .map_err(fail)?;
-        contains(&failed, "unsupported venv binding")?;
-        exists(&record("lvpm_e2e_root")?)?;
-        exists(&record("lvpm_e2e_private")?)?;
-        exists(&record("lvpm_e2e_shared")?)
-    })();
-    std::fs::write(&path, original).map_err(fail)?;
-    result?;
-    ok(&venv(), &["uninstall", "--all"]).map(drop)
-}
-
 fn uninstall_vipm_manifest() -> Check {
     let dir = env().work.join("vipm-venv");
     std::fs::create_dir_all(&dir).map_err(fail)?;
@@ -566,16 +538,9 @@ fn uninstall_vipm_manifest() -> Check {
          [dependencies]\nlvpm_e2e_private = \"1.0.0.1\"\n",
     )
     .map_err(fail)?;
-    std::fs::write(
-        dir.join("sources.toml"),
-        "[sources]\ndefaults = false\n[dependencies]\nlvpm_e2e_root = \"*\"\n",
-    )
-    .map_err(fail)?;
     ok(&dir, &["venv", "create", "--manifest", "vipm.toml"])?;
-    ok(
-        &dir,
-        &["install", "--manifest", "sources.toml", "--no-relink"],
-    )?;
+    // This fork's install has no --manifest: the venv bound to vipm.toml is the destination.
+    ok(&dir, &["install", "lvpm_e2e_root", "--no-relink"])?;
     let result = ok(&dir, &["uninstall", "lvpm_e2e_root", "--with-deps"])?;
     contains(&result, "keeping lvpm_e2e_private: declared in vipm.toml")?;
     contains(

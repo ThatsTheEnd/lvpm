@@ -531,6 +531,7 @@ mod tests {
     fn a_venv() -> Venv {
         let repo = PathBuf::from("proj");
         Venv {
+            manifest: None,
             dir: repo.join(".lv-venv"),
             repo,
             target: LvTarget {

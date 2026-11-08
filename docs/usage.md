@@ -9,7 +9,7 @@
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, run linkfix, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
-| `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one relink pass ([The lock file](#the-lock-file))                    |
+| `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one linkfix pass ([The lock file](#the-lock-file))                    |
 | `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
@@ -41,9 +41,9 @@ Flags that apply to every command:
 | `--labview-version <YYYY>` | Install into this LabVIEW version (see `lvpm targets`)                                                    |
 | `--project <DIR>`          | Use that project's venv instead of looking upwards from the current directory; for `init`, the folder to write the project into |
 | `--global`                 | Use the LabVIEW installation itself, even from inside a project that has a venv                           |
-| `--prefix <DIR>`           | Install into a scratch directory instead of LabVIEW (file copy only; nothing to relink or run hooks with) |
+| `--prefix <DIR>`           | Install into a scratch directory instead of LabVIEW (files and linkfix only; nothing to relink or run hooks with) |
 | `--refresh`                | Ask each index whether it changed (a conditional request) instead of trusting the cache in `%LOCALAPPDATA%\lvpm\cache` |
-| `--yes` / `-y`             | Answer yes to every prompt (today only `venv remove` asks). `LVPM_YES` does the same; `0`, `false`, `no`, `off` or empty leaves it off |
+| `--yes` / `-y`             | Answer yes to every prompt (`venv remove`, and `uninstall` about dependencies). `LVPM_YES` does the same; `0`, `false`, `no`, `off` or empty leaves it off |
 | `--labview-bitness <32\|64>` | Use only 32- or 64-bit LabVIEW installations, to pick one when both of a version are installed; a venv bound to the other bitness is an error (`--global` skips the venv) |
 | `--json`                   | Write JSON Lines to stdout for a script or front end ([JSON output and exit codes](https://github.com/ThatsTheEnd/lvpm#json-output-and-exit-codes)). Not taken by `app-probe`, `vi-probe`, `vi-save` or `vi-run` (exit 2) |
 
@@ -660,8 +660,8 @@ Needs LabVIEW 2024 Q1 or later.
 Two things follow from LabVIEW reading an addon's contents at launch:
 
 - After `lvpm install`, a LabVIEW already open on the venv cannot see the new
-  files. Restart it with `lvpm launch`. For the same reason the relink runs
-  in a LabVIEW that lvpm starts fresh on the venv, and is refused while one
+  files. Restart it with `lvpm launch`. For the same reason the resave (and the
+  relink, with `--relink`) runs in a LabVIEW that lvpm starts fresh on the venv, and is refused while one
   is already open there.
 - The real installation always wins over the overlay: a package installed
   both globally and in the venv loads from the global copy, whatever its

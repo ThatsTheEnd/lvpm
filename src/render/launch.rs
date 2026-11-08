@@ -54,6 +54,7 @@ mod tests {
         let dir = PathBuf::from("proj").join(".lv-venv");
         let mut done = Launched {
             venv: Venv {
+                manifest: None,
                 repo: PathBuf::from("proj"),
                 dir: dir.clone(),
                 target: LvTarget {

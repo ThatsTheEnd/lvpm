@@ -39,7 +39,8 @@ wins over the overlay; `LVAddons.AdditionalLocations` needs LabVIEW 2024 Q1.
 
 ### Iteration 2 - WIP
 
-- ~~**Install hooks in a venv.**~~ Done. `PostInstall` now runs in the venv's
+- ~~**Install hooks in a venv.**~~ Done upstream; this fork still runs no
+  hook in a venv ([usage](usage.md#install-hooks)). Upstream, `PostInstall` now runs in the venv's
   own instance, sharing the one LabVIEW the install already starts, and
   `lvpm run-hooks` is venv-aware too. Confirmed on
   `ni_lib_advanced_http_client_api`: it ships both `lvwebclient_32.dll` and
@@ -56,7 +57,7 @@ wins over the overlay; `LVAddons.AdditionalLocations` needs LabVIEW 2024 Q1.
   files only the 3 that were saved by hand ever changed. `tools/linkfix/audit.py`
   reports the two properties that decide it (embedded compiled code, and
   linker paths that are not `<vilib>`-relative).
-- ~~**Rewrite linker paths in Rust.**~~ Done: `lvpm linkfix` (`src/linkfix.rs`).
+- ~~**Rewrite linker paths in Rust.**~~ Done: `lvpm linkfix` (`crates/lvpm-core/src/linkfix.rs`).
   The real residue turned out to be bigger than the 579 absolutes: 5127 of
   7649 VIs carried a relative or empty owner path, relative subVI paths, or
   links into other libraries without the qualifier — everything a project

@@ -967,6 +967,12 @@ fn run(cli: &Cli) -> Result<Report> {
             use ops::uninstall::Dependencies;
             let ask = |names: &[String]| {
                 use std::io::IsTerminal;
+                // Under --json stdin is no place for an answer.
+                ensure!(
+                    !cli.json,
+                    "dependencies can be removed: {}. Pass --with-deps, --keep-deps or --yes under --json",
+                    names.join(", ")
+                );
                 let stdin = std::io::stdin();
                 confirm_dependencies(
                     names,
@@ -978,6 +984,7 @@ fn run(cli: &Cli) -> Result<Report> {
             let deps = match (with_deps, keep_deps) {
                 (true, _) => Dependencies::Remove,
                 (_, true) => Dependencies::Keep,
+                _ if cli.yes => Dependencies::Remove,
                 _ => Dependencies::Ask(&ask),
             };
             ops::uninstall::uninstall(&env, package.as_deref(), *all, deps)
@@ -1243,7 +1250,6 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<R
     }
 }
 
-/// Ask whether to delete the venv: core takes no input of its own (AC-K6).
 /// Ask whether uninstall takes the dependencies nothing else needs with it.
 /// Refused where nobody can answer: a script says which with a flag.
 fn confirm_dependencies(
@@ -1269,6 +1275,7 @@ fn confirm_dependencies(
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
+/// Ask whether to delete the venv: core takes no input, so the front end asks.
 fn confirm_removal(v: &venv::Venv) -> Result<bool> {
     eprint!(
         "delete {} and everything installed in it? [y/N] ",

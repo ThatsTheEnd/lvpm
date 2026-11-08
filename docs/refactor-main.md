@@ -15,9 +15,10 @@ This is the first step of the [roadmap](roadmap.md)'s Terminal UI work, and
 the CLI changes in [cli.md](cli.md) land in the files it creates. Line
 numbers below are as of `main` at `39a5aaf`.
 
-The install resolver has since moved to `src/resolve.rs`, with tests for
+The install resolver has since moved out of `main.rs` (here: `resolve_greedy` in
+`crates/lvpm-core/src/ops/install.rs`), with tests for
 resolution and structured notices for the CLI. `Project` also exposes declared
-dependency names across all groups, and `src/dependency.rs` owns package
+dependency names across all groups, and `crates/lvpm-core/src/dependency.rs` owns package
 dependency metadata and uninstall planning. The remaining split below is
 still planned. Unlike the original resolver, an unreadable or invalid
 installed dependency record now fails explicitly instead of being ignored.

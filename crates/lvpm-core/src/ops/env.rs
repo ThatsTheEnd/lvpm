@@ -276,18 +276,17 @@ impl<'a> OpEnv<'a> {
     }
 
     /// The manifest a command belongs to: `explicit` (`--manifest`) names it;
-    /// else the venv's `repo` when one is in effect; else `--project`'s; else
+    /// else `bound`, the manifest of the venv in effect; else `--project`'s; else
     /// the nearest `lvpm.toml` at or above the working directory. None is fine
     /// — a package can be installed without a project.
     pub fn manifest_for(
         &self,
         explicit: Option<&Path>,
-        repo: Option<&Path>,
+        bound: Option<&Path>,
     ) -> Result<Option<(PathBuf, Project)>> {
-        let path = match (explicit, repo, &self.flags.project) {
+        let path = match (explicit, bound, &self.flags.project) {
             (Some(p), _, _) => Some(self.cwd.join(p)),
-            // A venv created with `--manifest` may have no `lvpm.toml` beside it.
-            (None, Some(r), _) => Some(r.join(project::FILE_NAME)).filter(|p| p.is_file()),
+            (None, Some(m), _) => Some(m.to_path_buf()).filter(|p| p.is_file()),
             (None, None, Some(dir)) => {
                 Some(self.cwd.join(dir).join(project::FILE_NAME)).filter(|p| p.is_file())
             }

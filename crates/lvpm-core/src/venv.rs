@@ -37,6 +37,10 @@ pub struct Venv {
     /// own, so the user's primary IDE on the default port is never mistaken
     /// for it.
     pub port: u16,
+    /// The manifest file the venv was created from, relative to `repo`
+    /// (`None`: `lvpm.toml`).
+    #[serde(skip)]
+    pub manifest: Option<PathBuf>,
 }
 
 /// What `venv create` pins. The payload is relinked and saved in this
@@ -51,6 +55,14 @@ struct Binding {
     bitness: u8,
     port: u16,
     created_at: u64,
+    /// The manifest's file name, beside the venv; a binding without one means `lvpm.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<PathBuf>,
+}
+
+/// The project manifest at `repo` that a binding names.
+fn bound_manifest(repo: &Path, manifest: Option<&Path>) -> PathBuf {
+    repo.join(manifest.unwrap_or(Path::new(project::FILE_NAME)))
 }
 
 pub(crate) fn binding_path(dir: &Path) -> PathBuf {
@@ -68,7 +80,7 @@ fn legacy_binding_path(dir: &Path) -> PathBuf {
 fn reject_legacy(dir: &Path) -> Result<()> {
     ensure!(
         !legacy_binding_path(dir).exists(),
-        "{} uses the old venv layout; close its LabVIEW, then run `lvpm venv remove`          and `lvpm venv create`, followed by `lvpm install`",
+        "{} uses the old venv layout; close its LabVIEW, then run `lvpm venv remove` and `lvpm venv create`, followed by `lvpm install`",
         dir.display()
     );
     Ok(())
@@ -82,13 +94,16 @@ pub fn staging_of(dir: &Path) -> PathBuf {
 }
 
 impl Venv {
+    /// The project manifest this venv belongs to.
+    pub fn manifest_path(&self) -> PathBuf {
+        bound_manifest(&self.repo, self.manifest.as_deref())
+    }
+
     /// Roots for installing one package: its own addon under the venv.
     pub fn roots_for_pkg(&self, pkg: &str) -> Result<Roots> {
         // The name becomes a directory LabVIEW enumerates;
         ensure!(
-            !pkg.is_empty()
-                && pkg != "."
-                && pkg != ".."
+            crate::community::installable_name(pkg)
                 && pkg
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
@@ -262,6 +277,7 @@ fn load_inner(repo: &Path, venv_dir: &Path, targets: &[LvTarget], legacy: bool) 
         dir,
         target,
         port: b.port,
+        manifest: b.manifest,
     })
 }
 
@@ -278,7 +294,22 @@ fn read_binding_at(repo: &Path, bp: &Path) -> Result<Binding> {
             repo.display()
         )
     })?;
-    serde_json::from_str(&text).with_context(|| format!("reading {}", bp.display()))
+    let b: Binding =
+        serde_json::from_str(&text).with_context(|| format!("reading {}", bp.display()))?;
+    // A bare file name: the binding must not point the manifest outside the repo.
+    if let Some(name) = &b.manifest {
+        ensure!(
+            name.components().count() == 1
+                && matches!(
+                    name.components().next(),
+                    Some(std::path::Component::Normal(_))
+                ),
+            "invalid manifest file name {} in {}",
+            name.display(),
+            bp.display()
+        );
+    }
+    Ok(b)
 }
 
 /// What a venv's binding says, taken as it is: the LabVIEW it names is not
@@ -292,6 +323,8 @@ pub struct Bound {
     pub dir: PathBuf,
     /// The installation the venv was bound to, as stored.
     pub target: LvTarget,
+    /// The manifest the venv was created from.
+    pub manifest: PathBuf,
 }
 
 impl Bound {
@@ -308,6 +341,7 @@ pub fn binding(repo: &Path, venv_dir: &Path) -> Result<Bound> {
     let dir = repo.join(venv_dir);
     let b = read_binding(&repo, &dir)?;
     Ok(Bound {
+        manifest: bound_manifest(&repo, b.manifest.as_deref()),
         repo,
         dir,
         target: LvTarget {
@@ -385,6 +419,11 @@ pub fn create(
         target.label()
     );
 
+    // Recorded only when it is not `lvpm.toml`, which a binding without one means.
+    let manifest = manifest_path
+        .file_name()
+        .filter(|n| *n != project::FILE_NAME)
+        .map(PathBuf::from);
     // A project that has no manifest yet gets one, pinned to the LabVIEW it
     // was just bound to — that is what the minimum means from here on.
     if proj.is_none() {
@@ -416,12 +455,14 @@ pub fn create(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
+        manifest: manifest.clone(),
     };
     let v = Venv {
         repo,
         dir,
         target,
         port,
+        manifest,
     };
     // The venv's own ini is copied from the target's at its first LabVIEW
     // start (`launch::write_ini`), not here, so a venv can be bound to an
@@ -741,5 +782,41 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&none);
+    }
+
+    #[test]
+    fn the_binding_names_the_manifest_and_refuses_one_outside_the_repo() {
+        let repo = scratch_dir("bound-manifest");
+        let targets = [labview_2026()];
+        let v = create(
+            &repo,
+            Some("2026"),
+            None,
+            Path::new(".v"),
+            &targets,
+            &NullSink,
+        )
+        .unwrap();
+        assert_eq!(v.manifest_path(), repo.join(project::FILE_NAME));
+
+        let bp = binding_path(&v.dir);
+        let mut b: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&bp).unwrap()).unwrap();
+        for (name, ok) in [
+            ("vipm.toml", true),
+            ("../x.toml", false),
+            ("sub/x.toml", false),
+        ] {
+            b["manifest"] = name.into();
+            std::fs::write(&bp, b.to_string()).unwrap();
+            match load(&repo, Path::new(".v"), &targets) {
+                Ok(v) => assert!(ok && v.manifest_path() == repo.join(name), "{name}"),
+                Err(e) => assert!(
+                    !ok && e.to_string().contains("invalid manifest"),
+                    "{name}: {e:#}"
+                ),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

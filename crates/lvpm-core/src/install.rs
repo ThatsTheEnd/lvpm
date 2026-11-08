@@ -23,11 +23,9 @@ pub struct Manifest {
     pub target: String,
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
-    /// The packages this version requires directly, as its spec names them.
-    /// Uninstall follows them to find what could go with it. Records written
-    /// before they were kept have none, so nothing goes with those.
-    /// Direct package requirements, an empty list when there are none.
-    /// Missing in records written before lvpm kept it: see
+    /// The packages this version requires directly, as its spec names them;
+    /// uninstall follows them. Missing in records written before lvpm kept
+    /// it, and then removing dependencies refuses: see
     /// [`records_without_dependencies`].
     #[serde(default)]
     pub dependencies: Vec<String>,
