@@ -157,7 +157,7 @@ impl CliWorld {
         let installation = self.installation();
         std::fs::create_dir_all(installation.join("vi.lib")).expect("make the installation");
         let venv = self.sandbox.venv_dir();
-        std::fs::create_dir_all(venv.join(".lvpm")).expect("make the venv");
+        std::fs::create_dir_all(&venv).expect("make the venv");
         let binding = json!({
             "target_key": "LabVIEW-2026-64bit",
             "target_path": installation.to_string_lossy(),
@@ -167,7 +167,7 @@ impl CliWorld {
             "port": predicted_port(&venv),
             "created_at": 0,
         });
-        std::fs::write(venv.join(".lvpm/venv.json"), binding.to_string()).expect("bind the venv");
+        std::fs::write(venv.join("venv.json"), binding.to_string()).expect("bind the venv");
     }
 
     /// One part of a `holding` list: files, a folder, a copy, or a file made
@@ -233,7 +233,12 @@ impl CliWorld {
     /// A package the venv holds: `from` as `rel` below its `vi.lib`, and the
     /// install record that lists it.
     fn install_in_venv(&self, package: &str, rel: &str, from: &Path) {
-        let tree = self.sandbox.venv_dir().join(package).join("1/vi.lib");
+        let tree = self
+            .sandbox
+            .venv_dir()
+            .join("packages")
+            .join(package)
+            .join("1/vi.lib");
         let to = self.write(&tree.join(rel), &std::fs::read(from).expect("a file"));
         self.record_install(package, &[to]);
     }
@@ -251,7 +256,12 @@ impl CliWorld {
             .unwrap_or_else(|| panic!("no committed pilot archive for {package}"));
         let mut zip = zip::ZipArchive::new(std::fs::File::open(archive).expect("a pilot archive"))
             .expect("a zip");
-        let tree = self.sandbox.venv_dir().join(package).join("1");
+        let tree = self
+            .sandbox
+            .venv_dir()
+            .join("packages")
+            .join(package)
+            .join("1");
         let mut files = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).expect("a zip entry");
@@ -281,7 +291,7 @@ impl CliWorld {
         let record_path = self
             .sandbox
             .venv_dir()
-            .join(format!(".lvpm/installed/{package}.json"));
+            .join(format!("installed/{package}.json"));
         self.write(&record_path, record.to_string().as_bytes());
     }
 

@@ -18,6 +18,7 @@
 
 - [Commands and configuration](usage.md)
 - [JSON output and exit codes](reference/json-output.md)
+- [linkfix](linkfix.md)
 - [The VI Server protocol](vi-server-protocol.md)
 
 # Explanation

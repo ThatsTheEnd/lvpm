@@ -148,7 +148,7 @@ Feature: add and remove edit the manifest, then lock and sync
     Then the command fails saying --no-deps is not supported with a lock
 
   Scenario: uninstall inside a project hints at remove
-    When I run "lvpm uninstall beta --prefix dest"
+    When I run "lvpm uninstall beta --keep-deps --prefix dest"
     Then "beta" is uninstalled
     And the output says "beta" is still in lvpm.toml and "lvpm remove beta" removes it for good
 

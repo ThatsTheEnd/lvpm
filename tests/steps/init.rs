@@ -346,11 +346,7 @@ async fn folder_feed_with_the_pilots(world: &mut CliWorld) {
 
 #[then(regex = r"^the folder has a venv bound to LabVIEW (\d{4})$")]
 async fn folder_has_a_venv_bound_to(world: &mut CliWorld, year: String) {
-    let binding = world
-        .init_cwd()
-        .join(VENV_DIR)
-        .join(".lvpm")
-        .join("venv.json");
+    let binding = world.init_cwd().join(VENV_DIR).join("venv.json");
     let text = std::fs::read_to_string(&binding)
         .unwrap_or_else(|why| panic!("{}: {why}", binding.display()));
     let json: serde_json::Value = serde_json::from_str(&text).expect("a venv binding in JSON");

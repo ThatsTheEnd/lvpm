@@ -30,7 +30,7 @@ Feature: The current CLI's output is recorded so later changes can be compared a
       | a project using only the loopback feed                  | lvpm install hooked --prefix dest                | dest  | install-hooked           |
       | beta installed in dest                                  | lvpm list --prefix dest                          | -     | list-beta                |
       | an empty dest                                           | lvpm list --prefix dest                          | -     | list-empty               |
-      | beta installed in dest                                  | lvpm uninstall beta --prefix dest                | dest  | uninstall-beta           |
+      | beta installed in dest                                  | lvpm uninstall beta --keep-deps --prefix dest    | dest  | uninstall-beta           |
       | an empty dest                                           | lvpm uninstall beta --prefix dest                | dest  | uninstall-missing        |
       | a project using only the loopback feed                  | lvpm install does_not_exist --prefix dest        | dest  | install-missing          |
       | no project                                              | lvpm list --labview-version 2026 --prefix dest   | -     | flags-conflict           |
@@ -40,7 +40,7 @@ Feature: The current CLI's output is recorded so later changes can be compared a
       | no project, default feeds via the loopback proxy        | lvpm search a                                    | -     | search-a-noproject       |
       | no project, default feeds via the loopback proxy        | lvpm install beta --prefix dest                  | dest  | install-beta-noproject   |
       | no project, beta installed in dest                      | lvpm list --prefix dest                          | -     | list-beta-noproject      |
-      | no project, beta installed in dest                      | lvpm uninstall beta --prefix dest                | dest  | uninstall-beta-noproject |
+      | no project, beta installed in dest                      | lvpm uninstall beta --keep-deps --prefix dest    | dest  | uninstall-beta-noproject |
       | a project using the faulty feed                         | lvpm install corrupt --prefix dest               | dest  | install-corrupt          |
       | a project using the faulty feed                         | lvpm install tampered --prefix dest              | dest  | install-tampered         |
       | a project using the faulty feed                         | lvpm install missing --prefix dest               | dest  | install-archive-404      |

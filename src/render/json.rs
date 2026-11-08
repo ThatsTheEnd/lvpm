@@ -124,6 +124,7 @@ mod tests {
         };
         let status = VenvStatus {
             venv: Venv {
+                manifest: None,
                 repo: "repo".into(),
                 dir: "repo/dir".into(),
                 target,

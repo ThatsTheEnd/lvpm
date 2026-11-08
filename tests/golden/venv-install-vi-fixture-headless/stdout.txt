@@ -12,9 +12,11 @@ resave (1/1) lvpm_vi_fixture ... 1 saved (<DUR>)
 
 done. 1 files written.
 
+linkfix: skipped (--relink selects LabVIEW instead)
+
 relinking 1 folder(s) with <TEMP>/lvpm-relink-package-<LVPM_VERSION>.vi
   lvpm_vi_fixture
-      <SANDBOX>/work/.lv-venv/lvpm_vi_fixture/1/vi.lib/lvpm_vi_fixture ... <DUR>
+      <SANDBOX>/work/.lv-venv/packages/lvpm_vi_fixture/1/vi.lib/lvpm_vi_fixture ... <DUR>
         saved nothing
 
 next: `lvpm launch` starts LabVIEW on this venv — a LabVIEW already open on it

@@ -70,7 +70,7 @@ pub fn status(env: &OpEnv) -> Result<Option<VenvStatus>> {
 
 /// The venv a removal means. There must be one.
 pub fn existing(env: &OpEnv) -> Result<Venv> {
-    match env.find_venv()? {
+    match env.find_venv_for_removal()? {
         Some(venv) => Ok(venv),
         None => bail!("no venv at or above {}", env.cwd.display()),
     }

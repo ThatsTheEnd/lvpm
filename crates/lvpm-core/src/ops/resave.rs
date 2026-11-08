@@ -344,7 +344,7 @@ pub(crate) mod fake {
                 .expect("<staging>/<package>/1")
                 .to_string_lossy()
                 .into_owned();
-            let mut landed: Vec<String> = std::fs::read_dir(&self.venv_dir)
+            let mut landed: Vec<String> = std::fs::read_dir(self.venv_dir.join("packages"))
                 .into_iter()
                 .flatten()
                 .flatten()
@@ -439,7 +439,8 @@ mod tests {
     }
 
     fn landed(venv: &Venv, package: &str) -> bool {
-        install::is_installed(&venv.store(), package) && venv.dir.join(package).join("1").is_dir()
+        install::is_installed(&venv.store(), package)
+            && venv.packages_dir().join(package).join("1").is_dir()
     }
 
     #[test]
@@ -528,7 +529,7 @@ mod tests {
         let (package, error, folder) = failed.expect("a resave_failed event");
         assert_eq!(package, "alpha");
         assert!(error.contains("error 1003"), "{error}");
-        assert_eq!(folder, venv.dir.join("alpha"));
+        assert_eq!(folder, venv.packages_dir().join("alpha"));
         assert!(events.contains(&Event::ResaveRecap {
             failed: vec!["alpha".into()],
             packages: 1,
@@ -601,12 +602,7 @@ mod tests {
         Fake::cannot_start().install();
         let sink = Recorded::default();
 
-        let why = install(
-            &env_on(&sink, &repo),
-            Some("alpha"),
-            &InstallOptions::default(),
-        )
-        .unwrap_err();
+        let why = install(&env_on(&sink, &repo), Some("alpha"), &relink()).unwrap_err();
 
         assert!(sink.events().contains(&Event::ResaveStartFailed {
             error: "no LabVIEW.exe in LabVIEW 2026".into(),
@@ -716,7 +712,7 @@ mod tests {
         assert_eq!(resaves(&events), ["alpha"]);
         assert!(events.contains(&Event::PhaseSkipped {
             phase: crate::events::Phase::Relink,
-            reason: crate::events::SkipReason::Headless,
+            reason: crate::events::SkipReason::Declined,
             skipped: 1,
         }));
         assert_eq!(fake.log().headless, [true]);
@@ -743,10 +739,18 @@ mod tests {
         )));
     }
 
+    /// `--relink`: LabVIEW's load-and-save pass instead of linkfix.
+    fn relink() -> InstallOptions {
+        InstallOptions {
+            force_relink: true,
+            ..InstallOptions::default()
+        }
+    }
+
     fn dry_run() -> InstallOptions {
         InstallOptions {
             dry_run: true,
-            ..InstallOptions::default()
+            ..relink()
         }
     }
 
@@ -786,7 +790,7 @@ mod tests {
             }
         }
         assert!(!venv.staging_dir().exists());
-        assert!(!venv.dir.join("alpha").exists());
+        assert!(!venv.packages_dir().join("alpha").exists());
         assert_eq!(fake.log().starts, 0);
     }
 

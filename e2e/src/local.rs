@@ -57,6 +57,38 @@ pub fn trials() -> Vec<Trial> {
         ),
         ("venv create", venv_create),
         (
+            "uninstall: install dependency graph in venv",
+            uninstall_setup,
+        ),
+        (
+            "uninstall: non-interactive choice and keep-deps",
+            uninstall_keep_dependencies,
+        ),
+        (
+            "uninstall: remove unshared and warn about shared",
+            uninstall_shared_dependencies,
+        ),
+        (
+            "uninstall: warn before removing a required package",
+            uninstall_required_package,
+        ),
+        (
+            "uninstall: old records fail explicitly",
+            uninstall_legacy_records,
+        ),
+        (
+            "uninstall: --all removes remaining venv packages",
+            uninstall_venv_all,
+        ),
+        (
+            "uninstall: project dependencies and their dependencies are kept",
+            uninstall_project_dependencies,
+        ),
+        (
+            "uninstall: a venv bound to vipm.toml protects its dependencies",
+            uninstall_vipm_manifest,
+        ),
+        (
             "venv install with relink in a LabVIEW started with -pref",
             venv_install,
         ),
@@ -179,21 +211,20 @@ fn run_hooks() -> Check {
     .map(drop)
 }
 
+fn relink_vi_from_log(log: &str) -> Option<PathBuf> {
+    let pattern =
+        regex(r"^relinking \d+ folder\(s\) with (.+?)(?:  \(\d+ covered by a parent\))?$");
+    log.lines().find_map(|line| {
+        pattern
+            .captures(line)
+            .map(|capture| PathBuf::from(&capture[1]))
+    })
+}
+
 fn relink_vi_walks() -> Check {
-    // Where the relinks so far have written it: %TEMP% on Windows, lvpm's
-    // cache elsewhere (work_dir in lvpm's main.rs).
-    #[cfg(windows)]
-    let cache = std::env::temp_dir();
-    #[cfg(not(windows))]
-    let cache = PathBuf::from(stdout(&ok(&global(), &["config", "get", "cache"])?).trim());
-    let vi = std::fs::read_dir(&cache)
-        .map_err(|e| format!("{}: {e}", cache.display()))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| {
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
-            name.starts_with("lvpm-relink-package-") && name.ends_with(".vi")
-        })
-        .ok_or_else(|| format!("no relink VI in {}", cache.display()))?;
+    let log = INSTALL_LOG.lock().unwrap().clone();
+    let vi = relink_vi_from_log(&log)
+        .ok_or_else(|| format!("no relink VI in install output:\n{log}"))?;
     let folder = format!(
         "Folder to relink=str:{}",
         lv("vi.lib/lvpm_linux_relink_test").display()
@@ -283,21 +314,44 @@ fn venv_create() -> Check {
 }
 
 fn venv_install() -> Check {
-    ok(&venv(), &["install", "--relink"]).map(drop)
+    ok(&venv(), &["install", "--relink"])?;
+    let dir = venv_dir()?;
+    exists(
+        &dir.join("packages")
+            .join("lvpm_linux_test")
+            .join("1")
+            .join("lvaddoninfo.json"),
+    )?;
+    exists(
+        &dir.join("packages")
+            .join("lvpm_linux_test")
+            .join("1")
+            .join("vi.lib")
+            .join("lvpm_linux_test")
+            .join("E2E Call VI.vi"),
+    )?;
+    exists(&dir.join("installed").join("lvpm_linux_test.json"))?;
+    absent(&dir.join(".lvpm"))
 }
 
 fn venv_ini() -> Check {
     let dir = venv_dir()?;
-    let ini = dir.join(".lvpm").join("labview.ini");
+    let ini = dir.join("labview.ini");
     let text = std::fs::read_to_string(&ini).map_err(|e| format!("{}: {e}", ini.display()))?;
-    let want = format!("LVAddons.AdditionalLocations={}", dir.display());
+    let location = dir.join("packages").display().to_string();
+    let location = if location.contains(' ') {
+        format!("\"{location}\"")
+    } else {
+        location
+    };
+    let want = format!("LVAddons.AdditionalLocations={location}");
     ensure(text.lines().any(|l| l.trim_end() == want), || {
         format!("no `{want}` in {}:\n{text}", ini.display())
     })
 }
 
 fn venv_launch() -> Check {
-    let json = venv_dir()?.join(".lvpm").join("venv.json");
+    let json = venv_dir()?.join("venv.json");
     let v: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json).map_err(fail)?).map_err(fail)?;
     let port = v["port"].as_u64().ok_or("no port in venv.json")? as u16;
@@ -324,4 +378,202 @@ fn overlay_runs() -> Check {
         std::thread::sleep(Duration::from_secs(2));
     }
     ok(&venv(), &["vi-run", &caller(), "--timeout", "60"]).map(drop)
+}
+
+fn record(name: &str) -> Result<PathBuf, libtest_mimic::Failed> {
+    Ok(venv_dir()?.join("installed").join(format!("{name}.json")))
+}
+
+fn addon(name: &str) -> Result<PathBuf, libtest_mimic::Failed> {
+    Ok(venv_dir()?.join("packages").join(name))
+}
+
+fn uninstall_setup() -> Check {
+    contains(
+        &ok(&venv(), &["venv", "status"])?,
+        "not running on this venv",
+    )?;
+    ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"])?;
+    ok(&venv(), &["install", "lvpm_e2e_other", "--no-relink"])?;
+    for (name, dependency) in [
+        ("lvpm_e2e_root", Some("lvpm_e2e_private")),
+        ("lvpm_e2e_private", Some("lvpm_e2e_shared")),
+        ("lvpm_e2e_other", Some("lvpm_e2e_shared")),
+        ("lvpm_e2e_shared", None),
+    ] {
+        let path = record(name)?;
+        let data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).map_err(fail)?).map_err(fail)?;
+        let want = dependency.map(|d| vec![d]).unwrap_or_default();
+        ensure(data["dependencies"] == serde_json::json!(want), || {
+            format!("unexpected dependencies in {}: {data}", path.display())
+        })?;
+        exists(
+            &addon(name)?
+                .join("1")
+                .join("vi.lib")
+                .join(name)
+                .join("fixture.txt"),
+        )?;
+    }
+    Ok(())
+}
+
+fn uninstall_keep_dependencies() -> Check {
+    let failed = lvpm(&venv(), &["uninstall", "lvpm_e2e_root"])
+        .try_failure()
+        .map_err(fail)?;
+    contains(&failed, "--with-deps or --keep-deps")?;
+    exists(&record("lvpm_e2e_root")?)?;
+    ok(&venv(), &["uninstall", "lvpm_e2e_root", "--keep-deps"])?;
+    absent(&record("lvpm_e2e_root")?)?;
+    absent(&addon("lvpm_e2e_root")?)?;
+    exists(&record("lvpm_e2e_private")?)?;
+    exists(&record("lvpm_e2e_shared")?)?;
+    ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"]).map(drop)
+}
+
+fn uninstall_shared_dependencies() -> Check {
+    let result = ok(&venv(), &["uninstall", "lvpm_e2e_root", "--with-deps"])?;
+    contains(
+        &result,
+        "keeping lvpm_e2e_shared: still required by lvpm_e2e_other",
+    )?;
+    for name in ["lvpm_e2e_root", "lvpm_e2e_private"] {
+        absent(&record(name)?)?;
+        absent(&addon(name)?)?;
+    }
+    exists(&record("lvpm_e2e_shared")?)?;
+    exists(&addon("lvpm_e2e_shared")?)?;
+    exists(&record("lvpm_e2e_other")?)
+}
+
+fn uninstall_required_package() -> Check {
+    let result = ok(&venv(), &["uninstall", "lvpm_e2e_shared", "--keep-deps"])?;
+    contains(&result, "required by installed packages: lvpm_e2e_other")?;
+    absent(&record("lvpm_e2e_shared")?)?;
+    exists(&record("lvpm_e2e_other")?)
+}
+
+fn uninstall_legacy_records() -> Check {
+    ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"])?;
+    let path = record("lvpm_e2e_other")?;
+    let original = std::fs::read(&path).map_err(fail)?;
+    let result = (|| {
+        let mut data: serde_json::Value = serde_json::from_slice(&original).map_err(fail)?;
+        data.as_object_mut()
+            .ok_or("installation record is not an object")?
+            .remove("dependencies");
+        std::fs::write(&path, serde_json::to_vec_pretty(&data).map_err(fail)?).map_err(fail)?;
+        // This fork reads old records; only a removal that needs their
+        // dependency list refuses them.
+        let failed = lvpm(&venv(), &["uninstall", "lvpm_e2e_root", "--with-deps"])
+            .try_failure()
+            .map_err(fail)?;
+        contains(&failed, "dependency list required")?;
+        ok(&venv(), &["list"])?;
+        exists(&record("lvpm_e2e_root")?)?;
+        exists(&record("lvpm_e2e_private")?)?;
+        exists(&record("lvpm_e2e_shared")?)
+    })();
+    std::fs::write(&path, original).map_err(fail)?;
+    result
+}
+
+fn uninstall_venv_all() -> Check {
+    ok(&venv(), &["uninstall", "--all"])?;
+    for name in [
+        "lvpm_e2e_root",
+        "lvpm_e2e_private",
+        "lvpm_e2e_shared",
+        "lvpm_e2e_other",
+    ] {
+        absent(&record(name)?)?;
+        absent(&addon(name)?)?;
+    }
+    contains(
+        &ok(&venv(), &["list"])?,
+        "lvpm has installed nothing into this target",
+    )
+}
+
+fn uninstall_project_dependencies() -> Check {
+    let path = venv().join("lvpm.toml");
+    let original = std::fs::read_to_string(&path).map_err(fail)?;
+    let result = (|| {
+        for table in ["dependencies", "dependency-groups.test"] {
+            let manifest = if table == "dependencies" {
+                original.replace("[dependencies]", "[dependencies]\nlvpm_e2e_private = \"*\"")
+            } else {
+                format!("{original}\n[dependency-groups.test]\nlvpm_e2e_private = \"*\"\n")
+            };
+            std::fs::write(&path, manifest).map_err(fail)?;
+            ok(&venv(), &["install", "lvpm_e2e_root", "--no-relink"])?;
+            let result = ok(&venv(), &["uninstall", "lvpm_e2e_root", "--with-deps"])?;
+            contains(&result, "keeping lvpm_e2e_private: declared in lvpm.toml")?;
+            contains(
+                &result,
+                "keeping lvpm_e2e_shared: required by a package declared in lvpm.toml",
+            )?;
+            absent(&record("lvpm_e2e_root")?)?;
+            exists(&record("lvpm_e2e_private")?)?;
+            exists(&record("lvpm_e2e_shared")?)?;
+            let result = ok(&venv(), &["uninstall", "lvpm_e2e_private", "--keep-deps"])?;
+            contains(&result, "lvpm_e2e_private is declared in lvpm.toml")?;
+            exists(&record("lvpm_e2e_shared")?)?;
+            ok(&venv(), &["uninstall", "--all"])?;
+        }
+        Ok(())
+    })();
+    std::fs::write(&path, original).map_err(fail)?;
+    result
+}
+
+fn uninstall_vipm_manifest() -> Check {
+    let dir = env().work.join("vipm-venv");
+    std::fs::create_dir_all(&dir).map_err(fail)?;
+    std::fs::write(
+        dir.join("vipm.toml"),
+        "[project]\nname = \"vipm-e2e\"\nlabview-version = \"2026\"\n\
+         [dependencies]\nlvpm_e2e_private = \"1.0.0.1\"\n",
+    )
+    .map_err(fail)?;
+    ok(&dir, &["venv", "create", "--manifest", "vipm.toml"])?;
+    // This fork's install has no --manifest: the venv bound to vipm.toml is the destination.
+    ok(&dir, &["install", "lvpm_e2e_root", "--no-relink"])?;
+    let result = ok(&dir, &["uninstall", "lvpm_e2e_root", "--with-deps"])?;
+    contains(&result, "keeping lvpm_e2e_private: declared in vipm.toml")?;
+    contains(
+        &result,
+        "keeping lvpm_e2e_shared: required by a package declared in vipm.toml",
+    )?;
+    let location = stdout(&ok(&dir, &["config", "get", "venv.dir"])?);
+    let records = dir.join(location.trim()).join("installed");
+    absent(&records.join("lvpm_e2e_root.json"))?;
+    exists(&records.join("lvpm_e2e_private.json"))?;
+    exists(&records.join("lvpm_e2e_shared.json"))?;
+    ok(&dir, &["uninstall", "--all"]).map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relink_vi_from_log;
+    use std::path::PathBuf;
+
+    #[test]
+    fn finds_relink_vi_in_install_output() {
+        for (log, expected) in [
+            (
+                "relinking 1 folder(s) with /root/.cache/lvpm/cache/lvpm/tools/abc/Relink Package.vi\n",
+                "/root/.cache/lvpm/cache/lvpm/tools/abc/Relink Package.vi",
+            ),
+            (
+                r"relinking 2 folder(s) with C:\Users\Test User\lvpm\tools\abc\Relink Package.vi  (1 covered by a parent)",
+                r"C:\Users\Test User\lvpm\tools\abc\Relink Package.vi",
+            ),
+        ] {
+            assert_eq!(relink_vi_from_log(log), Some(PathBuf::from(expected)));
+        }
+        assert_eq!(relink_vi_from_log("install completed"), None);
+    }
 }

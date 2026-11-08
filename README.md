@@ -17,8 +17,10 @@ lvpm installs `.vip` and `.ogp` packages, the formats VIPM and OpenG use, and
 its own `.lvpkg`, by name. It takes them from the public package directories, your own hosted
 indexes, or local folders. It installs them either into a LabVIEW installation
 or into a project's own venv, so two projects on one machine can use
-different versions of the same library. Then it has LabVIEW fix the installed
-VIs' links. Install hooks are off by default: a package's hooks run only if
+different versions of the same library. Then **linkfix** repairs the installed
+VIs' links and separates their compiled code, without starting LabVIEW
+([Linkfix](docs/linkfix.md)); `--relink` has LabVIEW load and save them
+instead. Install hooks are off by default: a package's hooks run only if
 you allow them ([Hooks](docs/labview-integration.md#hooks)).
 
 Not affiliated with JKI or NI. Working, in active development; see

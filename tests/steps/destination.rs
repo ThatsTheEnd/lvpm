@@ -65,7 +65,7 @@ fn parse_flags(text: &str) -> DestinationFlags {
 
 /// What `lvpm venv create` leaves for a project: the binding to a LabVIEW.
 fn create_venv(project: &Path, bound_to: &LvTarget) {
-    let lvpm_dir = project.join(VENV_DIR).join(".lvpm");
+    let lvpm_dir = project.join(VENV_DIR);
     std::fs::create_dir_all(&lvpm_dir).expect("create the venv");
     let binding = serde_json::json!({
         "target_key": format!("LabVIEW-{}-{}bit", bound_to.version as u32 + 2000, bound_to.bitness),

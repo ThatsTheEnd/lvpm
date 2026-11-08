@@ -157,6 +157,8 @@ pub struct InstallSession {
     /// Relinking happens after every package is on disk, so no package can be
     /// relinked against a dependency that is not there yet.
     pub(super) relink_work: Vec<(String, Vec<PathBuf>)>,
+    /// Every LabVIEW-tree file written so far, for the linkfix pass.
+    pub(super) linkfix_files: Vec<PathBuf>,
     /// PostInstall hooks extracted so far, executed only after the relink
     /// pass has made them runnable.
     pub(super) post_install_hooks: Vec<PostInstallHook>,
@@ -172,6 +174,7 @@ impl InstallSession {
             downloads: None,
             hook_connection: None,
             relink_work: Vec::new(),
+            linkfix_files: Vec::new(),
             post_install_hooks: Vec::new(),
             resaver: Resaver::default(),
         }

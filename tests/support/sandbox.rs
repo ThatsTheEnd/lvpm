@@ -1061,7 +1061,7 @@ mod tests {
             "[project]\nname = \"demo\"\nlabview = \">=2026\"\n",
         )
         .expect("write a manifest");
-        let lvpm_dir = cwd.path().join(VENV_DIR).join(".lvpm");
+        let lvpm_dir = cwd.path().join(VENV_DIR);
         std::fs::create_dir_all(&lvpm_dir).expect("create the venv");
         let binding = serde_json::json!({
             "target_key": "LabVIEW-2026-64bit",
@@ -1409,7 +1409,7 @@ mod tests {
     fn a_learned_venv_port_anchors_normalised_text_after_the_venv_is_gone() {
         let sandbox = sandbox_with_feed();
         let port = venv::predicted_port(&sandbox.venv_dir());
-        let state = sandbox.venv_dir().join(".lvpm");
+        let state = sandbox.venv_dir();
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("venv.json"), format!(r#"{{"port":{port}}}"#)).unwrap();
         sandbox.learn_venv_port();
@@ -1425,7 +1425,7 @@ mod tests {
     fn a_venv_port_that_is_not_the_predicted_one_is_an_error() {
         let sandbox = sandbox_with_feed();
         let wrong = venv::predicted_port(&sandbox.venv_dir()) + 1;
-        let state = sandbox.venv_dir().join(".lvpm");
+        let state = sandbox.venv_dir();
         std::fs::create_dir_all(&state).unwrap();
         std::fs::write(state.join("venv.json"), format!(r#"{{"port":{wrong}}}"#)).unwrap();
         sandbox.learn_venv_port();

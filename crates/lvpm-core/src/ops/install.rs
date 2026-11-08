@@ -2,13 +2,15 @@
 //!
 //! [`resolve_greedy`] turns what was asked for into an [`InstallPlan`];
 //! [`apply`] puts the plan's packages on disk, whoever wrote the plan; and
-//! [`finish`] does what waits for the last package: one relink pass, the
-//! PostInstall hooks and one palette refresh. The steps share an
+//! [`finish`] does what waits for the last package: one linkfix pass (or,
+//! with `--relink`, LabVIEW's relink pass), the PostInstall hooks and one
+//! palette refresh. The steps share an
 //! [`InstallSession`], and [`install`] runs them in that order.
 
 use super::env::{Destination, OpEnv};
 use super::hook_policy::{HookAllow, HookContext, HookSkip, Verdict};
 use super::hooks::{HOOK_TIMEOUT_SECS, HookCall, PostInstallHook, hook_action_info};
+use super::linkfix;
 use super::refresh::refresh_palettes_and_menus;
 use super::relink::{RelinkOptions, relink_in_destination};
 use super::resave;
@@ -36,12 +38,13 @@ pub struct InstallOptions {
     pub dry_run: bool,
     /// Do not install dependencies.
     pub no_deps: bool,
-    /// Copy the files but skip the relink pass. Not the resave: a venv
-    /// install resaves each package whatever this says.
+    /// Leave the files as copied: no linkfix pass.
+    pub no_linkfix: bool,
+    /// Accepted for old callers; LabVIEW's relink pass is off unless
+    /// `force_relink` asks for it.
     pub no_relink: bool,
-    /// Relink even where LabVIEW runs headless, where the pass is otherwise
-    /// off: nothing there opens the IDE, and a compile or build resolves the
-    /// links itself as it loads.
+    /// Run LabVIEW's load-and-save relink pass instead of linkfix (`--relink`).
+    /// Not the resave: a venv install resaves each package whatever this says.
     pub force_relink: bool,
     /// Run every package's install hooks in this command, whether or not
     /// anything allowed them, and even where LabVIEW runs headless, where they
@@ -181,14 +184,14 @@ impl std::fmt::Display for Req {
 pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Result<()> {
     let dest = env.destination()?;
     let store = dest.store();
-    let repo = match &dest {
-        Destination::Venv(v) => Some(v.repo.clone()),
+    let bound = match &dest {
+        Destination::Venv(v) => Some(v.manifest_path()),
         _ => None,
     };
 
     // The project this install belongs to, if any: its `[sources]` count even
     // when a single package is named.
-    let found = env.manifest_for(None, repo.as_deref())?;
+    let found = env.manifest_for(None, bound.as_deref())?;
     let Some(package) = package else {
         bail!("give a package name, or --manifest <FILE>");
     };
@@ -492,6 +495,14 @@ fn install_one(
             entry.name, entry.version
         )
     })?;
+    // The feed's name becomes hook and record paths: the archive must agree with it.
+    anyhow::ensure!(
+        crate::project::same_name(&spec.name, &entry.name),
+        "the archive of {} {} names the package {:?}",
+        entry.name,
+        entry.version,
+        spec.name
+    );
     let mut plan = install::plan(&roots, &spec, &mut zip)?;
     // The old version goes only once the new archive has been read and
     // planned: a refused archive leaves it installed.
@@ -671,12 +682,23 @@ fn preview(env: &OpEnv, session: &mut InstallSession, pkg: &Unpacking) -> Result
         pkg.entry.name.clone(),
         relink::folders_for_spec(&pkg.roots, &pkg.spec)?,
     ));
+    session.linkfix_files.extend(lv_tree_writes(pkg));
     // shortcut: lists packages the version skip may pass over, since a dry run
     // unpacks nothing to read; read the archive members if that misleads.
     if session.venv().is_some() && pkg.plan.writes.iter().any(|w| resave::is_lv_file(&w.dest)) {
         session.resaver.planned.push(pkg.entry.name.clone());
     }
     Ok(())
+}
+
+/// The files the plan writes into the LabVIEW tree: what linkfix prepares.
+fn lv_tree_writes(pkg: &Unpacking) -> Vec<PathBuf> {
+    pkg.plan
+        .writes
+        .iter()
+        .filter(|w| w.dest.starts_with(&pkg.roots.application))
+        .map(|w| w.dest.clone())
+        .collect()
 }
 
 /// Write the package's files, with its PreInstall hook run just before and its
@@ -772,6 +794,7 @@ fn unpack(
         name.clone(),
         m.relink_folders.iter().map(PathBuf::from).collect(),
     ));
+    session.linkfix_files.extend(lv_tree_writes(pkg));
     if run && let Some(hook) = &m.post_install_vi {
         session.post_install_hooks.push(PostInstallHook {
             package: name.clone(),
@@ -846,6 +869,7 @@ pub fn finish(
     opts: &InstallOptions,
 ) -> Result<()> {
     session.close_hook_connection();
+    linkfix::after_install(env, session, applied, opts);
     relink_pass(env, session, applied, opts)?;
     post_install_hooks(env, session, opts);
     refresh_palettes(env, session, applied);
@@ -863,12 +887,8 @@ fn relink_pass(
     applied: &Applied,
     opts: &InstallOptions,
 ) -> Result<()> {
-    // Headless (containers, CI): nothing opens the IDE, and whatever the job
-    // does next — compile, build, test — resolves the links as it loads, so
-    // the pass is off unless asked for. Skipping it saved ten minutes of a
-    // twelve-minute DQMH install; the mass compile after it found nothing
-    // wrong.
-    let headless_skip = env.headless && !opts.force_relink && !opts.no_relink;
+    // Linkfix does the link repair without LabVIEW, so this pass runs only
+    // when `--relink` asks for it, headless or not.
     let work = &session.relink_work;
     let folders: usize = work.iter().map(|(_, f)| f.len()).sum();
     let skipped = |reason| Event::PhaseSkipped {
@@ -884,9 +904,7 @@ fn relink_pass(
     if folders == 0 {
         return Ok(());
     }
-    if headless_skip {
-        env.sink.emit(skipped(SkipReason::Headless));
-    } else if opts.no_relink {
+    if !opts.force_relink || opts.no_relink {
         env.sink.emit(skipped(SkipReason::Declined));
     } else if applied.dry_run {
         env.sink.emit(Event::RelinkPlanned {
@@ -1202,6 +1220,16 @@ mod tests {
             manifest.archive_sha256.as_deref(),
             Some(scratch.sha256.as_str())
         );
+    }
+
+    #[test]
+    fn an_archive_that_names_another_package_than_the_feed_is_refused() {
+        let scratch = Scratch::new("feed-name-mismatch");
+        let mut plan = scratch.plan(None);
+        plan.entries[0].entry.name = "../../escape".into();
+        let why = apply_plan(&scratch, &plan).unwrap_err();
+        assert!(format!("{why:#}").contains("names the package"), "{why:#}");
+        assert!(!scratch.root.join("escape-PreInstall.vi").exists());
     }
 
     #[test]

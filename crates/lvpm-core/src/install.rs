@@ -8,7 +8,7 @@
 use crate::ops::staging::Staging;
 use crate::spec::Spec;
 use crate::target::{LvTarget, Roots, TokenClass};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,12 @@ pub struct Manifest {
     pub target: String,
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
+    /// The packages this version requires directly, as its spec names them;
+    /// uninstall follows them. Missing in records written before lvpm kept
+    /// it, and then removing dependencies refuses: see
+    /// [`records_without_dependencies`].
+    #[serde(default)]
+    pub dependencies: Vec<String>,
     /// Hooks the package declares that were not run: every one in a venv
     /// (hooks act on a LabVIEW installation, and a venv is not one), every
     /// one of a package the install skipped (nothing allowed its hooks, or
@@ -150,6 +156,28 @@ pub fn read_manifest(roots: &Roots, name: &str) -> Result<Manifest> {
     Ok(serde_json::from_str(&text)?)
 }
 
+/// Records written before lvpm kept a dependency list. Uninstall cannot say
+/// which dependencies such a package still needs, so it refuses to plan.
+pub fn records_without_dependencies(roots: &Roots) -> Result<Vec<PathBuf>> {
+    let dir = roots.store_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&dir)? {
+        let p = e?.path();
+        if p.extension().is_some_and(|x| x == "json")
+            && let Ok(text) = std::fs::read_to_string(&p)
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+            && v.get("dependencies").is_none()
+        {
+            out.push(p);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 pub fn list_installed(roots: &Roots) -> Result<Vec<Manifest>> {
     let dir = roots.store_dir();
     if !dir.exists() {
@@ -208,7 +236,14 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
         bail!("the `spec` member is larger than {MAX_SPEC_BYTES} bytes");
     }
     // spec files are latin-1-ish; lossy is fine for the fields we read.
-    crate::spec::parse(&String::from_utf8_lossy(&buf))
+    let spec = crate::spec::parse(&String::from_utf8_lossy(&buf))?;
+    // The name becomes a file name (record, hook VIs), so no path may hide in it.
+    ensure!(
+        !spec.name.is_empty() && !spec.name.contains(['/', '\\', ':']) && !spec.name.contains(".."),
+        "the archive's spec names the package {:?}, which is not a file name",
+        spec.name
+    );
+    Ok(spec)
 }
 
 /// A package entry's content, at most `cap` bytes. The size in the
@@ -413,6 +448,7 @@ pub(crate) fn unpack_to(
             None => format!("scratch {}", roots.application.display()),
         },
         files: written,
+        dependencies: crate::dependency::package_dependency_names(&[], spec.requires.as_deref()),
         skipped_hooks: match roots.venv() {
             Some(_) => declared_hooks(spec),
             // PreInstall has run by now, PostInstall runs after the relink
@@ -645,6 +681,18 @@ mod tests {
     }
 
     #[test]
+    fn a_spec_whose_name_is_a_path_is_refused() {
+        for name in ["../../x", "a/b", "a\\b", ".."] {
+            let text = format!("[Package]\nName={name}\nVersion=1.0\n");
+            let why = read_spec(&mut archive_with_spec(text.as_bytes())).unwrap_err();
+            assert!(
+                format!("{why:#}").contains("names the package"),
+                "{name}: {why:#}"
+            );
+        }
+    }
+
+    #[test]
     fn a_spec_member_of_exactly_the_cap_is_read() {
         let mut zip = archive_with_spec(&padded_spec(MAX_SPEC_BYTES));
         assert_eq!(read_spec(&mut zip).unwrap().name, "alpha");
@@ -693,6 +741,7 @@ mod tests {
             installed_at: 0,
             target: "t".into(),
             files: files.iter().map(|f| f.to_string()).collect(),
+            dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,
             relink_folders: Vec::new(),

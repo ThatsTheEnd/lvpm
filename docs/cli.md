@@ -1,7 +1,8 @@
 # The command-line interface
 
 > **This fork (2026-10-30).** Came in with the upstream merge and describes
-> upstream's CLI at `39a5aaf`. This fork's command reference is
+> upstream's CLI (last synced at `bdaf82d`), so flags such as `install --manifest`
+> and `--no-hooks` are upstream's. This fork's command reference is
 > [usage.md](usage.md); the `main.rs` split it mentions is done here as ADR 5.
 
 What `lvpm`'s interface is today, what has to change before it is called
@@ -9,7 +10,7 @@ stable, and what is still missing. The [command reference](usage.md#commands) is
 the user reference; this file is for deciding. The code changes ride on the
 `main.rs` split in [refactor-main.md](refactor-main.md).
 
-State as of `main` at `39a5aaf` (0.2.1).
+Includes the linkfix install default on `feature/linkfix` (0.2.1).
 
 ## What "stable" will promise
 
@@ -34,19 +35,21 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   search <query>                search the indexes
   list                          what lvpm installed into the target
   install [<pkg>[@ver]] [--manifest FILE] [--dry-run] [--no-deps]
-          [--no-relink | --relink] [--hooks] [--allow-downgrade]
+          [--no-linkfix] [--relink] [--no-hooks | --hooks] [--allow-downgrade]
           [--relink-timeout SECS] [--relink-progress NAME] [--keep-open]
-  uninstall <pkg> | --all
+  uninstall <pkg> [--with-deps | --keep-deps] | --all
   relink <pkg> | --all          [--relink-timeout] [--relink-progress] [--keep-open]
+  linkfix [--tree DIR] [--dry-run] [--verbose] [--keep-compiled-code]
+     [--fix owner,paths,qualifiers,source-only] [--report FILE]
   run-hooks <pkg> | --all       [--timeout SECS]
   refresh                       [--timeout SECS]
   start                         [--wait SECS]
-  launch [<lvproj>]
+  launch [<lvproj>] [--ini KEY=VALUE]...
   venv create | status | remove [-y]
   config get <key> | set <key> [<value>...]
   cache add <path>
   app-probe <id>...             } VI Server primitives,
-  vi-probe <vi>                 } for diagnosis
+  vi-probe <vi>... [--timeout]  } for diagnosis
   vi-save <vi>                  }
   vi-run <vi> [--set N=T:V]... [--get N]... [--get-all] [--timeout] [--watch N] [--poll-ms MS] [--done N]
 ```
@@ -125,13 +128,23 @@ as a hidden alias. Breaking: no.
 
 ### 6. Relink and hooks: one flag each, three values
 
-`install` has `--no-relink`, `--relink` and `--hooks`. The relink default
-depends on `LV_RTE_HEADLESS`. Hooks are off by default everywhere and
+`install` runs Rust linkfix by default after copying and before PostInstall:
+repair links and prepare source-only files without starting LabVIEW.
+`--no-linkfix` opts out. This pass only edits files written by the install in
+the LabVIEW tree; the explicit `linkfix` command considers the selected tree.
+Unknown layouts and conversion exceptions are reported, not guessed.
+The [linkfix reference](linkfix.md) describes the
+changes, boundaries and inspection commands.
+
+The separate LabVIEW load/save pass is off by default and enabled by
+`--relink`, regardless of `LV_RTE_HEADLESS`. It replaces linkfix rather than
+running after it. The hidden legacy `--no-relink`
+is accepted and ignored; it does not disable linkfix. Hooks are off by default everywhere and
 `--hooks` runs them for one command ([Hooks](labview-integration.md#hooks)).
 
 Proposed: `--relink auto|always|never` and `--hooks auto|always|never`,
-`auto` being the allowlist behaviour (`hooks = "run"` or `hooks.run`; off
-otherwise). `--no-relink` stays as an alias for
+`auto` would need an explicit policy; this proposal does not change the
+independent linkfix default. `--no-relink` would become an alias for
 `--relink never`. Breaking: `--relink` and `--hooks` without a value would
 need a value; clap's `default_missing_value = "always"` keeps them working.
 

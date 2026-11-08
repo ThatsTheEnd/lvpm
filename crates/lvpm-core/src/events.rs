@@ -269,6 +269,25 @@ pub enum Event {
     /// A dry run's packages with LabVIEW files, which a venv install resaves.
     ResavePlanned { packages: Vec<String> },
 
+    // ---- ops::linkfix ----
+    /// `lvpm linkfix` is fixing the files under `roots` package roots.
+    LinkfixStarted {
+        roots: usize,
+        methods: Vec<crate::linkfix::Method>,
+        dry_run: bool,
+    },
+    /// An install is preparing the LabVIEW files it wrote with linkfix.
+    LinkfixPreparing,
+    /// A dry run: an install would prepare its LabVIEW files with linkfix.
+    LinkfixPlanned { files: usize },
+    /// Linkfix could not run over an install's files. Not fatal: the files
+    /// are installed as copied.
+    LinkfixFailed { error: String },
+    /// What linkfix changed, file by file.
+    LinkfixDone { report: LinkfixReport },
+    /// `lvpm linkfix --report` wrote its JSON report here.
+    LinkfixReportWritten { path: PathBuf },
+
     // ---- ops::relink ----
     /// The relink pass begins: `folders` to walk with the relink VI at `vi`,
     /// `covered_by_parent` more that a folder above them already covers.
@@ -333,6 +352,16 @@ pub enum Event {
     },
     /// One package of a sweep could not be uninstalled; the rest go on.
     UninstallFailed { name: String, error: String },
+    /// The package being uninstalled is declared in the project's manifest,
+    /// which uninstall does not edit.
+    UninstallDeclaredInProject { package: String, manifest: String },
+    /// Installed packages that require the package being uninstalled.
+    UninstallRequiredBy {
+        package: String,
+        dependents: Vec<String>,
+    },
+    /// A dependency of the uninstalled package stays installed.
+    DependencyKept { name: String, why: KeptBecause },
     /// PostUninstall.vi could not be copied out of the package's folder, which
     /// goes with the package, so it will not run.
     PostUninstallNotStaged { error: String },
@@ -726,9 +755,42 @@ pub enum Phase {
     /// Writing a package's files. Nothing past this point can be taken back by
     /// cancelling.
     Unpack,
+    /// Repairing the links of the LabVIEW files written, without LabVIEW.
+    Linkfix,
     Relink,
     Hooks,
     Refresh,
+}
+
+/// What one linkfix run did, summed and per file.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LinkfixReport {
+    pub dry_run: bool,
+    /// Name every changed and every skipped file, not only the totals.
+    pub verbose: bool,
+    pub looked_at: usize,
+    pub changed: usize,
+    pub clean: usize,
+    pub totals: crate::linkfix::Changes,
+    /// Files that kept their embedded compiled code, with the reason. Always
+    /// named: LabVIEW may still ask to save them.
+    pub not_separated: Vec<(PathBuf, String)>,
+    /// Every changed file and what changed in it.
+    pub changed_files: Vec<(PathBuf, crate::linkfix::Changes)>,
+    /// Every file linkfix could not read or rewrite, and why.
+    pub skipped_files: Vec<(PathBuf, String)>,
+}
+
+/// Why uninstall keeps a dependency of the package it removes.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KeptBecause {
+    /// The project's manifest declares it.
+    Declared { manifest: String },
+    /// A package the project's manifest declares needs it.
+    NeededByDeclared { manifest: String },
+    /// These other installed packages still require it.
+    RequiredBy { owners: Vec<String> },
 }
 
 /// Why a phase did not run.
@@ -741,6 +803,8 @@ pub enum SkipReason {
     Headless,
     /// The caller asked for it to be left out.
     Declined,
+    /// `--relink` asked for LabVIEW's load-and-save pass instead.
+    RelinkInstead,
     /// An install hook that nothing allowed: hooks are off unless the project
     /// or the user's config names the package, or the command says `--hooks`.
     NotAllowed,

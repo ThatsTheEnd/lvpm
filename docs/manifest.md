@@ -391,6 +391,15 @@ A bare `lvpm install` in a project is `lvpm sync`: the venv is made to match
 `lvpm.lock`, and what the lock does not list is uninstalled. Outside a
 project, `install` stays additive. See [usage.md](usage.md#the-lock-file).
 
+Uninstall can also remove unshared dependencies after confirmation; use
+`--with-deps` or `--keep-deps` for non-interactive use. It warns about
+dependents and keeps shared dependencies. A removal that needs the dependency
+list refuses installation records written before lvpm kept one; reinstall the
+package, or pass `--keep-deps`. In a venv, packages declared in any dependency
+group and their installed transitive dependencies are kept during automatic
+dependency removal. Explicitly uninstalling a declared package warns and leaves
+the manifest unchanged. `uninstall --all` still removes every package.
+
 ## Named dependency groups
 
 Named sets of packages the project needs only sometimes: test frameworks,
@@ -573,7 +582,8 @@ vipm.toml` copies them into an `lvpm.toml`, after which `sync` installs them
 (below).
 
 `venv create --manifest` writes no `lvpm.toml` skeleton: a skeleton is
-written only when `venv create` has no manifest to read.
+written only when `venv create` has no manifest to read. New venvs remember
+the chosen manifest for subsequent installs and dependency-aware uninstalls.
 
 To move a `vipm.toml` project over instead, `lvpm init --from vipm.toml`
 writes an `lvpm.toml` from it ([usage.md](usage.md#from-a-vipmtoml)) and leaves

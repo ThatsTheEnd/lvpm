@@ -350,7 +350,7 @@ async fn exit_code_is_2(world: &mut CliWorld) {
 }
 
 #[then(
-    r#"the "phase" values of its phase events are, in order, resolve, download, unpack, relink, hooks, refresh"#
+    r#"the "phase" values of its phase events are, in order, resolve, download, unpack, linkfix, relink, hooks, refresh"#
 )]
 async fn phases_in_order(world: &mut CliWorld) {
     let phases: Vec<Value> = phase_events(world)
@@ -358,7 +358,7 @@ async fn phases_in_order(world: &mut CliWorld) {
         .map(|(_, data)| data["phase"].clone())
         .collect();
     let expected = [
-        "resolve", "download", "unpack", "relink", "hooks", "refresh",
+        "resolve", "download", "unpack", "linkfix", "relink", "hooks", "refresh",
     ];
     assert_eq!(phases, expected.map(|phase| json!(phase)));
 }

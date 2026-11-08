@@ -3,7 +3,7 @@
 use super::hooks::hook_names;
 use super::install::pasteable;
 use super::{Renderer, Stream};
-use lvpm_core::events::{Event, UnrunReason};
+use lvpm_core::events::{Event, KeptBecause, UnrunReason};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -17,6 +17,34 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         ),
         Event::UninstallFailed { name, error } => {
             r.line(Stream::Out, &format!("uninstall {name} FAILED: {error}"))
+        }
+        Event::UninstallDeclaredInProject { package, manifest } => r.line(
+            Stream::Err,
+            &format!(
+                "warning: {package} is declared in {manifest}; uninstall does not edit the manifest"
+            ),
+        ),
+        Event::UninstallRequiredBy {
+            package,
+            dependents,
+        } => r.line(
+            Stream::Err,
+            &format!(
+                "warning: {package} is required by installed packages: {}",
+                dependents.join(", ")
+            ),
+        ),
+        Event::DependencyKept { name, why } => {
+            let why = match why {
+                KeptBecause::Declared { manifest } => format!("declared in {manifest}"),
+                KeptBecause::NeededByDeclared { manifest } => {
+                    format!("required by a package declared in {manifest}")
+                }
+                KeptBecause::RequiredBy { owners } => {
+                    format!("still required by {}", owners.join(", "))
+                }
+            };
+            r.line(Stream::Err, &format!("keeping {name}: {why}"))
         }
         Event::PostUninstallNotStaged { error } => r.line(
             Stream::Out,

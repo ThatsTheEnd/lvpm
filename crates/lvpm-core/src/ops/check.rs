@@ -173,15 +173,18 @@ fn run(env: &OpEnv, dir: Option<&Path>, scope: Scope) -> Result<Library, CheckEr
     }
     let bound = venv::binding(&repo, &env.config.venv_dir)?;
     env.check_bitness(&bound.target)?;
+    let file = bound
+        .manifest
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
     let (_, manifest) = env
-        .manifest_for(None, Some(&bound.repo))?
-        .ok_or_else(|| anyhow!("no {} in {}", project::FILE_NAME, bound.repo.display()))?;
+        .manifest_for(None, Some(&bound.manifest))?
+        .ok_or_else(|| anyhow!("no {file} in {}", bound.repo.display()))?;
     if matches!(scope, Scope::Members) && manifest.distribution.is_none() {
-        return Err(anyhow!(
-            "no [distribution] in {}: nothing says which VIs are the library",
-            project::FILE_NAME
-        )
-        .into());
+        return Err(
+            anyhow!("no [distribution] in {file}: nothing says which VIs are the library").into(),
+        );
     }
     let minimum = manifest
         .labview
@@ -459,11 +462,16 @@ struct Search {
 impl Search {
     fn of(bound: &Bound) -> Result<Search> {
         let mut packages = Vec::new();
-        // A venv is not always made yet: its binding is, but its folder may hold only that.
-        for entry in std::fs::read_dir(&bound.dir)
-            .with_context(|| format!("reading {}", bound.dir.display()))?
-        {
-            let tree = entry?.path().join("1");
+        // A venv is not always made yet: its binding is, but `packages/` may be missing.
+        let dir = bound.dir.join("packages");
+        let entries = match std::fs::read_dir(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            read => read
+                .with_context(|| format!("reading {}", dir.display()))?
+                .collect::<std::io::Result<Vec<_>>>()?,
+        };
+        for entry in entries {
+            let tree = entry.path().join("1");
             if tree.is_dir() {
                 packages.push(tree);
             }
@@ -797,7 +805,7 @@ mod tests {
         /// `rel` in its `vi.lib`, and the install record that lists it.
         fn package(&self, name: &str, rel: &str) -> &Sandbox {
             let venv = self.repo.join(self.venv_dir);
-            let to = venv.join(name).join("1/vi.lib").join(rel);
+            let to = venv.join("packages").join(name).join("1/vi.lib").join(rel);
             std::fs::create_dir_all(to.parent().unwrap()).unwrap();
             std::fs::copy(Path::new(FIXTURES).join("packages").join(rel), &to).unwrap();
             let record = serde_json::json!({
@@ -805,7 +813,7 @@ mod tests {
                 "target": self.installation.to_string_lossy(),
                 "files": [to.to_string_lossy().replace('\\', "/")], "skipped_hooks": [],
             });
-            let record_path = venv.join(format!(".lvpm/installed/{name}.json"));
+            let record_path = venv.join(format!("installed/{name}.json"));
             std::fs::create_dir_all(record_path.parent().unwrap()).unwrap();
             std::fs::write(record_path, record.to_string()).unwrap();
             self
@@ -1042,7 +1050,7 @@ mod tests {
     fn a_venv_package_holds_a_vilib_file_whether_or_not_the_installation_is_there() {
         let sandbox = Sandbox::new("package", None);
         sandbox.put("UsesNi.vi", "UsesNi.vi");
-        sandbox.write(&format!(".lv-venv/pkg/1/{NI_FILE}"), b"");
+        sandbox.write(&format!(".lv-venv/packages/pkg/1/{NI_FILE}"), b"");
         let checked = sandbox.check();
         assert_eq!(checked.findings, []);
         assert_eq!(checked.not_checked_total(), 0);
@@ -1758,7 +1766,7 @@ mod tests {
         sandbox
             .library_of(&["UsesNi.vi"])
             .put("UsesNi.vi", "UsesNi.vi");
-        sandbox.write(&format!(".lv-venv/pkg/1/{NI_FILE}"), b"");
+        sandbox.write(&format!(".lv-venv/packages/pkg/1/{NI_FILE}"), b"");
         assert_eq!(sandbox.check().findings, []);
     }
 

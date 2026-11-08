@@ -17,7 +17,7 @@ Feature: Install and uninstall run in core through plan, apply and finish
   Scenario: a scratch install emits its phases in order
     Given a project using only the loopback feed
     When core installs "beta" into a scratch destination with a recording sink
-    Then the phases appear in this order: resolve, download, unpack
+    Then the phases appear in this order: resolve, download, unpack, linkfix
     And relink, hooks and refresh are each reported as skipped with reason "scratch destination"
 
   @core

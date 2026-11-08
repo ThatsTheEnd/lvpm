@@ -224,8 +224,21 @@ impl<'a> OpEnv<'a> {
     /// The venv a command means, if any: `--project` names the repo outright,
     /// otherwise it is looked up from `cwd`.
     pub fn find_venv(&self) -> Result<Option<Venv>> {
+        self.find_venv_with(false)
+    }
+
+    /// [`Self::find_venv`] that also takes a venv of the old layout, for removing it.
+    pub fn find_venv_for_removal(&self) -> Result<Option<Venv>> {
+        self.find_venv_with(true)
+    }
+
+    fn find_venv_with(&self, legacy: bool) -> Result<Option<Venv>> {
+        let find = match legacy {
+            true => venv::find_for_removal,
+            false => venv::find,
+        };
         let project = self.flags.project.as_deref().map(|p| self.cwd.join(p));
-        let found = venv::find(
+        let found = find(
             project.as_deref(),
             &self.cwd,
             &self.config.venv_dir,
@@ -263,18 +276,17 @@ impl<'a> OpEnv<'a> {
     }
 
     /// The manifest a command belongs to: `explicit` (`--manifest`) names it;
-    /// else the venv's `repo` when one is in effect; else `--project`'s; else
+    /// else `bound`, the manifest of the venv in effect (missing: none); else `--project`'s; else
     /// the nearest `lvpm.toml` at or above the working directory. None is fine
     /// — a package can be installed without a project.
     pub fn manifest_for(
         &self,
         explicit: Option<&Path>,
-        repo: Option<&Path>,
+        bound: Option<&Path>,
     ) -> Result<Option<(PathBuf, Project)>> {
-        let path = match (explicit, repo, &self.flags.project) {
+        let path = match (explicit, bound, &self.flags.project) {
             (Some(p), _, _) => Some(self.cwd.join(p)),
-            // A venv created with `--manifest` may have no `lvpm.toml` beside it.
-            (None, Some(r), _) => Some(r.join(project::FILE_NAME)).filter(|p| p.is_file()),
+            (None, Some(m), _) => Some(m.to_path_buf()).filter(|p| p.is_file()),
             (None, None, Some(dir)) => {
                 Some(self.cwd.join(dir).join(project::FILE_NAME)).filter(|p| p.is_file())
             }
@@ -290,7 +302,7 @@ impl<'a> OpEnv<'a> {
     }
 
     /// Read a manifest file. A `vipm.toml` goes through the VIPM conversion; it
-    /// is only ever reached through `--manifest`, never discovered.
+    /// is reached through `--manifest` or a venv bound to it, never discovered.
     pub fn read_manifest(&self, path: &Path) -> Result<Project> {
         match crate::vipm_interop::is_toml(path) {
             true => crate::vipm_interop::read_toml(path, self.sink),

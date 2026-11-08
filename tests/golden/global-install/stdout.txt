@@ -6,10 +6,12 @@ resolved 1 package:
 
 done. 1 files written.
 
-relinking 1 folder(s) with <TEMP>/lvpm-relink-package-<LVPM_VERSION>.vi
-  lvpm_test_fixture
-      <LABVIEW>/vi.lib/_lvpm_test_fixture ... <DUR>
-        saved nothing
+linkfix: preparing installed files (repair links and separate compiled code; no LabVIEW needed)
+
+1 LabVIEW files looked at: 0 changed, 1 already clean, 0 skipped
+  edits: owner paths 0, relative paths 0, build-machine absolutes 0, qualifiers 0, owner refs 0, compiled code separated 0
+
+LabVIEW relink: skipped (pass --relink to use LabVIEW instead of linkfix)
 
 running 1 post-install hook(s)
   lvpm_test_fixture ... ok (<DUR>)

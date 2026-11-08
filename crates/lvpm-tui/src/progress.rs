@@ -5,10 +5,11 @@ use crate::worker::Outcome;
 use lvpm_core::events::{Event, Phase, SkipReason};
 
 /// The phases in the order an install goes through them.
-pub const PHASES: [Phase; 6] = [
+pub const PHASES: [Phase; 7] = [
     Phase::Resolve,
     Phase::Download,
     Phase::Unpack,
+    Phase::Linkfix,
     Phase::Relink,
     Phase::Hooks,
     Phase::Refresh,
@@ -19,6 +20,7 @@ pub fn name(phase: Phase) -> &'static str {
         Phase::Resolve => "resolve",
         Phase::Download => "download",
         Phase::Unpack => "unpack",
+        Phase::Linkfix => "linkfix",
         Phase::Relink => "relink",
         Phase::Hooks => "hooks",
         Phase::Refresh => "refresh",
@@ -31,6 +33,7 @@ pub fn reason(reason: SkipReason) -> &'static str {
         SkipReason::ScratchDestination => "scratch destination",
         SkipReason::Headless => "LabVIEW runs headless",
         SkipReason::Declined => "left out",
+        SkipReason::RelinkInstead => "relink instead",
         SkipReason::NotAllowed => "not allowed",
         SkipReason::AlreadyInstalled => "already installed",
     }
@@ -143,13 +146,13 @@ mod tests {
     #[test]
     fn phases_before_the_current_one_are_done_and_later_ones_wait() {
         let mut progress = Progress::default();
-        assert_eq!(states(&progress), [State::Waiting; 6]);
+        assert_eq!(states(&progress), [State::Waiting; 7]);
         progress.add(&started(Phase::Resolve));
         progress.add(&started(Phase::Download));
         use State::*;
         assert_eq!(
             states(&progress),
-            [Done, Running, Waiting, Waiting, Waiting, Waiting]
+            [Done, Running, Waiting, Waiting, Waiting, Waiting, Waiting]
         );
         assert!(progress.cancellable());
     }
@@ -164,7 +167,7 @@ mod tests {
         use State::*;
         assert_eq!(
             states(&progress),
-            [Done, Running, Done, Waiting, Waiting, Waiting]
+            [Done, Running, Done, Waiting, Waiting, Waiting, Waiting]
         );
         assert!(!progress.cancellable(), "files are written");
     }
@@ -180,7 +183,10 @@ mod tests {
         });
         progress.outcome = Some(Outcome::Done);
         use State::*;
-        assert_eq!(states(&progress), [Done, Done, Done, Done, Skipped, Done]);
+        assert_eq!(
+            states(&progress),
+            [Done, Done, Done, Done, Done, Skipped, Done]
+        );
     }
 
     #[test]

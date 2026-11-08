@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn a_venv_that_is_already_there_is_kept_and_init_says_so() {
         let (scratch, root) = folder("init-venv-there", "App");
-        let binding = root.join(".lv-venv").join(".lvpm").join("venv.json");
+        let binding = root.join(".lv-venv").join("venv.json");
         std::fs::create_dir_all(binding.parent().unwrap()).unwrap();
         std::fs::write(&binding, "{\"mine\":1}").unwrap();
 

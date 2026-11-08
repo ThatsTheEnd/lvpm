@@ -7,3 +7,8 @@ resolved 2 packages:
 + beta 1.0 ... 1 files
 
 done. 2 files written.
+
+linkfix: preparing installed files (repair links and separate compiled code; no LabVIEW needed)
+
+0 LabVIEW files looked at: 0 changed, 0 already clean, 0 skipped
+  edits: owner paths 0, relative paths 0, build-machine absolutes 0, qualifiers 0, owner refs 0, compiled code separated 0

@@ -12,6 +12,9 @@
 {"data":{"phase":"unpack"},"event":"phase_started"}
 {"data":{"dry_run":false,"files":1},"event":"package_done"}
 {"data":{"dry_run":false,"files":1},"event":"install_done"}
+{"data":{"phase":"linkfix"},"event":"phase_started"}
+{"event":"linkfix_preparing"}
+{"data":{"report":{"changed":0,"changed_files":[],"clean":0,"dry_run":false,"looked_at":0,"not_separated":[],"skipped_files":[],"totals":{"absolute":0,"owner":0,"qualifier":0,"relative":0,"separated":0,"vils":0},"verbose":true}},"event":"linkfix_done"}
 {"data":{"phase":"relink","reason":"scratch_destination","skipped":0},"event":"phase_skipped"}
 {"data":{"phase":"hooks","reason":"scratch_destination","skipped":0},"event":"phase_skipped"}
 {"data":{"phase":"refresh","reason":"scratch_destination","skipped":1},"event":"phase_skipped"}
