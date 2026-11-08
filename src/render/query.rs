@@ -241,6 +241,7 @@ mod tests {
             installed_at: 0,
             target: String::new(),
             files: vec!["a".into(), "b".into()],
+            dependencies: Vec::new(),
             skipped_hooks: skipped_hooks.iter().map(|h| h.to_string()).collect(),
             relinked,
             relink_folders: Vec::new(),

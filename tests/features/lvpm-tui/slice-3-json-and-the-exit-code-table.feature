@@ -87,7 +87,7 @@ Feature: Machine-readable output
 
   Scenario: install progress reports its phases in order, skipped ones too
     When "lvpm --json install alpha --prefix dest" runs in any folder
-    Then the "phase" values of its phase events are, in order, resolve, download, unpack, relink, hooks, refresh
+    Then the "phase" values of its phase events are, in order, resolve, download, unpack, linkfix, relink, hooks, refresh
     And relink, hooks and refresh are "phase_skipped" events with reason "scratch_destination"
 
   @labview

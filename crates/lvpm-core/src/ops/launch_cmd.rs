@@ -18,10 +18,26 @@ pub struct Launched {
     pub ini: PathBuf,
     /// The project file it was asked to open.
     pub lvproj: Option<PathBuf>,
+    /// The `--ini` keys written on top of lvpm's own.
+    pub ini_overrides: Vec<(String, String)>,
 }
 
-/// Start the venv's LabVIEW, optionally opening `lvproj` in it.
-pub fn launch(env: &OpEnv, lvproj: Option<&Path>) -> Result<Launched> {
+/// `KEY=VALUE` as `--ini` takes it.
+fn ini_override(kv: &str) -> Result<(String, String)> {
+    let (k, val) = kv
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("--ini {kv}: expected KEY=VALUE"))?;
+    ensure!(!k.trim().is_empty(), "--ini {kv}: empty key");
+    Ok((k.trim().to_string(), val.trim().to_string()))
+}
+
+/// Start the venv's LabVIEW, optionally opening `lvproj` in it, with `ini`
+/// (`KEY=VALUE`) written into the venv's ini first.
+pub fn launch(env: &OpEnv, lvproj: Option<&Path>, ini: &[String]) -> Result<Launched> {
+    let ini_overrides = ini
+        .iter()
+        .map(|kv| ini_override(kv))
+        .collect::<Result<Vec<_>>>()?;
     let Destination::Venv(venv) = env.destination()? else {
         bail!("launch needs a venv: run it inside a project that has one, or pass --project <DIR>");
     };
@@ -41,9 +57,14 @@ pub fn launch(env: &OpEnv, lvproj: Option<&Path>) -> Result<Launched> {
         }
         None => None,
     };
-    let ini = launch::write_ini(&venv)?;
+    let ini = launch::write_ini(&venv, &ini_overrides)?;
     launch::spawn(&venv, &ini, lvproj.as_deref(), env.sink)?;
-    Ok(Launched { venv, ini, lvproj })
+    Ok(Launched {
+        venv,
+        ini,
+        lvproj,
+        ini_overrides,
+    })
 }
 
 #[cfg(test)]
@@ -56,7 +77,7 @@ mod tests {
         let empty = scratch_dir("launch-none");
         let mut env = testing::env(&empty);
         env.flags.labview_version = Some("2026".into());
-        let why = launch(&env, None).unwrap_err().to_string();
+        let why = launch(&env, None, &[]).unwrap_err().to_string();
         assert!(why.starts_with("launch needs a venv:"), "{why}");
         let _ = std::fs::remove_dir_all(&empty);
     }
@@ -67,7 +88,7 @@ mod tests {
         let venv = testing::venv_in(&repo);
         let env = testing::env(&repo);
 
-        let why = launch(&env, Some(Path::new("missing.lvproj")))
+        let why = launch(&env, Some(Path::new("missing.lvproj")), &[])
             .unwrap_err()
             .to_string();
         assert_eq!(
@@ -83,5 +104,22 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn an_ini_override_is_key_equals_value_with_a_key() {
+        assert_eq!(
+            ini_override(" NIER = True").unwrap(),
+            ("NIER".into(), "True".into())
+        );
+        assert_eq!(ini_override("a=b=c").unwrap(), ("a".into(), "b=c".into()));
+        for bad in ["NIER", "=True"] {
+            assert!(
+                ini_override(bad)
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with("--ini")
+            );
+        }
     }
 }

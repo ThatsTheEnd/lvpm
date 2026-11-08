@@ -8,7 +8,6 @@ use std::sync::LazyLock;
 
 /// The venv directory name `lvpm` uses by default, inside the project.
 pub const VENV_DIR: &str = ".lv-venv";
-const VENV_STATE_DIR: &str = ".lvpm";
 const VENV_BINDING_FILE: &str = "venv.json";
 
 /// One line of `lvpm targets`: `LabVIEW 2026 (64-bit)  v26.3       C:\...\LabVIEW 2026`.
@@ -71,13 +70,10 @@ pub fn listening_ports(netstat_output: &str) -> HashSet<u16> {
         .collect()
 }
 
-/// The VI Server port in `.lv-venv/.lvpm/venv.json`, hashed from the venv's
+/// The VI Server port in `.lv-venv/venv.json`, hashed from the venv's
 /// path, so it differs for every sandbox.
 pub fn read_port(project_dir: &Path) -> Option<u16> {
-    let path = project_dir
-        .join(VENV_DIR)
-        .join(VENV_STATE_DIR)
-        .join(VENV_BINDING_FILE);
+    let path = project_dir.join(VENV_DIR).join(VENV_BINDING_FILE);
     let json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     u16::try_from(json.get("port")?.as_u64()?).ok()
@@ -91,7 +87,7 @@ mod tests {
         r"LabVIEW 2026 (64-bit)  v26.3       C:\Program Files\National Instruments\LabVIEW 2026";
 
     fn write_binding(project: &Path, json: &str) {
-        let dir = project.join(VENV_DIR).join(VENV_STATE_DIR);
+        let dir = project.join(VENV_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(VENV_BINDING_FILE), json).unwrap();
     }

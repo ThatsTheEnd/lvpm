@@ -9,3 +9,5 @@ resolved 2 packages:
       dest/LabVIEW/vi.lib/lvpm_fixture/beta.txt
 
 dry run: 2 files would be written, nothing changed
+
+linkfix: would prepare newly written LabVIEW-tree files (repair links and separate compiled code; no LabVIEW needed)

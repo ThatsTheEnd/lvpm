@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 pub const ABSENT: &str = "(absent)\n";
 /// More than this is not something a characterization scenario produces.
 const MAX_ENTRIES: usize = 10_000;
-/// What a LabVIEW started on a venv leaves in its `.lvpm/`: its own LabVIEW
-/// Data, temp and cache folders and its pid, which differ from run to run.
+/// What a LabVIEW started on a venv leaves in it: its own LabVIEW Data, temp
+/// and cache folders and its pid, which differ from run to run.
 const LABVIEW_RUNTIME: [&str; 4] = [
-    ".lvpm/data",
-    ".lvpm/temp",
-    ".lvpm/objcache",
-    ".lvpm/labview.pid",
+    ".lv-venv/data",
+    ".lv-venv/temp",
+    ".lv-venv/objcache",
+    ".lv-venv/labview.pid",
 ];
 
 /// The listing of `root`, with paths relative to `base` and `/` separators.

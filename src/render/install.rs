@@ -438,16 +438,18 @@ fn phase_skipped(r: &mut Renderer, phase: Phase, reason: SkipReason, skipped: us
         (Phase::Relink, SkipReason::ScratchDestination) => {
             "\nrelink: skipped — a scratch tree has no LabVIEW to relink with"
         }
-        (Phase::Relink, SkipReason::Headless) if r.resaved => {
-            "\nrelink: skipped (headless). The resave still ran."
-        }
         (phase, SkipReason::Headless) => return headless::phase_skipped(r, phase),
         (Phase::Relink, SkipReason::Declined) if r.resaved => {
-            "\nrelink: skipped (--no-relink). The resave still ran."
+            "\nLabVIEW relink: skipped (pass --relink to use LabVIEW instead of linkfix). The resave still ran."
         }
         (Phase::Relink, SkipReason::Declined) => {
-            "\nrelink: skipped (--no-relink). These VIs still declare the paths their\n      \
-             build machine wrote, so run `lvpm relink <package>` before using them."
+            "\nLabVIEW relink: skipped (pass --relink to use LabVIEW instead of linkfix)"
+        }
+        (Phase::Linkfix, SkipReason::Declined) => {
+            "\nlinkfix: skipped (--no-linkfix); files left as copied"
+        }
+        (Phase::Linkfix, SkipReason::RelinkInstead) => {
+            "\nlinkfix: skipped (--relink selects LabVIEW instead)"
         }
         (Phase::Hooks, SkipReason::ScratchDestination) => {
             "\npost-install hooks: skipped — a scratch tree has no LabVIEW to run them"
@@ -762,14 +764,10 @@ mod tests {
             ])
             .0
         };
-        assert!(
-            resaved_then(SkipReason::Declined)
-                .ends_with("\nrelink: skipped (--no-relink). The resave still ran.\n")
-        );
-        assert!(
-            resaved_then(SkipReason::Headless)
-                .ends_with("\nrelink: skipped (headless). The resave still ran.\n")
-        );
+        assert!(resaved_then(SkipReason::Declined).ends_with(
+            "\nLabVIEW relink: skipped (pass --relink to use LabVIEW instead of linkfix). \
+             The resave still ran.\n"
+        ));
     }
 
     #[test]

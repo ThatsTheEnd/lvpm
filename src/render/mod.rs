@@ -20,6 +20,7 @@ pub mod init;
 mod install;
 pub mod json;
 pub mod launch;
+mod linkfix;
 pub mod lock;
 pub mod publish;
 pub mod query;
@@ -73,6 +74,12 @@ impl Renderer {
             | Event::FeedChecked { .. }
             | Event::LocalPackageIgnored { .. }
             | Event::OciSourceUnpinned { .. } => index::render(self, event),
+            Event::LinkfixStarted { .. }
+            | Event::LinkfixPreparing
+            | Event::LinkfixPlanned { .. }
+            | Event::LinkfixFailed { .. }
+            | Event::LinkfixReportWritten { .. }
+            | Event::LinkfixDone { .. } => linkfix::render(self, event),
             Event::RelinkDoneNotClearable { .. }
             | Event::RelinkProgress { .. }
             | Event::RelinkProgressUnreadable { .. }
@@ -132,6 +139,9 @@ impl Renderer {
             | Event::RefreshUnavailable { .. } => refresh::render(self, event),
             Event::PackageRemoved { .. }
             | Event::UninstallFailed { .. }
+            | Event::UninstallDeclaredInProject { .. }
+            | Event::UninstallRequiredBy { .. }
+            | Event::DependencyKept { .. }
             | Event::PostUninstallNotStaged { .. }
             | Event::UninstallHooksNotRun { .. } => uninstall::render(self, event),
             Event::VenvManifestWritten { .. }

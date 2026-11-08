@@ -23,6 +23,14 @@ pub struct Manifest {
     pub target: String,
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
+    /// The packages this version requires directly, as its spec names them.
+    /// Uninstall follows them to find what could go with it. Records written
+    /// before they were kept have none, so nothing goes with those.
+    /// Direct package requirements, an empty list when there are none.
+    /// Missing in records written before lvpm kept it: see
+    /// [`records_without_dependencies`].
+    #[serde(default)]
+    pub dependencies: Vec<String>,
     /// Hooks the package declares that were not run: every one in a venv
     /// (hooks act on a LabVIEW installation, and a venv is not one), every
     /// one of a package the install skipped (nothing allowed its hooks, or
@@ -148,6 +156,28 @@ pub fn read_manifest(roots: &Roots, name: &str) -> Result<Manifest> {
     let text = std::fs::read_to_string(&p)
         .with_context(|| format!("{name} is not installed in this target ({})", p.display()))?;
     Ok(serde_json::from_str(&text)?)
+}
+
+/// Records written before lvpm kept a dependency list. Uninstall cannot say
+/// which dependencies such a package still needs, so it refuses to plan.
+pub fn records_without_dependencies(roots: &Roots) -> Result<Vec<PathBuf>> {
+    let dir = roots.store_dir();
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&dir)? {
+        let p = e?.path();
+        if p.extension().is_some_and(|x| x == "json")
+            && let Ok(text) = std::fs::read_to_string(&p)
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
+            && v.get("dependencies").is_none()
+        {
+            out.push(p);
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 pub fn list_installed(roots: &Roots) -> Result<Vec<Manifest>> {
@@ -413,6 +443,7 @@ pub(crate) fn unpack_to(
             None => format!("scratch {}", roots.application.display()),
         },
         files: written,
+        dependencies: crate::dependency::package_dependency_names(&[], spec.requires.as_deref()),
         skipped_hooks: match roots.venv() {
             Some(_) => declared_hooks(spec),
             // PreInstall has run by now, PostInstall runs after the relink
@@ -693,6 +724,7 @@ mod tests {
             installed_at: 0,
             target: "t".into(),
             files: files.iter().map(|f| f.to_string()).collect(),
+            dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,
             relink_folders: Vec::new(),

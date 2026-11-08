@@ -248,7 +248,7 @@ const ROWS: &[Row] = &[
         ..row(
             "uninstall-beta",
             Setup::BetaInstalledInDest,
-            "lvpm uninstall beta --prefix dest",
+            "lvpm uninstall beta --keep-deps --prefix dest",
         )
     },
     Row {

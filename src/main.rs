@@ -20,7 +20,7 @@ use lvpm_core::{config, git, launch, target, venv, viserver};
 
 mod render;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::builder::TypedValueParser as _;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::json;
@@ -118,13 +118,17 @@ struct ApplyArgs {
     /// Show what would be written, then stop.
     #[arg(long)]
     dry_run: bool,
-    /// Copy the files but skip the relink pass. A venv install still
-    /// resaves each package in the venv's LabVIEW.
+    /// Leave package files as copied: skip link repair and source-only
+    /// preparation (linkfix).
     #[arg(long)]
+    no_linkfix: bool,
+    /// Accepted and ignored: LabVIEW's relink pass is opt-in (`--relink`).
+    /// Does not skip linkfix.
+    #[arg(long, hide = true)]
     no_relink: bool,
-    /// Relink even where LabVIEW runs headless (LV_RTE_HEADLESS is set),
-    /// where the pass is otherwise off: nothing there opens the IDE, and
-    /// a compile or build resolves the links itself as it loads.
+    /// Load and save the installed VIs in LabVIEW instead of running
+    /// linkfix. A venv install still resaves each package in the venv's
+    /// LabVIEW either way.
     #[arg(long = "relink", conflicts_with = "no_relink")]
     force_relink: bool,
     /// Run every package's install hooks for this command. They are package
@@ -144,6 +148,7 @@ impl ApplyArgs {
         InstallOptions {
             dry_run: self.dry_run,
             no_deps,
+            no_linkfix: self.no_linkfix,
             no_relink: self.no_relink,
             force_relink: self.force_relink,
             run_hooks: self.run_hooks,
@@ -308,8 +313,7 @@ enum Cmd {
     /// Relink an already-installed package, without reinstalling it.
     ///
     /// The install manifest records what went where, so this is the same pass
-    /// `install` runs — useful after `--no-relink`, or after LabVIEW was not
-    /// running when the install happened.
+    /// `install --relink` runs. Separate from the default linkfix pass.
     Relink {
         /// Package to relink. Omit when using --all.
         package: Option<String>,
@@ -356,6 +360,12 @@ enum Cmd {
         /// Remove every package installed in this target.
         #[arg(long, conflicts_with = "package")]
         all: bool,
+        /// Remove dependencies nothing else needs too, without prompting.
+        #[arg(long, conflicts_with_all = ["all", "keep_deps"])]
+        with_deps: bool,
+        /// Keep dependencies, without prompting.
+        #[arg(long, conflicts_with_all = ["all", "with_deps"])]
+        keep_deps: bool,
     },
     /// Invoke parameterless Application-class methods by raw id, and report
     /// what LabVIEW says. Re-establishes method ids on a new LabVIEW: 1036
@@ -370,8 +380,16 @@ enum Cmd {
     /// Open a VI reference over VI Server and release it. Proves the transport
     /// against a running LabVIEW without changing anything on disk.
     ViProbe {
-        /// VI to open a reference to.
-        vi: PathBuf,
+        /// VIs to open references to. Several are opened one after another
+        /// on one connection and held until the last one is in, so a shared
+        /// hierarchy loads once; a VI that fails to open is reported and the
+        /// rest still run.
+        #[arg(required = true)]
+        vi: Vec<PathBuf>,
+        /// Seconds to wait for LabVIEW to answer a single open. A top-level VI
+        /// pulling a large class hierarchy can need minutes.
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
     },
     /// Load a VI over VI Server and save it back — the relink primitive.
     ViSave {
@@ -474,8 +492,13 @@ enum Cmd {
     /// was already open on it needs a fresh launch to see newly installed
     /// packages.
     Launch {
-        /// A `.lvproj` to open in the started LabVIEW.
+        /// A `.lvproj` (or any LabVIEW file) to open in the started LabVIEW.
         lvproj: Option<PathBuf>,
+        /// Extra `KEY=VALUE` written into the venv's labview.ini, e.g.
+        /// `--ini NIER=True --ini DPrintfLogging=True` for a crash report and
+        /// verbose log. Repeatable; the keys stay in that ini until removed.
+        #[arg(long = "ini", value_name = "KEY=VALUE")]
+        ini_keys: Vec<String>,
     },
     /// Resolve lvpm.toml's dependencies and write lvpm.lock: every package, direct
     /// or transitive, with its exact version, SHA-256 and source.
@@ -503,6 +526,40 @@ enum Cmd {
             conflicts_with = "check"
         )]
         upgrade_package: Vec<UpgradeTarget>,
+    },
+    /// Rewrite installed VI links and set libraries/classes source-only the
+    /// way LabVIEW saves them, without LabVIEW. Defaults to the venv in
+    /// effect; `--tree` takes any LabVIEW-shaped folder or venv store.
+    Linkfix {
+        /// A folder to fix instead of the venv: a venv store, or a
+        /// LabVIEW-shaped tree with `vi.lib`, `user.lib`, ... at its top.
+        #[arg(long, value_name = "DIR")]
+        tree: Option<PathBuf>,
+        /// Report what would change, write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Name every changed and every skipped file.
+        #[arg(long, short)]
+        verbose: bool,
+        /// Leave compiled-code settings unchanged. Same as leaving
+        /// `source-only` out of `--fix`.
+        #[arg(long)]
+        keep_compiled_code: bool,
+        /// Apply only these methods, comma-separated (default: all). Running
+        /// them one at a time shows which one a later save dialog is about.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            value_name = "METHOD",
+            value_parser = clap::builder::PossibleValuesParser::new(
+                lvpm_core::linkfix::Method::ALL.map(lvpm_core::linkfix::Method::name)
+            )
+        )]
+        fix: Vec<String>,
+        /// Write, per changed or skipped file, what each method changed (or
+        /// why the file was skipped) as JSON.
+        #[arg(long, value_name = "FILE")]
+        report: Option<PathBuf>,
     },
     /// Show what lvpm has installed into the selected target.
     List,
@@ -867,6 +924,31 @@ fn run(cli: &Cli) -> Result<Report> {
             relink,
         } => ops::relink::relink(&env, package.as_deref(), *all, &relink.into())
             .map(|()| Report::done("relink")),
+        Cmd::Linkfix {
+            tree,
+            dry_run,
+            verbose,
+            keep_compiled_code,
+            fix,
+            report,
+        } => {
+            use lvpm_core::linkfix::Method;
+            let mut methods: Vec<Method> = match fix.is_empty() {
+                true => Method::ALL.to_vec(),
+                false => fix.iter().filter_map(|m| Method::parse(m)).collect(),
+            };
+            if *keep_compiled_code {
+                methods.retain(|m| *m != Method::SourceOnly);
+            }
+            let opts = ops::linkfix::LinkfixOptions {
+                tree: tree.clone(),
+                dry_run: *dry_run,
+                verbose: *verbose,
+                methods,
+                report: report.clone(),
+            };
+            ops::linkfix::linkfix(&env, &opts).map(|()| Report::done("linkfix"))
+        }
         Cmd::RunHooks {
             package,
             all,
@@ -876,12 +958,35 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Refresh { timeout } => {
             ops::refresh::refresh(&env, *timeout).map(|()| Report::done("refresh"))
         }
-        Cmd::Uninstall { package, all } => {
-            ops::uninstall::uninstall(&env, package.as_deref(), *all)
+        Cmd::Uninstall {
+            package,
+            all,
+            with_deps,
+            keep_deps,
+        } => {
+            use ops::uninstall::Dependencies;
+            let ask = |names: &[String]| {
+                use std::io::IsTerminal;
+                let stdin = std::io::stdin();
+                confirm_dependencies(
+                    names,
+                    stdin.is_terminal(),
+                    &mut stdin.lock(),
+                    &mut std::io::stderr(),
+                )
+            };
+            let deps = match (with_deps, keep_deps) {
+                (true, _) => Dependencies::Remove,
+                (_, true) => Dependencies::Keep,
+                _ => Dependencies::Ask(&ask),
+            };
+            ops::uninstall::uninstall(&env, package.as_deref(), *all, deps)
                 .map(|()| Report::done("uninstall"))
         }
         Cmd::AppProbe { ids } => cmd_app_probe(&env, ids).map(|()| Report::done("app-probe")),
-        Cmd::ViProbe { vi } => cmd_vi_probe(&env, vi).map(|()| Report::done("vi-probe")),
+        Cmd::ViProbe { vi, timeout } => {
+            cmd_vi_probe(&env, vi, *timeout).map(|()| Report::done("vi-probe"))
+        }
         Cmd::ViSave { vi } => cmd_vi_save(&env, vi).map(|()| Report::done("vi-save")),
         Cmd::ViRun {
             vi,
@@ -975,8 +1080,8 @@ fn run(cli: &Cli) -> Result<Report> {
             .warning(warning)
             .failed(!checked.passed()))
         }
-        Cmd::Launch { lvproj } => {
-            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref())?;
+        Cmd::Launch { lvproj, ini_keys } => {
+            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys)?;
             Ok(Report::said(render::launch::launched(&launched), "launch"))
         }
         Cmd::Lock {
@@ -1139,6 +1244,31 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<R
 }
 
 /// Ask whether to delete the venv: core takes no input of its own (AC-K6).
+/// Ask whether uninstall takes the dependencies nothing else needs with it.
+/// Refused where nobody can answer: a script says which with a flag.
+fn confirm_dependencies(
+    names: &[String],
+    interactive: bool,
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+) -> Result<bool> {
+    ensure!(
+        interactive,
+        "dependencies can be removed: {}. Pass --with-deps or --keep-deps in non-interactive mode",
+        names.join(", ")
+    );
+    write!(
+        output,
+        "remove unshared dependencies ({}) too? [y/N] ",
+        names.join(", ")
+    )?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
+}
+
 fn confirm_removal(v: &venv::Venv) -> Result<bool> {
     eprint!(
         "delete {} and everything installed in it? [y/N] ",
@@ -1224,32 +1354,52 @@ fn vi_server_for(env: &OpEnv, what: &str) -> Result<(String, u16)> {
     }
 }
 
-fn cmd_vi_probe(env: &OpEnv, vi: &std::path::Path) -> Result<()> {
+fn cmd_vi_probe(env: &OpEnv, vis: &[PathBuf], timeout: u64) -> Result<()> {
     let (label, port) = vi_server_for(env, "vi-probe")?;
     println!("connecting to {label} on port {port}");
 
     let started = std::time::Instant::now();
     let mut conn =
-        viserver::Connection::connect("127.0.0.1", port, std::time::Duration::from_secs(30))?;
+        viserver::Connection::connect("127.0.0.1", port, std::time::Duration::from_secs(timeout))?;
     println!(
         "  handshake ok            {:>7.0} ms",
         started.elapsed().as_secs_f64() * 1000.0
     );
 
-    let t0 = std::time::Instant::now();
-    let vi_ref = conn.open_vi_reference(vi)?;
-    println!(
-        "  opened {} -> {vi_ref}  {:>7.0} ms",
-        vi.file_name().unwrap_or_default().to_string_lossy(),
-        t0.elapsed().as_secs_f64() * 1000.0
-    );
+    // Every reference stays open until the last VI is in: a hierarchy the
+    // VIs share is then loaded once instead of once per VI.
+    let mut held = Vec::new();
+    let mut failed = 0usize;
+    for vi in vis {
+        let name = vi.file_name().unwrap_or_default().to_string_lossy();
+        let t0 = std::time::Instant::now();
+        let ms = || t0.elapsed().as_secs_f64() * 1000.0;
+        match conn.open_vi_reference(vi) {
+            Ok(vi_ref) => {
+                println!("  opened {name} -> {vi_ref}  {:>7.0} ms", ms());
+                held.push(vi_ref);
+            }
+            Err(e) => {
+                failed += 1;
+                println!("  FAILED {name}: {e:#}  {:>7.0} ms", ms());
+                // A transport error leaves the connection unusable; a VI Server
+                // error code does not.
+                if viserver::error_code(&e).is_none() {
+                    bail!("connection lost while opening {}", vi.display());
+                }
+            }
+        }
+    }
 
-    conn.release(vi_ref)?;
+    for vi_ref in held {
+        conn.release(vi_ref)?;
+    }
     conn.close();
     println!(
         "  released + closed       {:>7.0} ms total",
         started.elapsed().as_secs_f64() * 1000.0
     );
+    ensure!(failed == 0, "{failed} of {} VIs did not open", vis.len());
     Ok(())
 }
 

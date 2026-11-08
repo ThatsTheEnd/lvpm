@@ -1120,7 +1120,7 @@ impl CliWorld {
         let path = self
             .sandbox
             .venv_dir()
-            .join(".lvpm/installed")
+            .join("installed")
             .join(format!("{name}.json"));
         std::fs::create_dir_all(path.parent().expect("a folder")).expect("make the store");
         std::fs::write(path, record.to_string()).expect("write the record");

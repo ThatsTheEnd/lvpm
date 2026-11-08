@@ -224,8 +224,21 @@ impl<'a> OpEnv<'a> {
     /// The venv a command means, if any: `--project` names the repo outright,
     /// otherwise it is looked up from `cwd`.
     pub fn find_venv(&self) -> Result<Option<Venv>> {
+        self.find_venv_with(false)
+    }
+
+    /// [`Self::find_venv`] that also takes a venv of the old layout, for removing it.
+    pub fn find_venv_for_removal(&self) -> Result<Option<Venv>> {
+        self.find_venv_with(true)
+    }
+
+    fn find_venv_with(&self, legacy: bool) -> Result<Option<Venv>> {
+        let find = match legacy {
+            true => venv::find_for_removal,
+            false => venv::find,
+        };
         let project = self.flags.project.as_deref().map(|p| self.cwd.join(p));
-        let found = venv::find(
+        let found = find(
             project.as_deref(),
             &self.cwd,
             &self.config.venv_dir,

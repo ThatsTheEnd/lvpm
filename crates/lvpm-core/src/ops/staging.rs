@@ -29,7 +29,7 @@ impl Staging {
         let dir = venv.staging_dir();
         Staging {
             stage_root: dir.join(package).join("1"),
-            final_root: venv.dir.join(package).join("1"),
+            final_root: venv.packages_dir().join(package).join("1"),
             dir,
         }
     }
@@ -328,7 +328,7 @@ mod tests {
 
         install(&env(&repo), &archive, "2.0").unwrap();
 
-        let root = venv.dir.join("alpha").join("1");
+        let root = venv.packages_dir().join("alpha").join("1");
         assert_eq!(tree(&root), ["lib/a.vi", "lib/b.ctl", "lvaddoninfo.json"]);
         assert!(!venv.staging_dir().exists(), "the staging folder is gone");
         let m = install::read_manifest(&venv.store(), "alpha").unwrap();
@@ -351,7 +351,7 @@ mod tests {
 
         install(&env(&repo), &archive, "2.0").unwrap();
 
-        let root = venv.dir.join("alpha").join("1");
+        let root = venv.packages_dir().join("alpha").join("1");
         assert_eq!(tree(&root), ["docs/readme.txt", "lvaddoninfo.json"]);
         let m = install::read_manifest(&venv.store(), "alpha").unwrap();
         assert!(m.relink_folders.is_empty());
@@ -376,7 +376,7 @@ mod tests {
         )
         .unwrap();
 
-        let root = venv.dir.join("alpha").join("1");
+        let root = venv.packages_dir().join("alpha").join("1");
         assert_eq!(tree(&root), ["lib/new.vi", "lvaddoninfo.json"]);
         assert_eq!(
             std::fs::read_to_string(root.join("lib/new.vi")).unwrap(),
@@ -404,7 +404,7 @@ mod tests {
         let broken = vip(&repo, "3.0", &["lib/new.vi"], false, true);
         assert!(install(&env, &broken, "3.0").is_err());
 
-        let root = venv.dir.join("alpha").join("1");
+        let root = venv.packages_dir().join("alpha").join("1");
         assert_eq!(tree(&root), ["lib/old.vi", "lvaddoninfo.json"]);
         let m = install::read_manifest(&venv.store(), "alpha").unwrap();
         assert_eq!(m.version, "2.0");
@@ -422,7 +422,7 @@ mod tests {
         let mut session = InstallSession::new(env.destination().unwrap());
         uninstall_one(&env, &mut session, "alpha").unwrap();
 
-        assert!(tree(&venv.dir.join("alpha")).is_empty());
+        assert!(tree(&venv.packages_dir().join("alpha")).is_empty());
         assert!(!install::is_installed(&venv.store(), "alpha"));
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -448,7 +448,7 @@ mod tests {
         assert!(install::is_installed(&fake.roots(), "alpha"));
 
         assert!(!venv.staging_dir().exists());
-        assert!(!venv.dir.join("alpha").exists());
+        assert!(!venv.packages_dir().join("alpha").exists());
         assert_eq!(lv.log().starts + lv.log().resaves.len(), 0, "no resave");
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -499,7 +499,10 @@ mod tests {
                 venv.staging_dir().display()
             )
         );
-        assert!(!venv.dir.join("alpha").exists(), "nothing was installed");
+        assert!(
+            !venv.packages_dir().join("alpha").exists(),
+            "nothing was installed"
+        );
         drop(open);
         let _ = std::fs::remove_dir_all(&repo);
     }
@@ -557,7 +560,7 @@ mod tests {
     fn a_folder_with_no_install_record_is_replaced() {
         let repo = testing::scratch_dir("stage-unrecorded");
         let venv = testing::venv_in(&repo);
-        let root = venv.dir.join("alpha").join("1");
+        let root = venv.packages_dir().join("alpha").join("1");
         std::fs::create_dir_all(root.join("lib")).unwrap();
         std::fs::write(root.join("by-hand.vi"), "mine").unwrap();
         std::fs::write(root.join("lib/a.vi"), "old").unwrap();
@@ -579,7 +582,11 @@ mod tests {
         let repo = testing::scratch_dir("stage-dry");
         let venv = testing::venv_in(&repo);
         let left = venv.staging_dir().join("half.vi");
-        let mine = venv.dir.join("alpha").join("1").join("by-hand.vi");
+        let mine = venv
+            .packages_dir()
+            .join("alpha")
+            .join("1")
+            .join("by-hand.vi");
         for f in [&left, &mine] {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, "x").unwrap();

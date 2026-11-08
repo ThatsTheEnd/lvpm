@@ -1029,6 +1029,7 @@ mod tests {
             installed_at: 0,
             target: String::new(),
             files: Vec::new(),
+            dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,
             relink_folders: Vec::new(),

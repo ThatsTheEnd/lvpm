@@ -494,24 +494,24 @@ impl Roots {
         }
     }
 
-    /// One package's addon inside a project venv. `<venv>/<pkg>/1` mirrors the
+    /// One package's addon inside a project venv. `<venv>/packages/<pkg>/1` mirrors the
     /// LabVIEW install dir — that is what LVAddons overlays — so every
     /// LabVIEW-tree token lands inside the addon. The machine roots stay real:
     /// the venv policy skips those groups rather than redirecting them.
     pub(crate) fn project(venv: &Path, target: &LvTarget, pkg: &str) -> Roots {
         let mut r = Roots::labview(target);
-        r.application = venv.join(pkg).join("1");
+        r.application = venv.join("packages").join(pkg).join("1");
         r.venv = Some(venv.to_path_buf());
         r
     }
 
     /// The venv as a whole, for the places that treat `application` as a
     /// boundary rather than a destination: the manifest store, and the prune
-    /// that stops there on uninstall — so removing a package takes its `1`
-    /// and its `<pkg>` dir with it.
+    /// that stops at `packages/` on uninstall, so removing a package takes its
+    /// `1` and its `<pkg>` dir with it.
     pub(crate) fn project_store(venv: &Path, target: &LvTarget) -> Roots {
         let mut r = Roots::labview(target);
-        r.application = venv.to_path_buf();
+        r.application = venv.join("packages");
         r.venv = Some(venv.to_path_buf());
         r
     }
@@ -579,7 +579,7 @@ impl Roots {
     /// `%ProgramData%` on Windows, `/var/lib` on Linux.
     pub(crate) fn store_dir(&self) -> PathBuf {
         match (&self.venv, &self.scratch, &self.target) {
-            (Some(v), _, _) => v.join(".lvpm").join("installed"),
+            (Some(v), _, _) => v.join("installed"),
             (None, Some(p), _) => p.join(".lvpm").join("installed"),
             (None, None, Some(t)) => self.state.join("lvpm").join(t.key()).join("installed"),
             (None, None, None) => PathBuf::from(".lvpm/installed"),
@@ -833,7 +833,7 @@ mod tests {
         };
         let venv = &Path::new(REPO).join(".lv-venv");
         let r = Roots::project(venv, &t, "oglib_error");
-        let addon = venv.join("oglib_error").join("1");
+        let addon = venv.join("packages").join("oglib_error").join("1");
 
         assert_eq!(
             r.expand("<vi.lib>/_OpenG.lib/error").unwrap(),
@@ -853,9 +853,12 @@ mod tests {
             .unwrap();
         assert!(r.check_contained(&r.expand("<temp>").unwrap()).is_err());
 
-        assert_eq!(r.store_dir(), venv.join(".lvpm").join("installed"));
+        assert_eq!(r.store_dir(), venv.join("installed"));
         assert_eq!(Roots::project_store(venv, &t).store_dir(), r.store_dir());
-        assert_eq!(&Roots::project_store(venv, &t).application, venv);
+        assert_eq!(
+            Roots::project_store(venv, &t).application,
+            venv.join("packages")
+        );
         assert_eq!(r.venv(), Some(venv.as_path()));
         assert!(r.target.is_some());
     }

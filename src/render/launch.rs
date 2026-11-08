@@ -14,6 +14,9 @@ pub fn launched(launched: &Launched) -> String {
         launched.ini.display(),
         v.port
     );
+    for (k, val) in &launched.ini_overrides {
+        text.push_str(&format!("  ini override   {k}={val}\n"));
+    }
     if let Some(p) = &launched.lvproj {
         text.push_str(&format!("  opening        {}\n", p.display()));
     }
@@ -62,6 +65,7 @@ mod tests {
             },
             ini: dir.join("labview.ini"),
             lvproj: None,
+            ini_overrides: Vec::new(),
         };
         let head = format!(
             "started LabVIEW 2026 (64-bit)  v26.3 on {}\n  ini            {}\n  VI Server port 3412\n",
