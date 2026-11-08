@@ -1,19 +1,25 @@
 //! A loopback HTTP server standing in for GitHub's releases API.
 //!
-//! It serves `GET /repos/{owner}/{repo}/releases` (paged by `per_page`, with a
+//! It serves `GET /repos/{owner}/{repo}` (the repo itself, when the caller may
+//! see it), `GET /repos/{owner}/{repo}/releases` (paged by `per_page`, with a
 //! `Link: rel="next"`), each release's draft and pre-release flags, and its
-//! assets. An asset's API URL answers JSON, unless the request asks for
+//! assets, and `GET /repos/{owner}/{repo}/contents/{path}` for the files a test
+//! registers with [`GitHubFake::add_file`] (raw, for `Accept:
+//! application/vnd.github.raw`; any other file is a 404). An asset's API URL answers JSON, unless the request asks for
 //! `Accept: application/octet-stream`: then it redirects to
 //! `http://localhost:{port}/download/{id}`, the same server under another host
 //! *name*, so a client's redirect policy sees a cross-host hop. `/download/{id}`
-//! serves the bytes.
+//! serves the bytes. `GET /{owner}/{repo}/releases/download/{tag}/{file}` serves
+//! a release file the way the web site does, for a public repo.
+//! `GET /orgs/{org}/public_members/{login}` answers 204 for a member a test
+//! registers with [`GitHubFake::add_public_member`] and 404 for anyone else.
 //!
 //! Each failure GitHub can answer with is a mode a test switches on, and every
 //! request is logged, so a test can say what was asked and with which token.
 
 use crate::http::{Request, accept, accept_loop, response, shut_down};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Write;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::AtomicBool;
@@ -27,6 +33,7 @@ pub const DOWNLOAD_HOST: &str = "localhost";
 const DEFAULT_PER_PAGE: usize = 30;
 const MAX_PER_PAGE: usize = 100;
 const OCTET_STREAM: &str = "application/octet-stream";
+const RAW: &str = "application/vnd.github.raw";
 const FIRST_ASSET_ID: u64 = 1000;
 
 /// A release as a test describes it: ids are the fake's to give.
@@ -95,6 +102,10 @@ struct Repo {
     /// Only [`PRIVATE_TOKEN`] sees it.
     private: bool,
     releases: Vec<Release>,
+    /// The files `contents` serves, by path in the repo.
+    files: BTreeMap<String, Vec<u8>>,
+    /// The SHA-256 (hex) of each file the attestations API lists one for.
+    attested: BTreeSet<String>,
 }
 
 /// What every API request (not a download) answers instead of its own reply.
@@ -162,6 +173,8 @@ struct State {
     /// The fault is answered to requests with no `Authorization` only.
     fault_for_anonymous_only: bool,
     repos: BTreeMap<String, Repo>,
+    /// The public members of each organisation, by login (lower case).
+    orgs: BTreeMap<String, BTreeSet<String>>,
     assets_issued: u64,
     log: Vec<LoggedRequest>,
 }
@@ -243,9 +256,80 @@ impl GitHubFake {
         state.repos.entry(repo.to_string()).or_default().private = true;
     }
 
+    /// Serve `body` as the file `path` of `repo`, replacing what it held.
+    pub fn add_file(&self, repo: &str, path: &str, body: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        repo.files
+            .insert(path.to_string(), body.as_bytes().to_vec());
+    }
+
+    /// Stop serving the file `path` of `repo`: a 404 from now on.
+    pub fn remove_file(&self, repo: &str, path: &str) {
+        let mut state = lock(&self.state);
+        let removed = state
+            .repos
+            .entry(repo.to_string())
+            .or_default()
+            .files
+            .remove(path);
+        assert!(removed.is_some(), "{repo} serves no file {path}");
+    }
+
+    /// From now on `GET /repos/{repo}/attestations/sha256:{sha256}` lists an
+    /// attestation for that file, as GitHub does for one a workflow attested;
+    /// any other digest is a 404, which GitHub answers for an unattested file.
+    pub fn add_attestation(&self, repo: &str, sha256: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        repo.attested.insert(sha256.to_ascii_lowercase());
+    }
+
+    /// From now on the attestations API lists none for the file with this
+    /// digest in `repo`: undoes [`add_attestation`](GitHubFake::add_attestation).
+    pub fn remove_attestation(&self, repo: &str, sha256: &str) {
+        let mut state = lock(&self.state);
+        let repo = state.repos.entry(repo.to_string()).or_default();
+        assert!(
+            repo.attested.remove(&sha256.to_ascii_lowercase()),
+            "{sha256} has no attestation"
+        );
+    }
+
+    /// From now on `GET /orgs/{org}/public_members/{login}` answers 204: `login`
+    /// is a public member of the organisation `org`, as GitHub says it of one
+    /// whose membership is public. Any other login is a 404, which is also what a
+    /// user account that is no organisation answers.
+    pub fn add_public_member(&self, org: &str, login: &str) {
+        let mut state = lock(&self.state);
+        let members = state.orgs.entry(org.to_ascii_lowercase()).or_default();
+        members.insert(login.to_ascii_lowercase());
+    }
+
+    /// Whether the attestations API lists one for the file with this digest in
+    /// `repo`.
+    pub fn lists_attestation(&self, repo: &str, sha256: &str) -> bool {
+        let state = lock(&self.state);
+        let repo = state.repos.get(repo);
+        repo.is_some_and(|repo| repo.attested.contains(&sha256.to_ascii_lowercase()))
+    }
+
     /// Add `release` to `repo`, after the releases it has (newest first).
     pub fn add_release(&self, repo: &str, release: FakeRelease) {
         lock(&self.state).add_release(repo, release);
+    }
+
+    /// Remove the file `name` from every release of `repo`: its download is a
+    /// 404 from now on, and the releases stay.
+    pub fn remove_asset(&self, repo: &str, name: &str) {
+        let mut state = lock(&self.state);
+        let releases = &mut state.repos.get_mut(repo).expect("a known repo").releases;
+        let before: usize = releases.iter().map(|r| r.assets.len()).sum();
+        releases
+            .iter_mut()
+            .for_each(|release| release.assets.retain(|asset| asset.name != name));
+        let after: usize = releases.iter().map(|r| r.assets.len()).sum();
+        assert!(after < before, "{repo} has no file {name}");
     }
 
     /// Replace the bytes of the file `name` in `repo`, keeping its asset id,
@@ -408,12 +492,44 @@ fn answer(
                 Err(refusal) => return refusal,
             };
             match rest {
+                [] => json_reply("200 OK", &[], &json!({ "full_name": slug })),
                 ["releases"] => listing(found, &slug, query, addr),
                 ["releases", "assets", id] => match asset_in(found, id) {
                     Some(asset) => asset_reply(asset, &slug, request.header("accept"), addr),
                     None => not_found(),
                 },
+                ["contents", path @ ..] => file_reply(found, &path.join("/"), request),
+                ["attestations", subject] => attestations_reply(found, subject),
                 _ => not_found(),
+            }
+        }
+        ["orgs", org, "public_members", login] => {
+            if let Some(fault) = &state.fault
+                && (request.header("authorization").is_none() || !state.fault_for_anonymous_only)
+            {
+                return fault.reply();
+            }
+            let member = state
+                .orgs
+                .get(&org.to_ascii_lowercase())
+                .is_some_and(|members| members.contains(&login.to_ascii_lowercase()));
+            match member {
+                true => response("204 No Content", &[], b""),
+                false => not_found(),
+            }
+        }
+        [owner, repo, "releases", "download", tag, file] => {
+            // The web site's address for a release file: public, no token read.
+            let slug = format!("{owner}/{repo}");
+            let asset = state
+                .repos
+                .get(&slug)
+                .filter(|repo| !repo.private)
+                .and_then(|repo| repo.releases.iter().find(|release| release.tag == *tag))
+                .and_then(|release| release.assets.iter().find(|asset| asset.name == *file));
+            match asset {
+                Some(asset) => response("200 OK", &[("Content-Type", OCTET_STREAM)], &asset.bytes),
+                None => not_found(),
             }
         }
         ["download", id] => {
@@ -443,6 +559,38 @@ fn visible<'a>(state: &'a State, slug: &str, request: &Request) -> Result<&'a Re
             &[],
             &message("Bad credentials"),
         )),
+    }
+}
+
+/// The file at `path`, raw as the client asks for it; JSON about it is not
+/// something the fake can say.
+fn file_reply(repo: &Repo, path: &str, request: &Request) -> Vec<u8> {
+    let Some(body) = repo.files.get(path) else {
+        return not_found();
+    };
+    match request.header("accept") {
+        Some(RAW) => response("200 OK", &[("Content-Type", RAW)], body),
+        _ => json_reply(
+            "415 Unsupported Media Type",
+            &[],
+            &message("ask for application/vnd.github.raw"),
+        ),
+    }
+}
+
+/// The attestations of the file with this digest: one when it was added, else
+/// the 404 of a file nothing attested. What the bundle holds is gh's to read.
+fn attestations_reply(repo: &Repo, subject: &str) -> Vec<u8> {
+    let attested = subject
+        .strip_prefix("sha256:")
+        .is_some_and(|sha| repo.attested.contains(&sha.to_ascii_lowercase()));
+    match attested {
+        true => json_reply(
+            "200 OK",
+            &[],
+            &json!({ "attestations": [{ "bundle": {} }] }),
+        ),
+        false => not_found(),
     }
 }
 
@@ -546,6 +694,35 @@ mod tests {
     }
 
     #[test]
+    fn a_public_member_is_a_204_and_anyone_else_a_404() {
+        let fake = GitHubFake::start(&[]);
+        fake.add_public_member("Acme", "Alice");
+        let status = |path: &str| get_from(fake.addr, path, "").status_line;
+
+        assert_eq!(
+            status("/orgs/acme/public_members/alice"),
+            "HTTP/1.1 204 No Content"
+        );
+        assert_eq!(
+            status("/orgs/ACME/public_members/ALICE"),
+            "HTTP/1.1 204 No Content"
+        );
+        assert_eq!(
+            status("/orgs/acme/public_members/bob"),
+            "HTTP/1.1 404 Not Found"
+        );
+        assert_eq!(
+            status("/orgs/other/public_members/alice"),
+            "HTTP/1.1 404 Not Found"
+        );
+        fake.fail_with(502);
+        assert_eq!(
+            status("/orgs/acme/public_members/alice"),
+            "HTTP/1.1 502 Bad Gateway"
+        );
+    }
+
+    #[test]
     fn a_listing_round_trips_tags_flags_and_assets() {
         let fake = GitHubFake::start(&[(
             "o/r",
@@ -635,6 +812,117 @@ mod tests {
 
         let download = get_from(fake.addr, &format!("/download/{id}"), "");
         assert_eq!(download.body, b"bytes");
+    }
+
+    #[test]
+    fn a_release_file_is_served_at_its_web_address_and_only_when_public() {
+        let fake = GitHubFake::start(&[("o/r", vec![pkg_release("1.0")])]);
+        let url = "/o/r/releases/download/1.0/pkg-1.0.lvpkg";
+        let served = get_from(fake.addr, url, "");
+        assert_eq!(served.status_line, "HTTP/1.1 200 OK");
+        assert_eq!(served.body, b"bytes");
+        for missing in [
+            "/o/r/releases/download/2.0/pkg-1.0.lvpkg",
+            "/o/r/releases/download/1.0/other.lvpkg",
+            "/x/y/releases/download/1.0/pkg-1.0.lvpkg",
+        ] {
+            let reply = get_from(fake.addr, missing, "");
+            assert_eq!(reply.status_line, "HTTP/1.1 404 Not Found", "{missing}");
+        }
+        fake.make_private("o/r");
+        assert_eq!(
+            get_from(fake.addr, url, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+    }
+
+    #[test]
+    fn an_attestation_is_listed_for_the_digests_added_and_404_for_any_other() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        let sha = "ab".repeat(32);
+        fake.add_attestation("o/r", &sha.to_ascii_uppercase());
+        let asked = |repo: &str, digest: &str| {
+            let path = format!("/repos/{repo}/attestations/{digest}");
+            get_from(fake.addr, &path, "").status_line
+        };
+        assert_eq!(asked("o/r", &format!("sha256:{sha}")), "HTTP/1.1 200 OK");
+        let other = format!("sha256:{}", "cd".repeat(32));
+        assert_eq!(asked("o/r", &other), "HTTP/1.1 404 Not Found");
+        assert_eq!(asked("o/r", &sha), "HTTP/1.1 404 Not Found");
+        assert_eq!(
+            asked("x/y", &format!("sha256:{sha}")),
+            "HTTP/1.1 404 Not Found"
+        );
+        let listed = get_from(
+            fake.addr,
+            &format!("/repos/o/r/attestations/sha256:{sha}"),
+            "",
+        );
+        assert_eq!(json_of(&listed)["attestations"][0]["bundle"], json!({}));
+    }
+
+    #[test]
+    fn a_removed_attestation_is_a_404_again() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        let sha = "ab".repeat(32);
+        let path = format!("/repos/o/r/attestations/sha256:{sha}");
+        fake.add_attestation("o/r", &sha);
+        assert_eq!(
+            get_from(fake.addr, &path, "").status_line,
+            "HTTP/1.1 200 OK"
+        );
+
+        fake.remove_attestation("o/r", &sha.to_ascii_uppercase());
+
+        assert_eq!(
+            get_from(fake.addr, &path, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+    }
+
+    #[test]
+    fn a_file_is_served_raw_a_file_not_registered_is_404_and_each_request_is_recorded() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "name = \"foo\"\n");
+        let raw = "Accept: application/vnd.github.raw\r\n";
+
+        let served = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(served.status_line, "HTTP/1.1 200 OK");
+        assert_eq!(served.body, b"name = \"foo\"\n");
+        let other = get_from(fake.addr, "/repos/o/r/contents/packages/bar.toml", raw);
+        assert_eq!(other.status_line, "HTTP/1.1 404 Not Found");
+        let json = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", "");
+        assert_eq!(json.status_line, "HTTP/1.1 415 Unsupported Media Type");
+
+        let asked: Vec<_> = fake.requests().into_iter().map(|r| r.path).collect();
+        assert_eq!(
+            asked,
+            [
+                "/repos/o/r/contents/packages/foo.toml",
+                "/repos/o/r/contents/packages/bar.toml",
+                "/repos/o/r/contents/packages/foo.toml",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_removed_file_is_404() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "x");
+        fake.remove_file("o/r", "packages/foo.toml");
+        let raw = "Accept: application/vnd.github.raw\r\n";
+        let gone = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(gone.status_line, "HTTP/1.1 404 Not Found");
+    }
+
+    #[test]
+    fn a_failing_mode_answers_a_file_request_with_its_status() {
+        let fake = GitHubFake::start(&[("o/r", vec![])]);
+        fake.add_file("o/r", "packages/foo.toml", "x");
+        fake.fail_with(500);
+        let raw = "Accept: application/vnd.github.raw\r\n";
+        let reply = get_from(fake.addr, "/repos/o/r/contents/packages/foo.toml", raw);
+        assert_eq!(reply.status_line, "HTTP/1.1 500 Internal Server Error");
     }
 
     #[test]
@@ -772,6 +1060,27 @@ mod tests {
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["tag_name"], "0.9");
         assert_eq!(download(&fake, id).status_line, "HTTP/1.1 404 Not Found");
+    }
+
+    #[test]
+    fn a_removed_asset_is_a_404_for_its_file_and_its_release_stays() {
+        let fake = GitHubFake::start(&[("o/r", vec![pkg_release("1.0"), pkg_release("0.9")])]);
+        let file = "/o/r/releases/download/1.0/pkg-1.0.lvpkg";
+        let other = "/o/r/releases/download/0.9/pkg-0.9.lvpkg";
+        assert_eq!(get_from(fake.addr, file, "").status_line, "HTTP/1.1 200 OK");
+
+        fake.remove_asset("o/r", "pkg-1.0.lvpkg");
+
+        assert_eq!(
+            get_from(fake.addr, file, "").status_line,
+            "HTTP/1.1 404 Not Found"
+        );
+        assert_eq!(
+            get_from(fake.addr, other, "").status_line,
+            "HTTP/1.1 200 OK"
+        );
+        let listed = json_of(&get_from(fake.addr, "/repos/o/r/releases", ""));
+        assert_eq!(listed.as_array().unwrap().len(), 2);
     }
 
     #[test]

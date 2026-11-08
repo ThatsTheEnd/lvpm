@@ -8,6 +8,7 @@
 //! enumerated values. Work that prints a line in two parts is a begin event and
 //! an end event, so the front end owns the half-written line.
 
+use crate::community::{Finding, NeedsReview};
 use crate::git::GitOutcome;
 use crate::released;
 use crate::verify::NotChecked;
@@ -536,6 +537,24 @@ pub enum Event {
         tag: String,
         registry: String,
     },
+
+    // ---- ops::community ----
+    /// `lvpm index add` wrote `version` of `name` into the entry file `file`
+    /// (`<entries-dir>/<key>.toml`, as the command was given the folder).
+    IndexEntryAdded {
+        name: String,
+        version: String,
+        file: String,
+    },
+    /// `lvpm index check` passed `version` of `name`: every rule holds.
+    IndexVersionAccepted { name: String, version: String },
+    /// `lvpm index check` refuses the PR for this one `finding`.
+    IndexRefused { finding: Finding },
+    /// `lvpm index check` passed the version, but its PR's author is not known
+    /// to own it: a maintainer has to look.
+    IndexNeedsReview { review: NeedsReview },
+    /// The PR changes nothing `lvpm index check` has a rule for.
+    IndexNothingToCheck,
 }
 
 /// A Unix time (seconds) as an RFC 3339 string.
@@ -799,11 +818,10 @@ pub enum FeedOutcome {
     Downloaded,
 }
 
-/// Drops every event, for unit tests that do not look at progress.
-#[cfg(test)]
+/// Drops every event: for unit tests that do not look at progress, and for a
+/// read whose progress is not part of what the command prints.
 pub(crate) struct NullSink;
 
-#[cfg(test)]
 impl EventSink for NullSink {
     fn emit(&self, _event: Event) {}
 }

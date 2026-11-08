@@ -286,6 +286,7 @@ pub(super) fn listed(name: &str, repo: &str, file: &ReleaseFile) -> Entry {
         lv_min: None,
         released: None,
         source: index::github_source(repo),
+        index_pin: None,
     }
 }
 
@@ -353,6 +354,7 @@ mod tests {
             lv_min,
             released: None,
             source: index::github_source("o/r"),
+            index_pin: None,
         }
     }
 

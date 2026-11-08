@@ -147,6 +147,7 @@ async fn a_plan_built_by_hand(world: &mut CliWorld, name: String, version: Strin
         lv_min: None,
         source: String::new(),
         released: None,
+        index_pin: None,
     };
     world.install = InstallState {
         plan: Some(InstallPlan {

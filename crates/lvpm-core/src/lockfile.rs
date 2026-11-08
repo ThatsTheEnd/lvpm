@@ -94,8 +94,8 @@ pub struct Lockfile {
 pub struct Inputs {
     /// Whether the public indexes were consulted too.
     pub defaults: bool,
-    /// The `[sources]` URLs, as the manifest lists them: hosted index folders
-    /// and `oci://` registries.
+    /// The `[sources]` values, as the manifest lists them: hosted index
+    /// folders, `oci://` registries and `github:owner/repo` index repos.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
     /// `[sources] min-age-days`; 0, which is also the absent key, is not written.
@@ -834,6 +834,23 @@ beta = \"o/beta\"
         assert_eq!(removed, stale, "removed");
         let added = lock().staleness(&manifest_with_github(Some("o/beta")));
         assert_eq!(added, stale, "added");
+    }
+
+    #[test]
+    fn changing_or_removing_the_community_line_makes_the_lock_stale() {
+        let manifest = |community_line: &str| {
+            let text = MANIFEST.replace("[sources]\n", &format!("[sources]\n{community_line}"));
+            crate::project::parse(&text).unwrap()
+        };
+        let written = manifest("community = \"github:o/r\"\n");
+        let mut lock = lock();
+        lock.inputs.sources = Inputs::of(&written).sources;
+        assert_eq!(lock.inputs.sources[0], "github:o/r", "the line is an input");
+        assert_eq!(lock.staleness(&written), None);
+        let stale = Some(StaleReason::SourcesChanged);
+        let changed = manifest("community = \"github:o/s\"\n");
+        assert_eq!(lock.staleness(&changed), stale, "changed");
+        assert_eq!(lock.staleness(&manifest("")), stale, "removed");
     }
 
     /// `lock()` as resolved from `MANIFEST` with beta's line pinned to `source`.

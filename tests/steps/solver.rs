@@ -78,6 +78,7 @@ fn entry(name: &str, version: &str) -> Entry {
         lv_min: None,
         source: String::new(),
         released: None,
+        index_pin: None,
     }
 }
 

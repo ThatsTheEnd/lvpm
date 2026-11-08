@@ -565,7 +565,7 @@ fn template_lines() -> Vec<String> {
 
 /// The text under the first heading of `doc` that holds `title`, up to the next
 /// heading of its level or a higher one. A `#` line inside a fence is no heading.
-fn section_of(doc: &str, title: &str) -> String {
+pub(super) fn section_of(doc: &str, title: &str) -> String {
     let (mut in_fence, mut level, mut section) = (false, 0, String::new());
     for line in doc.lines() {
         in_fence ^= line.starts_with("```");

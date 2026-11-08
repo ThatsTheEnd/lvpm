@@ -26,7 +26,7 @@
 
 use std::cmp::Ordering;
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, Default, Eq)]
 pub struct Version {
     /// The release numbers: `[0, 1, 0]` for `0.1.0alpha1-1`.
     parts: Vec<u64>,

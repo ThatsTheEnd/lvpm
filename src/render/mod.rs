@@ -5,11 +5,12 @@
 //! any other output starts on a line of its own. One file per core module holds
 //! the wording of that module's events; this file routes events to them and
 //! owns the two streams. `query` words what a query returns instead, and the
-//! `check`, `init`, `launch`, `venv` and `viserver` files also word what their
-//! commands return.
+//! `check`, `community`, `init`, `launch`, `venv` and `viserver` files also
+//! word what their commands return.
 
 pub mod build;
 pub mod check;
+pub mod community;
 pub mod edit;
 mod env;
 mod headless;
@@ -176,6 +177,11 @@ impl Renderer {
             Event::AppBuildStarting { .. } => build::render(self, event),
             Event::ArchiveFetching { .. } => query::render(self, event),
             Event::OciUploading { .. } => publish::render(self, event),
+            Event::IndexEntryAdded { .. }
+            | Event::IndexVersionAccepted { .. }
+            | Event::IndexRefused { .. }
+            | Event::IndexNeedsReview { .. }
+            | Event::IndexNothingToCheck => community::render(self, event),
         }
     }
 

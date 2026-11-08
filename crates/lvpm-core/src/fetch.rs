@@ -5,9 +5,9 @@
 //! require a valid stored blob, while ordinary local paths remain live reads.
 //! Feed fetching and resolution stay in `index`; storage stays in `cache`.
 
-use crate::cache::{Cache, LocalEntry};
+use crate::cache::{Cache, LocalEntry, sha256_hex};
 use crate::cancel::CancelToken;
-use crate::errors::Cancelled;
+use crate::errors::{Cancelled, IndexFileTooLarge, IndexHashMismatch, IndexUrlRefused};
 use crate::index::{self, Entry};
 use crate::oci::{Access, Oci};
 use anyhow::{Context, Result, ensure};
@@ -15,6 +15,10 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, HeaderMap};
 use std::io::Read;
+
+/// The most an index entry's file may be, in bytes: a community index is not
+/// trusted to bound its own entries.
+pub const MAX_INDEX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A GitHub download that came back with a status that is not a success. Its
 /// headers are kept (`error_for_status` drops them), so that a rate limit can
@@ -34,6 +38,56 @@ impl std::fmt::Display for Rejected {
 
 impl std::error::Error for Rejected {}
 
+/// Refuse a community index entry whose `url` is not a file of its publisher's
+/// releases on the site at `web` (see [`crate::github::GitHub::web_base`]); any
+/// other entry passes. The url is the index's, so it is checked before anything
+/// is read from it: no UNC path, `cache:` or local path, `oci://` reference or
+/// other host is ever opened for an index entry.
+pub fn check_index_url(entry: &Entry, web: &str) -> Result<(), IndexUrlRefused> {
+    let Some(pin) = &entry.index_pin else {
+        return Ok(());
+    };
+    if is_release_file(&entry.url, web, &pin.publisher) {
+        return Ok(());
+    }
+    Err(IndexUrlRefused {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        index: entry.source.clone(),
+        publisher: pin.publisher.clone(),
+    })
+}
+
+/// Whether `url` is `<web>/<publisher>/releases/download/<tag>/<file>`, the
+/// owner and repo compared ignoring ASCII case: exactly one tag and one file
+/// segment, neither empty, `.` or `..`. A `%` after the prefix refuses the url,
+/// since `%2f`, `%5c` and `%2e` would decode to a separator or a dot segment. A
+/// url with userinfo, a query or a fragment, or one with a control character
+/// (which a parser would strip), is no release file.
+fn is_release_file(url: &str, web: &str, publisher: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let prefix = format!("{web}/{publisher}/releases/download/");
+    let parsed_text = parsed.as_str();
+    let (Some(head), Some(rest)) = (
+        parsed_text.get(..prefix.len()),
+        parsed_text.get(prefix.len()..),
+    ) else {
+        return false;
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    !url.chars().any(char::is_control)
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && head.eq_ignore_ascii_case(&prefix)
+        && !rest.contains('%')
+        && segments.len() == 2
+        && segments.iter().all(|s| !matches!(*s, "" | "." | ".."))
+}
+
 /// Return archive bytes, checking SHA-256 on cache reads and MD5 when advertised.
 ///
 /// Ambiguous, missing, corrupt, or MD5-mismatched remote cache candidates trigger
@@ -47,6 +101,11 @@ impl std::error::Error for Rejected {}
 /// it, as `Authorization: Bearer`. It is called only when a download is due, so
 /// finding the token (which may run `gh`) costs nothing on a cache hit. Nothing
 /// of the token is kept or shown.
+///
+/// An entry a community index lists (`entry.index_pin`) is downloaded with no
+/// token and no more than [`MAX_INDEX_DOWNLOAD_BYTES`], and its SHA-256 must be
+/// the pinned one: bytes that are not fail with [`IndexHashMismatch`] before
+/// anything is cached. The cache answers for it by the pinned SHA-256.
 ///
 /// A cancelled `cancel` ends the fetch with [`Cancelled`] before it starts and
 /// between the chunks of a download, so nothing of a cancelled download is
@@ -65,9 +124,34 @@ pub fn package<'a>(
     if let Some(bytes) = on_hand(cache, entry)? {
         return Ok(bytes);
     }
-    let response = request(client, entry, auth())
+    download(
+        cache,
+        client,
+        entry,
+        auth(),
+        cancel,
+        MAX_INDEX_DOWNLOAD_BYTES,
+    )
+}
+
+/// [`package`] past the cache: the download, with `index_limit` the most an
+/// index entry's file may be.
+fn download(
+    cache: &Cache,
+    client: &Client,
+    entry: &Entry,
+    auth: Option<&str>,
+    cancel: &CancelToken,
+    index_limit: u64,
+) -> Result<Vec<u8>> {
+    // An index's url is its own to write: name the package, not the url.
+    let what = match entry.index_pin {
+        Some(_) => format!("{} {}", entry.name, entry.version),
+        None => entry.url.clone(),
+    };
+    let response = request(client, entry, auth)
         .send()
-        .with_context(|| format!("downloading {}", entry.url))?;
+        .with_context(|| format!("downloading {what}"))?;
     if index::github_repo(entry).is_some() && !response.status().is_success() {
         return Err(Rejected {
             status: response.status(),
@@ -76,8 +160,12 @@ pub fn package<'a>(
         .into());
     }
     let response = response.error_for_status()?;
-    let bytes = read_body(response, cancel)?;
+    let bytes = match entry.index_pin {
+        Some(_) => read_within(response, cancel, index_limit, entry)?,
+        None => read_body(response, cancel)?,
+    };
     let md5 = verify_md5(entry, &bytes)?;
+    verify_sha256(entry, &bytes)?;
     let sha256 = cache.store(&bytes)?;
     cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
     Ok(bytes)
@@ -130,6 +218,11 @@ fn request(client: &Client, entry: &Entry, auth: Option<&str>) -> RequestBuilder
 /// The archive's bytes when [`package`] would not download them: from the
 /// cache or a local file. `None` when only the feed has them.
 pub fn on_hand(cache: &Cache, entry: &Entry) -> Result<Option<Vec<u8>>> {
+    // An index entry is on hand only by the SHA-256 it pins: its url never
+    // names a cache blob or a local file.
+    if let Some(pin) = &entry.index_pin {
+        return cache.load(&pin.sha256.to_ascii_lowercase());
+    }
     if let Some(sha256) = entry.url.strip_prefix("cache:") {
         let bytes = cache.load(sha256)?.with_context(|| format!(
             "cached archive for {} is missing or corrupt; run cache add again with the original package", entry.name,
@@ -173,6 +266,26 @@ fn read_body(mut body: impl Read, cancel: &CancelToken) -> Result<Vec<u8>> {
     }
 }
 
+/// [`read_body`] of at most `limit` bytes of `entry`'s file: a longer body fails
+/// naming the limit, and is not kept.
+fn read_within(
+    body: impl Read,
+    cancel: &CancelToken,
+    limit: u64,
+    entry: &Entry,
+) -> Result<Vec<u8>> {
+    let bytes = read_body(body.take(limit + 1), cancel)?;
+    if bytes.len() as u64 > limit {
+        return Err(IndexFileTooLarge {
+            name: entry.name.clone(),
+            version: entry.version.to_string(),
+            limit,
+        }
+        .into());
+    }
+    Ok(bytes)
+}
+
 fn ensure_running(cancel: &CancelToken) -> Result<()> {
     match cancel.is_cancelled() {
         true => Err(Cancelled.into()),
@@ -191,6 +304,27 @@ fn verify_md5(entry: &Entry, bytes: &[u8]) -> Result<String> {
         );
     }
     Ok(got)
+}
+
+/// Reject bytes whose SHA-256 is not the one a community index pins for the
+/// entry; any other entry pins none.
+fn verify_sha256(entry: &Entry, bytes: &[u8]) -> Result<()> {
+    let Some(pin) = &entry.index_pin else {
+        return Ok(());
+    };
+    let actual = sha256_hex(bytes);
+    if actual.eq_ignore_ascii_case(&pin.sha256) {
+        return Ok(());
+    }
+    Err(IndexHashMismatch {
+        name: entry.name.clone(),
+        version: entry.version.to_string(),
+        index: entry.source.clone(),
+        publisher: pin.publisher.clone(),
+        pinned: pin.sha256.clone(),
+        actual,
+    }
+    .into())
 }
 
 #[cfg(test)]
@@ -224,6 +358,7 @@ mod tests {
             lv_min: None,
             source: String::new(),
             released: None,
+            index_pin: None,
         }
     }
 
@@ -315,6 +450,134 @@ mod tests {
             stream.write_all(rest).ok();
         });
         (url, first_sent, go, thread)
+    }
+
+    /// What a community index pins for `bytes`, as `entry` carries it.
+    fn pinned(url: String, bytes: &[u8]) -> Entry {
+        let mut pinned = entry(url, None);
+        pinned.source = "github-index:o/r".into();
+        pinned.index_pin = Some(index::IndexPin {
+            sha256: sha256_hex(bytes),
+            publisher: "someone/Serializer".into(),
+        });
+        pinned
+    }
+
+    /// Serves `bytes` once, and returns the head of the request it got.
+    fn head_server(bytes: &'static [u8]) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/pkg.lvpkg", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+            stream.write_all(bytes).unwrap();
+            String::from_utf8_lossy(&head).to_lowercase()
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn an_index_entrys_file_is_asked_for_with_no_token_even_when_one_is_configured() {
+        let (root, cache) = test_cache("index-no-token");
+        let (url, server) = head_server(b"package bytes");
+        let wanted = pinned(url, b"package bytes");
+        let token = || Some("tok");
+        let fetched = super::package(&cache, &Client::new(), &wanted, token, &CancelToken::new());
+        assert_eq!(fetched.unwrap(), b"package bytes");
+        let head = server.join().unwrap();
+        assert!(!head.contains("authorization"), "{head}");
+        assert!(!head.contains("octet-stream"), "{head}");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn bytes_that_are_not_the_pinned_sha256_fail_with_both_hashes_and_cache_nothing() {
+        let (root, cache) = test_cache("index-mismatch");
+        let (url, thread) = server(b"other bytes");
+        let wanted = pinned(url, b"package bytes");
+        let why = package(&cache, &Client::new(), &wanted).unwrap_err();
+        thread.join().unwrap();
+        let mismatch = why.downcast_ref::<IndexHashMismatch>().expect("typed");
+        assert_eq!(mismatch.pinned, sha256_hex(b"package bytes"));
+        assert_eq!(mismatch.actual, sha256_hex(b"other bytes"));
+        assert_eq!(
+            (&*mismatch.name, &*mismatch.index, &*mismatch.publisher),
+            ("test_package", "github-index:o/r", "someone/Serializer")
+        );
+        assert!(!root.join("content").exists());
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_pinned_file_is_cached_and_then_reused_by_its_sha256_with_the_server_gone() {
+        let (root, cache) = test_cache("index-reuse");
+        let (url, thread) = server(b"package bytes");
+        let wanted = pinned(url, b"package bytes");
+        assert_eq!(
+            package(&cache, &Client::new(), &wanted).unwrap(),
+            b"package bytes"
+        );
+        thread.join().unwrap();
+        assert_eq!(
+            package(&cache, &Client::new(), &wanted).unwrap(),
+            b"package bytes"
+        );
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn an_index_file_over_the_limit_fails_naming_the_limit_and_caches_nothing() {
+        let (root, cache) = test_cache("index-limit");
+        let client = Client::new();
+        let download = |bytes: &'static [u8], limit| {
+            let (url, thread) = server(bytes);
+            let wanted = pinned(url, bytes);
+            let fetched =
+                super::download(&cache, &client, &wanted, None, &CancelToken::new(), limit);
+            thread.join().unwrap();
+            fetched
+        };
+        let why = download(b"12345", 4).unwrap_err();
+        assert_eq!(
+            why.to_string(),
+            "the file of test_package 1.0.0 is larger than the download limit of 4 bytes"
+        );
+        assert!(!root.join("content").exists());
+        assert_eq!(download(b"1234", 4).unwrap(), b"1234");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_file_no_index_lists_is_not_limited_or_hash_checked() {
+        let (root, cache) = test_cache("no-index-limit");
+        let (url, thread) = server(b"12345");
+        let unpinned = entry(url, None);
+        let fetched = super::download(
+            &cache,
+            &Client::new(),
+            &unpinned,
+            None,
+            &CancelToken::new(),
+            4,
+        );
+        thread.join().unwrap();
+        assert_eq!(fetched.unwrap(), b"12345");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -547,6 +810,126 @@ mod tests {
         assert_eq!(package(&cache, &Client::new(), &no_md5).unwrap(), bytes);
         thread.join().unwrap();
         assert!(package(&cache, &Client::new(), &no_md5).is_err());
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// An entry a community index lists at `url`, its publisher `someone/Serializer`.
+    fn listed_at(url: &str) -> Entry {
+        let mut listed = pinned(url.into(), b"package bytes");
+        listed.source = "github-index:o/r".into();
+        listed
+    }
+
+    #[test]
+    fn an_index_url_is_accepted_only_under_its_publishers_releases_on_the_web_base() {
+        const WEB: &str = "https://github.com";
+        let under = "https://github.com/someone/Serializer/releases/download/1.0.0/pkg.lvpkg";
+        assert_eq!(check_index_url(&listed_at(under), WEB), Ok(()));
+        // The owner and the repo are compared ignoring ASCII case.
+        let cased = "https://github.com/SOMEONE/serializer/releases/download/1.0.0/pkg.lvpkg";
+        assert_eq!(check_index_url(&listed_at(cased), WEB), Ok(()));
+        // A test's web base is its loopback server.
+        let loopback = "http://127.0.0.1:9/someone/Serializer/releases/download/1/p.lvpkg";
+        assert_eq!(
+            check_index_url(&listed_at(loopback), "http://127.0.0.1:9"),
+            Ok(())
+        );
+
+        let refused = [
+            r"\\attacker\share\p.lvpkg",
+            "//attacker/share/p.lvpkg",
+            "cache:abcd",
+            "C:/packages/p.lvpkg",
+            "relative/p.lvpkg",
+            "oci://x",
+            "http://evil.example/someone/Serializer/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/other/Serializer/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/someone/Other/releases/download/1.0.0/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/",
+            "https://github.com/someone/Serializer/releases/download/../../../evil/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/%2e%2e/%2e%2e/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0/sub/foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0%2f..%2f..%2fb/foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0%5c..%5cfoo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0/",
+            "https://github.com/someone/Serializer/releases/download/1.1.0",
+            "https://github.com/someone/Serializer/releases/download//foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1.1.0//foo.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p.lvpkg?x=1",
+            "https://github.com/someone/Serializer/releases/download/1/p.lvpkg#frag",
+            "https://user@github.com/someone/Serializer/releases/download/1/p.lvpkg",
+            "https://github.com@evil.example/someone/Serializer/releases/download/1/p.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p\n.lvpkg",
+            "https://github.com/someone/Serializer/releases/download/1/p\t.lvpkg",
+        ];
+        for url in refused {
+            let why = check_index_url(&listed_at(url), WEB).expect_err(url);
+            let text = why.to_string();
+            assert_eq!(
+                (&*why.name, &*why.version, &*why.index, &*why.publisher),
+                (
+                    "test_package",
+                    "1.0.0",
+                    "github-index:o/r",
+                    "someone/Serializer"
+                )
+            );
+            assert!(
+                text.contains("test_package 1.0.0") && text.contains("fix:"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("attacker") && !text.contains("evil"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_no_index_lists_is_never_refused_for_its_url() {
+        assert_eq!(
+            check_index_url(&entry("C:/p.vip".into(), None), "https://github.com"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn an_index_entry_is_never_read_from_the_cache_by_url_or_from_a_local_file() {
+        let (root, cache) = test_cache("index-not-local");
+        let file = root.join("local.lvpkg");
+        std::fs::write(&file, b"package bytes").unwrap();
+        let sha256 = cache.store(b"other bytes").unwrap();
+        for url in [
+            file.to_string_lossy().into_owned(),
+            format!("cache:{sha256}"),
+        ] {
+            let wanted = listed_at(&url);
+            assert_eq!(on_hand(&cache, &wanted).unwrap(), None, "{url}");
+        }
+        // What the index pins is on hand by that SHA-256, whatever its url says.
+        let pinned_sha = cache.store(b"package bytes").unwrap();
+        let wanted = listed_at("cache:0000");
+        assert_eq!(wanted.index_pin.as_ref().unwrap().sha256, pinned_sha);
+        assert_eq!(on_hand(&cache, &wanted).unwrap().unwrap(), b"package bytes");
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_failed_index_download_names_the_package_and_not_the_url() {
+        let (root, cache) = test_cache("index-download-words");
+        let url = "http://127.0.0.1:1/someone/Serializer/releases/download/1.0.0/p.lvpkg";
+        let fetch = |entry: &Entry| {
+            super::download(&cache, &Client::new(), entry, None, &CancelToken::new(), 4)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(fetch(&listed_at(url)), "downloading test_package 1.0.0");
+        assert_eq!(
+            fetch(&entry(url.into(), None)),
+            format!("downloading {url}")
+        );
         drop(cache);
         std::fs::remove_dir_all(root).ok();
     }

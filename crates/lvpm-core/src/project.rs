@@ -9,6 +9,7 @@
 //! [sources]                         # repositories beyond the public indexes
 //! mirror = "http://host:8090/files" # a hosted index.vipr folder
 //! team = "oci://ghcr.io/org/lvpm"   # an OCI registry prefix: asked only for packages pinned to it
+//! community = "github:o/index"      # a community index repo: asked for the packages the project wants
 //! defaults = true                   # false: only the sources listed here
 //!
 //! [dependencies]
@@ -40,6 +41,7 @@
 //! an older one.
 
 use crate::errors::LockError;
+use crate::index::{GITHUB_SCHEME, INDEX_SCHEME};
 use crate::manifest_edit::DependencyTable;
 use crate::oci::{self, FeedUrl, UrlError};
 use crate::verify::Policy;
@@ -254,16 +256,20 @@ pub enum Feed {
     /// A registry prefix (`oci://host/prefix`). A registry has no catalogue,
     /// so only the packages pinned to it with `index = "<source>"` are asked.
     Oci(FeedUrl),
+    /// A community index repo (`github:owner/repo`), asked for the packages
+    /// the project wants.
+    Index { owner: String, repo: String },
 }
 
 impl Feed {
     /// What `Entry::source` holds for the entries this feed lists, and so what
     /// a source pin is compared with: the index URL of a hosted folder, the
-    /// `oci://` URL of a registry prefix.
+    /// `oci://` URL of a registry prefix, `github-index:owner/repo`.
     pub fn owner(&self) -> String {
         match self {
             Feed::Hosted(folder) => feed_url(folder),
             Feed::Oci(url) => url.to_string(),
+            Feed::Index { owner, repo } => format!("{INDEX_SCHEME}{owner}/{repo}"),
         }
     }
 }
@@ -288,6 +294,9 @@ fn feed_of(name: &str, url: &str) -> Result<Feed> {
     if url.starts_with(oci::SCHEME) {
         return oci_feed(name, url).map(Feed::Oci);
     }
+    if url.starts_with(GITHUB_SCHEME) {
+        return index_feed(name, url);
+    }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         bail!(
             "[sources] {name}: {:?} is not an http:// or https:// index folder",
@@ -307,6 +316,31 @@ fn without_userinfo(url: &str) -> String {
     // The last `@`: a password may hold a slash, so the authority's end is unknown.
     let tail = rest.rsplit_once('@').map_or(rest, |(_, tail)| tail);
     format!("{scheme}://{tail}")
+}
+
+/// `owner/repo`, with the owner and repo made of what GitHub names allow, so
+/// they are safe in a URL path and a message.
+pub(crate) fn split_owner_repo(value: &str) -> Option<(&str, &str)> {
+    let owner_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    let repo_char = |c: char| owner_char(c) || matches!(c, '_' | '.');
+    value.split_once('/').filter(|(owner, repo)| {
+        !owner.is_empty()
+            && owner.chars().all(owner_char)
+            && !matches!(*repo, "" | "." | "..")
+            && repo.chars().all(repo_char)
+    })
+}
+
+/// `github:owner/repo`.
+fn index_feed(name: &str, value: &str) -> Result<Feed> {
+    let named = (value.strip_prefix(GITHUB_SCHEME)).and_then(split_owner_repo);
+    match named {
+        Some((owner, repo)) => Ok(Feed::Index {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+        }),
+        None => bail!("[sources] {name}: {value:?} is not github:owner/repo"),
+    }
 }
 
 /// `oci://host/prefix`. A URL with `user:password@` is refused without a word
@@ -447,6 +481,9 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
                 // secret from lvpm.toml into the lock or its own output.
                 if s.starts_with(oci::SCHEME) {
                     oci_feed(&key, &s)?;
+                }
+                if s.starts_with(GITHUB_SCHEME) {
+                    index_feed(&key, &s)?;
                 }
                 p.sources.push((key, s))
             }
@@ -1129,6 +1166,55 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         assert_eq!(hosted.owner(), "http://h/x/index.vipr");
         let oci = Feed::Oci(FeedUrl::parse("oci://r:5000/org/lvpm").unwrap());
         assert_eq!(oci.owner(), "oci://r:5000/org/lvpm");
+    }
+
+    #[test]
+    fn a_github_source_is_an_index_feed_owned_by_github_index() {
+        let p = parse("[sources]\ncommunity = \"github:labview-package-manager/package-index\"\n")
+            .unwrap();
+        let feed = Feed::Index {
+            owner: "labview-package-manager".into(),
+            repo: "package-index".into(),
+        };
+        assert_eq!(
+            p.resolved_sources().unwrap(),
+            [("community".to_string(), feed.clone())]
+        );
+        let owner = feed.owner();
+        assert_eq!(owner, "github-index:labview-package-manager/package-index");
+        // Never `github:`, which is a GitHub dependency's source.
+        assert!(!owner.starts_with(GITHUB_SCHEME), "{owner}");
+    }
+
+    #[test]
+    fn a_github_source_that_is_not_owner_slash_repo_is_refused() {
+        for value in [
+            "github:x",
+            "github:/r",
+            "github:o/",
+            "github:o/r/x",
+            "github:../r",
+            "github:o/..",
+            "github:o/r?x",
+            // The edges of the two classes: no `_` or `.` in an owner, no `.` repo.
+            "github:o_/r",
+            "github:o.p/r",
+            "github:o/.",
+            "github:",
+            "github:o/r\u{e9}",
+        ] {
+            let why = parse(&format!("[sources]\ncommunity = {value:?}\n"))
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                why,
+                format!("[sources] community: {value:?} is not github:owner/repo"),
+                "{value}"
+            );
+        }
+        // Every character the classes allow, at once.
+        let allowed = parse("[sources]\ncommunity = \"github:O-1/r.x_y-Z\"\n").unwrap();
+        assert!(allowed.resolved_sources().is_ok());
     }
 
     #[test]

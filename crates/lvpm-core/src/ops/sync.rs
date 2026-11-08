@@ -10,6 +10,7 @@
 use super::env::OpEnv;
 use super::github_index;
 use super::hook_policy::HookAllow;
+use super::index_files::IndexFiles;
 use super::install::{
     Applied, InstallOptions, InstallPlan, PlannedPackage, announce_target, apply, finish,
     order_dependencies_first,
@@ -18,7 +19,10 @@ use super::lock as locking;
 use super::session::{Downloads, InstallSession};
 use super::uninstall::uninstall_one;
 use crate::cache::{Stored, sha256_hex};
-use crate::errors::{ArchiveFault, Cancelled, LockError, LockedArchiveProblem, SyncError};
+use crate::errors::{
+    ArchiveFault, Cancelled, IndexHashMismatch, IndexUrlRefused, LockError, LockedArchiveProblem,
+    SyncError,
+};
 use crate::events::{Event, PackageRef, Phase, RemoveReason, SyncStep};
 use crate::index::{self, Entry, Index};
 use crate::install::{self, Manifest};
@@ -558,6 +562,7 @@ pub fn fetch_locked(
         return Ok(Vec::new());
     }
     let downloads = Downloads::open(env)?;
+    let names: Vec<String> = wanted.iter().map(|locked| locked.name.clone()).collect();
     let mut searches: Vec<Search> = wanted
         .iter()
         .map(|locked| Search::in_cache(&downloads, locked))
@@ -587,12 +592,12 @@ pub fn fetch_locked(
             }
             continue;
         }
-        let index = match source.index(env, &downloads) {
+        let index = match source.index(env, &downloads, &names) {
             Ok(index) => index,
             // A repo that cannot be read says why; a folder that is gone and a
             // feed that is down hold nothing.
             Err(why) => {
-                if matches!(source, Source::GitHub(..)) {
+                if matches!(source, Source::GitHub(..) | Source::Index(_)) {
                     for search in asking {
                         search.unfetched = Some(Unfetched::plain(format!("{why:#}")));
                     }
@@ -641,6 +646,25 @@ impl Unfetched {
         Unfetched {
             reason,
             in_full: false,
+        }
+    }
+
+    /// Why `why` stopped a download from an index or a feed: a file the index
+    /// lists by another SHA-256, or at a url that is not its publisher's, is a
+    /// whole sentence; any other cause is worded after the package.
+    pub(super) fn of_download(why: &anyhow::Error) -> Unfetched {
+        let in_full = if let Some(mismatch) = why.downcast_ref::<IndexHashMismatch>() {
+            Some(mismatch.to_string())
+        } else {
+            why.downcast_ref::<IndexUrlRefused>()
+                .map(ToString::to_string)
+        };
+        match in_full {
+            Some(reason) => Unfetched {
+                reason,
+                in_full: true,
+            },
+            None => Unfetched::plain(format!("{why:#}")),
         }
     }
 
@@ -697,9 +721,7 @@ impl<'a> Search<'a> {
             .filter(|entry| entry.version == version)
         {
             let fetched = downloads.fetch(entry);
-            self.consider(downloads, fetched, |why| {
-                Unfetched::plain(format!("{why:#}"))
-            })?;
+            self.consider(downloads, fetched, Unfetched::of_download)?;
             if self.found {
                 break;
             }
@@ -736,6 +758,7 @@ impl<'a> Search<'a> {
             lv_min: None,
             source: self.locked.source.clone(),
             released: None,
+            index_pin: None,
         };
         let (name, version) = (&self.locked.name, &self.locked.version);
         let fetched = downloads.fetch(&entry);
@@ -816,6 +839,7 @@ impl<'a> Search<'a> {
                 lv_min: None,
                 source: String::new(),
                 released: None,
+                index_pin: None,
             },
             expected_sha256: Some(self.sha256()),
         }
@@ -834,6 +858,9 @@ enum Source {
     Folder(PathBuf),
     PublicFeeds,
     Feed(String),
+    /// A community index repo: asked for the locked names, as the lock found its
+    /// packages there.
+    Index(index::IndexFeed),
     /// An OCI source: fetched by digest, never listed, and asked only for the
     /// packages the lock records as from it.
     Oci(index::OciFeed),
@@ -849,34 +876,51 @@ impl Source {
         if project.default_sources {
             sources.push(Source::PublicFeeds);
         }
-        let (hosted, registries) =
+        let (remotes, registries) =
             index::split_sources(project.resolved_sources()?, &project.source_pins);
-        sources.extend(hosted.into_iter().map(Source::Feed));
+        sources.extend(remotes.into_iter().map(|remote| match remote {
+            index::Remote::Hosted(folder) => Source::Feed(folder),
+            index::Remote::Index(feed) => Source::Index(feed),
+        }));
         sources.extend(registries.into_iter().map(Source::Oci));
         Ok(sources)
     }
 
     /// Whether this source may hold the locked package: a package with a
     /// `github` line is in that repo's releases and nowhere else, and one with
-    /// a manifest digest is in the OCI source the lock names and nowhere else.
+    /// a manifest digest is in the OCI source the lock names and nowhere else; one
+    /// whose source is a community index is in that index and nowhere else.
     fn answers_for(&self, project: &Project, locked: &LockedPackage) -> bool {
         let name = &locked.name;
         match self {
             Source::GitHub(own, _) => same_name(own, name),
             Source::Oci(feed) => locked.digest.is_some() && locked.source == feed.url.to_string(),
-            _ => locked.digest.is_none() && !project.github.keys().any(|own| same_name(own, name)),
+            Source::Index(feed) => locked.source.eq_ignore_ascii_case(&feed.source()),
+            _ => {
+                locked.digest.is_none()
+                    && index::index_repo(&locked.source).is_none()
+                    && !project.github.keys().any(|own| same_name(own, name))
+            }
         }
     }
 
     /// The source's index. A repo's is made from a fresh listing, never the
     /// cached one: a file uploaded again with `--clobber` has a new asset id.
-    fn index(&self, env: &OpEnv, downloads: &Downloads) -> anyhow::Result<Index> {
+    ///
+    /// A community index is asked for `wanted`, the locked names, only.
+    fn index(
+        &self,
+        env: &OpEnv,
+        downloads: &Downloads,
+        wanted: &[String],
+    ) -> anyhow::Result<Index> {
         let (feeds, folders, defaults) = match self {
             Source::GitHub(name, repo) => return github_entries(env, downloads, name, repo),
+            Source::Index(feed) => return index_entries(env, feed, wanted),
             Source::Imported => (Vec::new(), Vec::new(), false),
             Source::Folder(dir) => (Vec::new(), vec![dir.clone()], false),
             Source::PublicFeeds => (Vec::new(), Vec::new(), true),
-            Source::Feed(url) => (vec![url.clone()], Vec::new(), false),
+            Source::Feed(url) => (vec![index::Remote::Hosted(url.clone())], Vec::new(), false),
             // Fetched by digest in `fetch_locked`, which never asks for this.
             Source::Oci(_) => {
                 return Ok(Index {
@@ -891,13 +935,29 @@ impl Source {
                 extra: &feeds,
                 local: &folders,
                 defaults,
-                oci: &[],
+                ..index::SourceSet::default()
             },
             &env.oci,
             env.sink,
             &env.cancel,
         )
     }
+}
+
+/// What the community index `feed` lists under the `wanted` names.
+fn index_entries(env: &OpEnv, feed: &index::IndexFeed, wanted: &[String]) -> anyhow::Result<Index> {
+    let remotes = [index::Remote::Index(feed.clone())];
+    let files = IndexFiles::open(&env.config.cache, &env.github, env.refresh)?;
+    let fetch = |feed: &index::IndexFeed, key: &str| files.read(feed, key);
+    let sources = index::SourceSet {
+        extra: &remotes,
+        wanted,
+        index_fetch: &fetch,
+        index_parse: crate::community::read_entries,
+        ..index::SourceSet::default()
+    };
+    let (cache, refresh) = (&env.config.cache, env.refresh);
+    index::load(cache, refresh, &sources, &env.oci, env.sink, &env.cancel)
 }
 
 /// The index of `name`'s files in the releases of `repo` that GitHub lists now.
@@ -1663,6 +1723,36 @@ mod tests {
         assert!(!repo.answers_for(&project, &package("beta")));
         assert!(Source::Imported.answers_for(&project, &package("beta")));
         assert!(!Source::Imported.answers_for(&project, &package("ALPHA")));
+    }
+
+    #[test]
+    fn an_index_answers_for_its_locked_package_whatever_the_case_of_its_manifest_line() {
+        let (_, project) = github_project(&Scratch::new("index-answers"));
+        let index = |owner: &str, repo: &str| {
+            Source::Index(index::IndexFeed {
+                owner: owner.into(),
+                repo: repo.into(),
+            })
+        };
+        let mut alpha = locked_as("alpha", "2.0", b"");
+        alpha.source = "github-index:o/idx".to_string();
+        assert!(index("o", "idx").answers_for(&project, &alpha));
+        assert!(index("O", "IDX").answers_for(&project, &alpha));
+        assert!(!index("o", "other").answers_for(&project, &alpha));
+    }
+
+    #[test]
+    fn a_refused_index_url_is_worded_in_full_and_any_other_failure_after_the_package() {
+        let refused = IndexUrlRefused {
+            name: "alpha".into(),
+            version: "1.0".into(),
+            index: "github-index:o/r".into(),
+            publisher: "a/x".into(),
+        };
+        let said = Unfetched::of_download(&refused.clone().into());
+        assert_eq!((said.reason, said.in_full), (refused.to_string(), true));
+        let said = Unfetched::of_download(&anyhow::anyhow!("HTTP 500"));
+        assert_eq!((said.reason, said.in_full), ("HTTP 500".to_string(), false));
     }
 
     #[test]
