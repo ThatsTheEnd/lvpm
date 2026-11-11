@@ -225,7 +225,8 @@ pub fn cache_refresh(catalog: &Catalog) -> String {
         "{} package version(s) listed\n",
         catalog.entries.len()
     ));
-    text
+    // A failure reason comes from a remote source: no escape reaches the terminal.
+    printable(text)
 }
 
 #[cfg(test)]
@@ -523,13 +524,13 @@ mod tests {
         let catalog = Catalog {
             entries: vec![entry("alpha", None), entry("beta", None)],
             sources: vec!["https://a/index.vipr".into(), "https://b/x.ogpd".into()],
-            failed: vec![("https://b/x.ogpd".into(), "timed out".into())],
+            failed: vec![("https://b/x.ogpd".into(), "timed\u{1b}[2K out".into())],
         };
         assert_eq!(
             cache_refresh(&catalog),
             concat!(
                 "refreshed https://a/index.vipr\n",
-                "failed    https://b/x.ogpd: timed out\n",
+                "failed    https://b/x.ogpd: timed?[2K out\n",
                 "2 package version(s) listed\n",
             )
         );

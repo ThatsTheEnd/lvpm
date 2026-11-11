@@ -3,6 +3,7 @@
 
 use lvpm_core::events::{Event, SyncStep};
 use lvpm_core::version::Version;
+use std::cmp::Ordering;
 
 /// What an install does to one package.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,9 +95,12 @@ impl Preview {
                     let (name, version, action) = match step {
                         SyncStep::Install { name, version } => (name, version, Action::New),
                         SyncStep::Replace { name, from, to } => {
-                            let action = match Version::parse(to) < Version::parse(from) {
-                                true => Action::Downgrade { from: from.clone() },
-                                false => Action::Upgrade { from: from.clone() },
+                            let from = from.clone();
+                            let action = match Version::parse(to).cmp(&Version::parse(&from)) {
+                                Ordering::Less => Action::Downgrade { from },
+                                Ordering::Greater => Action::Upgrade { from },
+                                // A reinstall of the same version, or 1.0 for 1.0.0.
+                                Ordering::Equal => Action::Already,
                             };
                             (name, to, action)
                         }
@@ -203,6 +207,7 @@ mod tests {
                 },
                 replace("alpha", "2.0", "1.0"),
                 replace("gamma", "1.0", "1.1"),
+                replace("delta", "1.0.0", "1.0"),
             ],
             dry_run: true,
         }]);
@@ -213,6 +218,7 @@ mod tests {
                 Action::New,
                 Action::Downgrade { from: "2.0".into() },
                 Action::Upgrade { from: "1.0".into() },
+                Action::Already,
             ]
         );
         assert_eq!(preview.downgrade().map(|i| i.name.as_str()), Some("alpha"));

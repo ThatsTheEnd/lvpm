@@ -28,7 +28,8 @@ pub enum Job {
     /// Install `package`, `name@version`, as `lvpm install` does; a dry run
     /// only says what it would do. `cancel` stops it until files are written.
     /// In a project's venv, `exact` writes `name = "version"` to lvpm.toml,
-    /// else the floor `name = ">=version"`; elsewhere it is ignored.
+    /// else the floor `name = ">=version"` at the version locked; elsewhere
+    /// it is ignored.
     Install {
         package: String,
         exact: bool,
@@ -149,14 +150,6 @@ impl EventSink for Forward<'_> {
     }
 }
 
-/// `name@version` as the floor `name@>=version`.
-fn floor(package: &str) -> String {
-    match package.split_once('@') {
-        Some((name, version)) => format!("{name}@>={version}"),
-        None => package.to_string(),
-    }
-}
-
 /// Start `job` on its own thread; its result arrives on the receiver.
 pub fn spawn(builder: &EnvBuilder, job: Job) -> Receiver<Done> {
     let (send, receive) = mpsc::channel();
@@ -222,11 +215,14 @@ fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
             // `route::install_mode` would answer additive: test the venv instead.
             let outcome = match env.destination() {
                 Ok(Destination::Venv(_)) => {
+                    // A bare name: core writes the floor at the version it locks.
                     let spec = match exact {
-                        true => package,
-                        false => floor(&package),
+                        true => package.as_str(),
+                        false => package
+                            .split_once('@')
+                            .map_or(package.as_str(), |(name, _)| name),
                     };
-                    match add_remove::add(&env, &spec, DependencyTable::Dependencies, None, &opts) {
+                    match add_remove::add(&env, spec, DependencyTable::Dependencies, None, &opts) {
                         Ok(()) => Outcome::Done,
                         Err(EditError::Cancelled) => Outcome::Cancelled,
                         // `Other` may be a file that could not be put back: claim nothing.
