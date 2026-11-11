@@ -2248,6 +2248,7 @@ Package.URL=bar-3.0.vip
             vec![listed("1.0", "hosted"), listed("7.1", jki)],
             &HashMap::new(),
         );
+        assert_eq!(shadowed[0].source, "hosted");
         assert_eq!(shadowed.len(), 1);
     }
 

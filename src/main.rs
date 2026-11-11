@@ -611,7 +611,8 @@ enum CacheCmd {
     /// Fetch the package indexes again: the public NI and JKI indexes,
     /// lvpm.toml's [sources] (a github: index for the project's dependencies
     /// only), and re-read each sources.local folder. Each feed is a
-    /// conditional request, so an unchanged one costs no download. What it
+    /// conditional request, so an unchanged one costs no download; github:
+    /// index files are downloaded again. What it
     /// stores is what every later command reads without asking the network.
     Refresh,
 }

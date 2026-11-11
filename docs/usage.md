@@ -18,7 +18,7 @@
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
-| `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; in a project an install is `lvpm add`, so `lvpm.toml` gains a floor at the version you chose; takes no options |
+| `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; in a project's venv an install is `lvpm add`: a pick from the list adds a floor (`>=version`) to `lvpm.toml`, a version picked in the details is pinned exactly; takes no options |
 | `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
@@ -1244,7 +1244,8 @@ first one, in this order, that lists it, unless the name has a source pin
 Apart from the two public indexes, a later source never replaces a name and
 never adds versions to it, even a higher one. If the first source has no version that fits, or cannot be
 reached, the command fails and names that source. `lvpm search` and
-`lvpm info` show only the versions that source lists. To take a package from
+`lvpm info` show only the versions that source lists, or both public indexes
+list. To take a package from
 another source, list that source earlier.
 
 **Pinning a package to one source.** Listing a source first protects a package
@@ -1320,7 +1321,8 @@ lvpm cache refresh
 ```
 
 It asks each feed whether it changed, as a conditional request, so an
-unchanged feed costs no download. It also re-reads each `sources.local`
+unchanged feed costs no download; `github:` index files are downloaded
+again in full. It also re-reads each `sources.local`
 folder. It prints one line per source, `refreshed` or `failed` with the
 reason, and the number of package versions listed. Run inside a project, it
 reads that project's `[sources]` too. A `github:` community index has no

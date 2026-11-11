@@ -35,7 +35,7 @@ pub enum Listing {
 pub struct Op {
     /// What is installed, `name@version`.
     pub package: String,
-    /// In a project, pin the version exactly rather than as a floor.
+    /// In a project's venv, pin the version exactly rather than as a floor.
     exact: bool,
     /// What the dry run said the install does.
     pub preview: Preview,

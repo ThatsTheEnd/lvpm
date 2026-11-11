@@ -214,7 +214,7 @@ offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
   `min-age-days`; outside one it reads the indexes alone. In a project,
   `lvpm install <name>` with none of those flags is an `lvpm add`, which does
   apply it. An install from `lvpm tui` into a project's venv is an
-  `lvpm add` too and applies it. Outside a project the TUI makes a plain
+  `lvpm add` too and applies it. Without a project venv the TUI makes a plain
   install into the newest LabVIEW installation, without the limit.
   `--labview-version` in a project with a venv writes into that venv and does
   not apply it.

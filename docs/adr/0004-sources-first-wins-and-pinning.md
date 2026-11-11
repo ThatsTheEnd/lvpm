@@ -12,6 +12,10 @@ Amended by [ADR 8](0008-community-index-sources-take-part-in-first-source-wins.m
 on 2026-11-07: a `github:` community index is a source in this order, and a
 `404` for a name reads as "not listed".
 
+Amended by [ADR 9](0009-the-public-defaults-are-one-source.md) on 2026-11-11:
+the public NI and JKI indexes count as one source, so a name both list has
+the versions of both.
+
 ## Context
 
 `[sources]` in `lvpm.toml` lists hosted index folders, loaded after the
