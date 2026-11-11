@@ -35,6 +35,8 @@ pub enum Listing {
 pub struct Op {
     /// What is installed, `name@version`.
     pub package: String,
+    /// In a project, pin the version exactly rather than as a floor.
+    exact: bool,
     /// What the dry run said the install does.
     pub preview: Preview,
     pub stage: Stage,
@@ -274,8 +276,9 @@ impl App {
         }
     }
 
-    /// Start the dry run of installing `name` `version`.
-    fn plan(&mut self, name: &str, version: &str) {
+    /// Start the dry run of installing `name` `version`; `exact` as in
+    /// [`Job::Install`].
+    fn plan(&mut self, name: &str, version: &str, exact: bool) {
         if let Err(error) = &self.destination {
             self.note = Some(error.lines().next().unwrap_or_default().into());
             return;
@@ -290,12 +293,14 @@ impl App {
         // one.
         self.start(Job::Install {
             package: package.clone(),
+            exact,
             dry_run: true,
             allow_downgrade: true,
             cancel: cancel.clone(),
         });
         self.op = Some(Op {
             package,
+            exact,
             preview: Preview::default(),
             stage: Stage::Planning,
             cancel,
@@ -311,6 +316,7 @@ impl App {
         op.stage = Stage::Running(Progress::default());
         let job = Job::Install {
             package: op.package.clone(),
+            exact: op.exact,
             dry_run: false,
             allow_downgrade,
             cancel: op.cancel.clone(),
@@ -342,7 +348,7 @@ impl App {
             }
             (_, Some(version)) => {
                 let version = version.to_string();
-                self.plan(&name, &version);
+                self.plan(&name, &version, false);
             }
         }
     }
@@ -519,7 +525,8 @@ impl App {
                     Some(year) => {
                         self.note = Some(format!("{name} {version} needs LabVIEW {year}"));
                     }
-                    None => self.plan(&name, &version),
+                    // A version picked in the details is the one locked.
+                    None => self.plan(&name, &version, true),
                 }
             } else {
                 detail_key(detail, key);

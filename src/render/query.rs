@@ -217,19 +217,12 @@ pub fn cache_refresh(catalog: &Catalog) -> String {
     let mut text = String::new();
     for source in &catalog.sources {
         match catalog.failed.iter().find(|(failed, _)| failed == source) {
-            Some((_, why)) => text.push_str(&format!(
-                "failed    {source}: {why}
-"
-            )),
-            None => text.push_str(&format!(
-                "refreshed {source}
-"
-            )),
+            Some((_, why)) => text.push_str(&format!("failed    {source}: {why}\n")),
+            None => text.push_str(&format!("refreshed {source}\n")),
         }
     }
     text.push_str(&format!(
-        "{} package version(s) listed
-",
+        "{} package version(s) listed\n",
         catalog.entries.len()
     ));
     text
@@ -523,5 +516,22 @@ mod tests {
             "imported a.vip sha256:ab\ncached b.vip sha256:cd\n2 package(s) processed\n"
         );
         assert_eq!(cache_add(&[]), "0 package(s) processed\n");
+    }
+
+    #[test]
+    fn cache_refresh_names_each_source_and_why_one_failed() {
+        let catalog = Catalog {
+            entries: vec![entry("alpha", None), entry("beta", None)],
+            sources: vec!["https://a/index.vipr".into(), "https://b/x.ogpd".into()],
+            failed: vec![("https://b/x.ogpd".into(), "timed out".into())],
+        };
+        assert_eq!(
+            cache_refresh(&catalog),
+            concat!(
+                "refreshed https://a/index.vipr\n",
+                "failed    https://b/x.ogpd: timed out\n",
+                "2 package version(s) listed\n",
+            )
+        );
     }
 }

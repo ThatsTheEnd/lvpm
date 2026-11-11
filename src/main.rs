@@ -608,8 +608,9 @@ enum CacheCmd {
         /// A `.vip`, `.ogp` or `.lvpkg` file, or a directory holding them.
         path: PathBuf,
     },
-    /// Fetch every package index again: lvpm.toml's [sources], the public NI
-    /// and JKI indexes, and re-read each sources.local folder. Each feed is a
+    /// Fetch the package indexes again: the public NI and JKI indexes,
+    /// lvpm.toml's [sources] (a github: index for the project's dependencies
+    /// only), and re-read each sources.local folder. Each feed is a
     /// conditional request, so an unchanged one costs no download. What it
     /// stores is what every later command reads without asking the network.
     Refresh,
@@ -1024,7 +1025,7 @@ fn run(cli: &Cli) -> Result<Report> {
         Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json, cli.yes),
         Cmd::Cache(CacheCmd::Refresh) => {
             env.refresh = true;
-            let catalog = ops::query::catalog(&env, None)?;
+            let catalog = ops::query::catalog_of_project(&env)?;
             let result = json!({
                 "sources": catalog.sources,
                 "failed": catalog.failed,

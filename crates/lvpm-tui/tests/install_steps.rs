@@ -285,35 +285,35 @@ async fn paused_at(world: &mut TuiWorld, phase: String) {
     world.confirm_parked(&phase);
 }
 
-#[when(r#"the TUI starts in the project and "alpha" is installed from the list"#)]
-async fn installed_in_project(world: &mut TuiWorld) {
+#[when(
+    regex = r#"^the TUI starts in the project and "alpha" (is installed from the list|1\.0 is installed from the details)$"#
+)]
+async fn installed_in_project(world: &mut TuiWorld, how: String) {
     // Archives too: the background's listing serves none.
     world.source(&[ALPHA_1, ALPHA_2, BETA_1]);
     world.cwd = world.scratch.path().join("project");
-    world.plan("alpha");
+    match how.contains("details") {
+        true => world.picked_1_0(),
+        false => world.plan("alpha"),
+    }
     world.press(KeyCode::Enter, KeyEventKind::Press);
     world.app().wait_for_job();
 }
 
-#[then(r#"lvpm.toml lists "alpha" = ">=2.0" and lvpm.lock holds "alpha" 2.0"#)]
-async fn manifest_lists_alpha(world: &mut TuiWorld) {
+#[then(regex = r#"^lvpm\.toml lists "alpha" = "([^"]+)" and lvpm\.lock holds "alpha" (\S+)$"#)]
+async fn manifest_lists_alpha(world: &mut TuiWorld, constraint: String, version: String) {
     let project = world.scratch.path().join("project");
     let read = |file: &str| std::fs::read_to_string(project.join(file)).unwrap_or_default();
-    let screen = world.screen().join(
-        "
-",
-    );
+    let screen = world.screen().join("\n");
+    let line = format!(r#"alpha = "{constraint}""#);
     assert!(
-        read("lvpm.toml").contains(r#"alpha = ">=2.0""#),
-        "{}
-{screen}",
+        read("lvpm.toml").contains(&line),
+        "{}\n{screen}",
         read("lvpm.toml")
     );
     let lock = read("lvpm.lock");
-    assert!(
-        lock.contains(r#"name = "alpha""#) && lock.contains(r#"version = "2.0""#),
-        "{lock}"
-    );
+    let locked = format!("name = \"alpha\"\nversion = \"{version}\"");
+    assert!(lock.contains(&locked), "{lock}");
 }
 
 #[when(r#"an install of "alpha" is confirmed"#)]

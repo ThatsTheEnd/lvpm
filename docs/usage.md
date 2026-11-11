@@ -22,7 +22,7 @@
 | `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
-| `lvpm cache refresh`                                 | Fetch every package index again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
+| `lvpm cache refresh`                                 | Fetch the package indexes again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
 | `lvpm cache add <path>`                              | Import a `.vip`, `.ogp` or `.lvpkg`, or every one in a folder, into the cache ([Package sources](#package-sources)) |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
@@ -1323,7 +1323,9 @@ It asks each feed whether it changed, as a conditional request, so an
 unchanged feed costs no download. It also re-reads each `sources.local`
 folder. It prints one line per source, `refreshed` or `failed` with the
 reason, and the number of package versions listed. Run inside a project, it
-reads that project's `[sources]` too.
+reads that project's `[sources]` too. A `github:` community index has no
+catalogue, so only the files of the project's dependencies, and of what they
+require, are fetched again.
 
 - `--refresh` on any other command does the same for that command only:
   `lvpm --refresh search dqmh`.

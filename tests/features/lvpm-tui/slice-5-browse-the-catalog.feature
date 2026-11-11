@@ -15,6 +15,11 @@ Feature: Browse the catalog
     When the TUI starts in the project and "alpha" is installed from the list
     Then lvpm.toml lists "alpha" = ">=2.0" and lvpm.lock holds "alpha" 2.0
 
+  Scenario: a version picked in the details is pinned exactly in lvpm.toml
+    Given a project with a venv on LabVIEW 2025
+    When the TUI starts in the project and "alpha" 1.0 is installed from the details
+    Then lvpm.toml lists "alpha" = "1.0" and lvpm.lock holds "alpha" 1.0
+
   Scenario: outside a project the detected LabVIEW is the destination
     When the TUI starts outside any project
     Then the header reads "LabVIEW 2025 64-bit"

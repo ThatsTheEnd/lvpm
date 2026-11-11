@@ -56,6 +56,12 @@ pub fn catalog(env: &OpEnv, query: Option<&str>) -> Result<Catalog> {
     catalog_asking(env, query, None)
 }
 
+/// [`catalog`], with the community indexes also asked for the manifest's
+/// dependencies and what those require, as `lvpm cache refresh` reads them.
+pub fn catalog_of_project(env: &OpEnv) -> Result<Catalog> {
+    catalog_asking(env, None, Some(&[]))
+}
+
 /// [`catalog`], with the community indexes asked for the manifest's
 /// dependencies and `own`, and what those require; `None` asks for nothing, as
 /// [`catalog`] does, the indexes having no catalogue.

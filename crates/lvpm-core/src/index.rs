@@ -1049,7 +1049,8 @@ fn oci_entry(feed: &OciFeed, repository: &str, package: &Package) -> Option<Entr
 /// versions of both, and a version both list is kept once, from NI's.
 fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
     let mut first_listed: HashMap<String, String> = HashMap::new();
-    let mut public_versions: HashSet<(String, String)> = HashSet::new();
+    // Compared as versions, so NI's `1.0` and JKI's `1.0.0` are one version.
+    let mut public_versions: HashMap<String, Vec<Version>> = HashMap::new();
     entries
         .into_iter()
         .filter(|entry| {
@@ -1064,7 +1065,15 @@ fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
             if first != group {
                 return false;
             }
-            group != PUBLIC || public_versions.insert((key, entry.version.to_string()))
+            if group != PUBLIC {
+                return true;
+            }
+            let seen = public_versions.entry(key).or_default();
+            let new = !seen.contains(&entry.version);
+            if new {
+                seen.push(entry.version.clone());
+            }
+            new
         })
         .collect()
 }
@@ -2226,7 +2235,7 @@ Package.URL=bar-3.0.vip
             )
         };
         let kept = first_source_wins(
-            vec![listed("6.0", ni), listed("6.0", jki), listed("7.1", jki)],
+            vec![listed("6.0", ni), listed("6.0.0", jki), listed("7.1", jki)],
             &HashMap::new(),
         );
         let kept: Vec<(String, &str)> = kept
