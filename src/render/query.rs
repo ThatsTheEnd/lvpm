@@ -212,6 +212,29 @@ pub fn cache_add(imports: &[Import]) -> String {
     text
 }
 
+/// What `lvpm cache refresh` read: each source, then the total.
+pub fn cache_refresh(catalog: &Catalog) -> String {
+    let mut text = String::new();
+    for source in &catalog.sources {
+        match catalog.failed.iter().find(|(failed, _)| failed == source) {
+            Some((_, why)) => text.push_str(&format!(
+                "failed    {source}: {why}
+"
+            )),
+            None => text.push_str(&format!(
+                "refreshed {source}
+"
+            )),
+        }
+    }
+    text.push_str(&format!(
+        "{} package version(s) listed
+",
+        catalog.entries.len()
+    ));
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

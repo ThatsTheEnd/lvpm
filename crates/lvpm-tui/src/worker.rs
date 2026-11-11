@@ -4,9 +4,12 @@
 use crate::destination::{EnvBuilder, Quiet};
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::errors::Cancelled;
+use lvpm_core::errors::EditError;
 use lvpm_core::events::{Event, EventSink, Phase};
 use lvpm_core::install::Manifest;
+use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::Destination;
+use lvpm_core::ops::add_remove;
 use lvpm_core::ops::install::{self, InstallOptions};
 use lvpm_core::ops::query::{self, Catalog, PackageInfo};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -143,6 +146,14 @@ impl EventSink for Forward<'_> {
     }
 }
 
+/// `name@version` as the floor `name@>=version`.
+fn floor(package: &str) -> String {
+    match package.split_once('@') {
+        Some((name, version)) => format!("{name}@>={version}"),
+        None => package.to_string(),
+    }
+}
+
 /// Start `job` on its own thread; its result arrives on the receiver.
 pub fn spawn(builder: &EnvBuilder, job: Job) -> Receiver<Done> {
     let (send, receive) = mpsc::channel();
@@ -202,7 +213,24 @@ fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
                 allow_downgrade,
                 ..InstallOptions::default()
             };
-            let outcome = match install::install(&env, Some(&package), &opts) {
+            // In a project the install is an add, as `lvpm install <name>` is:
+            // lvpm.toml gains a floor at the chosen version, `name = ">=1.2"`.
+            let in_project = matches!(env.destination(), Ok(Destination::Venv(_)));
+            let result = match in_project {
+                true => add_remove::add(
+                    &env,
+                    &floor(&package),
+                    DependencyTable::Dependencies,
+                    None,
+                    &opts,
+                )
+                .map_err(|error| match error {
+                    EditError::Cancelled => anyhow::Error::new(Cancelled),
+                    error => anyhow::Error::new(error),
+                }),
+                false => install::install(&env, Some(&package), &opts),
+            };
+            let outcome = match result {
                 Ok(()) => Outcome::Done,
                 Err(error) if error.chain().any(|cause| cause.is::<Cancelled>()) => {
                     Outcome::Cancelled

@@ -1044,9 +1044,12 @@ fn oci_entry(feed: &OciFeed, repository: &str, package: &Package) -> Option<Entr
 /// `owners` is source-pinned: it keeps only the entries whose `source` is its
 /// owner, so the cache, a local folder and every other feed lose it even when
 /// they list it first. Any other name keeps the entries of the first source
-/// that lists it, and a later source never adds versions (ADR 4).
+/// that lists it, and a later source never adds versions (ADR 4). The two
+/// public defaults count as one source (ADR 9): a name both list keeps the
+/// versions of both, and a version both list is kept once, from NI's.
 fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
     let mut first_listed: HashMap<String, String> = HashMap::new();
+    let mut public_versions: HashSet<(String, String)> = HashSet::new();
     entries
         .into_iter()
         .filter(|entry| {
@@ -1054,13 +1057,29 @@ fn first_source_wins(entries: Vec<Entry>, owners: &Owners) -> Vec<Entry> {
             if let Some(owner) = owners.get(&key) {
                 return owner.as_deref() == Some(entry.source.as_str());
             }
+            let group = source_group(&entry.source);
             let first = first_listed
-                .entry(key)
-                .or_insert_with(|| entry.source.clone());
-            *first == entry.source
+                .entry(key.clone())
+                .or_insert_with(|| group.to_string());
+            if first != group {
+                return false;
+            }
+            group != PUBLIC || public_versions.insert((key, entry.version.to_string()))
         })
         .collect()
 }
+
+/// The group [`first_source_wins`] ranks `source` in: [`PUBLIC`] for either
+/// public default, else the source itself.
+fn source_group(source: &str) -> &str {
+    match SOURCES.iter().any(|(index, _)| *index == source) {
+        true => PUBLIC,
+        false => source,
+    }
+}
+
+/// The one source the public NI and JKI indexes count as (ADR 9).
+const PUBLIC: &str = "public defaults";
 
 fn label(entries: &mut [Entry], source: &str) {
     for entry in entries {
@@ -2187,6 +2206,40 @@ Package.URL=bar-3.0.vip
                 ("beta", "2.0".to_string(), "ni"),
             ]
         );
+    }
+
+    #[test]
+    fn the_public_defaults_merge_their_versions_as_one_source() {
+        let (ni, jki) = (SOURCES[0].0, SOURCES[1].0);
+        let listed = |version: &str, source: &str| Entry {
+            source: source.to_string(),
+            ..local_entry(
+                LocalEntry {
+                    name: "dqmh".to_string(),
+                    version: version.to_string(),
+                    display_name: None,
+                    requires: Vec::new(),
+                    lv_min: None,
+                },
+                String::new(),
+                None,
+            )
+        };
+        let kept = first_source_wins(
+            vec![listed("6.0", ni), listed("6.0", jki), listed("7.1", jki)],
+            &HashMap::new(),
+        );
+        let kept: Vec<(String, &str)> = kept
+            .iter()
+            .map(|e| (e.version.to_string(), e.source.as_str()))
+            .collect();
+        assert_eq!(kept, [("6.0".to_string(), ni), ("7.1".to_string(), jki)]);
+        // A source ahead of the defaults still shadows both.
+        let shadowed = first_source_wins(
+            vec![listed("1.0", "hosted"), listed("7.1", jki)],
+            &HashMap::new(),
+        );
+        assert_eq!(shadowed.len(), 1);
     }
 
     #[test]

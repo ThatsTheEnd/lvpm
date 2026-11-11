@@ -113,7 +113,8 @@ A source can't be labelled `min-age-days`. `defaults` is the switch only when
 it is `true` or `false`; a string under `defaults` is read as a source.
 
 The public defaults are NI's `download.ni.com/.../index.vipr` and JKI's
-`jkisoft.ogpd`. A path on disk is refused here rather than silently resolving
+`jkisoft.ogpd`. They count as one source, so a name both list has the versions
+of both ([ADR 9](adr/0009-the-public-defaults-are-one-source.md)). A path on disk is refused here rather than silently resolving
 nothing: local `.vip` directories are a per-user setting
 (`lvpm config set sources.local`) and imported packages live in the shared
 cache (`lvpm cache add`), because a filesystem path rarely means the same
@@ -212,10 +213,11 @@ offset without a sign, a feed quirk beyond RFC 2822, is read as positive.
   project. Inside a project it uses the project's `[sources]` but not its
   `min-age-days`; outside one it reads the indexes alone. In a project,
   `lvpm install <name>` with none of those flags is an `lvpm add`, which does
-  apply it. An install from `lvpm-tui` is a plain install too: it writes into
-  the project's venv when there is one, else into the newest LabVIEW
-  installation. `--labview-version` in a project with a venv writes into that
-  venv. Neither applies the limit.
+  apply it. An install from `lvpm tui` into a project's venv is an
+  `lvpm add` too and applies it. Outside a project the TUI makes a plain
+  install into the newest LabVIEW installation, without the limit.
+  `--labview-version` in a project with a venv writes into that venv and does
+  not apply it.
 
 ## `[dependencies]`
 

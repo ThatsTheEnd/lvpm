@@ -18,10 +18,12 @@
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
-| `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; takes no options                                                                   |
+| `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; in a project an install is `lvpm add`, so `lvpm.toml` gains a floor at the version you chose; takes no options |
 | `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
+| `lvpm cache refresh`                                 | Fetch every package index again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
+| `lvpm cache add <path>`                              | Import a `.vip`, `.ogp` or `.lvpkg`, or every one in a folder, into the cache ([Package sources](#package-sources)) |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
@@ -1235,10 +1237,12 @@ first one, in this order, that lists it, unless the name has a source pin
 1. Packages imported with `lvpm cache add`.
 2. Each `sources.local` folder, in config order.
 3. Each `[sources]` entry, in file order.
-4. The public NI index, then JKI's, unless `defaults = false`.
+4. The public NI and JKI indexes, unless `defaults = false`. These two count
+   as one source: a name both list has the versions of both (ADR 9). NI's
+   index stopped taking some packages JKI's still carries, such as DQMH 7.
 
-A later source never replaces a name and never adds versions to it, even a
-higher one. If the first source has no version that fits, or cannot be
+Apart from the two public indexes, a later source never replaces a name and
+never adds versions to it, even a higher one. If the first source has no version that fits, or cannot be
 reached, the command fails and names that source. `lvpm search` and
 `lvpm info` show only the versions that source lists. To take a package from
 another source, list that source earlier.
@@ -1304,6 +1308,28 @@ Packages without a feed MD5 are stored but downloaded again on later installs:
 name/version alone does not identify their bytes. `--refresh` refreshes feeds,
 not already verified package blobs. Dry runs may populate the cache without
 writing package files into the target.
+
+### Refreshing the index cache
+
+lvpm keeps every index it reads in `%LOCALAPPDATA%\lvpm\cache`
+(`lvpm-cache.db`) and reads that copy from then on, without the network. A
+package published after that is not seen until the cache is refreshed:
+
+```powershell
+lvpm cache refresh
+```
+
+It asks each feed whether it changed, as a conditional request, so an
+unchanged feed costs no download. It also re-reads each `sources.local`
+folder. It prints one line per source, `refreshed` or `failed` with the
+reason, and the number of package versions listed. Run inside a project, it
+reads that project's `[sources]` too.
+
+- `--refresh` on any other command does the same for that command only:
+  `lvpm --refresh search dqmh`.
+- In `lvpm tui`, `R` reloads the feeds.
+- Deleting `%LOCALAPPDATA%\lvpm\cache` also works: the next command fetches
+  everything again. It drops imported packages and downloaded archives too.
 
 ### A github: source is a community index
 
