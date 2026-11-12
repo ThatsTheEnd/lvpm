@@ -4,9 +4,12 @@
 use crate::destination::{EnvBuilder, Quiet};
 use lvpm_core::cancel::CancelToken;
 use lvpm_core::errors::Cancelled;
+use lvpm_core::errors::EditError;
 use lvpm_core::events::{Event, EventSink, Phase};
 use lvpm_core::install::Manifest;
+use lvpm_core::manifest_edit::DependencyTable;
 use lvpm_core::ops::Destination;
+use lvpm_core::ops::add_remove;
 use lvpm_core::ops::install::{self, InstallOptions};
 use lvpm_core::ops::query::{self, Catalog, PackageInfo};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -24,8 +27,12 @@ pub enum Job {
     Info { name: String, version: String },
     /// Install `package`, `name@version`, as `lvpm install` does; a dry run
     /// only says what it would do. `cancel` stops it until files are written.
+    /// In a project's venv, `exact` writes `name = "version"` to lvpm.toml,
+    /// else the floor `name = ">=version"` at the version locked; elsewhere
+    /// it is ignored.
     Install {
         package: String,
+        exact: bool,
         dry_run: bool,
         allow_downgrade: bool,
         cancel: CancelToken,
@@ -186,6 +193,7 @@ fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
         }
         Job::Install {
             package,
+            exact,
             dry_run,
             allow_downgrade,
             cancel,
@@ -202,12 +210,35 @@ fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
                 allow_downgrade,
                 ..InstallOptions::default()
             };
-            let outcome = match install::install(&env, Some(&package), &opts) {
-                Ok(()) => Outcome::Done,
-                Err(error) if error.chain().any(|cause| cause.is::<Cancelled>()) => {
-                    Outcome::Cancelled
+            // In a project's venv the install is an add, as `lvpm install <name>`
+            // is. The TUI sets the newest LabVIEW in the flags, so
+            // `route::install_mode` would answer additive: test the venv instead.
+            let outcome = match env.destination() {
+                Ok(Destination::Venv(_)) => {
+                    // A bare name: core writes the floor at the version it locks.
+                    let spec = match exact {
+                        true => package.as_str(),
+                        false => package
+                            .split_once('@')
+                            .map_or(package.as_str(), |(name, _)| name),
+                    };
+                    match add_remove::add(&env, spec, DependencyTable::Dependencies, None, &opts) {
+                        Ok(()) => Outcome::Done,
+                        Err(EditError::Cancelled) => Outcome::Cancelled,
+                        // `Other` may be a file that could not be put back: claim nothing.
+                        Err(error @ EditError::Other(_)) => Outcome::Failed(format!("{error:#}")),
+                        Err(error) => Outcome::Failed(format!(
+                            "{error:#}\nlvpm.toml and lvpm.lock are unchanged"
+                        )),
+                    }
                 }
-                Err(error) => Outcome::Failed(format!("{error:#}")),
+                _ => match install::install(&env, Some(&package), &opts) {
+                    Ok(()) => Outcome::Done,
+                    Err(error) if error.chain().any(|cause| cause.is::<Cancelled>()) => {
+                        Outcome::Cancelled
+                    }
+                    Err(error) => Outcome::Failed(format!("{error:#}")),
+                },
             };
             Done::Installed { dry_run, outcome }
         }

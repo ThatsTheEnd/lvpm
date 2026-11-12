@@ -1,7 +1,9 @@
 //! The preview of an install: what its dry run said it would do, package by
 //! package, folded from core's events.
 
-use lvpm_core::events::Event;
+use lvpm_core::events::{Event, SyncStep};
+use lvpm_core::version::Version;
+use std::cmp::Ordering;
 
 /// What an install does to one package.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +84,36 @@ impl Preview {
                     item.files = *files;
                 }
             }
-            Event::DependencyUnresolved { name } => self.missing.push(name.clone()),
+            Event::DependencyUnresolved { name } | Event::RequirementUnresolved { name, .. } => {
+                self.missing.push(name.clone())
+            }
+            // An add in a project's venv plans a sync instead of installing.
+            // shortcut: a Remove step is not shown, an add of one package
+            // hardly ever removes one; show it when the preview lists removals.
+            Event::SyncPlanned { steps, .. } => {
+                self.items.extend(steps.iter().filter_map(|step| {
+                    let (name, version, action) = match step {
+                        SyncStep::Install { name, version } => (name, version, Action::New),
+                        SyncStep::Replace { name, from, to } => {
+                            let from = from.clone();
+                            let action = match Version::parse(to).cmp(&Version::parse(&from)) {
+                                Ordering::Less => Action::Downgrade { from },
+                                Ordering::Greater => Action::Upgrade { from },
+                                // A reinstall of the same version, or 1.0 for 1.0.0.
+                                Ordering::Equal => Action::Already,
+                            };
+                            (name, to, action)
+                        }
+                        SyncStep::Remove { .. } => return None,
+                    };
+                    Some(Item {
+                        name: name.clone(),
+                        version: version.clone(),
+                        action,
+                        files: 0,
+                    })
+                }))
+            }
             _ => {}
         }
     }
@@ -159,5 +190,37 @@ mod tests {
         let preview = preview(&[replacing("alpha", "1.0", true), start("beta", "1.0")]);
         assert_eq!(preview.items[0].action, Action::New);
         assert_eq!(preview.downgrade(), None);
+    }
+
+    #[test]
+    fn a_planned_sync_shows_its_installs_and_replacements() {
+        let replace = |name: &str, from: &str, to: &str| SyncStep::Replace {
+            name: name.into(),
+            from: from.into(),
+            to: to.into(),
+        };
+        let preview = preview(&[Event::SyncPlanned {
+            steps: vec![
+                SyncStep::Install {
+                    name: "beta".into(),
+                    version: "1.0".into(),
+                },
+                replace("alpha", "2.0", "1.0"),
+                replace("gamma", "1.0", "1.1"),
+                replace("delta", "1.0.0", "1.0"),
+            ],
+            dry_run: true,
+        }]);
+        let actions: Vec<_> = preview.items.iter().map(|i| i.action.clone()).collect();
+        assert_eq!(
+            actions,
+            [
+                Action::New,
+                Action::Downgrade { from: "2.0".into() },
+                Action::Upgrade { from: "1.0".into() },
+                Action::Already,
+            ]
+        );
+        assert_eq!(preview.downgrade().map(|i| i.name.as_str()), Some("alpha"));
     }
 }

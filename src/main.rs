@@ -608,6 +608,13 @@ enum CacheCmd {
         /// A `.vip`, `.ogp` or `.lvpkg` file, or a directory holding them.
         path: PathBuf,
     },
+    /// Fetch the package indexes again: the public NI and JKI indexes,
+    /// lvpm.toml's [sources] (a github: index for the project's dependencies
+    /// only), and re-read each sources.local folder. Each feed is a
+    /// conditional request, so an unchanged one costs no download; github:
+    /// index files are downloaded again. What it
+    /// stores is what every later command reads without asking the network.
+    Refresh,
 }
 
 #[derive(Subcommand)]
@@ -843,7 +850,7 @@ fn run(cli: &Cli) -> Result<Report> {
         true => Box::new(render::json::JsonSink),
         false => Box::new(render::CliSink::stdio()),
     };
-    let env = op_env(cli, sink.as_ref())?;
+    let mut env = op_env(cli, sink.as_ref())?;
     match &cli.cmd {
         Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::Targets => {
@@ -1017,6 +1024,16 @@ fn run(cli: &Cli) -> Result<Report> {
         )
         .map(|()| Report::done("vi-run")),
         Cmd::Venv(sub) => cmd_venv(&env, sub, cli.json, cli.yes),
+        Cmd::Cache(CacheCmd::Refresh) => {
+            env.refresh = true;
+            let catalog = ops::query::catalog_of_project(&env)?;
+            let result = json!({
+                "sources": catalog.sources,
+                "failed": catalog.failed,
+                "versions": catalog.entries.len(),
+            });
+            Report::new(render::query::cache_refresh(&catalog), result)
+        }
         Cmd::Cache(CacheCmd::Add { path }) => {
             let imports = ops::query::cache_add(&env, path)?;
             Report::new(render::query::cache_add(&imports), &imports)
