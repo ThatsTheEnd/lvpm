@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.25.0...v0.26.0) (2026-11-12)
+
+
+### Features
+
+* merge the public indexes, TUI install adds to lvpm.toml, lvpm cache refresh ([#124](https://github.com/ThatsTheEnd/lvpm/issues/124)) ([428589e](https://github.com/ThatsTheEnd/lvpm/commit/428589e094197272ab1ed79b58121708b213e797))
+
 ## [0.25.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.24.0...v0.25.0) (2026-11-08)
 
 
