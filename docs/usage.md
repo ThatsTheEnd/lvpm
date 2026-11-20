@@ -704,12 +704,19 @@ resolves as `<vilib>/...` exactly as a globally installed one would. The VIs
 you write against it link portably, and `C:\Program Files` never changes.
 Needs LabVIEW 2024 Q1 or later.
 
-Palette menus are the exception to one addon per package. LabVIEW merges
-the `menus/` of all addons badly, so after each install or uninstall lvpm
-moves every package's `menus/` files to `palettes/contributions/<pkg>/menus/`
-and publishes one merged addon, `packages/venv-palettes/`. Two packages that
-ship the same menu file with different contents refuse the merge and leave
-the published addon as it was. The package name `venv-palettes` is reserved.
+Palette menus are the exception to one addon per package. LabVIEW shows
+only one addon's copy of a folder, and packages share palette folders: the
+`menus/` tree, and Addons palette categories such as `vi.lib/addons/HSE`. So
+after each install or uninstall lvpm moves every package's `menus/` files and
+the `.mnu` files under its `vi.lib/addons/` to `palettes/contributions/<pkg>/`
+(the VIs beside them stay put) and publishes one merged addon,
+`packages/venv-palettes/`. When packages ship different `dir.mnu` files at one
+path, the first package by name supplies it, and lvpm says how many differ
+(`--json` names them). Two packages that ship any other menu file with
+different contents refuse the merge and leave the published addon as it was.
+An addon that already matches is not rewritten, so a running venv LabVIEW is
+left alone; after a change lvpm says to restart it, since LabVIEW reads its
+palettes at startup. The package name `venv-palettes` is reserved.
 `lvpm launch` refuses a venv whose merged addon no longer matches its
 packages; `lvpm sync` rebuilds it.
 

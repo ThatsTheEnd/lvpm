@@ -106,6 +106,18 @@ pub enum Event {
     },
 
     // ---- ops::install ----
+    /// A venv's merged palette addon was rebuilt from its packages' palettes.
+    PalettesMerged {
+        files: usize,
+        packages: usize,
+        /// Palette files an earlier lvpm left in a package's own addon, moved out.
+        moved: usize,
+        /// Shared `dir.mnu` files that differ between packages, and whose was kept.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        dir_mnu: Vec<crate::palette::DirMnuChoice>,
+        /// The venv's LabVIEW is running: it reads palettes only at startup.
+        restart: bool,
+    },
     /// The install reads its packages from a project manifest. `name` and
     /// `labview` are what the manifest states, if anything.
     ManifestInUse {

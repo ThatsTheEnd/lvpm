@@ -31,7 +31,6 @@ use crate::oci;
 use crate::project::{DEV_GROUP, is_dev_group};
 use crate::project::{Project, name_key, same_name};
 use crate::version::Version;
-use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -197,7 +196,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
         if let crate::ops::Destination::Venv(v) = &dest
             && !opts.install.dry_run
         {
-            crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+            super::install::merge_palettes(env, v)?;
         }
         env.sink.emit(Event::SyncNothingToDo);
         return Ok(());
