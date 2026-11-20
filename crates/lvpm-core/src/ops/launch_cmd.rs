@@ -50,6 +50,10 @@ pub fn launch(env: &OpEnv, lvproj: Option<&Path>, ini: &[String], check: bool) -
     if check {
         check_against_lock(env, &venv)?;
     }
+    // Not a reason to refuse: the copies may be the same version. But the
+    // user should know which one LabVIEW is about to load.
+    let records = install::list_installed(&venv.store()).unwrap_or_default();
+    crate::shadow::emit(env.sink, &venv, &records);
     let venv = crate::venv::ensure_port(&venv, env.sink)?;
     if launch::is_running(&venv) {
         bail!(

@@ -50,6 +50,8 @@ pub struct VenvStatus {
     pub running: bool,
     /// Not answering yet, but a LabVIEW lvpm started for this venv is alive.
     pub starting: bool,
+    /// The venv packages the LabVIEW installation has its own copy of.
+    pub shadowed: Vec<crate::shadow::Shadowed>,
 }
 
 /// The venv a command run here would use, if there is one.
@@ -64,6 +66,7 @@ pub fn status(env: &OpEnv) -> Result<Option<VenvStatus>> {
         not_relinked: installed.iter().filter(|m| !m.relinked).count(),
         running,
         starting: !running && launch::is_running(&venv),
+        shadowed: crate::shadow::find(&venv, &installed),
         venv,
     }))
 }

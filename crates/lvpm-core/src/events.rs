@@ -60,6 +60,12 @@ pub enum Event {
     /// The venv's stored VI Server port can no longer be listened on — Windows
     /// reserved it since — so the venv moved to `to` before LabVIEW started.
     VenvPortMoved { from: u16, to: u16 },
+    /// LabVIEW `labview_year`'s installation has its own copy of these venv
+    /// packages, and loads that copy instead ([`crate::shadow`]). Never empty.
+    VenvShadowed {
+        labview_year: u32,
+        packages: Vec<crate::shadow::Shadowed>,
+    },
 
     // ---- launch ----
     /// A LabVIEW is being started on a venv. `labview` is the installation's

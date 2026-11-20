@@ -33,6 +33,7 @@ pub mod refresh;
 pub mod released;
 pub mod relink;
 pub mod sbom;
+pub mod shadow;
 pub mod spec;
 pub mod target;
 pub mod timefmt;

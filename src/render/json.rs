@@ -134,6 +134,7 @@ mod tests {
             not_relinked: 1,
             running: false,
             starting: false,
+            shadowed: Vec::new(),
         };
         assert_eq!(
             serde_json::json!(status),
@@ -147,7 +148,8 @@ mod tests {
                 "installed": 2,
                 "not_relinked": 1,
                 "running": false,
-                "starting": false
+                "starting": false,
+                "shadowed": []
             })
         );
     }

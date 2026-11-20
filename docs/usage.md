@@ -652,6 +652,10 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
   a pointer to `lvpm sync`. `--no-check` starts anyway. The check does not
   hash files, so an edited file passes; dev and group packages are not
   checked.
+- When the LabVIEW installation has its own copy of a venv package (from
+  VIPM, `lvpm install --global` or by hand), LabVIEW loads that copy instead.
+  lvpm warns about it after an install into the venv, at `lvpm launch` and in
+  `lvpm venv status`, with the fix for each package. Only LabVIEW files count.
 
 How it works: the venv directory is an [LVAddons](https://labviewwiki.org/wiki/LVAddons)
 location (its `packages/` folder), one addon per package, each mirroring the

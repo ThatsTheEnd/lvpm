@@ -885,6 +885,14 @@ pub fn finish(
     relink_pass(env, session, applied, opts)?;
     post_install_hooks(env, session, opts);
     refresh_palettes(env, session, applied);
+    if let Some(v) = session.venv()
+        && !applied.dry_run
+    {
+        // Every venv package, not only this install's: any of them may be the
+        // one LabVIEW loads from the installation instead.
+        let records = install::list_installed(&v.store()).unwrap_or_default();
+        crate::shadow::emit(env.sink, v, &records);
+    }
     if session.venv().is_some() && applied.files > 0 && !applied.dry_run {
         env.sink.emit(Event::LaunchHint);
     }
