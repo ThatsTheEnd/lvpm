@@ -808,7 +808,7 @@ fn with_entry_changed(archive: &[u8], entry: &str) -> Vec<u8> {
         let mut member = zip.by_index(i).expect("an entry");
         let mut bytes = Vec::new();
         member.read_to_end(&mut bytes).expect("read an entry");
-        let name = member.name().to_string();
+        let name = member.name().unwrap().to_string();
         if name == entry {
             bytes = b"changed after build".to_vec();
             changed = true;

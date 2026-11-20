@@ -282,7 +282,7 @@ fn find_archive<R: Read + Seek>(
     let mut found = Vec::new();
     for at in 0..zip.len() {
         let entry = zip.by_index_raw(at).map_err(|e| e.to_string())?;
-        let name = entry.name();
+        let name = entry.name().map_err(|e| e.to_string())?;
         if name.rsplit(['/', '\\']).next() == Some(wanted.as_str())
             && !name.chars().any(char::is_control)
         {

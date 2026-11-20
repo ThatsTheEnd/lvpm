@@ -1261,11 +1261,14 @@ mod tests {
             let mut member = src.by_index(i).unwrap();
             let mut bytes = Vec::new();
             member.read_to_end(&mut bytes).unwrap();
-            if member.name().ends_with("a.vi") {
+            if member.name().unwrap().ends_with("a.vi") {
                 bytes = b"altered".to_vec();
             }
             writer
-                .start_file(member.name(), zip::write::SimpleFileOptions::default())
+                .start_file(
+                    member.name().unwrap(),
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer.write_all(&bytes).unwrap();
         }

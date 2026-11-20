@@ -463,7 +463,10 @@ async fn package_toml_reads(world: &mut CliWorld, name: String, version: String,
     // SBOM first, the payload in order, the zip epoch and one compression
     // method throughout.
     let mut archive = world.archive();
-    let names: Vec<String> = archive.file_names().map(String::from).collect();
+    let names: Vec<String> = archive
+        .file_names()
+        .map(|n| n.unwrap().into_owned())
+        .collect();
     let mut payload = names[3..].to_vec();
     payload.sort();
     assert_eq!(names[..3], ["RECORD", "package.toml", SBOM]);
@@ -474,18 +477,18 @@ async fn package_toml_reads(world: &mut CliWorld, name: String, version: String,
             entry.last_modified(),
             Some(zip::DateTime::default()),
             "{}",
-            entry.name()
+            entry.name().unwrap()
         );
         assert_eq!(
             entry.compression(),
             zip::CompressionMethod::Deflated,
             "{}",
-            entry.name()
+            entry.name().unwrap()
         );
         assert!(
             entry.extra_data().is_none_or(|x| x.is_empty()),
             "{} has extra fields",
-            entry.name()
+            entry.name().unwrap()
         );
     }
 }
@@ -510,7 +513,11 @@ async fn members_under(world: &mut CliWorld, dir: String) {
 #[then(regex = r#"^the package holds no "([^"]+)"$"#)]
 async fn holds_no(world: &mut CliWorld, file: String) {
     world.succeeded();
-    let names: Vec<String> = world.archive().file_names().map(String::from).collect();
+    let names: Vec<String> = world
+        .archive()
+        .file_names()
+        .map(|n| n.unwrap().into_owned())
+        .collect();
     assert!(
         !names.iter().any(|n| n.ends_with(&format!("/{file}"))),
         "{names:?}"

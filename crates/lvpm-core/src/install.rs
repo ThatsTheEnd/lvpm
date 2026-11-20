@@ -215,10 +215,12 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
     // Almost always literally "spec" at the archive root.
     let idx = (0..zip.len()).find(|i| {
         zip.by_index(*i)
-            .map(|f| f.name().eq_ignore_ascii_case("spec"))
+            .map(|f| f.name().is_ok_and(|n| n.eq_ignore_ascii_case("spec")))
             .unwrap_or(false)
     });
-    let is_lvpkg = zip.file_names().any(|n| n == crate::lvpkg::PACKAGE_TOML);
+    let is_lvpkg = zip
+        .file_names()
+        .any(|n| n.is_ok_and(|n| n == crate::lvpkg::PACKAGE_TOML));
     let idx = match (is_lvpkg, idx) {
         (true, None) => return crate::lvpkg::read(zip),
         (true, Some(_)) => bail!(
@@ -249,7 +251,10 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
 /// A package entry's content, at most `cap` bytes. The size in the
 /// entry's header is the archive's claim, so nothing is allocated from it.
 fn read_entry(src: zip::read::ZipFile<'_, std::io::Cursor<Vec<u8>>>, cap: u64) -> Result<Vec<u8>> {
-    let name = src.name().to_string();
+    let name = src
+        .name()
+        .context("archive entry has no usable name")?
+        .to_string();
     let mut buf = Vec::new();
     src.take(cap + 1)
         .read_to_end(&mut buf)
@@ -266,7 +271,11 @@ pub fn plan(roots: &Roots, spec: &Spec, zip: &mut Archive) -> Result<Plan> {
     // between `spec` and the archive.
     let mut by_lower = std::collections::HashMap::new();
     for i in 0..zip.len() {
-        let name = zip.by_index(i)?.name().to_string();
+        let name = zip
+            .by_index(i)?
+            .name()
+            .with_context(|| format!("archive entry {i} has no usable name"))?
+            .to_string();
         by_lower.insert(name.to_lowercase().replace('\\', "/"), i);
     }
 

@@ -72,7 +72,7 @@ pub fn library_names(archive: &Path) -> Vec<String> {
     let mut names: Vec<String> = (0..zip.len())
         .filter_map(|i| {
             let entry = zip.by_index(i).expect("a zip entry");
-            let name = entry.name().rsplit(['/', '\\']).next()?.to_string();
+            let name = entry.name().ok()?.rsplit(['/', '\\']).next()?.to_string();
             name.to_lowercase().ends_with(".lvlib").then_some(name)
         })
         .collect();
@@ -238,9 +238,9 @@ pub fn group_zero_files(archive: &Path, under: &str) -> Vec<String> {
         .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
     let mut files: Vec<String> = zip
         .file_names()
-        .filter_map(|name| name.strip_prefix("File Group 0/"))
+        .map(|name| name.expect("a zip entry name").into_owned())
+        .filter_map(|name| name.strip_prefix("File Group 0/").map(String::from))
         .filter(|name| name.starts_with(under) && !name.ends_with('/'))
-        .map(String::from)
         .collect();
     files.sort();
     files
@@ -256,8 +256,8 @@ pub fn lvpkg_files(archive: &Path) -> Vec<String> {
         .unwrap_or_else(|e| panic!("reading {} as a zip: {e}", archive.display()));
     let mut files: Vec<String> = zip
         .file_names()
-        .filter(|name| !["RECORD", "package.toml", lvpm_core::lvpkg::SBOM].contains(name))
-        .map(String::from)
+        .map(|name| name.expect("a zip entry name").into_owned())
+        .filter(|name| !["RECORD", "package.toml", lvpm_core::lvpkg::SBOM].contains(&name.as_str()))
         .collect();
     files.sort();
     files
