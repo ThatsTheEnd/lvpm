@@ -33,23 +33,28 @@ refuses to run scripts:
 
 ## By hand
 
-Download `lvpm-<version>-windows-x64.zip` from the
-[Releases](https://github.com/ThatsTheEnd/lvpm/releases) page, right-click it,
-tick **Unblock**, extract, and put the folder on your `PATH`.
+Download `lvpm-x86_64-pc-windows-msvc.msi` from the
+[Releases](https://github.com/ThatsTheEnd/lvpm/releases) page and run it. It
+installs per-user to `%LOCALAPPDATA%\lvpm\bin`, adds that folder to your user
+`PATH`, and upgrades an earlier install in place.
+
+Or download `lvpm-x86_64-pc-windows-msvc.zip`, right-click it, tick
+**Unblock**, extract, and put the folder on your `PATH`. Releases up to
+v0.27.0 name it `lvpm-<version>-windows-x64.zip` and ship no MSI.
 
 ## On Linux
 
-Releases are pre-releases while the version is 0.x, so GitHub's "latest"
-link skips them. Open the
-[Releases](https://github.com/ThatsTheEnd/lvpm/releases) list and download
-`lvpm-<version>-linux-x64.tar.gz` and `SHA256SUMS` from the newest release,
-then:
+Download `lvpm-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256` from the
+newest [release](https://github.com/ThatsTheEnd/lvpm/releases), then:
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf lvpm-<version>-linux-x64.tar.gz
-./lvpm --version
+sha256sum -c lvpm-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf lvpm-x86_64-unknown-linux-gnu.tar.gz
+./lvpm-x86_64-unknown-linux-gnu/lvpm --version
 ```
+
+Releases up to v0.27.0 name it `lvpm-<version>-linux-x64.tar.gz`, with the
+checksum in `SHA256SUMS` and `lvpm` at the archive's top level.
 
 Move `lvpm` to a folder on your `PATH`, for example `~/.local/bin`.
 

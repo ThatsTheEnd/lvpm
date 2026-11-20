@@ -1,6 +1,6 @@
 # lvpm
 
-[![Release](https://github.com/ThatsTheEnd/lvpm/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/ThatsTheEnd/lvpm/actions/workflows/release.yml)
+[![Release](https://github.com/ThatsTheEnd/lvpm/actions/workflows/tag.yml/badge.svg?branch=main)](https://github.com/ThatsTheEnd/lvpm/actions/workflows/tag.yml)
 [![Docs](https://github.com/ThatsTheEnd/lvpm/actions/workflows/docs.yml/badge.svg?branch=main)](https://thatstheend.github.io/lvpm/)
 [![Latest release](https://img.shields.io/github/v/release/ThatsTheEnd/lvpm?include_prereleases&sort=semver)](https://github.com/ThatsTheEnd/lvpm/releases)
 [![Rust](https://img.shields.io/badge/rust-stable%20%C2%B7%20edition%202024-orange?logo=rust)](Cargo.toml)

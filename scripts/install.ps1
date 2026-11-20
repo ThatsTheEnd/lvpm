@@ -128,7 +128,8 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-$assetPattern = 'lvpm-*-windows-x64.zip'
+# dist names the zip by target; releases up to v0.27.0 named it by version.
+$assetPatterns = @('lvpm-x86_64-pc-windows-msvc.zip', 'lvpm-*-windows-x64.zip')
 $api = "https://api.github.com/repos/$Repo"
 
 $headers = @{
@@ -172,9 +173,9 @@ if ($Archive) {
 }
 
 if (-not $Archive) {
-    $asset = $release.assets | Where-Object { $_.name -like $assetPattern } | Select-Object -First 1
+    $asset = $release.assets | Where-Object { $name = $_.name; $assetPatterns | Where-Object { $name -like $_ } } | Select-Object -First 1
     if (-not $asset) {
-        throw "release $($release.tag_name) has no asset matching $assetPattern"
+        throw "release $($release.tag_name) has no asset matching $($assetPatterns -join ' or ')"
     }
 }
 Write-Host "release: $($release.tag_name)$(if ($release.prerelease) { ' (pre-release)' })"

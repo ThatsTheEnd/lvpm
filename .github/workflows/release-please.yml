@@ -2,17 +2,18 @@ name: Release PR
 
 # Keeps one open release PR that raises the version in Cargo.toml and
 # Cargo.lock and writes CHANGELOG.md from the conventional-commit titles merged
-# since the last release. Merging it is what releases: release.yml then sees an
-# untagged version and publishes it. release-please creates no tag or release
-# itself (skip-github-release); release.yml does both.
-# It also runs after each Release run: a merge that lands while the merged
+# since the last release. Merging it is what releases: tag.yml then sees an
+# untagged version and tags it, and dist's release.yml builds and publishes
+# that tag. release-please creates no tag or release itself
+# (skip-github-release).
+# It also runs after each Tag release run: a merge that lands while the merged
 # release PR is still labelled pending opens nothing, so it is retried once
-# release.yml has moved the label to tagged.
+# tag.yml has moved the label to tagged.
 on:
   push:
     branches: [main]
   workflow_run:
-    workflows: [Release]
+    workflows: [Tag release]
     types: [completed]
     branches: [main]
 

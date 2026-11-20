@@ -28,7 +28,7 @@ done <<<"$rows"
 named=$(grep -nE '^ *if:.*(image|labview:|-linux|-windows)' <<<"$pr_text" || true)
 [ -z "$named" ] || report_violation "$pr: a condition names an image; branch on the row's os instead: $named"
 
-for f in pr.yml build.yml package.yml; do
+for f in pr.yml build.yml; do
   [ -f "$dir/$f" ] || { report_violation "$dir/$f not found."; continue; }
   text=$(tr -d '\r' < "$dir/$f")
   grep -qE '^permissions:$' <<<"$text" && grep -qE '^  contents: read$' <<<"$text" \

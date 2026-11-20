@@ -39,6 +39,19 @@ tempfile = "3.27.0"
 toml = { version = "1.1.5", features = ["preserve_order"] }
 zip = "9.5.1"
 
+# The MSI (wix/main.wxs, built by dist). The same upgrade code as upstream
+# lvpm's MSI: both install to %LOCALAPPDATA%\lvpm\bin, so one replaces the other.
+[package.metadata.wix]
+upgrade-guid = "2AE3D9AE-39AC-4BC3-A28C-187026CEEFCE"
+path-guid = "5B493AB7-0E84-4A8E-8B3F-A0E99B41FE04"
+license = false
+eula = false
+
 [[test]]
 name = "acceptance"
 harness = false
+
+# The profile that dist builds releases with.
+[profile.dist]
+inherits = "release"
+lto = "thin"

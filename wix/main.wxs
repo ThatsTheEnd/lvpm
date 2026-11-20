@@ -1,0 +1,129 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  The lvpm MSI, built by dist (dist-workspace.toml) through cargo-wix.
+
+  Taken from upstream lvpm's wix/main.wxs, itself started from cargo-wix's
+  template (Copyright (C) 2017 Christopher R. Field, Apache-2.0) and edited by
+  hand, which is why dist-workspace.toml sets allow-dirty = ["msi"]. A
+  `dist generate` without that would overwrite it.
+
+  Differences from the template:
+    - Per-user, no elevation: installs to %LOCALAPPDATA%\lvpm\bin, the same
+      folder scripts/install.ps1 uses, and adds it to the user PATH.
+    - Ships the license files in %LOCALAPPDATA%\lvpm.
+    - No folder choice in the dialog: a per-user install cannot write to
+      one outside the profile, such as Program Files.
+    - Files in the user profile cannot be component key paths (ICE38), so
+      each component is keyed by a value under HKCU\Software\lvpm, and the
+      folders are removed on uninstall (ICE64).
+  Upstream also ships its relink VI beside lvpm.exe; this lvpm embeds it.
+
+  cargo-wix variables used here: Version, CargoTargetBinDir.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='lvpm'
+        UpgradeCode='2AE3D9AE-39AC-4BC3-A28C-187026CEEFCE'
+        Manufacturer='lvpm contributors'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Open-source package manager for LabVIEW'
+            Manufacturer='lvpm contributors'
+            InstallerVersion='500'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perUser'
+            InstallPrivileges='limited'
+            SummaryCodepage='1252'
+            />
+
+        <!-- Same-version upgrades too: every build gets a new ProductCode, so a
+             rebuilt MSI of one version replaces the installed one instead of
+             appearing beside it under Settings > Apps. -->
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            AllowSameVersionUpgrades='yes'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='LocalAppDataFolder'>
+                <Directory Id='APPLICATIONFOLDER' Name='lvpm'>
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='binary0' Guid='44AD98F6-E7E0-4684-88B9-95DEE0FECB36'>
+                            <File
+                                Id='exe0'
+                                Name='lvpm.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\lvpm.exe'/>
+                            <RegistryValue Root='HKCU' Key='Software\lvpm' Name='lvpm.exe'
+                                Type='string' Value='[#exe0]' KeyPath='yes'/>
+                            <RemoveFolder Id='RemoveBin' Directory='Bin' On='uninstall'/>
+                            <RemoveFolder Id='RemoveApplicationFolder' Directory='APPLICATIONFOLDER' On='uninstall'/>
+                        </Component>
+                        <Component Id='Path' Guid='5B493AB7-0E84-4A8E-8B3F-A0E99B41FE04'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='no'/>
+                            <RegistryValue Root='HKCU' Key='Software\lvpm' Name='Path'
+                                Type='integer' Value='1' KeyPath='yes'/>
+                        </Component>
+                    </Directory>
+                    <Component Id='Notices' Guid='1964C78F-A264-4F1F-B956-C829EA8743E9'>
+                        <File Id='LicenseMit' Name='LICENSE-MIT' DiskId='1' Source='LICENSE-MIT'/>
+                        <File Id='LicenseApache' Name='LICENSE-APACHE' DiskId='1' Source='LICENSE-APACHE'/>
+                        <RegistryValue Root='HKCU' Key='Software\lvpm' Name='Notices'
+                            Type='integer' Value='1' KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='lvpm.'
+            Level='1'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='binary0'/>
+            <ComponentRef Id='Notices'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of the [ProductName] executable to your user PATH. This allows the [ProductName] executable to be called from any location.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <Property Id='ARPHELPLINK' Value='https://github.com/ThatsTheEnd/lvpm'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+            <!-- No EULA dialog: Welcome goes straight to the feature tree. -->
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+        </UI>
+
+    </Product>
+
+</Wix>
