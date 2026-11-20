@@ -366,6 +366,10 @@ enum Cmd {
         /// Keep dependencies, without prompting.
         #[arg(long, conflicts_with_all = ["all", "with_deps"])]
         keep_deps: bool,
+        /// Remove the package even though other installed packages require
+        /// it, leaving them without it. Without this, that is refused.
+        #[arg(long, conflicts_with = "all")]
+        force: bool,
     },
     /// Invoke parameterless Application-class methods by raw id, and report
     /// what LabVIEW says. Re-establishes method ids on a new LabVIEW: 1036
@@ -970,6 +974,7 @@ fn run(cli: &Cli) -> Result<Report> {
             all,
             with_deps,
             keep_deps,
+            force,
         } => {
             use ops::uninstall::Dependencies;
             let ask = |names: &[String]| {
@@ -994,7 +999,7 @@ fn run(cli: &Cli) -> Result<Report> {
                 _ if cli.yes => Dependencies::Remove,
                 _ => Dependencies::Ask(&ask),
             };
-            ops::uninstall::uninstall(&env, package.as_deref(), *all, deps)
+            ops::uninstall::uninstall(&env, package.as_deref(), *all, deps, *force)
                 .map(|()| Report::done("uninstall"))
         }
         Cmd::AppProbe { ids } => cmd_app_probe(&env, ids).map(|()| Report::done("app-probe")),

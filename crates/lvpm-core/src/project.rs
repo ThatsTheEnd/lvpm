@@ -46,7 +46,7 @@ use crate::manifest_edit::DependencyTable;
 use crate::oci::{self, FeedUrl, UrlError};
 use crate::verify::Policy;
 use crate::version::Version;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -72,13 +72,22 @@ pub enum Constraint {
 impl Constraint {
     pub fn parse(s: &str) -> Result<Constraint> {
         let s = s.trim();
+        // Version::parse takes anything, so "latest" or "v1.0" would become an
+        // exact pin that only fails later as "not found".
+        let version = |v: &str| {
+            ensure!(
+                crate::version::is_version(v),
+                "{v:?} is not a version — use an exact version such as \"1.2.3.4\", \">=x.y\" or \"*\""
+            );
+            Ok(Version::parse(v))
+        };
         Ok(match s {
             "" | "*" => Constraint::Any,
-            _ if s.starts_with(">=") => Constraint::AtLeast(Version::parse(s[2..].trim())),
+            _ if s.starts_with(">=") => Constraint::AtLeast(version(s[2..].trim())?),
             _ if s.starts_with(['<', '>', '=', '~', '^']) => bail!(
                 "unsupported version constraint {s:?} — use an exact version, \">=x.y\" or \"*\""
             ),
-            _ => Constraint::Exact(Version::parse(s)),
+            _ => Constraint::Exact(version(s)?),
         })
     }
 
@@ -809,6 +818,17 @@ fn dependency_table(
             "{at}: github and index cannot be used together; a github dependency comes only from its repo"
         );
     }
+    // Upstream lvpm spells a group `[dependencies.<group>]`; here that is a
+    // dependency line with none of a line's keys.
+    if table == "dependencies"
+        && !fields.is_empty()
+        && !fields.keys().any(|k| LINE_KEYS.contains(&k.as_str()))
+    {
+        bail!(
+            "{at}: a table under [dependencies] is one dependency line; \
+             a group is written [dependency-groups.{name}]"
+        );
+    }
     if let Some(key) = fields.keys().find(|k| !LINE_KEYS.contains(&k.as_str())) {
         let (last, rest) = LINE_KEYS.split_last().expect("LINE_KEYS is not empty");
         bail!(
@@ -1421,6 +1441,30 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         ] {
             assert_eq!(refusal("dependencies", line), said, "{line}");
         }
+    }
+
+    #[test]
+    fn a_constraint_that_is_not_a_version_is_refused() {
+        for bad in ["latest", "v1.0", ">=latest", "1,0"] {
+            assert!(Constraint::parse(bad).is_err(), "{bad}");
+        }
+        for good in ["", "*", "1.0", ">=6.0.1", "0.1.0alpha1", "1.0.1-1"] {
+            assert!(Constraint::parse(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn an_upstream_style_group_table_names_the_group_spelling() {
+        let e = format!(
+            "{:#}",
+            parse(
+                "[dependencies.test]
+jki_lib_caraya = \"*\"
+"
+            )
+            .unwrap_err()
+        );
+        assert!(e.contains("[dependency-groups.test]"), "{e}");
     }
 
     #[test]

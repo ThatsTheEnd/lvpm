@@ -29,11 +29,18 @@ pub enum Dependencies<'a> {
 /// sweep; a single named package still fails the command with its own error.
 /// A named package takes the dependencies nothing else needs with it, as
 /// `deps` says; whatever the project's manifest declares, or needs through
-/// what it declares, stays.
-pub fn uninstall(env: &OpEnv, package: Option<&str>, all: bool, deps: Dependencies) -> Result<()> {
+/// what it declares, stays. A named package other installed packages require
+/// is refused before anything is touched, unless `force`.
+pub fn uninstall(
+    env: &OpEnv,
+    package: Option<&str>,
+    all: bool,
+    deps: Dependencies,
+    force: bool,
+) -> Result<()> {
     let dest = env.destination()?;
     let names: Vec<String> = match (package, all) {
-        (Some(p), _) => with_dependencies(env, &dest, p, deps)?,
+        (Some(p), _) => with_dependencies(env, &dest, p, deps, force)?,
         (None, true) => install::list_installed(&dest.store())?
             .into_iter()
             .map(|m| m.name)
@@ -175,6 +182,7 @@ fn with_dependencies(
     dest: &Destination,
     package: &str,
     deps: Dependencies,
+    force: bool,
 ) -> Result<Vec<String>> {
     // Keeping every dependency is safe without knowing them; removing is not.
     let old = install::records_without_dependencies(&dest.store())?;
@@ -212,6 +220,17 @@ fn with_dependencies(
         });
     }
     if !plan.dependents.is_empty() {
+        // Removing what another installed package needs leaves that one
+        // broken: refused before anything is touched, unless --force.
+        ensure!(
+            force,
+            "{} is required by installed packages: {}
+             hint: uninstall {} first, or pass --force to remove {} anyway",
+            plan.root,
+            plan.dependents.join(", "),
+            plan.dependents.join(", "),
+            plan.root
+        );
         env.sink.emit(Event::UninstallRequiredBy {
             package: plan.root.clone(),
             dependents: plan.dependents.clone(),
@@ -439,6 +458,45 @@ mod tests {
         );
     }
 
+    /// A package another installed package requires is refused, with
+    /// nothing touched; --force removes it anyway.
+    #[test]
+    fn a_package_others_require_is_refused_unless_forced() {
+        let (dir, file) = scratch_with_alpha("required");
+        let store = Roots::scratch(&dir).store_dir();
+        let beta = serde_json::json!({
+            "name": "beta", "version": "1.0", "display_name": null, "installed_at": 0,
+            "target": "scratch", "files": [], "skipped_hooks": [], "dependencies": ["alpha"],
+        });
+        std::fs::write(store.join("beta.json"), beta.to_string()).unwrap();
+        let sink = Recorder::default();
+        let why = uninstall(
+            &env_for(&sink, &dir),
+            Some("alpha"),
+            false,
+            Dependencies::Keep,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            why.contains("required by installed packages: beta"),
+            "{why}"
+        );
+        assert!(why.contains("--force"), "{why}");
+        assert!(file.exists(), "nothing was touched");
+        uninstall(
+            &env_for(&sink, &dir),
+            Some("alpha"),
+            false,
+            Dependencies::Keep,
+            true,
+        )
+        .unwrap();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn an_uninstall_removes_the_files_and_hands_the_removals_to_finish() {
         let (dir, file) = scratch_with_alpha("removes");
@@ -448,6 +506,7 @@ mod tests {
             Some("alpha"),
             false,
             Dependencies::Keep,
+            false,
         )
         .unwrap();
         assert!(!file.exists(), "the package's file is gone");
@@ -491,6 +550,7 @@ mod tests {
                 Some("alpha"),
                 false,
                 Dependencies::Keep,
+                false,
             )
             .unwrap();
             let events = sink.0.lock().unwrap().clone();
@@ -521,6 +581,7 @@ mod tests {
             Some("alpha"),
             false,
             Dependencies::Keep,
+            false,
         )
         .unwrap();
         let events = sink.0.lock().unwrap().clone();
@@ -561,7 +622,7 @@ mod tests {
         env.headless = true;
         env.flags.global = true;
         env.flags.labview_version = Some("2099".into());
-        uninstall(&env, Some("alpha"), false, Dependencies::Keep).unwrap();
+        uninstall(&env, Some("alpha"), false, Dependencies::Keep, false).unwrap();
         assert!(!file.exists(), "the package's file is gone");
 
         let events = sink.0.lock().unwrap().clone();
@@ -586,12 +647,12 @@ mod tests {
         let sink = Recorder::default();
         let mut env = env_for(&sink, &dir);
         assert!(env.cancel.cancel());
-        let why = uninstall(&env, Some("alpha"), false, Dependencies::Keep).unwrap_err();
+        let why = uninstall(&env, Some("alpha"), false, Dependencies::Keep, false).unwrap_err();
         assert!(why.is::<crate::errors::Cancelled>(), "{why:#}");
         assert!(file.exists(), "a cancel that returned true deleted a file");
 
         env.cancel = crate::cancel::CancelToken::new();
-        uninstall(&env, Some("alpha"), false, Dependencies::Keep).unwrap();
+        uninstall(&env, Some("alpha"), false, Dependencies::Keep, false).unwrap();
         assert!(!env.cancel.cancel(), "the uninstall had begun to delete");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -622,6 +683,7 @@ mod tests {
             Some("alpha"),
             false,
             Dependencies::Keep,
+            false,
         )
         .unwrap_err();
         assert!(
@@ -655,7 +717,7 @@ mod tests {
         let mut env = env_on(&sink, &dir);
         fake.place(&mut env);
         env.flags.labview_version = Some("2099".into());
-        let why = uninstall(&env, Some("alpha"), false, Dependencies::Keep).unwrap_err();
+        let why = uninstall(&env, Some("alpha"), false, Dependencies::Keep, false).unwrap_err();
 
         assert!(
             why.to_string().contains("outside this destination"),
@@ -718,7 +780,7 @@ mod tests {
         env.headless = true;
         env.flags.global = true;
         env.flags.labview_version = Some("2099".into());
-        uninstall(&env, Some("hooked"), false, Dependencies::Keep).unwrap();
+        uninstall(&env, Some("hooked"), false, Dependencies::Keep, false).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         sink.events()
     }
@@ -836,6 +898,7 @@ mod tests {
             Some("alpha"),
             false,
             Dependencies::Keep,
+            false,
         )
         .unwrap();
 
@@ -894,11 +957,11 @@ mod tests {
         let (dir, _) = scratch_with_alpha("refused");
         let sink = Recorder::default();
         let env = env_for(&sink, &dir);
-        let nothing = uninstall(&env, None, false, Dependencies::Keep)
+        let nothing = uninstall(&env, None, false, Dependencies::Keep, false)
             .unwrap_err()
             .to_string();
         assert_eq!(nothing, "give a package name, or --all");
-        let absent = uninstall(&env, Some("beta"), false, Dependencies::Keep)
+        let absent = uninstall(&env, Some("beta"), false, Dependencies::Keep, false)
             .unwrap_err()
             .to_string();
         assert!(
