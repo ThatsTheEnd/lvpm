@@ -243,6 +243,26 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
     },
+    /// Write the packages a VIPM .vipc or vipm.toml chose into this project's lvpm.toml,
+    /// once, and put the package archives a .vipc holds into the cache. Installs nothing.
+    ///
+    /// Reads the file as `init --from` does. Makes lvpm.toml when there is none; an
+    /// existing one keeps everything else.
+    Import {
+        /// The .vipc or vipm.toml, relative to the working directory.
+        file: PathBuf,
+        /// Also pin the packages a .vipc lists only as another's dependency.
+        #[arg(long)]
+        all: bool,
+        /// Put the packages in [dependency-groups.<GROUP>] (`dev` is
+        /// [dev-dependencies]). Default: the table that declares the package
+        /// already, else [dependencies].
+        #[arg(long, value_name = "GROUP")]
+        group: Option<String>,
+        /// Say what would be written, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install a package by name, or name@version. In a project, a bare
     /// install is `lvpm sync` and a named install is `lvpm add`, unless
     /// --global, --prefix or --labview-version say where it goes.
@@ -993,6 +1013,16 @@ fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
             let done = ops::init::run(&env, from.as_deref(), &git::spawn)
                 .map_err(|why| anyhow!(render::init::error(&why)))?;
             Report::new(render::init::initialized(&done), &done)
+        }
+        Cmd::Import {
+            file,
+            all,
+            group,
+            dry_run,
+        } => {
+            let done = ops::init::import(&env, file, *all, group.as_deref(), *dry_run)
+                .map_err(|why| anyhow!(render::init::error(&why)))?;
+            Report::new(render::init::imported(&done), &done)
         }
         Cmd::Install {
             package,

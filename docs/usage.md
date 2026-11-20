@@ -7,6 +7,7 @@
 | `lvpm init`                                          | Start a project here: write an `lvpm.toml` and a `.gitignore`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
 | `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
+| `lvpm import <file>`                                 | Write the packages of a `.vipc` or `vipm.toml` into an existing (or new) `lvpm.toml`; installs nothing ([Importing into a project](#importing-into-a-project)) |
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, run linkfix, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one linkfix pass ([The lock file](#the-lock-file))                    |
@@ -193,6 +194,31 @@ initialized a git repository
   `venv create --manifest` ([the table](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#compatibility-with-vipmtoml)).
   A `vipm.toml` that cannot be converted (a floor such as `">=1.0"` where VIPM
   takes only exact versions, or text that is not TOML) fails and writes nothing.
+
+### Importing into a project
+
+`lvpm import <file>` reads a `.vipc` or `vipm.toml` the way `init --from` does
+and writes its packages into the project's `lvpm.toml`, which it makes when
+there is none. Everything else in the manifest stays as it was, and nothing is
+installed: `lvpm sync` does that.
+
+```console
+$ lvpm import project.vipc
+manifest: C:\Git\daq-tool\lvpm.toml
+  updated alpha [dependencies]: "1.0" -> "2.0"
+  saved beta = ">=0.2" [dependency-groups.test]
+  1 package(s) VIPM lists only as another's dependency left out (--all pins them too)
+next: lvpm sync
+```
+
+- A package goes to the table that already declares it, else `[dependencies]`
+  (a `vipm.toml`'s dev-dependencies to `[dev-dependencies]`). `--group <name>`
+  puts the main packages in `[dependency-groups.<name>]` instead.
+- `--all` also takes the packages a `.vipc` lists only as another's dependency.
+  It is refused for a `vipm.toml`.
+- `[nipm.dependencies]` entries the manifest lacks are added; one it has stays.
+- The archives a `.vipc` carries go into the cache, as for `init --from`.
+- `--dry-run` says what would change and writes nothing.
 
 ## The project manifest
 

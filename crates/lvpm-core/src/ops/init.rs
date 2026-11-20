@@ -158,7 +158,7 @@ pub fn run(env: &OpEnv, from: Option<&Path>, runner: Runner) -> Result<Initializ
         })
         .transpose()?;
     let (seed, source_kind) = match from {
-        Some(from) => read_source(&env.cwd, from).map(|(seed, kind)| (seed, Some(kind)))?,
+        Some(from) => read_source(&env.cwd, from, false).map(|(seed, kind)| (seed, Some(kind)))?,
         None => (Seed::default(), None),
     };
     let choice = choose_labview(&env.pickable()?, flag);
@@ -214,7 +214,7 @@ pub fn run(env: &OpEnv, from: Option<&Path>, runner: Runner) -> Result<Initializ
 /// told from the file's name before the file is opened, so this `match` is where
 /// another kind of file gets its reader. `from` is looked for from `cwd`; the
 /// errors name it as it was typed.
-fn read_source(cwd: &Path, from: &Path) -> Result<(Seed, SourceKind), InitError> {
+fn read_source(cwd: &Path, from: &Path, all: bool) -> Result<(Seed, SourceKind), InitError> {
     let file = from.display().to_string();
     let name = from
         .file_name()
@@ -227,7 +227,7 @@ fn read_source(cwd: &Path, from: &Path) -> Result<(Seed, SourceKind), InitError>
         _ if vipm_interop::is_toml(from) => read_vipm_toml(&path, &file)
             .map(|seed| (seed, SourceKind::VipmToml))
             .map_err(bad_source),
-        _ => read_vipc(&path, &file)
+        _ => read_vipc(&path, &file, all)
             .map(|seed| (seed, SourceKind::Vipc))
             .map_err(bad_source),
     }
@@ -279,9 +279,13 @@ fn read_vipm_toml(path: &Path, file: &str) -> anyhow::Result<Seed> {
 }
 
 /// The `.vipc` at `path`, with the archives it holds. Taking them is part of
-/// the check, so a bad one fails before anything is written.
-fn read_vipc(path: &Path, file: &str) -> anyhow::Result<Seed> {
-    let vipc = vipc::read(path, file)?;
+/// the check, so a bad one fails before anything is written. With `all`, the
+/// packages VIPM lists only as another's dependency are taken too.
+fn read_vipc(path: &Path, file: &str, all: bool) -> anyhow::Result<Seed> {
+    let mut vipc = vipc::read(path, file)?;
+    if all {
+        vipc.packages.iter_mut().for_each(|p| p.dependency = false);
+    }
     let mut seed = vipc.seed();
     vipc.embed(path, file, &mut seed)?;
     Ok(seed)
@@ -362,6 +366,201 @@ fn with_nipm_dependencies(text: &str, dependencies: &Table) -> Result<String, In
     nipm.insert("dependencies", Item::Table(dependencies));
     doc.insert("nipm", Item::Table(nipm));
     Ok(doc.to_string())
+}
+
+/// What `import` wrote into `lvpm.toml`, or would write on a dry run.
+#[derive(Debug, Clone, Serialize)]
+pub struct Imported {
+    pub manifest: PathBuf,
+    /// There was no `lvpm.toml`: the import makes it.
+    pub created: bool,
+    pub dry_run: bool,
+    /// Every package of the file, in the table it went to.
+    pub saved: Vec<ImportedEntry>,
+    /// `[nipm.dependencies]` entries added; one already there is kept.
+    pub nipm_added: usize,
+    /// How many packages VIPM lists only as another's dependency, left out.
+    pub skipped: usize,
+    /// How many package archives the file carries, for the cache.
+    pub embedded: usize,
+}
+
+/// One package as `import` left it in the manifest.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportedEntry {
+    /// The table, as between brackets: `dependencies`, `dependency-groups.test`.
+    pub table: String,
+    pub name: String,
+    pub constraint: String,
+    /// What that table said for it before, when it had it.
+    pub was: Option<String>,
+}
+
+/// `lvpm import FILE`: the packages a VIPM `.vipc` or `vipm.toml` chose, read
+/// as `init --from` reads them, written into the project's `lvpm.toml` (made
+/// when there is none) once. A package goes to `group` when given, else to
+/// the table that already declares it, else `[dependencies]` (a vipm.toml's
+/// dev-dependencies to `[dev-dependencies]`). `all` also takes a `.vipc`'s
+/// packages VIPM lists only as another's dependency. The archives the file
+/// carries go into the cache once the manifest is written. Nothing is
+/// installed; with `dry_run` nothing is written.
+pub fn import(
+    env: &OpEnv,
+    file: &Path,
+    all: bool,
+    group: Option<&str>,
+    dry_run: bool,
+) -> Result<Imported, InitError> {
+    let typed = file.display().to_string();
+    if all && vipm_interop::is_toml(file) {
+        return Err(InitError::BadSource {
+            why: format!("{typed}: --all is for a .vipc; a vipm.toml lists only what it chose"),
+        });
+    }
+    if group.is_some_and(|g| g.trim().is_empty()) {
+        return Err(InitError::BadSource {
+            why: "--group needs a group name".to_string(),
+        });
+    }
+    let root = match &env.flags.project {
+        Some(dir) => paths::resolve(&env.cwd, dir),
+        None => project::find_manifest(&paths::clean(&env.cwd))
+            .and_then(|m| m.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| paths::clean(&env.cwd)),
+    };
+    if !root.is_dir() {
+        return Err(InitError::ProjectMissing { dir: root });
+    }
+    let manifest = root.join(project::FILE_NAME);
+    let created = !manifest.is_file();
+    let (seed, _) = read_source(&env.cwd, file, all)?;
+    let before = match created {
+        true => None,
+        false => {
+            // A manifest lvpm cannot read is refused before any edit.
+            project::read(&manifest)?;
+            Some(std::fs::read_to_string(&manifest).map_err(anyhow::Error::from)?)
+        }
+    };
+    let mut text = before.clone().unwrap_or_else(|| {
+        let name = seed
+            .name
+            .clone()
+            .unwrap_or_else(|| manifest_edit::folder_name(&root));
+        let version = seed.version.as_deref().unwrap_or(FIRST_VERSION);
+        manifest_edit::skeleton(&name, Some(version), None)
+    });
+    let asked = group.map(|g| DependencyTable::from_flags(false, Some(g)));
+    let mut saved = Vec::new();
+    for (default, entries) in [
+        (DependencyTable::Dependencies, &seed.deps),
+        (DependencyTable::DevDependencies, &seed.dev_deps),
+    ] {
+        for (name, constraint) in entries {
+            let declared = declared(&text, name)?;
+            let table = match (&asked, &declared) {
+                (Some(table), _) if default == DependencyTable::Dependencies => table.clone(),
+                (_, Some((table, _))) => table.clone(),
+                _ => default.clone(),
+            };
+            let was = declared
+                .filter(|(t, _)| *t == table)
+                .map(|(_, constraint)| constraint);
+            text = manifest_edit::set(&text, &table, name, constraint)?;
+            saved.push(ImportedEntry {
+                table: table.key(),
+                name: name.clone(),
+                constraint: constraint.clone(),
+                was,
+            });
+        }
+    }
+    let nipm_added = match &seed.nipm {
+        Some(nipm) => {
+            let (merged, added) = merge_nipm(&text, nipm)?;
+            text = merged;
+            added
+        }
+        None => 0,
+    };
+    if !dry_run && before.as_deref() != Some(text.as_str()) {
+        match created {
+            true => write_new(&manifest, &text)?,
+            false => std::fs::write(&manifest, &text).map_err(anyhow::Error::from)?,
+        }
+    }
+    let embedded = seed.embedded.len();
+    if !dry_run {
+        import_embedded(env, &typed, seed.embedded, seed.not_embedded);
+    }
+    Ok(Imported {
+        manifest,
+        created,
+        dry_run,
+        saved,
+        nipm_added,
+        skipped: seed.skipped,
+        embedded,
+    })
+}
+
+/// The table of `text` that declares `name`, and its constraint there.
+fn declared(text: &str, name: &str) -> anyhow::Result<Option<(DependencyTable, String)>> {
+    let doc: DocumentMut = text.parse()?;
+    let mut tables = vec![
+        (DependencyTable::Dependencies, doc.get("dependencies")),
+        (
+            DependencyTable::DevDependencies,
+            doc.get("dev-dependencies"),
+        ),
+    ];
+    if let Some(groups) = doc.get("dependency-groups").and_then(Item::as_table_like) {
+        for (group, item) in groups.iter() {
+            tables.push((DependencyTable::Group(group.to_string()), Some(item)));
+        }
+    }
+    for (table, item) in tables {
+        let Some(entries) = item.and_then(Item::as_table_like) else {
+            continue;
+        };
+        if let Some((_, value)) = entries
+            .iter()
+            .find(|(key, _)| project::same_name(key, name))
+        {
+            let constraint = value
+                .as_str()
+                .or_else(|| value.get("version").and_then(Item::as_str))
+                .unwrap_or("*");
+            return Ok(Some((table, constraint.to_string())));
+        }
+    }
+    Ok(None)
+}
+
+/// `text` with each entry of `source` that its `[nipm.dependencies]` lacks
+/// added at the end, and how many were added.
+fn merge_nipm(text: &str, source: &Table) -> Result<(String, usize), InitError> {
+    let mut doc: DocumentMut = text.parse().map_err(anyhow::Error::from)?;
+    let nipm = doc.entry("nipm").or_insert_with(|| {
+        let mut t = Table::new();
+        t.set_implicit(true);
+        Item::Table(t)
+    });
+    let deps = nipm
+        .as_table_like_mut()
+        .ok_or_else(|| anyhow!("[nipm] in lvpm.toml is not a table"))?
+        .entry("dependencies")
+        .or_insert(Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| anyhow!("[nipm.dependencies] in lvpm.toml is not a table"))?;
+    let mut added = 0;
+    for (key, value) in source.iter() {
+        if !deps.contains_key(key) {
+            deps.insert(key, value.clone());
+            added += 1;
+        }
+    }
+    Ok((doc.to_string(), added))
 }
 
 /// The venv for the LabVIEW `year` names, bound to the installation at `path`
@@ -1807,6 +2006,85 @@ build = "x"
             run(&env, from, &no_git).unwrap_err(),
             InitError::DragonFile { .. }
         ));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn import_adds_a_vipc_into_the_existing_manifest_and_keeps_the_rest() {
+        let (scratch, root) = folder("import-existing", "App");
+        let manifest = root.join("lvpm.toml");
+        std::fs::write(
+            &manifest,
+            "[project]\nname = \"App\" # mine\n\n[dependencies]\nalpha = \"1.0\"\n\n[dependency-groups.test]\nbeta = \">=0.1\"\n",
+        )
+        .unwrap();
+        vipc_in(
+            &root,
+            "p.vipc",
+            "23.0",
+            &[
+                ("alpha-2.0", true, false),
+                ("beta-0.2", true, false),
+                ("dep_only-1.0", false, true),
+            ],
+        );
+        let sink = Recorded::default();
+        let env = env_on(&sink, &root);
+
+        let done = import(&env, Path::new("p.vipc"), false, None, false).unwrap();
+
+        assert!(!done.created);
+        assert_eq!(done.skipped, 1);
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains("name = \"App\" # mine"), "{text}");
+        assert!(text.contains("alpha = \"2.0\""), "{text}");
+        // beta stays in the group that declared it.
+        assert!(
+            text.contains("[dependency-groups.test]\nbeta = \"0.2\""),
+            "{text}"
+        );
+        assert!(!text.contains("dep_only"), "{text}");
+        assert_eq!(done.saved[0].was.as_deref(), Some("1.0"));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn import_all_takes_dependency_packages_into_the_named_group_and_dry_run_writes_nothing() {
+        let (scratch, root) = folder("import-all", "App");
+        vipc_in(
+            &root,
+            "p.vipc",
+            "23.0",
+            &[("alpha-2.0", true, false), ("dep_only-1.0", false, true)],
+        );
+        let sink = Recorded::default();
+        let env = env_on(&sink, &root);
+
+        let dry = import(&env, Path::new("p.vipc"), true, Some("tools"), true).unwrap();
+        assert!(dry.created && !root.join("lvpm.toml").exists());
+
+        let done = import(&env, Path::new("p.vipc"), true, Some("tools"), false).unwrap();
+        let text = std::fs::read_to_string(&done.manifest).unwrap();
+        assert!(text.starts_with("[project]\nname = \"App\""), "{text}");
+        assert!(
+            text.contains("[dependency-groups.tools]\nalpha = \"2.0\"\ndep_only = \">=1.0\""),
+            "{text}"
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn import_refuses_all_for_a_vipm_toml_and_an_empty_group() {
+        let (scratch, root) = folder("import-refused", "App");
+        let sink = Recorded::default();
+        let env = env_on(&sink, &root);
+        for (file, all, group) in [("vipm.toml", true, None), ("p.vipc", false, Some(" "))] {
+            assert!(matches!(
+                import(&env, Path::new(file), all, group, false).unwrap_err(),
+                InitError::BadSource { .. }
+            ));
+        }
+        assert!(!root.join("lvpm.toml").exists());
         let _ = std::fs::remove_dir_all(&scratch);
     }
 }

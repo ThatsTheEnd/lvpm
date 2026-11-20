@@ -5,7 +5,7 @@ use super::{Renderer, Stream};
 use lvpm_core::errors::InitError;
 use lvpm_core::events::{Event, Retarget, SourceKind};
 use lvpm_core::git::GitOutcome;
-use lvpm_core::ops::init::Initialized;
+use lvpm_core::ops::init::{Imported, Initialized};
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
@@ -176,6 +176,66 @@ pub fn initialized(done: &Initialized) -> String {
         (Some(_), Err(_)) => "next: lvpm venv create\n",
     };
     format!("{venv}{next}")
+}
+
+/// What `lvpm import` prints: the manifest, each package and the table it
+/// went to, and what to do next.
+pub fn imported(done: &Imported) -> String {
+    let (save, update, add) = match done.dry_run {
+        true => ("would save", "would update", "would add"),
+        false => ("saved", "updated", "added"),
+    };
+    let mut out = format!(
+        "manifest: {}{}\n",
+        done.manifest.display(),
+        if done.created { " (new)" } else { "" }
+    );
+    for e in &done.saved {
+        let line = match e.was.as_deref() {
+            Some(was) if was == e.constraint => {
+                format!(
+                    "  {} = \"{}\" already in [{}]",
+                    e.name, e.constraint, e.table
+                )
+            }
+            Some(was) => format!(
+                "  {update} {} [{}]: \"{was}\" -> \"{}\"",
+                e.name, e.table, e.constraint
+            ),
+            None => format!("  {save} {} = \"{}\" [{}]", e.name, e.constraint, e.table),
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    if done.nipm_added > 0 {
+        out.push_str(&format!(
+            "  {add} {} [nipm.dependencies] entr{}\n",
+            done.nipm_added,
+            if done.nipm_added == 1 { "y" } else { "ies" }
+        ));
+    }
+    if done.skipped > 0 {
+        out.push_str(&format!(
+            "  {} package(s) VIPM lists only as another's dependency left out (--all pins them too)\n",
+            done.skipped
+        ));
+    }
+    if done.saved.is_empty() {
+        out.push_str("  the file lists no packages\n");
+    }
+    match done.dry_run {
+        true => {
+            if done.embedded > 0 {
+                out.push_str(&format!(
+                    "  would add {} carried package archive(s) to the cache\n",
+                    done.embedded
+                ));
+            }
+            out.push_str("dry run: nothing written\n");
+        }
+        false => out.push_str("next: lvpm sync\n"),
+    }
+    out
 }
 
 /// What `lvpm init` prints when it fails: what happened, and that nothing was
