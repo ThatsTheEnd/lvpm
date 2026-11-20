@@ -27,7 +27,7 @@
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
 | `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
-| `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
+| `lvpm launch [<lvproj>] [--no-check]`                | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
@@ -646,6 +646,12 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
   `labview.ini` first, for diagnosis: `--ini NIER=True` for a crash minidump,
   `--ini DPrintfLogging=True` for a verbose log. They stay in that ini until
   you remove them; the installation's `LabVIEW.ini` is never touched.
+  First it checks the venv against `lvpm.lock`: a `[dependencies]` package
+  missing or at another version, a recorded file gone, or a `relink = true`
+  package not yet relinked refuses the launch with one line per problem and
+  a pointer to `lvpm sync`. `--no-check` starts anyway. The check does not
+  hash files, so an edited file passes; dev and group packages are not
+  checked.
 
 How it works: the venv directory is an [LVAddons](https://labviewwiki.org/wiki/LVAddons)
 location (its `packages/` folder), one addon per package, each mirroring the

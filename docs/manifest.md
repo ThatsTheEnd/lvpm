@@ -283,7 +283,7 @@ and `lvpm build` writes this name. Other assets are ignored.
 - `github` together with `index`: a GitHub dependency comes only from its repo.
   This holds across tables too: a name with `github` in one table and `index`
   in another is refused, naming both tables.
-- Any key besides `version`, `github`, `index` and `hooks`: `unknown key "foo"; expected version, github, index or hooks`.
+- Any key besides `version`, `github`, `index`, `hooks` and `relink`: `unknown key "foo"; expected version, github, index, hooks or relink`.
 - A table without `version`.
 - A `github` value that is not `owner/repo`, such as `"https://github.com/o/r"`
   (drop the `https://github.com/`).

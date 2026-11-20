@@ -390,6 +390,11 @@ pub fn apply(
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
         // Into the cache first; install_one's own fetch then reads it back.
+        if !plan.entries.is_empty() {
+            env.sink.emit(Event::PhaseStarted {
+                phase: Phase::Download,
+            });
+        }
         for planned in &plan.entries {
             session.fetch(env, &planned.entry)?;
         }
@@ -472,9 +477,7 @@ fn install_one(
         dry_run: opts.dry_run,
     });
 
-    env.sink.emit(Event::PhaseStarted {
-        phase: Phase::Download,
-    });
+    // Fetched by apply before the first package, so a cache read.
     let bytes = session.fetch(env, entry)?;
     let archive_sha256 = sha256_hex(&bytes);
     if let Some(expected) = &planned.expected_sha256 {

@@ -503,6 +503,10 @@ enum Cmd {
         /// verbose log. Repeatable; the keys stay in that ini until removed.
         #[arg(long = "ini", value_name = "KEY=VALUE")]
         ini_keys: Vec<String>,
+        /// Start even when the venv does not hold what lvpm.lock lists
+        /// (a package missing or at another version, files gone, a relink owed).
+        #[arg(long)]
+        no_check: bool,
     },
     /// Resolve lvpm.toml's dependencies and write lvpm.lock: every package, direct
     /// or transitive, with its exact version, SHA-256 and source.
@@ -1116,8 +1120,12 @@ fn run(cli: &Cli) -> Result<Report> {
             .warning(warning)
             .failed(!checked.passed()))
         }
-        Cmd::Launch { lvproj, ini_keys } => {
-            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys)?;
+        Cmd::Launch {
+            lvproj,
+            ini_keys,
+            no_check,
+        } => {
+            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys, !no_check)?;
             Ok(Report::said(render::launch::launched(&launched), "launch"))
         }
         Cmd::Lock {
