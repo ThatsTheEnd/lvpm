@@ -100,6 +100,11 @@ impl Version {
         }
     }
 
+    /// A release, not a prerelease: `1.0.0`, not `1.0.0-rc.1`.
+    pub fn is_release(&self) -> bool {
+        self.pre.is_none()
+    }
+
     fn at(&self, i: usize) -> u64 {
         self.parts.get(i).copied().unwrap_or(0)
     }

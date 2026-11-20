@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const DEFAULT_VENV_DIR: &str = ".lv-venv";
 
 /// The keys `config set` and `config get` accept, as the errors list them.
-const SUPPORTED_KEYS: &str = "cache, hooks.run, sources.local, venv.dir, venv.title";
+const SUPPORTED_KEYS: &str = "cache, hooks.run, log.dir, sources.local, venv.dir, venv.title";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -21,6 +21,8 @@ pub struct Config {
     pub cache: PathBuf,
     /// Names of the packages whose install hooks may run in a global install with no project.
     pub hooks_run: Vec<String>,
+    /// Where lvpm writes its logs: one per venv, `lvpm.log`, `tui.log`.
+    pub log_dir: PathBuf,
     /// Local directories scanned for package files.
     pub local_sources: Vec<PathBuf>,
     /// Project-relative venv directory, unless configured as an absolute path.
@@ -79,6 +81,7 @@ pub fn load() -> Result<Config> {
 struct FileConfig {
     cache: Option<String>,
     hooks: HooksConfig,
+    log: LogConfig,
     sources: SourcesConfig,
     venv: VenvConfig,
 }
@@ -87,6 +90,12 @@ struct FileConfig {
 #[serde(default)]
 struct HooksConfig {
     run: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct LogConfig {
+    dir: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -115,6 +124,10 @@ fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Co
         Some(v) => split_names(&v),
         None => file.hooks.run.clone(),
     };
+    let log_dir = match env_value(&env, "log.dir").or_else(|| file.log.dir.clone()) {
+        Some(v) => std::path::absolute(v)?,
+        None => default_log_dir(),
+    };
     let local_sources = match env_value(&env, "sources.local") {
         Some(v) => std::env::split_paths(&v).collect(),
         None => file.sources.local.iter().map(PathBuf::from).collect(),
@@ -131,6 +144,7 @@ fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Co
     Ok(Config {
         cache,
         hooks_run,
+        log_dir,
         local_sources,
         venv_dir: PathBuf::from(venv_dir),
         venv_title,
@@ -155,6 +169,13 @@ fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Res
     match key {
         "cache" if values.len() == 1 => file.cache = Some(values[0].clone()),
         "hooks.run" => file.hooks.run = values.iter().flat_map(|v| split_names(v)).collect(),
+        "log.dir" if values.len() == 1 => {
+            file.log.dir = Some(
+                paths::resolve(cwd, Path::new(&values[0]))
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
         "sources.local" => {
             file.sources.local = values
                 .iter()
@@ -171,6 +192,7 @@ fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Res
             file.venv.title = Some(pos.as_str().to_string())
         }
         "cache" => bail!("`config set cache` expects one value"),
+        "log.dir" => bail!("`config set log.dir` expects one value"),
         "venv.dir" => bail!("`config set venv.dir` expects one value"),
         "venv.title" => bail!(
             "`config set venv.title` expects one value: {}",
@@ -185,6 +207,7 @@ pub fn get(cfg: &Config, key: &str) -> Result<Vec<String>> {
     match key {
         "cache" => Ok(vec![cfg.cache.to_string_lossy().into_owned()]),
         "hooks.run" => Ok(cfg.hooks_run.clone()),
+        "log.dir" => Ok(vec![cfg.log_dir.to_string_lossy().into_owned()]),
         "sources.local" => Ok(cfg
             .local_sources
             .iter()
@@ -243,6 +266,26 @@ fn split_names(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// `%LOCALAPPDATA%\lvpm\logs`; `$XDG_STATE_HOME/lvpm/logs` elsewhere.
+#[cfg(windows)]
+fn default_log_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lvpm")
+        .join("logs")
+}
+
+#[cfg(not(windows))]
+fn default_log_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("lvpm").join("logs")
+}
+
 /// Per-user, not per-target — the feeds are the same for every LabVIEW.
 #[cfg(windows)]
 fn default_cache() -> PathBuf {
@@ -265,6 +308,24 @@ fn default_cache() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_dir_defaults_beside_the_config_and_reads_the_environment_first() {
+        let none = |_: &str| None;
+        assert_eq!(
+            resolve(&FileConfig::default(), none).unwrap().log_dir,
+            default_log_dir()
+        );
+        let file = FileConfig {
+            log: LogConfig {
+                dir: Some("from-file".into()),
+            },
+            ..FileConfig::default()
+        };
+        assert!(resolve(&file, none).unwrap().log_dir.ends_with("from-file"));
+        let env = |k: &str| (k == "LVPM_CONFIG_LOG_DIR").then(|| "from-env".to_string());
+        assert!(resolve(&file, env).unwrap().log_dir.ends_with("from-env"));
+    }
+
     #[test]
     fn venv_title_defaults_to_end_reads_the_environment_first_and_refuses_others() {
         let file = FileConfig {
@@ -326,6 +387,7 @@ mod tests {
         let file = FileConfig {
             cache: Some("from-file".into()),
             hooks: HooksConfig::default(),
+            log: LogConfig::default(),
             sources: SourcesConfig {
                 local: vec!["packages-a".into()],
             },
@@ -376,6 +438,7 @@ mod tests {
         let file = FileConfig {
             cache: None,
             hooks: HooksConfig::default(),
+            log: LogConfig::default(),
             sources: SourcesConfig {
                 local: vec!["one".into(), "two".into()],
             },
@@ -446,7 +509,7 @@ mod tests {
 
     #[test]
     fn config_get_hooks_run_lists_the_names_and_unknown_keys_list_the_supported_ones() {
-        let keys = "supported keys: cache, hooks.run, sources.local, venv.dir, venv.title";
+        let keys = "supported keys: cache, hooks.run, log.dir, sources.local, venv.dir, venv.title";
         let cfg = resolve(&file_running(&["a", "b"]), |_| None).unwrap();
         assert_eq!(get(&cfg, "hooks.run").unwrap(), ["a", "b"]);
         let why = get(&cfg, "hooks.allow").unwrap_err().to_string();

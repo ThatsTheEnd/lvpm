@@ -255,6 +255,7 @@ mod tests {
 
     fn env_with(cache: &str, venv_dir: &str, targets: Vec<LvTarget>) -> OpEnv<'static> {
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: PathBuf::from(cache),
             hooks_run: Vec::new(),
@@ -358,6 +359,7 @@ mod tests {
         std::fs::write(cwd.join("pkgs").join("alpha-1.0.vip"), bytes).unwrap();
 
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: cwd.join("cache"),
             hooks_run: Vec::new(),
@@ -398,6 +400,7 @@ mod tests {
             local_sources.push(dir);
         }
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: cwd.join("cache"),
             hooks_run: Vec::new(),

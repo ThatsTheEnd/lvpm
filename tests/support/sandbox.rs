@@ -206,6 +206,7 @@ pub fn real_installation_risk(
     }
     let sink = RecordingSink::default();
     let config = Config {
+        log_dir: Default::default(),
         venv_title: Default::default(),
         cache: PathBuf::new(),
         hooks_run: Vec::new(),

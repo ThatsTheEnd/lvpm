@@ -18,7 +18,9 @@ use lvpm_core::ops::sync::{LockFlags, SyncOptions, strictness};
 use lvpm_core::ops::{self, Destination, DestinationFlags, OpEnv};
 use lvpm_core::{config, git, launch, target, venv, viserver};
 
+mod logfile;
 mod render;
+mod update_notice;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::builder::TypedValueParser as _;
@@ -900,6 +902,13 @@ fn main() -> std::process::ExitCode {
             ExitCode::FAILURE
         };
     }
+    // Only for a person reading the console, so never under --json.
+    let notice = match cli.json {
+        true => None,
+        false => config::load()
+            .ok()
+            .and_then(|c| update_notice::start(&c.cache)),
+    };
     let result = run(&cli);
     if let (
         Cmd::Launch {
@@ -920,6 +929,9 @@ fn main() -> std::process::ExitCode {
         (Ok(report), false) => {
             eprint!("{}", report.warning);
             print!("{}", report.text);
+            if let Some(notice) = notice {
+                notice.finish();
+            }
             report.exit_code()
         }
         (Ok(report), true) => {
@@ -941,11 +953,31 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<Report> {
-    let sink: Box<dyn EventSink> = match cli.json {
+    let console: Box<dyn EventSink> = match cli.json {
         true => Box::new(render::json::JsonSink),
         false => Box::new(render::CliSink::stdio()),
     };
-    let mut env = op_env(cli, sink.as_ref())?;
+    let log = logfile::LogSink::new(console);
+    let env = op_env(cli, &log)?;
+    // The venv the command is on, for its log; a broken venv is the command's to report.
+    let on_venv = (!cli.global && cli.prefix.is_none())
+        .then(|| {
+            venv::find(
+                cli.project.as_deref(),
+                &env.cwd,
+                &env.config.venv_dir,
+                &env.targets,
+            )
+        })
+        .and_then(Result::ok)
+        .flatten();
+    log.attach(logfile::path(&env.config.log_dir, on_venv.as_ref()));
+    let result = dispatch(cli, env);
+    log.finish(&result);
+    result
+}
+
+fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
     match &cli.cmd {
         Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
         Cmd::TitleWatch { .. } => unreachable!("main runs title-watch before any sink is made"),

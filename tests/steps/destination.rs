@@ -113,6 +113,7 @@ async fn an_env(world: &mut CliWorld, flags: String, cwd: String, headless: bool
 async fn core_resolves(world: &mut CliWorld) {
     let state = &mut world.destination;
     let config = Config {
+        log_dir: Default::default(),
         venv_title: Default::default(),
         cache: world.sandbox.cache_dir(),
         hooks_run: Vec::new(),

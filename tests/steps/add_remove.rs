@@ -136,6 +136,7 @@ impl CliWorld {
     /// project in the working directory, with no destination flag.
     fn plain_env<'s>(&self, sink: &'s RecordingSink) -> OpEnv<'s> {
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: self.sandbox.cache_dir(),
             hooks_run: Vec::new(),

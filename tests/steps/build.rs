@@ -96,6 +96,7 @@ impl CliWorld {
             true => {
                 let sink = RecordingSink::default();
                 let config = Config {
+                    log_dir: Default::default(),
                     venv_title: Default::default(),
                     cache: self.sandbox.cache_dir(),
                     hooks_run: Vec::new(),

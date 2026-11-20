@@ -119,6 +119,7 @@ mod tests {
     #[test]
     fn a_job_logs_in_to_a_registry_with_what_the_front_end_gave_the_builder() {
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: "cache".into(),
             hooks_run: Vec::new(),

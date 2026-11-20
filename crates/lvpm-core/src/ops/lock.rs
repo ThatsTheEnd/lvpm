@@ -1684,6 +1684,7 @@ caraya = \"*\"
 
         fn env<'a>(&self, sink: &'a dyn EventSink) -> OpEnv<'a> {
             let config = Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: self.root.join("cache"),
                 hooks_run: Vec::new(),
@@ -1860,6 +1861,7 @@ caraya = \"*\"
         let env = OpEnv::new(
             &sink,
             Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: bare.join("cache"),
                 hooks_run: Vec::new(),
@@ -2482,6 +2484,7 @@ caraya = \"*\"
         let env = OpEnv::new(
             &sink,
             Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: bare.join("cache"),
                 hooks_run: Vec::new(),

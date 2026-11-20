@@ -203,6 +203,7 @@ mod tests {
 
     fn config(hooks_run: &[&str]) -> Config {
         Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: PathBuf::from("cache"),
             hooks_run: hooks_run.iter().map(|n| n.to_string()).collect(),

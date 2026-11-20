@@ -1415,6 +1415,7 @@ mod tests {
 
         fn env<'a>(&self, sink: &'a dyn EventSink, folders: Vec<PathBuf>) -> OpEnv<'a> {
             let config = Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: self.root.join("cache"),
                 hooks_run: Vec::new(),

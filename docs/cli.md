@@ -54,7 +54,7 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   vi-run <vi> [--set N=T:V]... [--get N]... [--get-all] [--timeout] [--watch N] [--poll-ms MS] [--done N]
 ```
 
-`config` takes the keys `cache`, `hooks.run`, `sources.local`, `venv.dir` and `venv.title`.
+`config` takes the keys `cache`, `hooks.run`, `log.dir`, `sources.local`, `venv.dir` and `venv.title`.
 `hooks.run` lists the packages whose install hooks may run in an install
 outside a project; its variable is `LVPM_CONFIG_HOOKS_RUN`
 ([usage.md](usage.md#configuration)).

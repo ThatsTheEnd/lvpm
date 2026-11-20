@@ -1625,6 +1625,7 @@ value is kept and turns the file's list off. Precedence, highest first:
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `LVPM_CONFIG_CACHE` | `%LOCALAPPDATA%\lvpm\cache` (Linux: `$XDG_CACHE_HOME/lvpm/cache`, else `~/.cache/lvpm/cache`) | Where the cache DB, feed bodies, and imported package archives live |
+| `LVPM_CONFIG_LOG_DIR` | `%LOCALAPPDATA%\lvpm\logs` (Linux: `$XDG_STATE_HOME/lvpm/logs`, else `~/.local/state/lvpm/logs`) | Where lvpm writes its logs ([Logs](#logs)) |
 | `LVPM_CONFIG_SOURCES_LOCAL` | Empty | Local package directories (`.vip`, `.ogp`, `.lvpkg`); separate paths with `;` on Windows or `:` on Linux |
 | `LVPM_CONFIG_VENV_DIR` | `.lv-venv` | Project-relative venv directory (or an absolute path) |
 | `LVPM_CONFIG_VENV_TITLE` | `end` | Where `lvpm launch` puts the venv's name in LabVIEW's window titles (Windows): `end`, `start` or `off` ([Window titles, icon and taskbar](#window-titles-icon-and-taskbar)) |
@@ -1645,6 +1646,29 @@ $env:LVPM_CONFIG_SOURCES_LOCAL = 'D:\LabVIEW\Packages;E:\MorePackages'
 $env:LVPM_CONFIG_VENV_DIR = '.venv'
 lvpm search caraya
 ```
+
+#### Logs
+
+Every command appends a record of its run to a file in the `log.dir`
+folder: a header with the version, the arguments and the folder it ran in,
+every event as one JSON line (more than the console shows: each file linkfix
+touched, each download), and `---- done` or `---- failed: <error>`. A command
+on a venv writes that venv's own log, named after its project path
+(`C:\Git\lvpm` → `c--git-lvpm-3fa2c1d0.log`); any other command writes
+`lvpm.log`, and `lvpm tui` writes `tui.log`. Lines are written as they
+happen, so a run cut off by Ctrl+C keeps what it logged. A log past 10 MB is
+moved to `<name>.1`. A log that cannot be written is reported once and never
+fails the command.
+
+#### Update notice
+
+When a command succeeds in a terminal, lvpm says so if a newer stable lvpm
+release is out, with the releases page to get it from. It asks GitHub at most
+once a day, in the background, and caches the answer as `update-check.json`
+in the `cache` folder; a slow answer never delays the command by more than a
+moment. It stays silent under `--json`, when output is redirected, and when
+`LVPM_NO_UPDATE_CHECK`, `CI` or `LV_RTE_HEADLESS` is set. It reads the
+releases of upstream lvpm (`labview-package-manager/lvpm`).
 
 `LVPM_CONFIG_HOOKS_RUN` wins over the file. While it is set, the
 `lvpm config set hooks.run ...` line in an install hook warning changes the

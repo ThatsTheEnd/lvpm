@@ -421,6 +421,7 @@ mod tests {
 
     fn env_for<'s>(sink: &'s Recorder, dir: &std::path::Path) -> OpEnv<'s> {
         let config = Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: dir.join("cache"),
             hooks_run: Vec::new(),

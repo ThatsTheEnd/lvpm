@@ -301,6 +301,7 @@ mod tests {
         let mut env = OpEnv::new(
             &NullSink,
             crate::config::Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: cache.clone(),
                 hooks_run: Vec::new(),
@@ -347,6 +348,7 @@ mod tests {
         let mut env = OpEnv::new(
             &NullSink,
             crate::config::Config {
+                log_dir: Default::default(),
                 venv_title: Default::default(),
                 cache: cache.clone(),
                 hooks_run: Vec::new(),
@@ -397,6 +399,7 @@ mod tests {
     fn a_github_file_that_cannot_be_downloaded_fails_in_githubs_words_and_a_feed_file_in_its_own() {
         let cache = std::env::temp_dir().join(format!("lvpm-session-fail-{}", std::process::id()));
         let config = crate::config::Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: cache.clone(),
             hooks_run: Vec::new(),
@@ -446,6 +449,7 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(&local, b"bytes").unwrap();
         let config = crate::config::Config {
+            log_dir: Default::default(),
             venv_title: Default::default(),
             cache: cache.clone(),
             hooks_run: Vec::new(),
