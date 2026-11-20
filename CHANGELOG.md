@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.27.0...v0.28.0) (2026-11-20)
+
+
+### Features
+
+* merge upstream lvpm main and port its features ([#132](https://github.com/ThatsTheEnd/lvpm/issues/132)) ([6abcd63](https://github.com/ThatsTheEnd/lvpm/commit/6abcd63bd08d3c0ae080784d1dcc71a0f46d76fc))
+
 ## [0.27.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.26.0...v0.27.0) (2026-11-12)
 
 
