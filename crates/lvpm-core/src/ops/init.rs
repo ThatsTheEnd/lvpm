@@ -460,16 +460,19 @@ pub fn import(
             let declared = declared(&text, name)?;
             let table = match (&asked, &declared) {
                 (Some(table), _) if default == DependencyTable::Dependencies => table.clone(),
-                (_, Some((table, _))) => table.clone(),
+                (_, Some((table, _, _))) => table.clone(),
                 _ => default.clone(),
             };
-            let was = declared
-                .filter(|(t, _)| *t == table)
-                .map(|(_, constraint)| constraint);
-            text = manifest_edit::set(&text, &table, name, constraint)?;
+            // The manifest's own spelling, so a key differing only in case is
+            // rewritten, not added beside it.
+            let (key, was) = match declared {
+                Some((t, key, was)) if t == table => (key, Some(was)),
+                _ => (name.clone(), None),
+            };
+            text = manifest_edit::set(&text, &table, &key, constraint)?;
             saved.push(ImportedEntry {
                 table: table.key(),
-                name: name.clone(),
+                name: key,
                 constraint: constraint.clone(),
                 was,
             });
@@ -504,37 +507,16 @@ pub fn import(
     })
 }
 
-/// The table of `text` that declares `name`, and its constraint there.
-fn declared(text: &str, name: &str) -> anyhow::Result<Option<(DependencyTable, String)>> {
-    let doc: DocumentMut = text.parse()?;
-    let mut tables = vec![
-        (DependencyTable::Dependencies, doc.get("dependencies")),
-        (
-            DependencyTable::DevDependencies,
-            doc.get("dev-dependencies"),
-        ),
-    ];
-    if let Some(groups) = doc.get("dependency-groups").and_then(Item::as_table_like) {
-        for (group, item) in groups.iter() {
-            tables.push((DependencyTable::Group(group.to_string()), Some(item)));
-        }
-    }
-    for (table, item) in tables {
-        let Some(entries) = item.and_then(Item::as_table_like) else {
-            continue;
-        };
-        if let Some((_, value)) = entries
+/// The table of `text` that declares `name`, the key it is written under
+/// there, and its constraint.
+fn declared(text: &str, name: &str) -> anyhow::Result<Option<(DependencyTable, String, String)>> {
+    let project = project::parse(text)?;
+    Ok(project.tables().find_map(|(table, lines)| {
+        lines
             .iter()
             .find(|(key, _)| project::same_name(key, name))
-        {
-            let constraint = value
-                .as_str()
-                .or_else(|| value.get("version").and_then(Item::as_str))
-                .unwrap_or("*");
-            return Ok(Some((table, constraint.to_string())));
-        }
-    }
-    Ok(None)
+            .map(|(key, constraint)| (table, key.clone(), constraint_text(constraint)))
+    }))
 }
 
 /// `text` with each entry of `source` that its `[nipm.dependencies]` lacks
@@ -2045,6 +2027,33 @@ build = "x"
         );
         assert!(!text.contains("dep_only"), "{text}");
         assert_eq!(done.saved[0].was.as_deref(), Some("1.0"));
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn import_rewrites_a_key_written_in_another_case_instead_of_adding_one() {
+        let (scratch, root) = folder("import-case", "App");
+        let manifest = root.join("lvpm.toml");
+        std::fs::write(
+            &manifest,
+            "[project]
+name = \"App\"
+
+[dependencies]
+Alpha = \"1.0\"
+",
+        )
+        .unwrap();
+        vipc_in(&root, "p.vipc", "23.0", &[("alpha-2.0", true, false)]);
+        let sink = Recorded::default();
+        let env = env_on(&sink, &root);
+
+        let done = import(&env, Path::new("p.vipc"), false, None, false).unwrap();
+
+        let text = std::fs::read_to_string(&manifest).unwrap();
+        assert!(text.contains("Alpha = \"2.0\""), "{text}");
+        assert!(!text.contains("alpha ="), "{text}");
+        assert_eq!(done.saved[0].name, "Alpha");
         let _ = std::fs::remove_dir_all(&scratch);
     }
 

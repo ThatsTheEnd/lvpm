@@ -345,14 +345,26 @@ fn library_names(rsrc: &Rsrc) -> Result<Vec<u8>> {
     Ok(names.join(&b":"[..]))
 }
 
+/// The most a VI's block-diagram heap may inflate to. A package's VI is
+/// untrusted, and zlib reaches about 1000:1.
+const MAX_HEAP_BYTES: u64 = 256 << 20;
+
+/// `z` inflated, or `None` if it does not inflate or grows past
+/// [`MAX_HEAP_BYTES`].
+fn inflate_heap(z: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(z)
+        .take(MAX_HEAP_BYTES + 1)
+        .read_to_end(&mut out)
+        .ok()?;
+    (out.len() as u64 <= MAX_HEAP_BYTES).then_some(out)
+}
+
 /// MD5 of the block-diagram heap's content, which the second BDPW hash covers.
 fn heap_hash(rsrc: &Rsrc) -> Result<Option<[u8; 16]>> {
     let raw = if let Some(s) = rsrc.section(b"BDHc").or_else(|| rsrc.section(b"BDHb")) {
-        let mut out = Vec::new();
-        flate2::read::ZlibDecoder::new(s.data.get(4..).context("truncated heap")?)
-            .read_to_end(&mut out)
-            .context("inflating the block-diagram heap")?;
-        out
+        inflate_heap(s.data.get(4..).context("truncated heap")?)
+            .context("inflating the block-diagram heap")?
     } else if let Some(s) = rsrc.section(b"BDHP") {
         s.data.clone()
     } else {
@@ -1802,17 +1814,11 @@ impl LazyHeap {
     /// The inflated heap; empty if the VI has none or it does not inflate.
     fn get(&self) -> &[u8] {
         self.inflated.get_or_init(|| {
-            let mut out = Vec::new();
-            let ok = self
-                .packed
+            self.packed
                 .as_deref()
                 .and_then(|d| d.get(4..))
-                .is_some_and(|z| {
-                    flate2::read::ZlibDecoder::new(z)
-                        .read_to_end(&mut out)
-                        .is_ok()
-                });
-            if ok { out } else { Vec::new() }
+                .and_then(inflate_heap)
+                .unwrap_or_default()
         })
     }
 }
@@ -2583,6 +2589,21 @@ pub fn summarize(outcomes: &[Outcome]) -> BTreeMap<&'static str, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_heap_inflating_past_the_cap_is_refused() {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let zeros = vec![0u8; 1 << 20];
+        for _ in 0..=(MAX_HEAP_BYTES >> 20) {
+            z.write_all(&zeros).unwrap();
+        }
+        let packed = z.finish().unwrap();
+        assert!(inflate_heap(&packed).is_none());
+        let mut small = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        small.write_all(b"heap").unwrap();
+        assert_eq!(inflate_heap(&small.finish().unwrap()).unwrap(), b"heap");
+    }
 
     #[test]
     fn the_heap_is_inflated_only_when_a_call_library_link_reads_it() {

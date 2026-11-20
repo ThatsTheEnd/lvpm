@@ -219,8 +219,8 @@ fn problems(
         }
         if project.relink_for(&m.name) && !m.relinked {
             found.push(format!(
-                "{}: relink = true but the relink pass has not completed",
-                m.name
+                "{}: relink = true but the relink pass has not completed (run `lvpm relink {}`)",
+                m.name, m.name
             ));
         }
     }
@@ -308,7 +308,7 @@ mod tests {
                 "absent: not installed (lock: 1.0)",
                 "gone: 1 of 2 files missing, e.g. c:/v/b.vi",
                 "old: 1.5 installed, lock: 2.0",
-                "relinkme: relink = true but the relink pass has not completed",
+                "relinkme: relink = true but the relink pass has not completed (run `lvpm relink relinkme`)",
             ],
             "a dev package not installed and a package the lock lacks pass"
         );
@@ -337,6 +337,34 @@ mod tests {
         let why = launch(&env, None, &[], true).unwrap_err().to_string();
         assert!(why.starts_with("launch needs a venv:"), "{why}");
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn a_venv_short_of_its_lock_refuses_the_launch_unless_the_check_is_skipped() {
+        let repo = scratch_dir("launch-check");
+        testing::venv_in(&repo);
+        std::fs::write(
+            repo.join("lvpm.toml"),
+            "[project]\nname = \"app\"\n\n[dependencies]\nalpha = \"1.0\"\n",
+        )
+        .unwrap();
+        let env = testing::env(&repo);
+
+        let why = launch(&env, None, &[], true).unwrap_err().to_string();
+        assert!(why.starts_with("the venv does not match"), "{why}");
+        assert!(why.contains("no lvpm.lock beside the manifest"), "{why}");
+        assert!(
+            why.ends_with("`lvpm launch --no-check` to start anyway"),
+            "{why}"
+        );
+
+        // --no-check gets past the check, to the next refusal.
+        let why = launch(&env, Some(Path::new("missing.lvproj")), &[], false)
+            .unwrap_err()
+            .to_string();
+        assert!(why.starts_with("no such project file:"), "{why}");
+
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

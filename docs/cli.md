@@ -37,10 +37,11 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   install [<pkg>[@ver]] [--manifest FILE] [--dry-run] [--no-deps]
           [--no-linkfix] [--relink] [--no-hooks | --hooks] [--allow-downgrade]
           [--relink-timeout SECS] [--relink-progress NAME] [--keep-open]
-  uninstall <pkg> [--with-deps | --keep-deps] | --all
+  uninstall <pkg> [--with-deps | --keep-deps] [--force] | --all
   relink <pkg> | --all          [--relink-timeout] [--relink-progress] [--keep-open]
   linkfix [--tree DIR] [--dry-run] [--verbose] [--keep-compiled-code]
-     [--fix owner,paths,qualifiers,source-only] [--report FILE]
+     [--fix owner,paths,qualifiers,source-only,clfn-wildcard] [--report FILE]
+     [--bitness 32|64]
   run-hooks <pkg> | --all       [--timeout SECS]
   refresh                       [--timeout SECS]
   start                         [--wait SECS]

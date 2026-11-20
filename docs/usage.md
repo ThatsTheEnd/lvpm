@@ -14,13 +14,13 @@
 | `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
-| `lvpm uninstall <name>` / `--all` / `--with-deps` / `--keep-deps` | Remove exactly the files that were installed and prune empty folders. A named package can take the dependencies nothing else needs with it: it asks, and a script passes `--with-deps` or `--keep-deps` ([Uninstalling](#uninstalling)) |
+| `lvpm uninstall <name>` / `--all` / `--with-deps` / `--keep-deps` / `--force` | Remove exactly the files that were installed and prune empty folders. A named package can take the dependencies nothing else needs with it: it asks, and a script passes `--with-deps` or `--keep-deps`. A package other installed packages require needs `--force` ([Uninstalling](#uninstalling)) |
 | `lvpm list`                                          | What lvpm has installed into the selected target, and which hooks it did not run                                                             |
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
 | `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; in a project's venv an install is `lvpm add`: a pick from the list adds a floor (`>=version`) to `lvpm.toml`, a version picked in the details is pinned exactly; takes no options |
-| `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
+| `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` / `--bitness <32\|64>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
 | `lvpm cache refresh`                                 | Fetch the package indexes again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
@@ -736,7 +736,7 @@ their exact title.
 The same watcher gives the windows the venv's icon, LabVIEW's own with a
 coloured disc in the upper right, and a taskbar button of their own. The
 colour comes from the project folder's name. lvpm writes the icon to
-`.lv-venvenv.ico` at each launch and for `venv shortcut`. Each venv's
+`.lv-venv/venv.ico` at each launch and for `venv shortcut`. Each venv's
 windows get the app id `lvpm.venv.<hash of the project path>`, so the venv's
 LabVIEW has its own taskbar button. *Pin to taskbar* on it pins
 `lvpm --project <repo> launch`, with the venv's icon and name. A LabVIEW on
@@ -776,9 +776,12 @@ skips the pass; `--relink` runs LabVIEW's relink pass instead.
 `lvpm linkfix` runs the same edits on demand, over every package in the venv
 or over a LabVIEW-shaped `--tree <DIR>`. `--dry-run` changes nothing,
 `--verbose` names every changed and skipped file, `--fix owner,paths` picks
-methods (`owner`, `paths`, `qualifiers`, `source-only`; all by default),
-`--keep-compiled-code` leaves compiled code embedded, and `--report <file>`
-writes a JSON report of each file. See [linkfix](linkfix.md) for what each
+methods (`owner`, `paths`, `qualifiers`, `source-only`, `clfn-wildcard`; all
+by default), `--keep-compiled-code` leaves compiled code embedded, and
+`--report <file>` writes a JSON report of each file. `clfn-wildcard` gives a
+Call Library node whose library VI Package Builder pinned to one bitness
+(`lvwebclient_32.dll`) its wildcard back; it needs the target's bitness, which
+a venv knows and a `--tree` takes as `--bitness <32|64>`. See [linkfix](linkfix.md) for what each
 method changes.
 
 ### Uninstalling
@@ -794,8 +797,9 @@ remove unshared dependencies (alpha) too? [y/N]
 `--with-deps` removes them and `--keep-deps` keeps them, without asking.
 Without a terminal to ask, one of the two is required. A dependency that
 stays is named with the reason, and uninstall warns when the package is
-declared in `lvpm.toml` (it does not edit the manifest) or other installed
-packages still require it. A package installed by an older lvpm has no
+declared in `lvpm.toml` (it does not edit the manifest). When other installed
+packages still require it, uninstall refuses and touches nothing; `--force`
+removes it anyway, with a warning. A package installed by an older lvpm has no
 dependency list; removing dependencies is then refused until it is
 reinstalled, and `--keep-deps` still works.
 

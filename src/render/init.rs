@@ -235,7 +235,8 @@ pub fn imported(done: &Imported) -> String {
         }
         false => out.push_str("next: lvpm sync\n"),
     }
-    out
+    // Names and constraints come from a file the user was handed.
+    super::printable(out)
 }
 
 /// What `lvpm init` prints when it fails: what happened, and that nothing was

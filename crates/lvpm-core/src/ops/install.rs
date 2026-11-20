@@ -396,7 +396,16 @@ pub fn apply(
             });
         }
         for planned in &plan.entries {
-            session.fetch(env, &planned.entry)?;
+            // The same version installed is left alone by install_one: no
+            // download, so a no-op install works offline.
+            let entry = &planned.entry;
+            let roots = session.roots_for(&entry.name)?;
+            let same = install::is_installed(&roots, &entry.name)
+                && install::read_manifest(&roots, &entry.name)
+                    .is_ok_and(|old| Version::parse(&old.version) == entry.version);
+            if !same {
+                session.fetch(env, entry)?;
+            }
         }
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
@@ -918,7 +927,7 @@ fn relink_pass(
                 .filter(|(pkg, _)| {
                     opts.relink_marked
                         .iter()
-                        .any(|m| m.eq_ignore_ascii_case(pkg))
+                        .any(|m| crate::project::same_name(m, pkg))
                 })
                 .cloned()
                 .collect();

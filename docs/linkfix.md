@@ -108,8 +108,9 @@ fresh package copies when switching to the LabVIEW preparation method;
 an install that skips an already-installed version does not restore its
 original bytes.
 
-The independent methods are `owner`, `paths`, `qualifiers`, and `source-only`.
-Omitting `--fix` selects all four. `--keep-compiled-code` removes
+The independent methods are `owner`, `paths`, `qualifiers`, `source-only`
+and `clfn-wildcard`. Omitting `--fix` selects all five. `clfn-wildcard` needs
+the target's bitness: a venv knows it, a `--tree` takes `--bitness 32|64`. `--keep-compiled-code` removes
 `source-only` from the selection.
 
 `--dry-run` on an existing tree computes changes without writing them.

@@ -224,7 +224,7 @@ fn with_dependencies(
         // broken: refused before anything is touched, unless --force.
         ensure!(
             force,
-            "{} is required by installed packages: {}
+            "{} is required by installed packages: {}\n\
              hint: uninstall {} first, or pass --force to remove {} anyway",
             plan.root,
             plan.dependents.join(", "),

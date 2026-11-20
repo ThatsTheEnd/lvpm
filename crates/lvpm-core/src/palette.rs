@@ -794,6 +794,35 @@ mod tests {
     use crate::target::LvTarget;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn a_palette_path_that_leaves_the_tree_is_refused() {
+        for bad in [
+            "/abs/x.mnu",
+            "\\abs\\x.mnu",
+            "C:x.mnu",
+            "a/../../x.mnu",
+            "..",
+            "",
+            "./",
+        ] {
+            assert!(safe_palette_path(bad).is_err(), "{bad:?} was accepted");
+        }
+        assert_eq!(
+            safe_palette_path("a\\.\\b//c.mnu").unwrap(),
+            Path::new("a").join("b").join("c.mnu")
+        );
+    }
+
+    #[test]
+    fn a_package_name_must_be_a_plain_folder_name() {
+        for bad in ["", ".", "..", "a/b", "a\\b", "a b", "a:b", "ä"] {
+            assert!(validate_package_name(bad).is_err(), "{bad:?} was accepted");
+        }
+        for good in ["oglib_array", "JKI_State-Machine.2", "R&D"] {
+            validate_package_name(good).unwrap();
+        }
+    }
+
     fn roots(label: &str) -> (PathBuf, Roots) {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

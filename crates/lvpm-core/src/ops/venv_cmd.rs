@@ -178,7 +178,8 @@ pub struct ShortcutWritten {
 }
 
 /// Write a Windows shortcut that runs `lvpm launch` on the venv: to `out`
-/// (a `.lnk` path, or a folder), else the desktop, else the project folder.
+/// (a `.lnk` path, or a folder), else the desktop when `desktop`, else the
+/// project folder.
 pub fn shortcut(
     env: &OpEnv,
     lvproj: Option<&Path>,

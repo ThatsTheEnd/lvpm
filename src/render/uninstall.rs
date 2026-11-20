@@ -30,7 +30,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         } => r.line(
             Stream::Err,
             &format!(
-                "warning: {package} is required by installed packages: {} (--force)",
+                "warning: {package} is required by installed packages: {}; removed anyway (--force)",
                 dependents.join(", ")
             ),
         ),

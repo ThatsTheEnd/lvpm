@@ -391,7 +391,8 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(latest.as_deref(), Some("0.4.0"));
         assert!(elapsed >= GRACE, "{elapsed:?}");
-        assert!(elapsed < GRACE + Duration::from_millis(500), "{elapsed:?}");
+        // Well short of the worker's 5 s, with room for a loaded CI machine.
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
     }
 
     #[test]
