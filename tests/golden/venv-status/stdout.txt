@@ -4,3 +4,4 @@
   VI Server port <PORT>
   packages       0 installed, 0 not yet relinked
   LabVIEW        not running on this venv
+  shadowed       none: LabVIEW has no copy of its own of any of them
