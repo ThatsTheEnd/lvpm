@@ -1292,8 +1292,7 @@ fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
             .map_err(|why| anyhow!(render::lock::error(&why)))?
         }
         Cmd::List => {
-            let installed = ops::query::list(&env)?;
-            let in_venv = env.roots()?.venv().is_some();
+            let (installed, in_venv) = ops::query::list(&env)?;
             Report::new(render::query::list(&installed, in_venv), &installed)
         }
         Cmd::Search { query, all: true } => {

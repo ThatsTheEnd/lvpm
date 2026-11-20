@@ -172,7 +172,7 @@ fn run(builder: &EnvBuilder, job: Job, send: &Sender<Done>) -> Done {
             let destination = builder.destination();
             let listing = query::catalog(&env, None).and_then(|catalog| {
                 let installed = match destination.is_ok() {
-                    true => query::list(&env)?,
+                    true => query::list(&env)?.0,
                     false => Vec::new(),
                 };
                 Ok((catalog, installed))
