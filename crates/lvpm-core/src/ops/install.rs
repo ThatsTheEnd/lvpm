@@ -884,7 +884,7 @@ pub fn finish(
     linkfix::after_install(env, session, applied, opts);
     relink_pass(env, session, applied, opts)?;
     post_install_hooks(env, session, opts);
-    refresh_palettes(env, session, applied);
+    refresh_palettes(env, session, applied)?;
     if let Some(v) = session.venv()
         && !applied.dry_run
     {
@@ -1019,9 +1019,14 @@ fn post_install_hooks(env: &OpEnv, session: &mut InstallSession, opts: &InstallO
 /// Palettes and menus last, after the hooks: a hook is free to write more
 /// palette files of its own. Not for a venv: its LabVIEW is started fresh on
 /// launch and builds them from the overlay then.
-fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) {
-    if session.venv().is_some() {
-        return;
+fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) -> Result<()> {
+    // A venv's LabVIEW rebuilds its palettes at launch; what is owed here is
+    // the one merged menu addon its packages share.
+    if let Some(v) = session.venv() {
+        if !applied.dry_run {
+            crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+        }
+        return Ok(());
     }
     let written = if applied.dry_run { 0 } else { applied.files };
     let skipped = |reason, skipped| Event::PhaseSkipped {
@@ -1049,6 +1054,7 @@ fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) {
         }
         Some(_) => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]

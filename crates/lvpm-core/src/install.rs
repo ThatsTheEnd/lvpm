@@ -23,6 +23,10 @@ pub struct Manifest {
     pub target: String,
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
+    /// In a venv, the package's `menus/` files, by path within that tree,
+    /// once [`crate::palette::reconcile`] moved them out of the addon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette_files: Vec<PaletteFile>,
     /// The packages this version requires directly, as its spec names them;
     /// uninstall follows them. Missing in records written before lvpm kept
     /// it, and then removing dependencies refuses: see
@@ -100,6 +104,12 @@ impl Manifest {
     pub fn clear_skipped_hooks(&mut self) {
         self.skipped_hooks.clear();
     }
+}
+
+/// One of a venv package's menu files, kept outside the mounted addons.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaletteFile {
+    pub relative: String,
 }
 
 /// What an install *would* do. Produced first so `--dry-run` and the real run
@@ -457,6 +467,7 @@ pub(crate) fn unpack_to(
             None => format!("scratch {}", roots.application.display()),
         },
         files: written,
+        palette_files: Vec::new(),
         dependencies: crate::dependency::package_dependency_names(&[], spec.requires.as_deref()),
         skipped_hooks: match roots.venv() {
             Some(_) => declared_hooks(spec),
@@ -782,6 +793,7 @@ mod tests {
             installed_at: 0,
             target: "t".into(),
             files: files.iter().map(|f| f.to_string()).collect(),
+            palette_files: Vec::new(),
             dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,

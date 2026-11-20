@@ -669,6 +669,15 @@ resolves as `<vilib>/...` exactly as a globally installed one would. The VIs
 you write against it link portably, and `C:\Program Files` never changes.
 Needs LabVIEW 2024 Q1 or later.
 
+Palette menus are the exception to one addon per package. LabVIEW merges
+the `menus/` of all addons badly, so after each install or uninstall lvpm
+moves every package's `menus/` files to `palettes/contributions/<pkg>/menus/`
+and publishes one merged addon, `packages/venv-palettes/`. Two packages that
+ship the same menu file with different contents refuse the merge and leave
+the published addon as it was. The package name `venv-palettes` is reserved.
+`lvpm launch` refuses a venv whose merged addon no longer matches its
+packages; `lvpm sync` rebuilds it.
+
 Two things follow from LabVIEW reading an addon's contents at launch:
 
 - After `lvpm install`, a LabVIEW already open on the venv cannot see the new

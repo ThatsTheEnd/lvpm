@@ -31,6 +31,7 @@ use crate::oci;
 use crate::project::{DEV_GROUP, is_dev_group};
 use crate::project::{Project, name_key, same_name};
 use crate::version::Version;
+use anyhow::Context;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -191,6 +192,13 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
         announce_migration(env, &plan);
     }
     if plan.is_empty() {
+        // In line with the lock, but the merged palette addon may still be
+        // owed: the fix `lvpm launch` points at for a stale one.
+        if let crate::ops::Destination::Venv(v) = &dest
+            && !opts.install.dry_run
+        {
+            crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+        }
         env.sink.emit(Event::SyncNothingToDo);
         return Ok(());
     }
@@ -1030,6 +1038,7 @@ mod tests {
             installed_at: 0,
             target: String::new(),
             files: Vec::new(),
+            palette_files: Vec::new(),
             dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,

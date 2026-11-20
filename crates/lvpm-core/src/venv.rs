@@ -109,6 +109,10 @@ impl Venv {
                     .all(|c| c.is_ascii_alphanumeric() || "._-&".contains(c)),
             "package name {pkg:?} cannot be an addon folder name"
         );
+        ensure!(
+            !pkg.eq_ignore_ascii_case(crate::palette::ADDON_NAME),
+            "package name {pkg:?} is reserved for lvpm's merged palette addon"
+        );
         Ok(Roots::project(&self.dir, &self.target, pkg))
     }
 

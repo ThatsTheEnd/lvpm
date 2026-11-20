@@ -95,7 +95,10 @@ fn check_against_lock(env: &OpEnv, venv: &Venv) -> Result<()> {
         false => None,
     };
     let installed = install::list_installed(&Destination::Venv(venv.clone()).store())?;
-    let found = problems(&project, lock.as_ref(), &installed, |p| p.exists());
+    let mut found = problems(&project, lock.as_ref(), &installed, |p| p.exists());
+    if let Err(why) = crate::palette::verify(&venv.store()) {
+        found.push(format!("palettes: {why:#}"));
+    }
     if found.is_empty() {
         return Ok(());
     }
@@ -184,6 +187,7 @@ mod tests {
             installed_at: 0,
             target: String::new(),
             files: files.iter().map(|f| f.to_string()).collect(),
+            palette_files: Vec::new(),
             dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked,

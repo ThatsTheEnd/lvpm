@@ -26,6 +26,7 @@ pub mod linkfix;
 pub mod lvlib;
 pub mod lvpkg;
 pub mod oci;
+pub mod palette;
 mod paths;
 pub mod process;
 pub mod project;
