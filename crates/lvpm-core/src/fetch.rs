@@ -15,6 +15,7 @@ use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::header::{ACCEPT, HeaderMap};
 use std::io::Read;
+use std::time::Duration;
 
 /// The most an index entry's file may be, in bytes: a community index is not
 /// trusted to bound its own entries.
@@ -131,11 +132,18 @@ pub fn package<'a>(
         auth(),
         cancel,
         MAX_INDEX_DOWNLOAD_BYTES,
+        RETRY_DELAYS,
     )
 }
 
+/// Pauses before the second and third attempt. Package servers (JKI's S3
+/// redirect in particular) now and then close a connection mid-transfer; one
+/// such hiccup should not abort a 47-package install.
+const RETRY_DELAYS: &[Duration] = &[Duration::from_secs(2), Duration::from_secs(5)];
+
 /// [`package`] past the cache: the download, with `index_limit` the most an
-/// index entry's file may be.
+/// index entry's file may be, tried again after each of `delays` while it
+/// fails in a way that may pass ([`transient`]).
 fn download(
     cache: &Cache,
     client: &Client,
@@ -143,15 +151,50 @@ fn download(
     auth: Option<&str>,
     cancel: &CancelToken,
     index_limit: u64,
+    delays: &[Duration],
 ) -> Result<Vec<u8>> {
     // An index's url is its own to write: name the package, not the url.
     let what = match entry.index_pin {
         Some(_) => format!("{} {}", entry.name, entry.version),
         None => entry.url.clone(),
     };
+    let mut attempt = 0;
+    let bytes = loop {
+        let tries = match attempt {
+            0 => String::new(),
+            n => format!(" after {} attempts", n + 1),
+        };
+        match download_once(client, entry, auth, cancel, index_limit, &what, &tries) {
+            Ok(bytes) => break bytes,
+            Err(why) if attempt < delays.len() && transient(&why) => {
+                // shortcut: the retry is silent (fetch has no event sink); the final error counts the attempts.
+                std::thread::sleep(delays[attempt]);
+                ensure_running(cancel)?;
+                attempt += 1;
+            }
+            Err(why) => return Err(why),
+        }
+    };
+    let md5 = verify_md5(entry, &bytes)?;
+    verify_sha256(entry, &bytes)?;
+    let sha256 = cache.store(&bytes)?;
+    cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
+    Ok(bytes)
+}
+
+/// One GET of `entry`'s file; `tries` ends the error's words once it was retried.
+fn download_once(
+    client: &Client,
+    entry: &Entry,
+    auth: Option<&str>,
+    cancel: &CancelToken,
+    index_limit: u64,
+    what: &str,
+    tries: &str,
+) -> Result<Vec<u8>> {
     let response = request(client, entry, auth)
         .send()
-        .with_context(|| format!("downloading {what}"))?;
+        .with_context(|| format!("downloading {what}{tries}"))?;
     if index::github_repo(entry).is_some() && !response.status().is_success() {
         return Err(Rejected {
             status: response.status(),
@@ -159,16 +202,40 @@ fn download(
         }
         .into());
     }
-    let response = response.error_for_status()?;
-    let bytes = match entry.index_pin {
-        Some(_) => read_within(response, cancel, index_limit, entry)?,
-        None => read_body(response, cancel)?,
-    };
-    let md5 = verify_md5(entry, &bytes)?;
-    verify_sha256(entry, &bytes)?;
-    let sha256 = cache.store(&bytes)?;
-    cache.record_download(&LocalEntry::from(entry), &entry.url, &sha256, &md5)?;
-    Ok(bytes)
+    let read = response
+        .error_for_status()
+        .map_err(anyhow::Error::from)
+        .and_then(|response| match entry.index_pin {
+            Some(_) => read_within(response, cancel, index_limit, entry),
+            None => read_body(response, cancel),
+        });
+    match tries.is_empty() {
+        true => read,
+        false => read.with_context(|| format!("downloading {what}{tries}")),
+    }
+}
+
+/// A failure the next attempt may not have: no connection, a timeout, a body
+/// cut short, or a 408/429/5xx answer. Any other status is the server's final
+/// word, and a cancel or a size refusal is lvpm's own.
+fn transient(why: &anyhow::Error) -> bool {
+    let passing =
+        |status: StatusCode| status.is_server_error() || matches!(status.as_u16(), 408 | 429);
+    if why.downcast_ref::<Cancelled>().is_some() {
+        false
+    } else if let Some(rejected) = why.downcast_ref::<Rejected>() {
+        // GitHub's 429 is a rate limit that outlasts any retry here.
+        rejected.status.is_server_error()
+    } else if let Some(e) = why.downcast_ref::<reqwest::Error>() {
+        match e.status() {
+            Some(status) => passing(status),
+            None => {
+                e.is_connect() || e.is_timeout() || e.is_request() || e.is_body() || e.is_decode()
+            }
+        }
+    } else {
+        why.downcast_ref::<std::io::Error>().is_some()
+    }
 }
 
 /// The archive of a package an OCI source lists, `entry.url` being the OCI
@@ -387,6 +454,75 @@ mod tests {
         (url, thread)
     }
 
+    /// Serve one connection per response; `None` promises a body and hangs up
+    /// half-way, the way the JKI server did.
+    fn scripted_server(
+        responses: Vec<Option<&'static str>>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/package.vip", listener.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let reply =
+                    response.unwrap_or("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial");
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        (url, thread)
+    }
+
+    fn download_from(cache: &Cache, url: &str, delays: &[Duration]) -> Result<Vec<u8>> {
+        let entry = entry(url.into(), None);
+        super::download(
+            cache,
+            &Client::new(),
+            &entry,
+            None,
+            &CancelToken::new(),
+            4,
+            delays,
+        )
+    }
+
+    #[test]
+    fn a_dropped_connection_and_a_busy_server_are_retried() {
+        let (root, cache) = test_cache("retry");
+        let ok = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nbytes";
+        let busy =
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (url, thread) = scripted_server(vec![None, Some(busy), Some(ok)]);
+        let got = download_from(&cache, &url, &[Duration::ZERO, Duration::ZERO]).unwrap();
+        assert_eq!(got, b"bytes");
+        thread.join().unwrap();
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn retries_give_up_counting_the_attempts_and_a_client_error_is_final() {
+        let (root, cache) = test_cache("retry-final");
+        let (url, thread) = scripted_server(vec![None, None]);
+        let err = download_from(&cache, &url, &[Duration::ZERO]).unwrap_err();
+        assert!(format!("{err:#}").contains("after 2 attempts"), "{err:#}");
+        thread.join().unwrap();
+
+        let missing = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (url, thread) = scripted_server(vec![Some(missing)]);
+        let err = download_from(&cache, &url, &[Duration::ZERO, Duration::ZERO]).unwrap_err();
+        assert!(format!("{err:#}").contains("404"), "{err:#}");
+        assert!(!format!("{err:#}").contains("attempts"), "{err:#}");
+        thread.join().unwrap();
+        drop(cache);
+        std::fs::remove_dir_all(root).ok();
+    }
+
     #[test]
     fn a_download_is_cached_and_reused_with_the_server_offline() {
         let (root, cache) = test_cache("reuse");
@@ -545,8 +681,15 @@ mod tests {
         let download = |bytes: &'static [u8], limit| {
             let (url, thread) = server(bytes);
             let wanted = pinned(url, bytes);
-            let fetched =
-                super::download(&cache, &client, &wanted, None, &CancelToken::new(), limit);
+            let fetched = super::download(
+                &cache,
+                &client,
+                &wanted,
+                None,
+                &CancelToken::new(),
+                limit,
+                &[],
+            );
             thread.join().unwrap();
             fetched
         };
@@ -573,6 +716,7 @@ mod tests {
             None,
             &CancelToken::new(),
             4,
+            &[],
         );
         thread.join().unwrap();
         assert_eq!(fetched.unwrap(), b"12345");
@@ -921,9 +1065,17 @@ mod tests {
         let (root, cache) = test_cache("index-download-words");
         let url = "http://127.0.0.1:1/someone/Serializer/releases/download/1.0.0/p.lvpkg";
         let fetch = |entry: &Entry| {
-            super::download(&cache, &Client::new(), entry, None, &CancelToken::new(), 4)
-                .unwrap_err()
-                .to_string()
+            super::download(
+                &cache,
+                &Client::new(),
+                entry,
+                None,
+                &CancelToken::new(),
+                4,
+                &[],
+            )
+            .unwrap_err()
+            .to_string()
         };
         assert_eq!(fetch(&listed_at(url)), "downloading test_package 1.0.0");
         assert_eq!(

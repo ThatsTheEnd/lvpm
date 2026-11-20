@@ -360,9 +360,9 @@ pub fn resolve_greedy(
 /// A package already installed is judged by version: the same one is left
 /// alone; an older one is upgraded, its recorded footprint removed first so
 /// files the new version no longer ships do not linger; a newer one is never
-/// silently downgraded. The archive of each is fetched just before it is
-/// unpacked, and refused when the plan says what its SHA-256 must be and it is
-/// not.
+/// silently downgraded. Every archive is fetched before the first file is
+/// written, so a download failure leaves the target unchanged; each is refused
+/// when the plan says what its SHA-256 must be and it is not.
 pub fn apply(
     env: &OpEnv,
     session: &mut InstallSession,
@@ -384,6 +384,10 @@ pub fn apply(
     let mut skipped: Vec<HookSkip> = Vec::new();
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
+        // Into the cache first; install_one's own fetch then reads it back.
+        for planned in &plan.entries {
+            session.fetch(env, &planned.entry)?;
+        }
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
             if let Some(done) = install_one(env, session, planned, opts, &mut skipped)? {

@@ -49,6 +49,9 @@ impl Downloads {
         Ok(Downloads {
             client: Client::builder()
                 .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(std::time::Duration::from_secs(30))
+                // One package download; it is retried twice on a transient failure.
+                .timeout(std::time::Duration::from_secs(120))
                 .build()?,
             cache: Cache::open(cache)?,
             cancel: env.cancel.clone(),
@@ -409,8 +412,8 @@ mod tests {
                 "GitHub refused access (401 Unauthorized)",
             ),
             (
-                "502 Bad Gateway",
-                "cannot read the releases; check your network and try again: HTTP 502",
+                "400 Bad Request",
+                "cannot read the releases; check your network and try again: HTTP 400",
             ),
         ];
         for (status, said) in table {
