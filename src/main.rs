@@ -564,6 +564,11 @@ enum Cmd {
         /// why the file was skipped) as JSON.
         #[arg(long, value_name = "FILE")]
         report: Option<PathBuf>,
+        /// The bitness of the LabVIEW a `--tree` is for (32 or 64), which the
+        /// `clfn-wildcard` method resolves Call Library wildcards for. A venv
+        /// knows its own.
+        #[arg(long, value_name = "32|64")]
+        bitness: Option<u8>,
     },
     /// Show what lvpm has installed into the selected target.
     List,
@@ -942,6 +947,7 @@ fn run(cli: &Cli) -> Result<Report> {
             keep_compiled_code,
             fix,
             report,
+            bitness,
         } => {
             use lvpm_core::linkfix::Method;
             let mut methods: Vec<Method> = match fix.is_empty() {
@@ -957,6 +963,7 @@ fn run(cli: &Cli) -> Result<Report> {
                 verbose: *verbose,
                 methods,
                 report: report.clone(),
+                bitness: *bitness,
             };
             ops::linkfix::linkfix(&env, &opts).map(|()| Report::done("linkfix"))
         }

@@ -9,6 +9,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             roots,
             methods,
             dry_run,
+            bitness,
         } => {
             let names: Vec<&str> = methods.iter().map(|m| m.name()).collect();
             r.line(
@@ -19,6 +20,12 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                     names.join(", ")
                 ),
             );
+            if bitness.is_none() && methods.contains(&lvpm_core::linkfix::Method::ClfnWildcard) {
+                r.line(
+                    Stream::Out,
+                    "  clfn-wildcard: skipped, the tree's LabVIEW bitness is unknown (pass --bitness 32|64)",
+                );
+            }
         }
         Event::LinkfixPreparing => r.line(
             Stream::Out,

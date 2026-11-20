@@ -275,6 +275,8 @@ pub enum Event {
         roots: usize,
         methods: Vec<crate::linkfix::Method>,
         dry_run: bool,
+        /// The LabVIEW bitness `clfn-wildcard` resolves for; `None` skips it.
+        bitness: Option<u8>,
     },
     /// An install is preparing the LabVIEW files it wrote with linkfix.
     LinkfixPreparing,
