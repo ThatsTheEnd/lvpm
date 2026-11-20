@@ -1,10 +1,18 @@
-.githooks/* text eol=lf
+# LF everywhere, in the repository and in every checkout, whatever the
+# machine's core.autocrlf (Git for Windows turns it on). Shell scripts break
+# on a CR at the end of a line on Linux, even from a Windows checkout (WSL, a
+# container mount), and the CI checks compare generated files byte for byte.
+* text=auto eol=lf
+
+# LabVIEW's files are binary: no line-ending conversion, no text diffs.
 *.vi binary
 *.vit binary
 *.ctl binary
 *.ctt binary
 *.llb binary
 *.lvlib binary
+*.vip binary
+*.ogp binary
 
 # NI template copied byte-for-byte: no line-ending conversion, or the VIs and project change
 tests/fixtures/pilot-app/app/** binary
