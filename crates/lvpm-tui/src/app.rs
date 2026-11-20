@@ -648,6 +648,8 @@ mod tests {
     fn idle() -> App {
         let builder = EnvBuilder::new(
             lvpm_core::config::Config {
+                log_dir: Default::default(),
+                venv_title: Default::default(),
                 cache: "cache".into(),
                 hooks_run: Vec::new(),
                 local_sources: Vec::new(),

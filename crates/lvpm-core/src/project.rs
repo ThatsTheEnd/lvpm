@@ -46,7 +46,7 @@ use crate::manifest_edit::DependencyTable;
 use crate::oci::{self, FeedUrl, UrlError};
 use crate::verify::Policy;
 use crate::version::Version;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -72,13 +72,22 @@ pub enum Constraint {
 impl Constraint {
     pub fn parse(s: &str) -> Result<Constraint> {
         let s = s.trim();
+        // Version::parse takes anything, so "latest" or "v1.0" would become an
+        // exact pin that only fails later as "not found".
+        let version = |v: &str| {
+            ensure!(
+                crate::version::is_version(v),
+                "{v:?} is not a version — use an exact version such as \"1.2.3.4\", \">=x.y\" or \"*\""
+            );
+            Ok(Version::parse(v))
+        };
         Ok(match s {
             "" | "*" => Constraint::Any,
-            _ if s.starts_with(">=") => Constraint::AtLeast(Version::parse(s[2..].trim())),
+            _ if s.starts_with(">=") => Constraint::AtLeast(version(s[2..].trim())?),
             _ if s.starts_with(['<', '>', '=', '~', '^']) => bail!(
                 "unsupported version constraint {s:?} — use an exact version, \">=x.y\" or \"*\""
             ),
-            _ => Constraint::Exact(Version::parse(s)),
+            _ => Constraint::Exact(version(s)?),
         })
     }
 
@@ -212,6 +221,10 @@ pub struct Project {
     /// The name, as written, of every dependency whose line says
     /// `hooks = "run"`, in any table.
     pub hooks_allowed: BTreeSet<String>,
+    /// The name, as written, of every dependency whose line says
+    /// `relink = true`, in any table: an install loads and saves it in
+    /// LabVIEW after linkfix.
+    pub relink: BTreeSet<String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
     /// `[distribution]`, as written: `lvpm build` reads it through
@@ -240,6 +253,7 @@ impl Default for Project {
             github: BTreeMap::new(),
             source_pins: BTreeMap::new(),
             hooks_allowed: BTreeSet::new(),
+            relink: BTreeSet::new(),
             nipm: Vec::new(),
             distribution: None,
             application: None,
@@ -377,6 +391,12 @@ impl Project {
         self.hooks_allowed.iter().any(|n| same_name(n, name))
     }
 
+    /// Whether a dependency line says `relink = true` for `name`, in any
+    /// table, whatever the case either is written in.
+    pub fn relink_for(&self, name: &str) -> bool {
+        self.relink.iter().any(|n| same_name(n, name))
+    }
+
     /// Every dependency table, with its lines: `[dependencies]`,
     /// `[dev-dependencies]`, then each group in file order. The one list of
     /// tables: whatever treats the tables alike goes through it.
@@ -507,6 +527,7 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
         .map(|(name, (source, _))| (name, source))
         .collect();
     p.hooks_allowed = stated.hooks;
+    p.relink = stated.relink;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
     p.application = f.application.map(parse_application).transpose()?;
@@ -656,6 +677,8 @@ struct Stated {
     index: BTreeMap<String, (String, String)>,
     /// Names whose line says `hooks = "run"`, as written.
     hooks: BTreeSet<String>,
+    /// Names whose line says `relink = true`, as written.
+    relink: BTreeSet<String>,
 }
 
 /// What `name` was stated as, whatever the case it was written in.
@@ -726,6 +749,9 @@ fn parse_dependencies(
             if keys.hooks {
                 stated.hooks.insert(name.clone());
             }
+            if keys.relink {
+                stated.relink.insert(name.clone());
+            }
             Ok((name, constraint))
         })
         .collect()
@@ -773,10 +799,12 @@ struct LineKeys {
     index: Option<String>,
     /// `hooks = "run"`.
     hooks: bool,
+    /// `relink = true`.
+    relink: bool,
 }
 
 /// One dependency line: a version string, or a table with `version` and,
-/// optionally, `github`, `index` or `hooks`.
+/// optionally, `github`, `index`, `hooks` or `relink`.
 fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, LineKeys)> {
     let (version, keys) = match value {
         toml::Value::String(version) => (version, LineKeys::default()),
@@ -791,12 +819,12 @@ fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint
 }
 
 /// The keys a table-form dependency line may have.
-const LINE_KEYS: [&str; 4] = ["version", "github", "index", "hooks"];
+const LINE_KEYS: [&str; 5] = ["version", "github", "index", "hooks", "relink"];
 
 /// The one value `hooks` may have.
 const HOOKS_RUN: &str = "run";
 
-/// The `version`, `github`, `index` and `hooks` of a table-form dependency
+/// The `version`, `github`, `index`, `hooks` and `relink` of a table-form dependency
 /// line. Any key not known yet is refused, never ignored.
 fn dependency_table(
     table: &str,
@@ -807,6 +835,17 @@ fn dependency_table(
     if fields.contains_key("index") && fields.contains_key("github") {
         bail!(
             "{at}: github and index cannot be used together; a github dependency comes only from its repo"
+        );
+    }
+    // Upstream lvpm spells a group `[dependencies.<group>]`; here that is a
+    // dependency line with none of a line's keys.
+    if table == "dependencies"
+        && !fields.is_empty()
+        && !fields.keys().any(|k| LINE_KEYS.contains(&k.as_str()))
+    {
+        bail!(
+            "{at}: a table under [dependencies] is one dependency line; \
+             a group is written [dependency-groups.{name}]"
         );
     }
     if let Some(key) = fields.keys().find(|k| !LINE_KEYS.contains(&k.as_str())) {
@@ -845,12 +884,21 @@ fn dependency_table(
         .map(|value| hooks_run(&at, value))
         .transpose()?
         .is_some();
+    let relink = match fields.remove("relink") {
+        None => false,
+        Some(toml::Value::Boolean(on)) => on,
+        Some(other) => bail!(
+            "{at}: relink must be true or false, got {}",
+            other.type_str()
+        ),
+    };
     Ok((
         version,
         LineKeys {
             github,
             index,
             hooks,
+            relink,
         },
     ))
 }
@@ -1406,7 +1454,7 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
             ),
             (
                 "pkg = { github = \"o/r\", version = \"*\", foo = \"x\" }",
-                "[dependencies] pkg: unknown key \"foo\"; expected version, github, index or hooks",
+                "[dependencies] pkg: unknown key \"foo\"; expected version, github, index, hooks or relink",
             ),
             ("pkg = { github = \"o/r\" }", a_table_needs_version),
             ("pkg = {}", a_table_needs_version),
@@ -1421,6 +1469,48 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         ] {
             assert_eq!(refusal("dependencies", line), said, "{line}");
         }
+    }
+
+    #[test]
+    fn a_dependency_line_may_ask_for_relink_in_any_table() {
+        let p = parse(
+            "[dependencies]\nsklein_lib_webview2 = { version = \"2.1.1.2\", relink = true }\n\
+             plain = { version = \"1.0\", relink = false }\n\n\
+             [dependency-groups.test]\nJKI_Caraya = { version = \"*\", relink = true }\n",
+        )
+        .unwrap();
+        assert!(p.relink_for("SKLEIN_lib_webview2"));
+        assert!(p.relink_for("jki_caraya"), "a group's line counts too");
+        assert!(!p.relink_for("plain"));
+        let why = parse("[dependencies]\nx = { version = \"1\", relink = \"yes\" }\n").unwrap_err();
+        assert!(
+            format!("{why:#}").contains("relink must be true or false, got string"),
+            "{why:#}"
+        );
+    }
+
+    #[test]
+    fn a_constraint_that_is_not_a_version_is_refused() {
+        for bad in ["latest", "v1.0", ">=latest", "1,0"] {
+            assert!(Constraint::parse(bad).is_err(), "{bad}");
+        }
+        for good in ["", "*", "1.0", ">=6.0.1", "0.1.0alpha1", "1.0.1-1"] {
+            assert!(Constraint::parse(good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn an_upstream_style_group_table_names_the_group_spelling() {
+        let e = format!(
+            "{:#}",
+            parse(
+                "[dependencies.test]
+jki_lib_caraya = \"*\"
+"
+            )
+            .unwrap_err()
+        );
+        assert!(e.contains("[dependency-groups.test]"), "{e}");
     }
 
     #[test]

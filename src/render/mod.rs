@@ -146,7 +146,9 @@ impl Renderer {
             | Event::UninstallHooksNotRun { .. } => uninstall::render(self, event),
             Event::VenvManifestWritten { .. }
             | Event::VenvRemoved { .. }
-            | Event::VenvPortMoved { .. } => venv::render(self, event),
+            | Event::VenvPortMoved { .. }
+            | Event::VenvShadowed { .. }
+            | Event::VenvWindowsWarning { .. } => venv::render(self, event),
             Event::LockHashing { .. }
             | Event::GitHubListed { .. }
             | Event::RequirementUnresolved { .. }

@@ -7,27 +7,28 @@
 | `lvpm init`                                          | Start a project here: write an `lvpm.toml` and a `.gitignore`, make a git repository and a venv ([Starting a project](#starting-a-project)); an existing `lvpm.toml` is never replaced |
 | `lvpm init --from <file.vipc>`                       | The same, with the packages VIPM chose in a `.vipc` as dependencies ([From a .vipc](#from-a-vipc))                                           |
 | `lvpm init --from vipm.toml`                         | The same, with the project and packages of a VIPM 2026 `vipm.toml` ([From a vipm.toml](#from-a-vipmtoml))                                    |
+| `lvpm import <file>`                                 | Write the packages of a `.vipc` or `vipm.toml` into an existing (or new) `lvpm.toml`; installs nothing ([Importing into a project](#importing-into-a-project)) |
 | `lvpm install <name>[@<version>]`                    | Outside a project, or with `--global`, `--prefix` or `--labview-version`: resolve the package and its dependencies, download, verify MD5, unpack, run linkfix, run the hooks of packages you allowed ([Install hooks](#install-hooks)). In a project it is `lvpm add` |
 | `lvpm install`                                       | Inside a project: the same as `lvpm sync`                                                                                                    |
 | `lvpm sync`                                          | Make the destination hold exactly what `lvpm.lock` lists, one plan with one linkfix pass ([The lock file](#the-lock-file))                    |
 | `lvpm add <name>[@<constraint>]` / `--dev` / `--group <name>` / `--index <NAME>` | Add a dependency to `lvpm.toml`, lock and sync                                                                                      |
 | `lvpm remove <name>` / `--dev` / `--group <name>`    | Remove a dependency from `lvpm.toml`, lock and sync                                                                                          |
 | `lvpm lock` / `--check` / `--upgrade`                | Write `lvpm.lock`, check it, or move packages to newer versions                                                                              |
-| `lvpm uninstall <name>` / `--all` / `--with-deps` / `--keep-deps` | Remove exactly the files that were installed and prune empty folders. A named package can take the dependencies nothing else needs with it: it asks, and a script passes `--with-deps` or `--keep-deps` ([Uninstalling](#uninstalling)) |
+| `lvpm uninstall <name>` / `--all` / `--with-deps` / `--keep-deps` / `--force` | Remove exactly the files that were installed and prune empty folders. A named package can take the dependencies nothing else needs with it: it asks, and a script passes `--with-deps` or `--keep-deps`. A package other installed packages require needs `--force` ([Uninstalling](#uninstalling)) |
 | `lvpm list`                                          | What lvpm has installed into the selected target, and which hooks it did not run                                                             |
 | `lvpm search <query>` / `--all [query]`              | Search the package indexes; `--all` lists every version of every package and its source                                                      |
 | `lvpm info <package>[@<version>]`                    | Show a package's description, requirements, files and versions, from its archive (downloaded, then cached)                                   |
 | `lvpm targets`                                       | Detected LabVIEW installations                                                                                                               |
 | `lvpm tui`                                           | Browse the catalog and install packages in a terminal UI; in a project's venv an install is `lvpm add`: a pick from the list adds a floor (`>=version`) to `lvpm.toml`, a version picked in the details is pinned exactly; takes no options |
-| `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
+| `lvpm linkfix` / `--tree <DIR>` / `--dry-run` / `--verbose` / `--fix <methods>` / `--keep-compiled-code` / `--report <file>` / `--bitness <32\|64>` | Repair the links and separate the compiled code of every LabVIEW file in the venv, or under `--tree`, without LabVIEW ([Linkfix](#linkfix)) |
 | `lvpm relink <name>` / `--all`                       | Rerun the relink pass from the install manifests, without reinstalling                                                                       |
 | `lvpm run-hooks <name>` / `--all`                    | Run a package's PostInstall hook now, for one that failed or was skipped during install ([Install hooks](#install-hooks))                    |
 | `lvpm cache refresh`                                 | Fetch the package indexes again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
 | `lvpm cache add <path>`                              | Import a `.vip`, `.ogp` or `.lvpkg`, or every one in a folder, into the cache ([Package sources](#package-sources)) |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
-| `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
-| `lvpm launch [<lvproj>]`                             | Start a LabVIEW on the project's venv                                                                                                        |
+| `lvpm venv create` / `status` / `remove` / `shortcut` | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
+| `lvpm launch [<lvproj>] [--no-check]`                | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
@@ -193,6 +194,31 @@ initialized a git repository
   `venv create --manifest` ([the table](https://github.com/ThatsTheEnd/lvpm/blob/main/docs/manifest.md#compatibility-with-vipmtoml)).
   A `vipm.toml` that cannot be converted (a floor such as `">=1.0"` where VIPM
   takes only exact versions, or text that is not TOML) fails and writes nothing.
+
+### Importing into a project
+
+`lvpm import <file>` reads a `.vipc` or `vipm.toml` the way `init --from` does
+and writes its packages into the project's `lvpm.toml`, which it makes when
+there is none. Everything else in the manifest stays as it was, and nothing is
+installed: `lvpm sync` does that.
+
+```console
+$ lvpm import project.vipc
+manifest: C:\Git\daq-tool\lvpm.toml
+  updated alpha [dependencies]: "1.0" -> "2.0"
+  saved beta = ">=0.2" [dependency-groups.test]
+  1 package(s) VIPM lists only as another's dependency left out (--all pins them too)
+next: lvpm sync
+```
+
+- A package goes to the table that already declares it, else `[dependencies]`
+  (a `vipm.toml`'s dev-dependencies to `[dev-dependencies]`). `--group <name>`
+  puts the main packages in `[dependency-groups.<name>]` instead.
+- `--all` also takes the packages a `.vipc` lists only as another's dependency.
+  It is refused for a `vipm.toml`.
+- `[nipm.dependencies]` entries the manifest lacks are added; one it has stays.
+- The archives a `.vipc` carries go into the cache, as for `init --from`.
+- `--dry-run` says what would change and writes nothing.
 
 ## The project manifest
 
@@ -646,6 +672,25 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
   `labview.ini` first, for diagnosis: `--ini NIER=True` for a crash minidump,
   `--ini DPrintfLogging=True` for a verbose log. They stay in that ini until
   you remove them; the installation's `LabVIEW.ini` is never touched.
+  First it checks the venv against `lvpm.lock`: a `[dependencies]` package
+  missing or at another version, a recorded file gone, or a `relink = true`
+  package not yet relinked refuses the launch with one line per problem and
+  a pointer to `lvpm sync`. `--no-check` starts anyway. The check does not
+  hash files, so an edited file passes; dev and group packages are not
+  checked.
+- `lvpm venv shortcut [<lvproj>]` writes a Windows shortcut,
+  `<project> (LabVIEW <year> <bits>-bit).lnk`, that runs
+  `lvpm --project <repo> launch [<lvproj>]` with the venv's icon. It goes in
+  the project folder; `--desktop` puts it on the desktop, and `--out PATH`
+  takes a `.lnk` path or a folder. It runs `lvpm`, not `LabVIEW.exe`: a
+  shortcut cannot set the venv's temp directory and would skip the check
+  above. When a launch from it fails, its console stays open until you press
+  Enter. It records the full path of the `lvpm.exe` that wrote it, so write
+  it again if you move lvpm.
+- When the LabVIEW installation has its own copy of a venv package (from
+  VIPM, `lvpm install --global` or by hand), LabVIEW loads that copy instead.
+  lvpm warns about it after an install into the venv, at `lvpm launch` and in
+  `lvpm venv status`, with the fix for each package. Only LabVIEW files count.
 
 How it works: the venv directory is an [LVAddons](https://labviewwiki.org/wiki/LVAddons)
 location (its `packages/` folder), one addon per package, each mirroring the
@@ -658,6 +703,44 @@ pointing there overlays them onto its own tree, so a package in the venv
 resolves as `<vilib>/...` exactly as a globally installed one would. The VIs
 you write against it link portably, and `C:\Program Files` never changes.
 Needs LabVIEW 2024 Q1 or later.
+
+Palette menus are the exception to one addon per package. LabVIEW merges
+the `menus/` of all addons badly, so after each install or uninstall lvpm
+moves every package's `menus/` files to `palettes/contributions/<pkg>/menus/`
+and publishes one merged addon, `packages/venv-palettes/`. Two packages that
+ship the same menu file with different contents refuse the merge and leave
+the published addon as it was. The package name `venv-palettes` is reserved.
+`lvpm launch` refuses a venv whose merged addon no longer matches its
+packages; `lvpm sync` rebuilds it.
+
+#### Window titles, icon and taskbar
+
+On Windows, `launch` also starts a small hidden `lvpm` beside the venv
+LabVIEW. It keeps the project folder's name in the window titles, so a venv
+IDE and your primary one (or two venvs) can be told apart:
+
+```text
+MyProject.lvproj - Project Explorer [MyProject]
+Main.vi Front Panel on MyProject.lvproj/My Computer [MyProject] *
+```
+
+It tags the Getting Started window, Project Explorer, front panels, block
+diagrams and class or library windows; dialogs and palettes keep their
+titles. LabVIEW rewrites a title on every edit and save, and the watcher
+puts the tag back straight after. LabVIEW's `*` for unsaved changes stays
+where LabVIEW shows it. The watcher reacts to window events only and exits
+with its LabVIEW. The `venv.title` setting moves the name to the front
+(`start`) or turns it off (`off`), for a tool that finds LabVIEW's windows by
+their exact title.
+
+The same watcher gives the windows the venv's icon, LabVIEW's own with a
+coloured disc in the upper right, and a taskbar button of their own. The
+colour comes from the project folder's name. lvpm writes the icon to
+`.lv-venv/venv.ico` at each launch and for `venv shortcut`. Each venv's
+windows get the app id `lvpm.venv.<hash of the project path>`, so the venv's
+LabVIEW has its own taskbar button. *Pin to taskbar* on it pins
+`lvpm --project <repo> launch`, with the venv's icon and name. A LabVIEW on
+the venv started another way than `lvpm launch` gets none of this.
 
 Two things follow from LabVIEW reading an addon's contents at launch:
 
@@ -693,9 +776,12 @@ skips the pass; `--relink` runs LabVIEW's relink pass instead.
 `lvpm linkfix` runs the same edits on demand, over every package in the venv
 or over a LabVIEW-shaped `--tree <DIR>`. `--dry-run` changes nothing,
 `--verbose` names every changed and skipped file, `--fix owner,paths` picks
-methods (`owner`, `paths`, `qualifiers`, `source-only`; all by default),
-`--keep-compiled-code` leaves compiled code embedded, and `--report <file>`
-writes a JSON report of each file. See [linkfix](linkfix.md) for what each
+methods (`owner`, `paths`, `qualifiers`, `source-only`, `clfn-wildcard`; all
+by default), `--keep-compiled-code` leaves compiled code embedded, and
+`--report <file>` writes a JSON report of each file. `clfn-wildcard` gives a
+Call Library node whose library VI Package Builder pinned to one bitness
+(`lvwebclient_32.dll`) its wildcard back; it needs the target's bitness, which
+a venv knows and a `--tree` takes as `--bitness <32|64>`. See [linkfix](linkfix.md) for what each
 method changes.
 
 ### Uninstalling
@@ -711,8 +797,9 @@ remove unshared dependencies (alpha) too? [y/N]
 `--with-deps` removes them and `--keep-deps` keeps them, without asking.
 Without a terminal to ask, one of the two is required. A dependency that
 stays is named with the reason, and uninstall warns when the package is
-declared in `lvpm.toml` (it does not edit the manifest) or other installed
-packages still require it. A package installed by an older lvpm has no
+declared in `lvpm.toml` (it does not edit the manifest). When other installed
+packages still require it, uninstall refuses and touches nothing; `--force`
+removes it anyway, with a warning. A package installed by an older lvpm has no
 dependency list; removing dependencies is then refused until it is
 reinstalled, and `--keep-deps` still works.
 
@@ -1568,8 +1655,10 @@ value is kept and turns the file's list off. Precedence, highest first:
 | Variable | Default | What it sets |
 | --- | --- | --- |
 | `LVPM_CONFIG_CACHE` | `%LOCALAPPDATA%\lvpm\cache` (Linux: `$XDG_CACHE_HOME/lvpm/cache`, else `~/.cache/lvpm/cache`) | Where the cache DB, feed bodies, and imported package archives live |
+| `LVPM_CONFIG_LOG_DIR` | `%LOCALAPPDATA%\lvpm\logs` (Linux: `$XDG_STATE_HOME/lvpm/logs`, else `~/.local/state/lvpm/logs`) | Where lvpm writes its logs ([Logs](#logs)) |
 | `LVPM_CONFIG_SOURCES_LOCAL` | Empty | Local package directories (`.vip`, `.ogp`, `.lvpkg`); separate paths with `;` on Windows or `:` on Linux |
 | `LVPM_CONFIG_VENV_DIR` | `.lv-venv` | Project-relative venv directory (or an absolute path) |
+| `LVPM_CONFIG_VENV_TITLE` | `end` | Where `lvpm launch` puts the venv's name in LabVIEW's window titles (Windows): `end`, `start` or `off` ([Window titles, icon and taskbar](#window-titles-icon-and-taskbar)) |
 | `LVPM_CONFIG_HOOKS_RUN` | Empty | Packages whose install hooks may run in an install outside a project ([Install hooks](#install-hooks)); separate names with commas or spaces |
 
 ```powershell
@@ -1578,6 +1667,7 @@ lvpm config get sources.local
 lvpm config set sources.local                 # clear configured local sources
 lvpm config set venv.dir .venv
 lvpm config get venv.dir
+lvpm config set venv.title start              # [MyProject] Main.vi Front Panel ...
 lvpm config set hooks.run pilot_a pilot_b     # replaces the list; no names clears it
 lvpm config get hooks.run
 # Or set LVPM_CONFIG_SOURCES_LOCAL for this shell; it overrides config.toml.
@@ -1586,6 +1676,29 @@ $env:LVPM_CONFIG_SOURCES_LOCAL = 'D:\LabVIEW\Packages;E:\MorePackages'
 $env:LVPM_CONFIG_VENV_DIR = '.venv'
 lvpm search caraya
 ```
+
+#### Logs
+
+Every command appends a record of its run to a file in the `log.dir`
+folder: a header with the version, the arguments and the folder it ran in,
+every event as one JSON line (more than the console shows: each file linkfix
+touched, each download), and `---- done` or `---- failed: <error>`. A command
+on a venv writes that venv's own log, named after its project path
+(`C:\Git\lvpm` → `c--git-lvpm-3fa2c1d0.log`); any other command writes
+`lvpm.log`, and `lvpm tui` writes `tui.log`. Lines are written as they
+happen, so a run cut off by Ctrl+C keeps what it logged. A log past 10 MB is
+moved to `<name>.1`. A log that cannot be written is reported once and never
+fails the command.
+
+#### Update notice
+
+When a command succeeds in a terminal, lvpm says so if a newer stable lvpm
+release is out, with the releases page to get it from. It asks GitHub at most
+once a day, in the background, and caches the answer as `update-check.json`
+in the `cache` folder; a slow answer never delays the command by more than a
+moment. It stays silent under `--json`, when output is redirected, and when
+`LVPM_NO_UPDATE_CHECK`, `CI` or `LV_RTE_HEADLESS` is set. It reads the
+releases of upstream lvpm (`labview-package-manager/lvpm`).
 
 `LVPM_CONFIG_HOOKS_RUN` wins over the file. While it is set, the
 `lvpm config set hooks.run ...` line in an install hook warning changes the

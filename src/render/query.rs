@@ -258,6 +258,7 @@ mod tests {
             installed_at: 0,
             target: String::new(),
             files: vec!["a".into(), "b".into()],
+            palette_files: Vec::new(),
             dependencies: Vec::new(),
             skipped_hooks: skipped_hooks.iter().map(|h| h.to_string()).collect(),
             relinked,

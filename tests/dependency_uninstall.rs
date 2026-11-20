@@ -107,11 +107,23 @@ fn install_records_and_uninstall_protects_shared_dependencies() {
     assert!(!f.record("root").exists());
     assert!(!f.record("private").exists());
     assert!(f.record("shared").exists());
+    // Still required by `other`: refused, and nothing is removed.
     let output = f.run(&["uninstall", "shared", "--keep-deps"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("required by installed packages: other"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--force"), "{stderr}");
+    assert!(f.record("shared").exists());
+    // --force removes it anyway, with the warning.
+    let output = f.run(&["uninstall", "shared", "--keep-deps", "--force"]);
     success(&output);
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("required by installed packages: other")
     );
+    assert!(!f.record("shared").exists());
 }
 
 #[test]

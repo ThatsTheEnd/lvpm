@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   # Whether the PR changes only docs/ and top-level Markdown. A docs-only PR
-  # skips build, package, e2e and lint, and ci-ok still reports. test still
+  # skips build, e2e and lint, and ci-ok still reports. test still
   # runs: the suite reads README.md and docs/.
   changes:
     name: changes
@@ -73,7 +73,7 @@ jobs:
         if: runner.os == 'Windows'
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ci/e2e/smoke.test.ps1
 
-  # The same build and packaging main releases with.
+  # The release build; release.yml builds the published binaries with dist.
   build:
     needs: [changes]
     if: needs.changes.outputs.docs_only == 'false'
@@ -81,12 +81,6 @@ jobs:
     with:
       ref: ${{ github.event.pull_request.head.sha }}
       acceptance: true
-
-  package:
-    needs: [build]
-    uses: ./.github/workflows/package.yml
-    with:
-      ref: ${{ github.event.pull_request.head.sha }}
 
   # The CLI smoke flow inside NI's LabVIEW images, with the binary build made.
   # Steps branch on row fields (os), never on image names, so a new image is
@@ -214,7 +208,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, test, build, package, e2e, lint]
+    needs: [changes, test, build, e2e, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

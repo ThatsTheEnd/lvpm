@@ -18,7 +18,9 @@ use lvpm_core::ops::sync::{LockFlags, SyncOptions, strictness};
 use lvpm_core::ops::{self, Destination, DestinationFlags, OpEnv};
 use lvpm_core::{config, git, launch, target, venv, viserver};
 
+mod logfile;
 mod render;
+mod update_notice;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::builder::TypedValueParser as _;
@@ -241,6 +243,26 @@ enum Cmd {
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
     },
+    /// Write the packages a VIPM .vipc or vipm.toml chose into this project's lvpm.toml,
+    /// once, and put the package archives a .vipc holds into the cache. Installs nothing.
+    ///
+    /// Reads the file as `init --from` does. Makes lvpm.toml when there is none; an
+    /// existing one keeps everything else.
+    Import {
+        /// The .vipc or vipm.toml, relative to the working directory.
+        file: PathBuf,
+        /// Also pin the packages a .vipc lists only as another's dependency.
+        #[arg(long)]
+        all: bool,
+        /// Put the packages in [dependency-groups.<GROUP>] (`dev` is
+        /// [dev-dependencies]). Default: the table that declares the package
+        /// already, else [dependencies].
+        #[arg(long, value_name = "GROUP")]
+        group: Option<String>,
+        /// Say what would be written, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Install a package by name, or name@version. In a project, a bare
     /// install is `lvpm sync` and a named install is `lvpm add`, unless
     /// --global, --prefix or --labview-version say where it goes.
@@ -366,6 +388,10 @@ enum Cmd {
         /// Keep dependencies, without prompting.
         #[arg(long, conflicts_with_all = ["all", "with_deps"])]
         keep_deps: bool,
+        /// Remove the package even though other installed packages require
+        /// it, leaving them without it. Without this, that is refused.
+        #[arg(long, conflicts_with = "all")]
+        force: bool,
     },
     /// Invoke parameterless Application-class methods by raw id, and report
     /// what LabVIEW says. Re-establishes method ids on a new LabVIEW: 1036
@@ -499,6 +525,40 @@ enum Cmd {
         /// verbose log. Repeatable; the keys stay in that ini until removed.
         #[arg(long = "ini", value_name = "KEY=VALUE")]
         ini_keys: Vec<String>,
+        /// Start even when the venv does not hold what lvpm.lock lists
+        /// (a package missing or at another version, files gone, a relink owed).
+        #[arg(long)]
+        no_check: bool,
+        /// Wait for Enter before exiting on an error, so a console opened by
+        /// a shortcut stays up long enough to read it.
+        #[arg(long, hide = true)]
+        pause_on_error: bool,
+    },
+    /// Keep a tag in the window titles of one LabVIEW until it exits.
+    /// Started hidden by `launch`; see the `venv.title` setting.
+    #[command(hide = true)]
+    TitleWatch {
+        /// Process id of the LabVIEW to watch.
+        #[arg(long)]
+        pid: u32,
+        /// The text to put in each title, e.g. `[my-project]`.
+        #[arg(long)]
+        tag: String,
+        /// `end`, `start` or `off`.
+        #[arg(long, default_value = "end")]
+        position: String,
+        /// Windows app id to give each window, grouping them in the taskbar.
+        #[arg(long, requires_all = ["relaunch", "relaunch_icon", "relaunch_name"])]
+        app_id: Option<String>,
+        /// Command line a taskbar pin of the group runs.
+        #[arg(long)]
+        relaunch: Option<String>,
+        /// Icon of that pin; an `.ico` also goes on each window.
+        #[arg(long)]
+        relaunch_icon: Option<String>,
+        /// Name of that pin.
+        #[arg(long)]
+        relaunch_name: Option<String>,
     },
     /// Resolve lvpm.toml's dependencies and write lvpm.lock: every package, direct
     /// or transitive, with its exact version, SHA-256 and source.
@@ -560,6 +620,11 @@ enum Cmd {
         /// why the file was skipped) as JSON.
         #[arg(long, value_name = "FILE")]
         report: Option<PathBuf>,
+        /// The bitness of the LabVIEW a `--tree` is for (32 or 64), which the
+        /// `clfn-wildcard` method resolves Call Library wildcards for. A venv
+        /// knows its own.
+        #[arg(long, value_name = "32|64")]
+        bitness: Option<u8>,
     },
     /// Show what lvpm has installed into the selected target.
     List,
@@ -599,6 +664,19 @@ enum VenvCmd {
     Status,
     /// Delete the venv and everything installed in it.
     Remove,
+    /// Write a Windows shortcut that runs `lvpm launch` on this venv, with
+    /// the venv's icon. Goes in the project folder unless `--desktop` or
+    /// `--out` says otherwise.
+    Shortcut {
+        /// A `.lvproj` (or any LabVIEW file) the shortcut opens.
+        lvproj: Option<PathBuf>,
+        /// Put the shortcut on the desktop.
+        #[arg(long, conflicts_with = "out")]
+        desktop: bool,
+        /// Where to write the shortcut: a `.lnk` path, or a folder to put it in.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -821,10 +899,59 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
-    match (run(&cli), cli.json) {
+    if let Cmd::TitleWatch {
+        pid,
+        tag,
+        position,
+        app_id,
+        relaunch,
+        relaunch_icon,
+        relaunch_name,
+    } = &cli.cmd
+    {
+        // Hidden, with no console: nothing to print to, so only the exit code.
+        let watched = title_watch(
+            *pid,
+            tag,
+            position,
+            [app_id, relaunch, relaunch_icon, relaunch_name],
+        );
+        return if watched.is_ok() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
+    // Only for a person reading the console, so never under --json.
+    let notice = match cli.json {
+        true => None,
+        false => config::load()
+            .ok()
+            .and_then(|c| update_notice::start(&c.cache)),
+    };
+    let result = run(&cli);
+    if let (
+        Cmd::Launch {
+            pause_on_error: true,
+            ..
+        },
+        Err(e),
+    ) = (&cli.cmd, &result)
+    {
+        eprintln!(
+            "Error: {}\n\npress Enter to close",
+            render::printable(format!("{e:#}"))
+        );
+        let _ = std::io::stdin().read_line(&mut String::new());
+        return ExitCode::FAILURE;
+    }
+    match (result, cli.json) {
         (Ok(report), false) => {
             eprint!("{}", report.warning);
             print!("{}", report.text);
+            if let Some(notice) = notice {
+                notice.finish();
+            }
             report.exit_code()
         }
         (Ok(report), true) => {
@@ -846,13 +973,34 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<Report> {
-    let sink: Box<dyn EventSink> = match cli.json {
+    let console: Box<dyn EventSink> = match cli.json {
         true => Box::new(render::json::JsonSink),
         false => Box::new(render::CliSink::stdio()),
     };
-    let mut env = op_env(cli, sink.as_ref())?;
+    let log = logfile::LogSink::new(console);
+    let env = op_env(cli, &log)?;
+    // The venv the command is on, for its log; a broken venv is the command's to report.
+    let on_venv = (!cli.global && cli.prefix.is_none())
+        .then(|| {
+            venv::find(
+                cli.project.as_deref(),
+                &env.cwd,
+                &env.config.venv_dir,
+                &env.targets,
+            )
+        })
+        .and_then(Result::ok)
+        .flatten();
+    log.attach(logfile::path(&env.config.log_dir, on_venv.as_ref()));
+    let result = dispatch(cli, env);
+    log.finish(&result);
+    result
+}
+
+fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
     match &cli.cmd {
         Cmd::Tui => unreachable!("main runs the TUI before any sink is made"),
+        Cmd::TitleWatch { .. } => unreachable!("main runs title-watch before any sink is made"),
         Cmd::Targets => {
             let targets = ops::query::targets(&env)?;
             Report::new(render::query::targets(&targets), targets)
@@ -865,6 +1013,16 @@ fn run(cli: &Cli) -> Result<Report> {
             let done = ops::init::run(&env, from.as_deref(), &git::spawn)
                 .map_err(|why| anyhow!(render::init::error(&why)))?;
             Report::new(render::init::initialized(&done), &done)
+        }
+        Cmd::Import {
+            file,
+            all,
+            group,
+            dry_run,
+        } => {
+            let done = ops::init::import(&env, file, *all, group.as_deref(), *dry_run)
+                .map_err(|why| anyhow!(render::init::error(&why)))?;
+            Report::new(render::init::imported(&done), &done)
         }
         Cmd::Install {
             package,
@@ -938,6 +1096,7 @@ fn run(cli: &Cli) -> Result<Report> {
             keep_compiled_code,
             fix,
             report,
+            bitness,
         } => {
             use lvpm_core::linkfix::Method;
             let mut methods: Vec<Method> = match fix.is_empty() {
@@ -953,6 +1112,7 @@ fn run(cli: &Cli) -> Result<Report> {
                 verbose: *verbose,
                 methods,
                 report: report.clone(),
+                bitness: *bitness,
             };
             ops::linkfix::linkfix(&env, &opts).map(|()| Report::done("linkfix"))
         }
@@ -970,6 +1130,7 @@ fn run(cli: &Cli) -> Result<Report> {
             all,
             with_deps,
             keep_deps,
+            force,
         } => {
             use ops::uninstall::Dependencies;
             let ask = |names: &[String]| {
@@ -994,7 +1155,7 @@ fn run(cli: &Cli) -> Result<Report> {
                 _ if cli.yes => Dependencies::Remove,
                 _ => Dependencies::Ask(&ask),
             };
-            ops::uninstall::uninstall(&env, package.as_deref(), *all, deps)
+            ops::uninstall::uninstall(&env, package.as_deref(), *all, deps, *force)
                 .map(|()| Report::done("uninstall"))
         }
         Cmd::AppProbe { ids } => cmd_app_probe(&env, ids).map(|()| Report::done("app-probe")),
@@ -1104,8 +1265,13 @@ fn run(cli: &Cli) -> Result<Report> {
             .warning(warning)
             .failed(!checked.passed()))
         }
-        Cmd::Launch { lvproj, ini_keys } => {
-            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys)?;
+        Cmd::Launch {
+            lvproj,
+            ini_keys,
+            no_check,
+            ..
+        } => {
+            let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys, !no_check)?;
             Ok(Report::said(render::launch::launched(&launched), "launch"))
         }
         Cmd::Lock {
@@ -1236,6 +1402,31 @@ fn cmd_sync(env: &OpEnv, options: &SyncOptions) -> Result<()> {
     })
 }
 
+/// `lvpm title-watch`: see [`lvpm_core::watcher`].
+fn title_watch(pid: u32, tag: &str, position: &str, taskbar: [&Option<String>; 4]) -> Result<()> {
+    let pos: lvpm_core::config::TitlePosition = position.parse()?;
+    #[cfg(windows)]
+    {
+        let taskbar = match taskbar {
+            [Some(id), Some(relaunch), Some(icon), Some(name)] => {
+                Some(lvpm_core::watcher::Taskbar {
+                    id: id.clone(),
+                    relaunch: relaunch.clone(),
+                    icon: icon.clone(),
+                    name: name.clone(),
+                })
+            }
+            _ => None,
+        };
+        lvpm_core::watcher::watch(pid, tag, pos, taskbar)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, tag, pos, taskbar);
+        bail!("title-watch is Windows-only");
+    }
+}
+
 fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<Report> {
     match sub {
         VenvCmd::Create { manifest } => {
@@ -1263,6 +1454,15 @@ fn cmd_venv(env: &OpEnv, sub: &VenvCmd, under_json: bool, yes: bool) -> Result<R
             }
             ops::venv_cmd::remove(env, &venv, yes || confirm_removal(&venv)?)?;
             Ok(Report::done("venv"))
+        }
+        VenvCmd::Shortcut {
+            lvproj,
+            desktop,
+            out,
+        } => {
+            let written =
+                ops::venv_cmd::shortcut(env, lvproj.as_deref(), *desktop, out.as_deref())?;
+            Report::new(render::venv::shortcut(&written), &written)
         }
     }
 }

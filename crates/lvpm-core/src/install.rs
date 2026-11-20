@@ -23,6 +23,10 @@ pub struct Manifest {
     pub target: String,
     /// Absolute paths, forward-slashed.
     pub files: Vec<String>,
+    /// In a venv, the package's `menus/` files, by path within that tree,
+    /// once [`crate::palette::reconcile`] moved them out of the addon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub palette_files: Vec<PaletteFile>,
     /// The packages this version requires directly, as its spec names them;
     /// uninstall follows them. Missing in records written before lvpm kept
     /// it, and then removing dependencies refuses: see
@@ -100,6 +104,12 @@ impl Manifest {
     pub fn clear_skipped_hooks(&mut self) {
         self.skipped_hooks.clear();
     }
+}
+
+/// One of a venv package's menu files, kept outside the mounted addons.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaletteFile {
+    pub relative: String,
 }
 
 /// What an install *would* do. Produced first so `--dry-run` and the real run
@@ -215,10 +225,12 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
     // Almost always literally "spec" at the archive root.
     let idx = (0..zip.len()).find(|i| {
         zip.by_index(*i)
-            .map(|f| f.name().eq_ignore_ascii_case("spec"))
+            .map(|f| f.name().is_ok_and(|n| n.eq_ignore_ascii_case("spec")))
             .unwrap_or(false)
     });
-    let is_lvpkg = zip.file_names().any(|n| n == crate::lvpkg::PACKAGE_TOML);
+    let is_lvpkg = zip
+        .file_names()
+        .any(|n| n.is_ok_and(|n| n == crate::lvpkg::PACKAGE_TOML));
     let idx = match (is_lvpkg, idx) {
         (true, None) => return crate::lvpkg::read(zip),
         (true, Some(_)) => bail!(
@@ -249,7 +261,10 @@ pub fn read_spec(zip: &mut Archive) -> Result<Spec> {
 /// A package entry's content, at most `cap` bytes. The size in the
 /// entry's header is the archive's claim, so nothing is allocated from it.
 fn read_entry(src: zip::read::ZipFile<'_, std::io::Cursor<Vec<u8>>>, cap: u64) -> Result<Vec<u8>> {
-    let name = src.name().to_string();
+    let name = src
+        .name()
+        .context("archive entry has no usable name")?
+        .to_string();
     let mut buf = Vec::new();
     src.take(cap + 1)
         .read_to_end(&mut buf)
@@ -266,7 +281,11 @@ pub fn plan(roots: &Roots, spec: &Spec, zip: &mut Archive) -> Result<Plan> {
     // between `spec` and the archive.
     let mut by_lower = std::collections::HashMap::new();
     for i in 0..zip.len() {
-        let name = zip.by_index(i)?.name().to_string();
+        let name = zip
+            .by_index(i)?
+            .name()
+            .with_context(|| format!("archive entry {i} has no usable name"))?
+            .to_string();
         by_lower.insert(name.to_lowercase().replace('\\', "/"), i);
     }
 
@@ -448,13 +467,19 @@ pub(crate) fn unpack_to(
             None => format!("scratch {}", roots.application.display()),
         },
         files: written,
+        palette_files: Vec::new(),
         dependencies: crate::dependency::package_dependency_names(&[], spec.requires.as_deref()),
         skipped_hooks: match roots.venv() {
             Some(_) => declared_hooks(spec),
-            // PreInstall has run by now, PostInstall runs after the relink
-            // pass and is recorded here only if it fails, and the uninstall
+            // PreInstall has run by now. PostInstall is owed from this copy
+            // until it has run after the relink pass, so an install that stops
+            // in between leaves it listed for `lvpm run-hooks`. The uninstall
             // hooks wait for `lvpm uninstall` in the copies extracted above.
             // An install that skips a package's hooks has `apply` record them.
+            None if roots.target.is_some() && post_install_vi.is_some() => declared_hooks(spec)
+                .into_iter()
+                .filter(|h| h.starts_with("PostInstall="))
+                .collect(),
             None => Vec::new(),
         },
         relinked: false,
@@ -542,6 +567,14 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
         return Ok(());
     }
     m.skipped_hooks.push(hook.to_string());
+    write_manifest(roots, &m)
+}
+
+/// Record that `hook` has run: the record stops listing it as not run.
+pub fn mark_hook_ran(roots: &Roots, name: &str, hook: crate::events::HookKind) -> Result<()> {
+    let mut m = read_manifest(roots, name)?;
+    let prefix = format!("{}=", hook.name());
+    m.skipped_hooks.retain(|h| !h.starts_with(&prefix));
     write_manifest(roots, &m)
 }
 
@@ -654,6 +687,25 @@ mod tests {
         assert!(safe_relative("vi.lib/addons/ok.llb").is_ok());
     }
 
+    #[test]
+    fn a_hook_that_ran_is_no_longer_listed_and_the_others_stay() {
+        use crate::events::HookKind;
+        let dir = std::env::temp_dir().join(format!("lvpm-hook-ran-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let roots = Roots::scratch(&dir);
+        std::fs::create_dir_all(manifest_path(&roots, "p").parent().unwrap()).unwrap();
+        let record = r#"{"name":"p","version":"1","display_name":null,"installed_at":0,"target":"t",
+            "files":[],"skipped_hooks":["PostInstall=a.vi","PreUninstall=b.vi"]}"#;
+        let m: Manifest = serde_json::from_str(record).unwrap();
+        write_manifest(&roots, &m).unwrap();
+
+        mark_hook_ran(&roots, "p", HookKind::PostInstall).unwrap();
+
+        let m = read_manifest(&roots, "p").unwrap();
+        assert_eq!(m.skipped_hooks, ["PreUninstall=b.vi"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An archive whose only member is `spec`, holding `text`, deflated.
     fn archive_with_spec(text: &[u8]) -> Archive {
         use std::io::Write;
@@ -741,6 +793,7 @@ mod tests {
             installed_at: 0,
             target: "t".into(),
             files: files.iter().map(|f| f.to_string()).collect(),
+            palette_files: Vec::new(),
             dependencies: Vec::new(),
             skipped_hooks: Vec::new(),
             relinked: false,

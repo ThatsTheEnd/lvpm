@@ -49,6 +49,9 @@ impl Downloads {
         Ok(Downloads {
             client: Client::builder()
                 .user_agent(concat!("lvpm/", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(std::time::Duration::from_secs(30))
+                // One package download; it is retried twice on a transient failure.
+                .timeout(std::time::Duration::from_secs(120))
                 .build()?,
             cache: Cache::open(cache)?,
             cancel: env.cancel.clone(),
@@ -298,6 +301,8 @@ mod tests {
         let mut env = OpEnv::new(
             &NullSink,
             crate::config::Config {
+                log_dir: Default::default(),
+                venv_title: Default::default(),
                 cache: cache.clone(),
                 hooks_run: Vec::new(),
                 local_sources: Vec::new(),
@@ -343,6 +348,8 @@ mod tests {
         let mut env = OpEnv::new(
             &NullSink,
             crate::config::Config {
+                log_dir: Default::default(),
+                venv_title: Default::default(),
                 cache: cache.clone(),
                 hooks_run: Vec::new(),
                 local_sources: Vec::new(),
@@ -392,6 +399,8 @@ mod tests {
     fn a_github_file_that_cannot_be_downloaded_fails_in_githubs_words_and_a_feed_file_in_its_own() {
         let cache = std::env::temp_dir().join(format!("lvpm-session-fail-{}", std::process::id()));
         let config = crate::config::Config {
+            log_dir: Default::default(),
+            venv_title: Default::default(),
             cache: cache.clone(),
             hooks_run: Vec::new(),
             local_sources: Vec::new(),
@@ -409,8 +418,8 @@ mod tests {
                 "GitHub refused access (401 Unauthorized)",
             ),
             (
-                "502 Bad Gateway",
-                "cannot read the releases; check your network and try again: HTTP 502",
+                "400 Bad Request",
+                "cannot read the releases; check your network and try again: HTTP 400",
             ),
         ];
         for (status, said) in table {
@@ -440,6 +449,8 @@ mod tests {
         std::fs::create_dir_all(&cache).unwrap();
         std::fs::write(&local, b"bytes").unwrap();
         let config = crate::config::Config {
+            log_dir: Default::default(),
+            venv_title: Default::default(),
             cache: cache.clone(),
             hooks_run: Vec::new(),
             local_sources: Vec::new(),

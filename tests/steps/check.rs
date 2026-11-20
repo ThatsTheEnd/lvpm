@@ -265,7 +265,12 @@ impl CliWorld {
         let mut files = Vec::new();
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).expect("a zip entry");
-            let Some(rel) = entry.name().strip_prefix("File Group 0/").map(String::from) else {
+            let Some(rel) = entry
+                .name()
+                .unwrap()
+                .strip_prefix("File Group 0/")
+                .map(String::from)
+            else {
                 continue;
             };
             if entry.is_dir() {

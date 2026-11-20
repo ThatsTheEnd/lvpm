@@ -346,7 +346,12 @@ pub fn read<R: Read + Seek>(zip: &mut ZipArchive<R>) -> Result<Spec> {
 /// [`read`], with the archive allowed to unpack to `total` bytes at most.
 fn read_within<R: Read + Seek>(zip: &mut ZipArchive<R>, total: u64) -> Result<Spec> {
     let names: Vec<String> = (0..zip.len())
-        .map(|i| zip.name_for_index(i).unwrap_or_default().to_string())
+        .map(|i| {
+            zip.name_for_index(i)
+                .and_then(|n| n.ok())
+                .map(|n| n.to_string())
+                .unwrap_or_default()
+        })
         .collect();
     // The zip crate keeps one entry per name, so what is hashed below is what
     // `install` extracts: a second `RECORD` or `package.toml` cannot hide.
@@ -543,7 +548,11 @@ mod tests {
                 let mut f = zip.by_index(i).unwrap();
                 let mut content = Vec::new();
                 f.read_to_end(&mut content).unwrap();
-                (f.name().to_string(), f.last_modified().unwrap(), content)
+                (
+                    f.name().unwrap().to_string(),
+                    f.last_modified().unwrap(),
+                    content,
+                )
             })
             .collect()
     }

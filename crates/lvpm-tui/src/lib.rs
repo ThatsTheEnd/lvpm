@@ -34,16 +34,17 @@ const TICK: Duration = Duration::from_millis(100);
 #[allow(clippy::disallowed_methods)]
 pub fn run() -> anyhow::Result<()> {
     // Read before the terminal is taken, so an error prints as usual.
+    let config = config::load()?;
+    let log_file = config.log_dir.join("tui.log");
     let mut builder =
-        destination::EnvBuilder::new(config::load()?, target::detect()?, std::env::current_dir()?);
+        destination::EnvBuilder::new(config, target::detect()?, std::env::current_dir()?);
     builder.github = GitHub::from_lookup(|name| std::env::var(name).ok(), gh_auth_token)
         .with_gh_runner(gh::real_runner());
     builder.oci = Arc::new(Oci::with_credentials(logins::from_lookup(|name| {
         std::env::var_os(name)
     })?));
     let mut app = app::App::new(builder);
-    let local_app_data = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
-    app.log_file = local_app_data.as_deref().map(log::path);
+    app.log_file = Some(log_file);
     // Made before the terminal is set up, so a set-up that fails half way is
     // undone too.
     let _restore = Restore(ratatui::restore);

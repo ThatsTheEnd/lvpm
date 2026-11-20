@@ -26,6 +26,7 @@ lvpm-core = { path = "crates/lvpm-core" }
 lvpm-tui = { path = "crates/lvpm-tui" }
 anyhow = "1.0.104"
 clap = { version = "4.6.6", features = ["derive", "env"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "default-tls"] }
 
 [dev-dependencies]
 cucumber = "0.23.0"
@@ -33,12 +34,24 @@ futures = "0.3.34"
 lvpm-testkit = { path = "crates/lvpm-testkit" }
 md-5 = "0.11.0"
 regex = "1.13.1"
-reqwest = { version = "0.13.4", default-features = false, features = ["blocking"] }
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 toml = { version = "1.1.5", features = ["preserve_order"] }
-zip = "8.6.0"
+zip = "9.5.1"
+
+# The MSI (wix/main.wxs, built by dist). The same upgrade code as upstream
+# lvpm's MSI: both install to %LOCALAPPDATA%\lvpm\bin, so one replaces the other.
+[package.metadata.wix]
+upgrade-guid = "2AE3D9AE-39AC-4BC3-A28C-187026CEEFCE"
+path-guid = "5B493AB7-0E84-4A8E-8B3F-A0E99B41FE04"
+license = false
+eula = false
 
 [[test]]
 name = "acceptance"
 harness = false
+
+# The profile that dist builds releases with.
+[profile.dist]
+inherits = "release"
+lto = "thin"

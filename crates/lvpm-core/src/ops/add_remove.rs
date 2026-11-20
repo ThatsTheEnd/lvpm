@@ -392,6 +392,7 @@ fn commit(
     let sync_options = SyncOptions {
         install: InstallOptions {
             hook_allow: HookAllow::for_command(&env.config, Some(&edit.project)),
+            relink_marked: edit.project.relink.iter().cloned().collect(),
             ..options.clone()
         },
         ..SyncOptions::default()
@@ -935,6 +936,8 @@ alpha = \"1.0\"
                 hooks_run: Vec::new(),
                 local_sources: vec![self.root.join("packages")],
                 venv_dir: PathBuf::from(".lv-venv"),
+                log_dir: Default::default(),
+                venv_title: Default::default(),
             };
             let mut env = OpEnv::new(sink, config, Vec::new(), self.root.clone());
             env.flags.prefix = Some(self.root.join("dest"));

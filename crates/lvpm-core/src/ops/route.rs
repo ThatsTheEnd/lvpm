@@ -100,6 +100,8 @@ mod tests {
 
         fn env<'a>(&self, sink: &'a NullSink) -> OpEnv<'a> {
             let config = Config {
+                log_dir: Default::default(),
+                venv_title: Default::default(),
                 cache: self.root.join("cache"),
                 hooks_run: Vec::new(),
                 local_sources: Vec::new(),

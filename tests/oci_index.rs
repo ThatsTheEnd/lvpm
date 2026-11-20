@@ -357,6 +357,8 @@ alpha = {{ version = \"*\", index = \"a\" }}
     );
     std::fs::write(cwd.path().join("lvpm.toml"), manifest).unwrap();
     let config = Config {
+        log_dir: Default::default(),
+        venv_title: Default::default(),
         cache: cwd.path().join("cache"),
         hooks_run: Vec::new(),
         local_sources: Vec::new(),

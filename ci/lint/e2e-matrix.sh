@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Checks the e2e matrix and the PR workflows are wired safely: every row's image
 # is an NI LabVIEW tag whose -linux/-windows suffix matches the row's os, no
-# step condition names an image, the workflows a PR runs only read the repo,
+# step condition names an image, pr.yml and build.yml only read the repo,
 # never run on a trigger that hands fork code secrets, and use no secret but
-# GITHUB_TOKEN.
+# GITHUB_TOKEN. dist's generated release.yml also runs on PRs (dist plan); it
+# is left out because it is regenerated, not edited.
 # Usage: e2e-matrix.sh [<workflow dir>]  (default .github/workflows)
 set -euo pipefail
 dir="${1:-.github/workflows}"
@@ -28,7 +29,7 @@ done <<<"$rows"
 named=$(grep -nE '^ *if:.*(image|labview:|-linux|-windows)' <<<"$pr_text" || true)
 [ -z "$named" ] || report_violation "$pr: a condition names an image; branch on the row's os instead: $named"
 
-for f in pr.yml build.yml package.yml; do
+for f in pr.yml build.yml; do
   [ -f "$dir/$f" ] || { report_violation "$dir/$f not found."; continue; }
   text=$(tr -d '\r' < "$dir/$f")
   grep -qE '^permissions:$' <<<"$text" && grep -qE '^  contents: read$' <<<"$text" \

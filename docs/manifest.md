@@ -283,7 +283,7 @@ and `lvpm build` writes this name. Other assets are ignored.
 - `github` together with `index`: a GitHub dependency comes only from its repo.
   This holds across tables too: a name with `github` in one table and `index`
   in another is refused, naming both tables.
-- Any key besides `version`, `github`, `index` and `hooks`: `unknown key "foo"; expected version, github, index or hooks`.
+- Any key besides `version`, `github`, `index`, `hooks` and `relink`: `unknown key "foo"; expected version, github, index, hooks or relink`.
 - A table without `version`.
 - A `github` value that is not `owner/repo`, such as `"https://github.com/o/r"`
   (drop the `https://github.com/`).
@@ -364,6 +364,24 @@ pilot_a = { version = "*", hooks = "run" }
 
 What a hook is, and all the rules, are in
 [labview-integration.md](labview-integration.md#hooks).
+
+### Relinking a package in LabVIEW
+
+Linkfix repairs a package's links without LabVIEW. A few packages need
+LabVIEW itself to re-resolve their VIs, such as .NET invoke nodes that store a
+member index from another build of the assembly. Give such a line
+`relink = true`, and `lvpm sync` and `lvpm add` load and save that package in
+LabVIEW after linkfix, the pass `--relink` runs for every package:
+
+```toml
+[dependencies]
+sklein_lib_webview2 = { version = "2.1.1.2", relink = true }
+```
+
+- A line in any table counts, and only in the root `lvpm.toml`.
+- `relink = false` is the default. Any value that is not `true` or `false`
+  fails when the manifest is read.
+- Like `hooks`, it is not part of the lock.
 
 ### How the manifest resolves
 

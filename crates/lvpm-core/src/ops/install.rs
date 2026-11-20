@@ -46,6 +46,11 @@ pub struct InstallOptions {
     /// Run LabVIEW's load-and-save relink pass instead of linkfix (`--relink`).
     /// Not the resave: a venv install resaves each package whatever this says.
     pub force_relink: bool,
+    /// The packages the manifest marks `relink = true`: without
+    /// `force_relink`, LabVIEW's relink pass runs for these alone, after
+    /// linkfix. For VIs only LabVIEW can re-resolve, such as .NET invoke
+    /// nodes storing a member index from another build of the assembly.
+    pub relink_marked: Vec<String>,
     /// Run every package's install hooks in this command, whether or not
     /// anything allowed them, and even where LabVIEW runs headless, where they
     /// are otherwise skipped: most hooks add palettes, menus or markers for an
@@ -360,9 +365,9 @@ pub fn resolve_greedy(
 /// A package already installed is judged by version: the same one is left
 /// alone; an older one is upgraded, its recorded footprint removed first so
 /// files the new version no longer ships do not linger; a newer one is never
-/// silently downgraded. The archive of each is fetched just before it is
-/// unpacked, and refused when the plan says what its SHA-256 must be and it is
-/// not.
+/// silently downgraded. Every archive is fetched before the first file is
+/// written, so a download failure leaves the target unchanged; each is refused
+/// when the plan says what its SHA-256 must be and it is not.
 pub fn apply(
     env: &OpEnv,
     session: &mut InstallSession,
@@ -384,6 +389,27 @@ pub fn apply(
     let mut skipped: Vec<HookSkip> = Vec::new();
     let total = plan.entries.len();
     let mut each = || -> Result<()> {
+        // Into the cache first; install_one's own fetch then reads it back.
+        if !plan.entries.is_empty() {
+            env.sink.emit(Event::PhaseStarted {
+                phase: Phase::Download,
+            });
+        }
+        for planned in &plan.entries {
+            // What settle_installed leaves alone (the same version, or a newer
+            // one without --allow-downgrade) is not downloaded, so a no-op
+            // install works offline.
+            let entry = &planned.entry;
+            let roots = session.roots_for(&entry.name)?;
+            let left_alone = install::is_installed(&roots, &entry.name)
+                && install::read_manifest(&roots, &entry.name).is_ok_and(|old| {
+                    let old = Version::parse(&old.version);
+                    old == entry.version || (old > entry.version && !opts.allow_downgrade)
+                });
+            if !left_alone {
+                session.fetch(env, entry)?;
+            }
+        }
         for (i, planned) in plan.entries.iter().enumerate() {
             session.resaver.position = (i + 1, total);
             if let Some(done) = install_one(env, session, planned, opts, &mut skipped)? {
@@ -463,9 +489,7 @@ fn install_one(
         dry_run: opts.dry_run,
     });
 
-    env.sink.emit(Event::PhaseStarted {
-        phase: Phase::Download,
-    });
+    // Fetched by apply before the first package, so a cache read.
     let bytes = session.fetch(env, entry)?;
     let archive_sha256 = sha256_hex(&bytes);
     if let Some(expected) = &planned.expected_sha256 {
@@ -872,7 +896,15 @@ pub fn finish(
     linkfix::after_install(env, session, applied, opts);
     relink_pass(env, session, applied, opts)?;
     post_install_hooks(env, session, opts);
-    refresh_palettes(env, session, applied);
+    refresh_palettes(env, session, applied)?;
+    if let Some(v) = session.venv()
+        && !applied.dry_run
+    {
+        // Every venv package, not only this install's: any of them may be the
+        // one LabVIEW loads from the installation instead.
+        let records = install::list_installed(&v.store()).unwrap_or_default();
+        crate::shadow::emit(env.sink, v, &records);
+    }
     if session.venv().is_some() && applied.files > 0 && !applied.dry_run {
         env.sink.emit(Event::LaunchHint);
     }
@@ -888,23 +920,39 @@ fn relink_pass(
     opts: &InstallOptions,
 ) -> Result<()> {
     // Linkfix does the link repair without LabVIEW, so this pass runs only
-    // when `--relink` asks for it, headless or not.
-    let work = &session.relink_work;
+    // when `--relink` asks for it, headless or not, or for the packages the
+    // manifest marks `relink = true`.
+    let marked: Vec<(String, Vec<PathBuf>)>;
+    let work = match opts.force_relink {
+        true => &session.relink_work,
+        false => {
+            marked = (session.relink_work.iter())
+                .filter(|(pkg, _)| {
+                    opts.relink_marked
+                        .iter()
+                        .any(|m| crate::project::same_name(m, pkg))
+                })
+                .cloned()
+                .collect();
+            &marked
+        }
+    };
+    let installed: usize = session.relink_work.iter().map(|(_, f)| f.len()).sum();
     let folders: usize = work.iter().map(|(_, f)| f.len()).sum();
     let skipped = |reason| Event::PhaseSkipped {
         phase: Phase::Relink,
         reason,
-        skipped: folders,
+        skipped: installed,
     };
     let Some(target) = session.target() else {
         env.sink.emit(skipped(SkipReason::ScratchDestination));
         return Ok(());
     };
     // Nothing with linker tables was installed — palettes and docs only.
-    if folders == 0 {
+    if installed == 0 {
         return Ok(());
     }
-    if !opts.force_relink || opts.no_relink {
+    if work.is_empty() || opts.no_relink {
         env.sink.emit(skipped(SkipReason::Declined));
     } else if applied.dry_run {
         env.sink.emit(Event::RelinkPlanned {
@@ -966,35 +1014,31 @@ fn post_install_hooks(env: &OpEnv, session: &mut InstallSession, opts: &InstallO
                 timeout_secs: opts.relink.timeout,
             },
         );
-        if !ran {
-            record_failed_post_install(env, session.store(), hook);
+        // The copy listed it as owed; one that failed stays listed.
+        if ran
+            && let Err(e) =
+                install::mark_hook_ran(session.store(), &hook.package, HookKind::PostInstall)
+        {
+            env.sink.emit(Event::HookRecordNotUpdated {
+                package: hook.package.clone(),
+                error: format!("{e:#}"),
+            });
         }
     }
     session.close_hook_connection();
 }
 
-/// So `lvpm list` shows it, and uninstall holds its hooks back; a failed hook
-/// is otherwise only in this scrollback. Warns when the record cannot be told,
-/// because then the uninstall hooks of a package whose install hook failed run.
-fn record_failed_post_install(env: &OpEnv, roots: &Roots, hook: &PostInstallHook) {
-    if let Err(e) = install::mark_hook_skipped(
-        roots,
-        &hook.package,
-        &format!("PostInstall={}", hook.vi.display()),
-    ) {
-        env.sink.emit(Event::HookRecordNotUpdated {
-            package: hook.package.clone(),
-            error: format!("{e:#}"),
-        });
-    }
-}
-
 /// Palettes and menus last, after the hooks: a hook is free to write more
 /// palette files of its own. Not for a venv: its LabVIEW is started fresh on
 /// launch and builds them from the overlay then.
-fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) {
-    if session.venv().is_some() {
-        return;
+fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) -> Result<()> {
+    // A venv's LabVIEW rebuilds its palettes at launch; what is owed here is
+    // the one merged menu addon its packages share.
+    if let Some(v) = session.venv() {
+        if !applied.dry_run {
+            crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+        }
+        return Ok(());
     }
     let written = if applied.dry_run { 0 } else { applied.files };
     let skipped = |reason, skipped| Event::PhaseSkipped {
@@ -1022,6 +1066,7 @@ fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) {
         }
         Some(_) => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1108,6 +1153,8 @@ mod tests {
 
         fn env<'a>(&self, sink: &'a NullSink) -> OpEnv<'a> {
             let config = Config {
+                log_dir: Default::default(),
+                venv_title: Default::default(),
                 cache: self.root.join("cache"),
                 hooks_run: Vec::new(),
                 local_sources: Vec::new(),
@@ -1160,31 +1207,6 @@ mod tests {
         assert!(why.contains(&scratch.sha256), "{why}");
         let roots = Roots::scratch(&scratch.root.join("dest"));
         assert!(!install::is_installed(&roots, "alpha"));
-    }
-
-    #[test]
-    fn a_failed_post_install_the_record_cannot_note_is_warned_about() {
-        use crate::ops::testing::{Recorded, env_on, scratch_dir};
-        let dir = scratch_dir("post-install-unrecorded");
-        let roots = Roots::scratch(&dir);
-        // A directory where the record should be: reading it fails.
-        std::fs::create_dir_all(install::manifest_path(&roots, "alpha")).unwrap();
-        let sink = Recorded::default();
-        let env = env_on(&sink, &dir);
-        let hook = PostInstallHook {
-            package: "alpha".into(),
-            vi: PathBuf::from("PostInstall.vi"),
-            files: Vec::new(),
-        };
-
-        record_failed_post_install(&env, &roots, &hook);
-
-        let events = sink.events();
-        assert!(
-            matches!(events.as_slice(), [Event::HookRecordNotUpdated { package, .. }] if package == "alpha"),
-            "{events:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1261,11 +1283,14 @@ mod tests {
             let mut member = src.by_index(i).unwrap();
             let mut bytes = Vec::new();
             member.read_to_end(&mut bytes).unwrap();
-            if member.name().ends_with("a.vi") {
+            if member.name().unwrap().ends_with("a.vi") {
                 bytes = b"altered".to_vec();
             }
             writer
-                .start_file(member.name(), zip::write::SimpleFileOptions::default())
+                .start_file(
+                    member.name().unwrap(),
+                    zip::write::SimpleFileOptions::default(),
+                )
                 .unwrap();
             writer.write_all(&bytes).unwrap();
         }

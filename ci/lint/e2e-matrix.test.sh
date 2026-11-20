@@ -27,11 +27,11 @@ expect 1 "a condition naming an image fails" pr.yml "s/if: matrix.os == 'windows
 expect 1 "no matrix rows fails" pr.yml '/image: "nationalinstruments/d' "no e2e matrix rows"
 expect 1 "write permission fails" build.yml 's/^  contents: read/  contents: write/' "build.yml must set"
 expect 1 "a quoted write permission fails" build.yml 's/^  contents: read/  contents: read\n  packages: "write"/' "must not grant a write"
-expect 1 "a missing permissions block fails" package.yml '/^permissions:/d' "package.yml must set"
+expect 1 "a missing permissions block fails" build.yml '/^permissions:/d' "build.yml must set"
 expect 1 "a job-level write grant fails" pr.yml '/^  e2e:/a\    permissions: { packages: write }' "must not grant a write permission"
 expect 1 "a latest tag fails" pr.yml 's#labview:2026q3-linux#labview:latest#' "is not a nationalinstruments/labview"
 expect 1 "pull_request_target fails" pr.yml 's/^  pull_request:/  pull_request_target:/' "must not run on pull_request_target"
-expect 1 "inherited secrets fail" pr.yml '/^  package:/a\    secrets: inherit' "secrets: inherit"
+expect 1 "inherited secrets fail" pr.yml '/^  lint:/a\    secrets: inherit' "secrets: inherit"
 expect 1 "a secret fails" pr.yml '$a\        env: { T: ${{ secrets.NI_TOKEN }} }' "secrets.NI_TOKEN"
 
 [ $failures = 0 ] && echo "all e2e lint scenarios passed" || { echo "$failures scenario(s) failed"; exit 1; }

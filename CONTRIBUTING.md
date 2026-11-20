@@ -143,14 +143,21 @@ collide, so nothing else needs to change.
 After every merge to `main`, [release-please.yml](.github/workflows/release-please.yml)
 opens or updates one release PR, `chore(main): release <version>`, which
 raises the version in `Cargo.toml` (and, through a later step, `Cargo.lock`) and adds the merged
-titles to `CHANGELOG.md`. Merging that PR publishes the version as release
-`v<version>`, holding the Windows zip, the Linux tar.gz and `SHA256SUMS`;
-once the version is tagged, every other merge stops at release.yml's guard
-and releases nothing.
+titles to `CHANGELOG.md`. Merging that PR makes [tag.yml](.github/workflows/tag.yml)
+push tag `v<version>`. The tag starts [release.yml](.github/workflows/release.yml),
+which [dist](https://axodotdev.github.io/cargo-dist/) generates from
+`dist-workspace.toml`: it builds and publishes release `v<version>` with the
+Windows zip, a per-user MSI (`wix/main.wxs`), the Linux tar.gz and a
+`.sha256` per file. [mark-prerelease.yml](.github/workflows/mark-prerelease.yml)
+then marks a 0.x release a pre-release, which dist does not. Once the version is tagged, every other merge stops at
+tag.yml's guard and releases nothing. After a change to `dist-workspace.toml`,
+run `dist generate` to rewrite release.yml; `dist plan` shows what a tag would
+publish. On a PR, release.yml only runs `dist plan`.
 
 release-please needs a repository secret `RELEASE_PLEASE_TOKEN`: a token with
 contents and pull-requests write. The default token will not do, because a PR
-it opens runs no CI.
+it opens runs no CI and a tag it pushes starts no release.yml. tag.yml pushes
+the tag with the same secret.
 
 To release a different version than release-please picked, add a
 `Release-As: X.Y.Z` footer to a merged commit. Editing the version in the
@@ -165,18 +172,17 @@ A new crate needs only an entry in the root `[workspace] members` and
 release PR's `ci-ok` fails on `--locked`, the lock push failed: re-run the
 Release PR workflow.
 
-Releases run one at a time. A merge that lands while the release PR's run is
-still waiting replaces that run; the newer run releases the same version from
-the newer commit, so the release also contains that merge, but its title is
-not in that version's `CHANGELOG.md` entry and does not raise the version. The
-workflow is [release.yml](.github/workflows/release.yml); the design is in
-[the CI spec](docs/specs/lvpm-ci-pipeline.md).
+Tags are pushed one at a time. A merge that lands while the release PR's
+tag run is still waiting replaces that run; the newer run tags the same
+version on the newer commit, so the release also contains that merge, but its
+title is not in that version's `CHANGELOG.md` entry and does not raise the
+version.
 
 ### Continuous integration
 
 Every PR runs [pr-title.yml](.github/workflows/pr-title.yml) and
 [pr.yml](.github/workflows/pr.yml): `cargo
-test` on Windows and Linux, the release build and packaging, the CI lint
+test` on Windows and Linux, the release build, the CI lint
 checks, and the CLI smoke flow (targets, search, `lock --check`, install,
 list, uninstall) inside NI's LabVIEW images:
 
@@ -187,8 +193,8 @@ list, uninstall) inside NI's LabVIEW images:
 | `nationalinstruments/labview:2026q3-windows` | Windows | 2026 | the `@labview` acceptance scenarios |
 
 A PR that changes only `docs/` and top-level Markdown runs `cargo test`
-(the suite reads `README.md` and `docs/`) and skips the build, packaging,
-lint and LabVIEW image jobs.
+(the suite reads `README.md` and `docs/`) and skips the build, lint and
+LabVIEW image jobs.
 
 Branch protection on `main` must require two checks: `ci-ok`, which passes
 only when every other job in `pr.yml` passed (or, on a docs-only PR, was
@@ -217,30 +223,20 @@ mdbook serve --open        # target/book
 
 ### Release failed
 
-Failed runs show as red **Release** runs on `main` under
-[Actions](https://github.com/ThatsTheEnd/lvpm/actions/workflows/release.yml).
+A release is two runs on [Actions](https://github.com/ThatsTheEnd/lvpm/actions):
+**Tag release** on `main`, then **Release** on the tag.
 
-1. Read the run's job summary. It names the version, the job that failed and
-   what to do next.
-2. If **guard** says `tag v<version> already exists`, open the
+1. If **Tag release**'s guard says `tag v<version> already exists`, open the
    [Releases](https://github.com/ThatsTheEnd/lvpm/releases) list first. A
-   published `v<version>` with 3 assets means the release is done and there
-   is nothing to fix. Otherwise the version is taken: fix the version in the
-   next release PR (a `Release-As: X.Y.Z` footer sets it). (A merge that is not the release PR never shows this; guard
-   stops it quietly. It appears on a manual run of an already released
-   version.)
-3. If **publish** failed at "Check the version is still not released", a
-   newer version was released after this run started: merge the next release
-   PR.
-4. If only **label release PR** failed, the release is out, but release-please
+   published `v<version>` means the release is done. Otherwise the version is
+   taken: fix the version in the next release PR (a `Release-As: X.Y.Z`
+   footer sets it).
+2. If only **label release PR** failed, the tag is pushed, but release-please
    opens no new release PR until the merged one is labelled
-   `autorelease: tagged`. Re-run the failed jobs, or swap its
-   `autorelease: pending` label for `autorelease: tagged` by hand. Use
-   **Re-run failed jobs**, not **Re-run all jobs**: a full re-run stops at
-   guard, because the tag now exists, and skips the label job.
-5. For any other job, re-run the failed jobs, but not while another Release
-   run is in progress. A draft release left by the failed run is deleted and
-   created again, and the installer never picks a draft.
+   `autorelease: tagged`. Use **Re-run failed jobs**, or swap its
+   `autorelease: pending` label for `autorelease: tagged` by hand.
+3. If **Release** failed, re-run its failed jobs. dist creates the release
+   only after every build passed, so a failed build publishes nothing.
 
 Releases before v0.4.0 (v0.2.1 and older) are in the repository this one
 was forked from. Releases here start at v0.4.0.

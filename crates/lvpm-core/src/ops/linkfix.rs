@@ -20,6 +20,8 @@ pub struct LinkfixOptions {
     pub methods: Vec<Method>,
     /// Write a JSON report of every changed or skipped file here.
     pub report: Option<PathBuf>,
+    /// The bitness of the LabVIEW a `--tree` is for; a venv knows its own.
+    pub bitness: Option<u8>,
 }
 
 impl Default for LinkfixOptions {
@@ -30,6 +32,7 @@ impl Default for LinkfixOptions {
             verbose: false,
             methods: Method::ALL.to_vec(),
             report: None,
+            bitness: None,
         }
     }
 }
@@ -38,17 +41,25 @@ impl Default for LinkfixOptions {
 /// `--tree`. A venv store is a set of `<package>/1/` roots; anything else is
 /// one LabVIEW-shaped root.
 pub fn linkfix(env: &OpEnv, opts: &LinkfixOptions) -> Result<()> {
-    let roots = match &opts.tree {
+    ensure!(
+        opts.bitness.is_none_or(|b| b == 32 || b == 64),
+        "--bitness is 32 or 64"
+    );
+    let (roots, bitness) = match &opts.tree {
         Some(t) => {
             let store_like = linkfix::venv_roots(t)?;
-            if store_like.is_empty() {
+            let roots = if store_like.is_empty() {
                 vec![t.clone()]
             } else {
                 store_like
-            }
+            };
+            (roots, opts.bitness)
         }
         None => match env.destination()? {
-            Destination::Venv(v) => linkfix::venv_roots(&v.dir)?,
+            Destination::Venv(v) => (
+                linkfix::venv_roots(&v.dir)?,
+                opts.bitness.or(Some(v.target.bitness)),
+            ),
             Destination::Global(_) | Destination::Scratch(_) => bail!(
                 "give --tree <DIR> for an explicit LabVIEW-shaped tree, or run linkfix inside a venv; \
                  install prepares newly written files automatically"
@@ -60,8 +71,10 @@ pub fn linkfix(env: &OpEnv, opts: &LinkfixOptions) -> Result<()> {
         roots: roots.len(),
         methods: opts.methods.clone(),
         dry_run: opts.dry_run,
+        bitness,
     });
-    let (_tree, outcomes) = linkfix::fix_tree(&roots, opts.dry_run, Methods::of(&opts.methods))?;
+    let (_tree, outcomes) =
+        linkfix::fix_tree(&roots, opts.dry_run, Methods::of(&opts.methods, bitness))?;
     if let Some(path) = &opts.report {
         write_report(path, &outcomes, opts.dry_run, &opts.methods)?;
         env.sink
@@ -109,9 +122,10 @@ pub(super) fn after_install(
         Some(v) => linkfix::venv_roots(&v.dir),
         None => Ok(vec![session.store().application.clone()]),
     };
-    match roots
-        .and_then(|roots| linkfix::fix_files(&roots, files, false, Methods::of(&Method::ALL)))
-    {
+    match roots.and_then(|roots| {
+        let bitness = session.target().map(|t| t.bitness);
+        linkfix::fix_files(&roots, files, false, Methods::of(&Method::ALL, bitness))
+    }) {
         Ok((_, outcomes)) => env.sink.emit(Event::LinkfixDone {
             report: report(&outcomes, false, true),
         }),

@@ -158,7 +158,19 @@ impl TuiWorld {
             .take(30)
             .collect();
         assert!(!start.is_empty(), "an empty error");
-        self.shows(&start);
+        // The pane wraps a long word (a URL) onto a line of its own, so read
+        // the screen's text with each line end as one space.
+        let screen = self.screen();
+        let text: Vec<&str> = screen
+            .iter()
+            .map(|row| row.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+            .collect();
+        let start = start.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            text.join(" ").contains(&start),
+            "no {start:?}:\n{}",
+            screen.join("\n")
+        );
     }
 
     fn release_park(&mut self) {

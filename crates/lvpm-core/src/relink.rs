@@ -94,7 +94,7 @@ const LV_EXTENSIONS: &[&str] = &[
     "vi", "vit", "vim", "ctl", "ctt", "xctl", "llb", "lvlib", "lvclass", "lvproj",
 ];
 
-fn is_lv_item(p: &Path) -> bool {
+pub(crate) fn is_lv_item(p: &Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| LV_EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))

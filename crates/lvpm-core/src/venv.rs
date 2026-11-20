@@ -106,8 +106,12 @@ impl Venv {
             crate::community::installable_name(pkg)
                 && pkg
                     .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)),
+                    .all(|c| c.is_ascii_alphanumeric() || "._-&".contains(c)),
             "package name {pkg:?} cannot be an addon folder name"
+        );
+        ensure!(
+            !pkg.eq_ignore_ascii_case(crate::palette::ADDON_NAME),
+            "package name {pkg:?} is reserved for lvpm's merged palette addon"
         );
         Ok(Roots::project(&self.dir, &self.target, pkg))
     }
@@ -592,6 +596,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// A package name becomes the addon folder: `&` is allowed (real package
+    /// names carry it), anything that walks out of `packages/` is not.
+    #[test]
+    fn addon_folder_names_allow_ampersand_and_refuse_paths() {
+        let dir = PathBuf::from("venv");
+        let v = Venv {
+            repo: PathBuf::from("repo"),
+            dir: dir.clone(),
+            target: labview_2026(),
+            port: 3363,
+            manifest: None,
+        };
+        for pkg in ["", ".", "..", "../pkg", r"..\pkg", "/pkg", r"C:\pkg"] {
+            assert!(v.roots_for_pkg(pkg).is_err(), "{pkg:?}");
+        }
+        for pkg in ["pkg", "pkg&extra"] {
+            assert!(v.roots_for_pkg(pkg).is_ok(), "{pkg:?}");
+        }
     }
 
     #[test]

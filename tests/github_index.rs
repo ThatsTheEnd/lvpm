@@ -549,6 +549,8 @@ defaults = false
 
 fn env<'a>(dir: &Path, sink: &'a RecordingSink, fake: &GitHubFake) -> OpEnv<'a> {
     let config = Config {
+        log_dir: Default::default(),
+        venv_title: Default::default(),
         cache: dir.join("cache"),
         hooks_run: Vec::new(),
         local_sources: Vec::new(),

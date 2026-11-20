@@ -60,6 +60,15 @@ pub enum Event {
     /// The venv's stored VI Server port can no longer be listened on — Windows
     /// reserved it since — so the venv moved to `to` before LabVIEW started.
     VenvPortMoved { from: u16, to: u16 },
+    /// `launch` or `venv shortcut` could not give the venv's LabVIEW
+    /// windows (or the shortcut) all they should have; the launch goes on.
+    VenvWindowsWarning { why: String },
+    /// LabVIEW `labview_year`'s installation has its own copy of these venv
+    /// packages, and loads that copy instead ([`crate::shadow`]). Never empty.
+    VenvShadowed {
+        labview_year: u32,
+        packages: Vec<crate::shadow::Shadowed>,
+    },
 
     // ---- launch ----
     /// A LabVIEW is being started on a venv. `labview` is the installation's
@@ -275,6 +284,8 @@ pub enum Event {
         roots: usize,
         methods: Vec<crate::linkfix::Method>,
         dry_run: bool,
+        /// The LabVIEW bitness `clfn-wildcard` resolves for; `None` skips it.
+        bitness: Option<u8>,
     },
     /// An install is preparing the LabVIEW files it wrote with linkfix.
     LinkfixPreparing,

@@ -37,15 +37,16 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   install [<pkg>[@ver]] [--manifest FILE] [--dry-run] [--no-deps]
           [--no-linkfix] [--relink] [--no-hooks | --hooks] [--allow-downgrade]
           [--relink-timeout SECS] [--relink-progress NAME] [--keep-open]
-  uninstall <pkg> [--with-deps | --keep-deps] | --all
+  uninstall <pkg> [--with-deps | --keep-deps] [--force] | --all
   relink <pkg> | --all          [--relink-timeout] [--relink-progress] [--keep-open]
   linkfix [--tree DIR] [--dry-run] [--verbose] [--keep-compiled-code]
-     [--fix owner,paths,qualifiers,source-only] [--report FILE]
+     [--fix owner,paths,qualifiers,source-only,clfn-wildcard] [--report FILE]
+     [--bitness 32|64]
   run-hooks <pkg> | --all       [--timeout SECS]
   refresh                       [--timeout SECS]
   start                         [--wait SECS]
-  launch [<lvproj>] [--ini KEY=VALUE]...
-  venv create | status | remove [-y]
+  launch [<lvproj>] [--ini KEY=VALUE]... [--no-check]
+  venv create | status | remove [-y] | shortcut [<lvproj>] [--desktop | --out PATH]
   config get <key> | set <key> [<value>...]
   cache add <path>
   app-probe <id>...             } VI Server primitives,
@@ -54,7 +55,7 @@ lvpm [--labview-version YYYY] [--prefix DIR | --project DIR] [--global] [--refre
   vi-run <vi> [--set N=T:V]... [--get N]... [--get-all] [--timeout] [--watch N] [--poll-ms MS] [--done N]
 ```
 
-`config` takes the keys `cache`, `hooks.run`, `sources.local` and `venv.dir`.
+`config` takes the keys `cache`, `hooks.run`, `log.dir`, `sources.local`, `venv.dir` and `venv.title`.
 `hooks.run` lists the packages whose install hooks may run in an install
 outside a project; its variable is `LVPM_CONFIG_HOOKS_RUN`
 ([usage.md](usage.md#configuration)).

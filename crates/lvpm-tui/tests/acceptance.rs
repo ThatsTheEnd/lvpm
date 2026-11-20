@@ -99,6 +99,8 @@ impl TuiWorld {
 
     pub fn builder(&self) -> EnvBuilder {
         let config = Config {
+            venv_title: Default::default(),
+            log_dir: Default::default(),
             cache: self.scratch.path().join("cache"),
             hooks_run: Vec::new(),
             local_sources: Vec::new(),
@@ -160,6 +162,19 @@ fn main() {
         // SAFETY: as above.
         unsafe { std::env::set_var(name, "") };
     }
+    // The 1 MiB main thread stack on Windows is too small for the runner's
+    // futures in a debug build, as in the root acceptance harness.
+    let runner = std::thread::Builder::new()
+        .name("cucumber".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run_features)
+        .expect("start the thread the features run on");
+    if let Err(panic) = runner.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+fn run_features() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let failures: Vec<String> = FEATURE_FILES
         .iter()

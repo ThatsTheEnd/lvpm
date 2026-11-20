@@ -359,8 +359,16 @@ display-name = "Demo Lib"
                 GOOD.replace("\"Demo Lib\"", r#""Demo\"\n[Script VIs]""#),
                 "distribution.display-name",
             ),
-            (GOOD.replace("3.0", "3,0"), "dependencies"),
         ];
+        // Not a version: the manifest reader refuses it before validate runs.
+        let e = format!(
+            "{:#}",
+            crate::project::parse(&GOOD.replace("3.0", "3,0")).unwrap_err()
+        );
+        assert!(
+            e.contains("[dependencies]") && e.contains("not a version"),
+            "{e}"
+        );
         for (i, (text, key)) in cases.into_iter().enumerate() {
             let e = error(&text);
             assert!(e.contains(key), "case {i}, {key}: {e}");

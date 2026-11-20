@@ -419,7 +419,7 @@ mod tests {
         (0..archive.len())
             .map(|i| {
                 let entry = archive.by_index(i).expect("entry");
-                (entry.name().to_string(), entry.last_modified())
+                (entry.name().unwrap().to_string(), entry.last_modified())
             })
             .collect()
     }

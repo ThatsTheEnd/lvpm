@@ -8,11 +8,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Where `tui.log` is, under `%LOCALAPPDATA%`.
-pub fn path(local_app_data: &Path) -> PathBuf {
-    local_app_data.join("lvpm").join("logs").join("tui.log")
-}
-
 /// A `tui.log` this large is moved to `tui.log.1` before the next entry.
 pub const ROTATE_AT: u64 = 10 * 1024 * 1024;
 

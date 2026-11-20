@@ -1,7 +1,7 @@
 name: Build
 
-# The one build definition: pr.yml and release.yml both call it, so a PR
-# builds exactly what main releases.
+# pr.yml's build: the release binaries, checked to run and report the version.
+# Releases are built by dist (release.yml) from the same Cargo.toml.
 on:
   workflow_call:
     inputs:
@@ -59,6 +59,14 @@ jobs:
           echo "$got"
           [[ "$got" == *"$want"* ]] || { echo "::error::lvpm --version printed '$got', expected $want"; exit 1; }
         shell: bash
+      - name: Install the build with install.ps1, as from a release zip
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'lvpm-x86_64-pc-windows-msvc.zip'
+          Compress-Archive target/release/lvpm.exe $zip
+          $prefix = Join-Path $env:RUNNER_TEMP 'lvpm-install'
+          ./scripts/install.ps1 -Archive $zip -Sha256 (Get-FileHash $zip).Hash -InstallDir $prefix -NoPath
       - uses: actions/upload-artifact@v4
         with:
           name: lvpm-${{ matrix.os }}
@@ -75,15 +83,21 @@ jobs:
           robocopy . C:\src\lvpm /E /XD target .git /NFL /NDL /NJH /NJS /NP | Out-Null
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
           # -p lvpm: lvpm-tui has an `acceptance` test too, and the e2e script runs the one binary.
-          cargo test --manifest-path C:\src\lvpm\Cargo.toml -p lvpm --test acceptance --no-run --locked
-          exit $LASTEXITCODE
+          # Cargo names the test binary's path; since Rust 1.100 it is no longer under deps.
+          $exe = cargo test --manifest-path C:\src\lvpm\Cargo.toml -p lvpm --test acceptance --no-run --locked --message-format=json |
+            ConvertFrom-Json |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'acceptance' -and $_.executable } |
+            Select-Object -Last 1 -ExpandProperty executable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not $exe) { throw 'cargo reported no acceptance test executable' }
+          Copy-Item $exe C:/src/lvpm/target/acceptance.exe
       - uses: actions/upload-artifact@v4
         if: inputs.acceptance && matrix.os == 'windows'
         with:
           name: lvpm-acceptance
           path: |
             C:/src/lvpm/target/debug/lvpm.exe
-            C:/src/lvpm/target/debug/deps/acceptance-*.exe
+            C:/src/lvpm/target/acceptance.exe
             C:/src/lvpm/tests
           if-no-files-found: error
           retention-days: 7

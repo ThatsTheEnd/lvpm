@@ -392,6 +392,8 @@ mod tests {
 
     fn env_on<'a>(sink: &'a Recorded, repo: &Path) -> OpEnv<'a> {
         let config = Config {
+            log_dir: Default::default(),
+            venv_title: Default::default(),
             cache: repo.join("cache"),
             hooks_run: Vec::new(),
             local_sources: vec![repo.join("packages")],
@@ -792,6 +794,30 @@ mod tests {
         assert!(!venv.staging_dir().exists());
         assert!(!venv.packages_dir().join("alpha").exists());
         assert_eq!(fake.log().starts, 0);
+    }
+
+    #[test]
+    fn without_relink_only_the_packages_marked_relink_are_planned_for_it() {
+        let (repo, _venv) = repo("resave-marked");
+        package(&repo, "alpha", "");
+        package(&repo, "beta", "\"alpha >= 1.0\"");
+        Fake::saving().install();
+        let sink = Recorded::default();
+        let opts = InstallOptions {
+            dry_run: true,
+            relink_marked: vec!["ALPHA".into()],
+            ..InstallOptions::default()
+        };
+
+        install(&env_on(&sink, &repo), Some("beta"), &opts).unwrap();
+
+        let relinked = sink.events().into_iter().find_map(|e| match e {
+            Event::RelinkPlanned { packages, .. } => {
+                Some(packages.into_iter().map(|p| p.package).collect::<Vec<_>>())
+            }
+            _ => None,
+        });
+        assert_eq!(relinked, Some(vec!["alpha".to_string()]));
     }
 
     #[test]

@@ -93,11 +93,16 @@ pub fn removal_plan(
     // Protect the closure, not just the project declarations: keeping a
     // declared package while removing something it needs would still break it.
     let project_declared = project_roots.iter().any(|name| key(name) == root_key);
+    // Reached only through another package, the requested one stops the
+    // walk: it is going, so what the project needs only through it is no
+    // longer needed. Declared itself, it stays a root, and so do its
+    // dependencies.
     let mut project_required = HashSet::new();
     let mut project_queue = project_roots.to_vec();
     while let Some(name) = project_queue.pop() {
         let name = key(&name);
-        if project_required.insert(name.clone())
+        if (name != root_key || project_declared)
+            && project_required.insert(name.clone())
             && let Some(record) = records.get(&name)
         {
             project_queue.extend(record.dependencies.iter().cloned());
@@ -194,6 +199,7 @@ mod tests {
             installed_at: 0,
             target: "test".into(),
             files: vec![],
+            palette_files: Vec::new(),
             dependencies: deps
                 .expect("test packages declare dependencies")
                 .iter()
@@ -295,5 +301,23 @@ mod tests {
         assert!(plan.project_declared);
         assert!(plan.removable.is_empty());
         assert_eq!(plan.project_kept.len(), 3);
+    }
+
+    /// The dashboard is declared, requires the state machine, which alone
+    /// requires the palette. Uninstalling the state machine leaves the
+    /// palette needed by nobody, so it may go.
+    #[test]
+    fn what_the_project_needs_only_through_the_removed_package_may_go() {
+        let records = vec![
+            package("dashboard", Some(&["state_machine", "oglib_error"])),
+            package("state_machine", Some(&["palette"])),
+            package("palette", Some(&[])),
+            package("oglib_error", Some(&[])),
+        ];
+        let plan = removal_plan(&records, "state_machine", &["dashboard".into()]).unwrap();
+        assert_eq!(plan.dependents, ["dashboard"]);
+        assert_eq!(plan.removable, ["palette"]);
+        assert!(plan.kept.is_empty(), "{:?}", plan.kept);
+        assert!(plan.project_kept.is_empty());
     }
 }

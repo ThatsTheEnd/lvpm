@@ -1,0 +1,33 @@
+name: Mark 0.x pre-release
+
+# dist (release.yml) marks a release as a pre-release only for a version
+# suffix. This repo's rule (AC-R3) is that every 0.x release is one;
+# install.ps1 -Stable and the update notice rely on it. Runs once release.yml
+# has published a tag; dist's post-announce-jobs hook would be the natural
+# place, but dist 0.34.0 writes a broken `uses:` for a local job.
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  mark:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Mark the release a pre-release while the major version is 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # A tag push's run names the tag as its branch.
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::warning::not a release tag, nothing marked: $TAG"; exit 0; }
+          if [ "$(bash ci/version-check.sh --print-prerelease "${TAG#v}")" = true ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease
+          fi

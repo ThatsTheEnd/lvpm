@@ -1,0 +1,104 @@
+name: Tag release
+
+# A merge to main tags the version in Cargo.toml if it is not tagged yet,
+# which is the case after merging release-please's release PR
+# (release-please.yml); a merge whose version is already tagged stops at
+# guard. The tag push starts release.yml, which dist generates
+# (dist-workspace.toml): it builds, packages and publishes the release. A tag
+# pushed with GITHUB_TOKEN starts no workflow, so the push uses
+# RELEASE_PLEASE_TOKEN. No tests run here: the PR's required ci-ok check
+# already ran them on this exact tree.
+on:
+  push:
+    branches: [main]
+
+# One run per commit: a shared group would cancel a pending run when a newer
+# merge queues. Every run tags the commit that set the version, not its own,
+# so two runs racing for one tag push the same commit.
+concurrency:
+  group: tag-release-${{ github.sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+      version: ${{ steps.check.outputs.version }}
+      commit: ${{ steps.check.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Decide whether this merge releases
+        id: check
+        run: |
+          version=$(bash ci/version-check.sh --print-version)
+          # Only a merged release PR raises the version; every other merge stops here.
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "v$version is already released; nothing to release until the release PR is merged." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          bash ci/version-check.sh --release
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # The release PR's merge: the last commit that changed a version line.
+          echo "commit=$(git log -1 --format=%H -G'^version = "' -- Cargo.toml)" >> "$GITHUB_OUTPUT"
+          echo "Tagging v$version; release.yml builds and publishes it." >> "$GITHUB_STEP_SUMMARY"
+
+  tag:
+    name: tag
+    needs: [guard]
+    if: needs.guard.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TAG: v${{ needs.guard.outputs.version }}
+      COMMIT: ${{ needs.guard.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0  # COMMIT may be older than this run's commit
+      - name: Push the tag
+        run: |
+          git tag "$TAG" "$COMMIT"
+          # A racing run may have pushed the same tag first; that is fine if it names the same commit.
+          git push origin "refs/tags/$TAG" || [ "$(git ls-remote origin "refs/tags/$TAG" | cut -f1)" = "$COMMIT" ]
+
+  # release-please (skip-github-release) refuses to open the next release PR
+  # while a merged one is still labelled pending. Its own job, so a failure
+  # here is re-run alone.
+  label-release-pr:
+    name: label release PR
+    needs: [guard, tag]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PENDING: 'autorelease: pending'
+      TAGGED: 'autorelease: tagged'
+      TITLE: 'chore(main): release ${{ needs.guard.outputs.version }}'
+    steps:
+      - name: Mark the merged release PR as tagged
+        run: |
+          gh label create "$TAGGED" --force
+          # REST, not `gh pr edit`: its GraphQL query fails on some gh versions.
+          prs=$(gh pr list --state merged --label "$PENDING" --json number,title --jq ".[] | select(.title == \"$TITLE\") | .number")
+          for pr in $prs; do
+            gh api -X POST "repos/$GH_REPO/issues/$pr/labels" -f "labels[]=$TAGGED" >/dev/null
+            gh api -X DELETE "repos/$GH_REPO/issues/$pr/labels/$(jq -rn --arg l "$PENDING" '$l|@uri')" >/dev/null
+          done
+          [ -n "$prs" ] || echo "::warning::No merged PR titled '$TITLE' carries '$PENDING'. If one is still pending, move its label by hand, or release-please opens no next release PR."

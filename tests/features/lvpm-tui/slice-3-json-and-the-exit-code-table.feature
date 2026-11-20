@@ -43,9 +43,11 @@ Feature: Machine-readable output
     Then the last line is the only one with a "result" key and it is {"command": "<name>"}
     And the exit code is 0
 
+    # launch's venv holds none of the lock's packages; --no-check skips the
+    # check that would refuse it, which this row is not about.
     Examples:
       | setup                                          | command                        | name    |
-      | the project has a venv on the detected LabVIEW | launch                         | launch  |
+      | the project has a venv on the detected LabVIEW | launch --no-check              | launch  |
       | a venv with beta installed                     | relink --all                   | relink  |
 
   @labview

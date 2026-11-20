@@ -2,8 +2,9 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::events::Event;
-use lvpm_core::ops::venv_cmd::VenvStatus;
+use lvpm_core::ops::venv_cmd::{ShortcutWritten, VenvStatus};
 use lvpm_core::project;
+use lvpm_core::shadow::Shadowed;
 use lvpm_core::venv::Venv;
 use std::path::Path;
 
@@ -54,14 +55,64 @@ pub fn status(status: Option<&VenvStatus>, searched_from: &Path) -> String {
         (false, true) => "starting on this venv",
         (false, false) => "not running on this venv",
     };
+    let year = v.target.year();
+    let shadowed = match status.shadowed.len() {
+        0 => "none: LabVIEW has no copy of its own of any of them".to_string(),
+        n => format!("{n} also in LabVIEW {year} (below)"),
+    };
     format!(
-        "{}\n  project        {}\n{}  packages       {} installed, {} not yet relinked\n  LabVIEW        {running}\n",
+        "{}\n  project        {}\n{}  packages       {} installed, {} not yet relinked\n  LabVIEW        {running}\n  shadowed       {shadowed}\n{}",
         v.dir.display(),
         v.repo.display(),
         binding(v),
         status.installed,
         status.not_relinked,
+        shadow_warning(year, &status.shadowed),
     )
+}
+
+/// What `lvpm venv shortcut` prints.
+pub fn shortcut(written: &ShortcutWritten) -> String {
+    format!(
+        "wrote {}\n  runs           lvpm {}\n",
+        written.path.display(),
+        written.arguments
+    )
+}
+
+/// The warning for venv packages LabVIEW `year`'s installation has its own
+/// copy of, with the fix for each; empty when there are none.
+fn shadow_warning(year: u32, shadowed: &[Shadowed]) -> String {
+    if shadowed.is_empty() {
+        return String::new();
+    }
+    let s = if shadowed.len() == 1 { "" } else { "s" };
+    let mut out = format!(
+        "\nwarning: LabVIEW {year} has its own copy of {} package{s} in this venv, and loads that copy instead:\n",
+        shadowed.len()
+    );
+    let width = shadowed.iter().map(|p| p.name.len()).max().unwrap_or(0);
+    for p in shadowed {
+        out += &format!("  {:<width$}  {}\n", p.name, p.version);
+    }
+    let by_lvpm: Vec<&Shadowed> = shadowed.iter().filter(|p| p.by_lvpm.is_some()).collect();
+    if by_lvpm.len() < shadowed.len() {
+        let which = if by_lvpm.is_empty() {
+            "them"
+        } else {
+            "the others"
+        };
+        out += &format!(
+            "  fix: uninstall {which} from LabVIEW {year} with the tool that installed them (VIPM)\n"
+        );
+    }
+    for p in by_lvpm {
+        out += &format!(
+            "  fix: lvpm uninstall {} --global --labview-version {year}\n",
+            p.name
+        );
+    }
+    out
 }
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
@@ -73,6 +124,14 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
         Event::VenvPortMoved { from, to } => r.line(
             Stream::Err,
             &format!("VI Server port {from} is reserved by Windows now; this venv uses port {to}"),
+        ),
+        Event::VenvWindowsWarning { why } => r.line(Stream::Err, &format!("warning: {why}")),
+        Event::VenvShadowed {
+            labview_year,
+            packages,
+        } => r.line(
+            Stream::Err,
+            shadow_warning(*labview_year, packages).trim_end(),
         ),
         _ => unreachable!("routed here by Renderer::render: {event:?}"),
     }
@@ -127,17 +186,59 @@ mod tests {
             not_relinked: 1,
             running: true,
             starting: false,
+            shadowed: Vec::new(),
         };
         assert_eq!(
             status(Some(&found), Path::new("proj")),
             format!(
-                "{}\n  project        proj\n  bound to       LabVIEW 2026 (64-bit)  v26.3  (LabVIEW 2026)\n  VI Server port 3412\n  packages       3 installed, 1 not yet relinked\n  LabVIEW        running on this venv\n",
+                "{}\n  project        proj\n  bound to       LabVIEW 2026 (64-bit)  v26.3  (LabVIEW 2026)\n  VI Server port 3412\n  packages       3 installed, 1 not yet relinked\n  LabVIEW        running on this venv\n  shadowed       none: LabVIEW has no copy of its own of any of them\n",
                 v.dir.display()
             )
         );
         assert_eq!(
             status(None, Path::new("proj")),
             "no venv at or above proj — `lvpm venv create` makes one\n"
+        );
+    }
+
+    #[test]
+    fn shadowed_packages_are_named_with_the_fix_for_each() {
+        let pkg = |name: &str, by_lvpm: Option<Option<String>>| Shadowed {
+            name: name.into(),
+            version: "7.1".into(),
+            found: 1,
+            total: 2,
+            example: "vi.lib/x.vi".into(),
+            by_lvpm,
+        };
+        let (mut renderer, out, err) = renderer();
+        renderer.render(&Event::VenvShadowed {
+            labview_year: 2026,
+            packages: vec![pkg("delacor_qmh", None), pkg("oglib", Some(None))],
+        });
+        assert_eq!(out.text(), "");
+        assert_eq!(
+            err.text(),
+            "\nwarning: LabVIEW 2026 has its own copy of 2 packages in this venv, and loads that copy instead:\n\
+             \x20 delacor_qmh  7.1\n\
+             \x20 oglib        7.1\n\
+             \x20 fix: uninstall the others from LabVIEW 2026 with the tool that installed them (VIPM)\n\
+             \x20 fix: lvpm uninstall oglib --global --labview-version 2026\n"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_says_where_it_went_and_what_it_runs() {
+        let written = ShortcutWritten {
+            path: PathBuf::from("proj").join("proj (LabVIEW 2026 64-bit).lnk"),
+            arguments: "--project \"proj\" launch --pause-on-error".into(),
+        };
+        assert_eq!(
+            shortcut(&written),
+            format!(
+                "wrote {}\n  runs           lvpm --project \"proj\" launch --pause-on-error\n",
+                written.path.display()
+            )
         );
     }
 
