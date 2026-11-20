@@ -392,6 +392,7 @@ fn commit(
     let sync_options = SyncOptions {
         install: InstallOptions {
             hook_allow: HookAllow::for_command(&env.config, Some(&edit.project)),
+            relink_marked: edit.project.relink.iter().cloned().collect(),
             ..options.clone()
         },
         ..SyncOptions::default()

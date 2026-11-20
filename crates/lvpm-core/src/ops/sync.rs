@@ -207,6 +207,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
     let opts = &SyncOptions {
         install: InstallOptions {
             hook_allow: HookAllow::for_command(&env.config, Some(project)),
+            relink_marked: project.relink.iter().cloned().collect(),
             ..opts.install.clone()
         },
         ..opts.clone()

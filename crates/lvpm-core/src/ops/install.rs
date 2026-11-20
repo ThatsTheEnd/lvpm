@@ -46,6 +46,11 @@ pub struct InstallOptions {
     /// Run LabVIEW's load-and-save relink pass instead of linkfix (`--relink`).
     /// Not the resave: a venv install resaves each package whatever this says.
     pub force_relink: bool,
+    /// The packages the manifest marks `relink = true`: without
+    /// `force_relink`, LabVIEW's relink pass runs for these alone, after
+    /// linkfix. For VIs only LabVIEW can re-resolve, such as .NET invoke
+    /// nodes storing a member index from another build of the assembly.
+    pub relink_marked: Vec<String>,
     /// Run every package's install hooks in this command, whether or not
     /// anything allowed them, and even where LabVIEW runs headless, where they
     /// are otherwise skipped: most hooks add palettes, menus or markers for an
@@ -892,23 +897,39 @@ fn relink_pass(
     opts: &InstallOptions,
 ) -> Result<()> {
     // Linkfix does the link repair without LabVIEW, so this pass runs only
-    // when `--relink` asks for it, headless or not.
-    let work = &session.relink_work;
+    // when `--relink` asks for it, headless or not, or for the packages the
+    // manifest marks `relink = true`.
+    let marked: Vec<(String, Vec<PathBuf>)>;
+    let work = match opts.force_relink {
+        true => &session.relink_work,
+        false => {
+            marked = (session.relink_work.iter())
+                .filter(|(pkg, _)| {
+                    opts.relink_marked
+                        .iter()
+                        .any(|m| m.eq_ignore_ascii_case(pkg))
+                })
+                .cloned()
+                .collect();
+            &marked
+        }
+    };
+    let installed: usize = session.relink_work.iter().map(|(_, f)| f.len()).sum();
     let folders: usize = work.iter().map(|(_, f)| f.len()).sum();
     let skipped = |reason| Event::PhaseSkipped {
         phase: Phase::Relink,
         reason,
-        skipped: folders,
+        skipped: installed,
     };
     let Some(target) = session.target() else {
         env.sink.emit(skipped(SkipReason::ScratchDestination));
         return Ok(());
     };
     // Nothing with linker tables was installed — palettes and docs only.
-    if folders == 0 {
+    if installed == 0 {
         return Ok(());
     }
-    if !opts.force_relink || opts.no_relink {
+    if work.is_empty() || opts.no_relink {
         env.sink.emit(skipped(SkipReason::Declined));
     } else if applied.dry_run {
         env.sink.emit(Event::RelinkPlanned {

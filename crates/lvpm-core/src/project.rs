@@ -221,6 +221,10 @@ pub struct Project {
     /// The name, as written, of every dependency whose line says
     /// `hooks = "run"`, in any table.
     pub hooks_allowed: BTreeSet<String>,
+    /// The name, as written, of every dependency whose line says
+    /// `relink = true`, in any table: an install loads and saves it in
+    /// LabVIEW after linkfix.
+    pub relink: BTreeSet<String>,
     /// `[nipm.dependencies]` names, for reporting only.
     pub nipm: Vec<String>,
     /// `[distribution]`, as written: `lvpm build` reads it through
@@ -249,6 +253,7 @@ impl Default for Project {
             github: BTreeMap::new(),
             source_pins: BTreeMap::new(),
             hooks_allowed: BTreeSet::new(),
+            relink: BTreeSet::new(),
             nipm: Vec::new(),
             distribution: None,
             application: None,
@@ -386,6 +391,12 @@ impl Project {
         self.hooks_allowed.iter().any(|n| same_name(n, name))
     }
 
+    /// Whether a dependency line says `relink = true` for `name`, in any
+    /// table, whatever the case either is written in.
+    pub fn relink_for(&self, name: &str) -> bool {
+        self.relink.iter().any(|n| same_name(n, name))
+    }
+
     /// Every dependency table, with its lines: `[dependencies]`,
     /// `[dev-dependencies]`, then each group in file order. The one list of
     /// tables: whatever treats the tables alike goes through it.
@@ -516,6 +527,7 @@ pub(crate) fn parse(text: &str) -> Result<Project> {
         .map(|(name, (source, _))| (name, source))
         .collect();
     p.hooks_allowed = stated.hooks;
+    p.relink = stated.relink;
     p.nipm = f.nipm.dependencies.into_iter().map(|(k, _)| k).collect();
     p.policy = f.policy.map(parse_policy).transpose()?.unwrap_or_default();
     p.application = f.application.map(parse_application).transpose()?;
@@ -665,6 +677,8 @@ struct Stated {
     index: BTreeMap<String, (String, String)>,
     /// Names whose line says `hooks = "run"`, as written.
     hooks: BTreeSet<String>,
+    /// Names whose line says `relink = true`, as written.
+    relink: BTreeSet<String>,
 }
 
 /// What `name` was stated as, whatever the case it was written in.
@@ -735,6 +749,9 @@ fn parse_dependencies(
             if keys.hooks {
                 stated.hooks.insert(name.clone());
             }
+            if keys.relink {
+                stated.relink.insert(name.clone());
+            }
             Ok((name, constraint))
         })
         .collect()
@@ -782,10 +799,12 @@ struct LineKeys {
     index: Option<String>,
     /// `hooks = "run"`.
     hooks: bool,
+    /// `relink = true`.
+    relink: bool,
 }
 
 /// One dependency line: a version string, or a table with `version` and,
-/// optionally, `github`, `index` or `hooks`.
+/// optionally, `github`, `index`, `hooks` or `relink`.
 fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint, LineKeys)> {
     let (version, keys) = match value {
         toml::Value::String(version) => (version, LineKeys::default()),
@@ -800,12 +819,12 @@ fn dependency(table: &str, name: &str, value: toml::Value) -> Result<(Constraint
 }
 
 /// The keys a table-form dependency line may have.
-const LINE_KEYS: [&str; 4] = ["version", "github", "index", "hooks"];
+const LINE_KEYS: [&str; 5] = ["version", "github", "index", "hooks", "relink"];
 
 /// The one value `hooks` may have.
 const HOOKS_RUN: &str = "run";
 
-/// The `version`, `github`, `index` and `hooks` of a table-form dependency
+/// The `version`, `github`, `index`, `hooks` and `relink` of a table-form dependency
 /// line. Any key not known yet is refused, never ignored.
 fn dependency_table(
     table: &str,
@@ -865,12 +884,21 @@ fn dependency_table(
         .map(|value| hooks_run(&at, value))
         .transpose()?
         .is_some();
+    let relink = match fields.remove("relink") {
+        None => false,
+        Some(toml::Value::Boolean(on)) => on,
+        Some(other) => bail!(
+            "{at}: relink must be true or false, got {}",
+            other.type_str()
+        ),
+    };
     Ok((
         version,
         LineKeys {
             github,
             index,
             hooks,
+            relink,
         },
     ))
 }
@@ -1426,7 +1454,7 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
             ),
             (
                 "pkg = { github = \"o/r\", version = \"*\", foo = \"x\" }",
-                "[dependencies] pkg: unknown key \"foo\"; expected version, github, index or hooks",
+                "[dependencies] pkg: unknown key \"foo\"; expected version, github, index, hooks or relink",
             ),
             ("pkg = { github = \"o/r\" }", a_table_needs_version),
             ("pkg = {}", a_table_needs_version),
@@ -1441,6 +1469,24 @@ ni-daqmx-labview-support = "26.0.0.49434-0+f282"
         ] {
             assert_eq!(refusal("dependencies", line), said, "{line}");
         }
+    }
+
+    #[test]
+    fn a_dependency_line_may_ask_for_relink_in_any_table() {
+        let p = parse(
+            "[dependencies]\nsklein_lib_webview2 = { version = \"2.1.1.2\", relink = true }\n\
+             plain = { version = \"1.0\", relink = false }\n\n\
+             [dependency-groups.test]\nJKI_Caraya = { version = \"*\", relink = true }\n",
+        )
+        .unwrap();
+        assert!(p.relink_for("SKLEIN_lib_webview2"));
+        assert!(p.relink_for("jki_caraya"), "a group's line counts too");
+        assert!(!p.relink_for("plain"));
+        let why = parse("[dependencies]\nx = { version = \"1\", relink = \"yes\" }\n").unwrap_err();
+        assert!(
+            format!("{why:#}").contains("relink must be true or false, got string"),
+            "{why:#}"
+        );
     }
 
     #[test]

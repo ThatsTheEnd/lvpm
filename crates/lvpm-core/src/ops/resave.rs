@@ -795,6 +795,30 @@ mod tests {
     }
 
     #[test]
+    fn without_relink_only_the_packages_marked_relink_are_planned_for_it() {
+        let (repo, _venv) = repo("resave-marked");
+        package(&repo, "alpha", "");
+        package(&repo, "beta", "\"alpha >= 1.0\"");
+        Fake::saving().install();
+        let sink = Recorded::default();
+        let opts = InstallOptions {
+            dry_run: true,
+            relink_marked: vec!["ALPHA".into()],
+            ..InstallOptions::default()
+        };
+
+        install(&env_on(&sink, &repo), Some("beta"), &opts).unwrap();
+
+        let relinked = sink.events().into_iter().find_map(|e| match e {
+            Event::RelinkPlanned { packages, .. } => {
+                Some(packages.into_iter().map(|p| p.package).collect::<Vec<_>>())
+            }
+            _ => None,
+        });
+        assert_eq!(relinked, Some(vec!["alpha".to_string()]));
+    }
+
+    #[test]
     fn a_dry_run_leaves_a_leftover_staging_folder_alone() {
         let (repo, venv) = repo("resave-dry-leftover");
         package(&repo, "alpha", "");
