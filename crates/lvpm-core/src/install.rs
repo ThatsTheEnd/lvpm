@@ -113,7 +113,7 @@ pub enum PaletteTree {
     #[default]
     #[serde(rename = "menus")]
     Menus,
-    /// `.mnu` files under `<vi.lib>ddons`, the Addons palette. Several
+    /// `.mnu` files under `<vi.lib>/addons`, the Addons palette. Several
     /// packages share a category folder there (`addons\HSE`), and LabVIEW
     /// shows only one addon's copy of a folder.
     #[serde(rename = "vi.lib/addons")]

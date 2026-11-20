@@ -660,6 +660,12 @@ mod tests {
         let (installed, in_venv) = list(&env_on(&sink, &repo)).unwrap();
         assert_eq!(installed.len(), 1);
         assert!(in_venv);
+        let selected = sink
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::VenvSelected { .. }))
+            .count();
+        assert_eq!(selected, 1, "one destination() call");
         std::fs::remove_dir_all(&repo).ok();
     }
 }
