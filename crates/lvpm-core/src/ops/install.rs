@@ -396,14 +396,17 @@ pub fn apply(
             });
         }
         for planned in &plan.entries {
-            // The same version installed is left alone by install_one: no
-            // download, so a no-op install works offline.
+            // What settle_installed leaves alone (the same version, or a newer
+            // one without --allow-downgrade) is not downloaded, so a no-op
+            // install works offline.
             let entry = &planned.entry;
             let roots = session.roots_for(&entry.name)?;
-            let same = install::is_installed(&roots, &entry.name)
-                && install::read_manifest(&roots, &entry.name)
-                    .is_ok_and(|old| Version::parse(&old.version) == entry.version);
-            if !same {
+            let left_alone = install::is_installed(&roots, &entry.name)
+                && install::read_manifest(&roots, &entry.name).is_ok_and(|old| {
+                    let old = Version::parse(&old.version);
+                    old == entry.version || (old > entry.version && !opts.allow_downgrade)
+                });
+            if !left_alone {
                 session.fetch(env, entry)?;
             }
         }
