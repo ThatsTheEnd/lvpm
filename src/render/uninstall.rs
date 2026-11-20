@@ -60,7 +60,6 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
                 UnrunReason::InstalledBeforeUninstallHooks => {
                     "installed before uninstall hooks existed".to_string()
                 }
-                UnrunReason::VenvRunsNoHooks => "hooks do not run in a venv".to_string(),
                 // The package name comes from a feed, and this line is pasted:
                 // only a plain name goes into the command. A package with no
                 // PostInstall has nothing for run-hooks to run. The package is
@@ -114,12 +113,6 @@ mod tests {
         let (mut renderer, out, _) = renderer();
         renderer.render(&Event::UninstallHooksNotRun {
             package: "alpha".into(),
-            hooks: vec!["PreUninstall=a.vi".into(), "PostUninstall=b.vi".into()],
-            reason: UnrunReason::VenvRunsNoHooks,
-            run_hooks_helps: true,
-        });
-        renderer.render(&Event::UninstallHooksNotRun {
-            package: "alpha".into(),
             hooks: vec!["PreUninstall=a.vi".into()],
             reason: UnrunReason::InstalledBeforeUninstallHooks,
             run_hooks_helps: true,
@@ -129,8 +122,7 @@ mod tests {
         });
         assert_eq!(
             out.text(),
-            "note: declared but not run (hooks do not run in a venv): PreUninstall, PostUninstall\n\
-             note: declared but not run (installed before uninstall hooks existed): PreUninstall\n\
+            "note: declared but not run (installed before uninstall hooks existed): PreUninstall\n\
              note: cannot stage PostUninstall.vi (access denied) — not running it\n"
         );
     }

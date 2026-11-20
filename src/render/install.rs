@@ -15,6 +15,38 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {
     match event {
+        // At most three lines; --json lists each differing dir.mnu.
+        Event::PalettesMerged {
+            files,
+            packages,
+            moved,
+            dir_mnu,
+            restart,
+        } => {
+            let moved = match moved {
+                0 => String::new(),
+                n => format!("; moved {n} out of the package addons"),
+            };
+            r.line(
+                Stream::Err,
+                &format!("palettes: merged {files} file(s) from {packages} package(s){moved}"),
+            );
+            if !dir_mnu.is_empty() {
+                r.line(
+                    Stream::Err,
+                    &format!(
+                        "palettes: {} shared dir.mnu differ between packages; kept the first by name",
+                        dir_mnu.len()
+                    ),
+                );
+            }
+            if *restart {
+                r.line(
+                    Stream::Err,
+                    "palettes: changed; restart the venv's LabVIEW to see them",
+                );
+            }
+        }
         Event::ManifestInUse {
             path,
             name,
@@ -472,6 +504,31 @@ mod tests {
             renderer.render(event);
         }
         (out.text(), err.text())
+    }
+
+    #[test]
+    fn a_palette_merge_is_at_most_three_lines() {
+        let merged = |moved, dir_mnu, restart| Event::PalettesMerged {
+            files: 4,
+            packages: 2,
+            moved,
+            dir_mnu,
+            restart,
+        };
+        let (_, err) = text_of(&[merged(0, vec![], false)]);
+        assert_eq!(err, "palettes: merged 4 file(s) from 2 package(s)\n");
+        let choice = lvpm_core::palette::DirMnuChoice {
+            relative: "vi.lib/addons/HSE/dir.mnu".into(),
+            kept: "alpha".into(),
+            dropped: vec!["beta".into()],
+        };
+        let (_, err) = text_of(&[merged(3, vec![choice], true)]);
+        assert_eq!(
+            err,
+            "palettes: merged 4 file(s) from 2 package(s); moved 3 out of the package addons\n\
+             palettes: 1 shared dir.mnu differ between packages; kept the first by name\n\
+             palettes: changed; restart the venv's LabVIEW to see them\n"
+        );
     }
 
     #[test]

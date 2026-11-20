@@ -1,7 +1,7 @@
 //! Questions about what lvpm knows, answered as data: the front end decides
 //! how many rows to show and what to call them.
 
-use super::env::OpEnv;
+use super::env::{Destination, OpEnv};
 use super::session::Downloads;
 use crate::cache::Cache;
 use crate::config;
@@ -219,8 +219,11 @@ pub struct PackageInfo {
 }
 
 /// What lvpm has installed into the selected destination.
-pub fn list(env: &OpEnv) -> Result<Vec<Manifest>> {
-    install::list_installed(&env.destination()?.store())
+/// Also says whether they are a venv's, whose list shows fewer hooks.
+pub fn list(env: &OpEnv) -> Result<(Vec<Manifest>, bool)> {
+    let destination = env.destination()?;
+    let in_venv = matches!(destination, Destination::Venv(_));
+    Ok((install::list_installed(&destination.store())?, in_venv))
 }
 
 /// The effective value of a setting, one string per value.
@@ -639,5 +642,30 @@ mod tests {
         let why = archive_bytes(&env, &listed).unwrap_err();
         assert!(why.is::<crate::errors::IndexUrlRefused>(), "{why:#}");
         std::fs::remove_dir_all(scratch).ok();
+    }
+
+    #[test]
+    fn a_list_inside_a_project_with_a_venv_lists_the_venv_and_says_so() {
+        use crate::ops::testing::{Recorded, env_on, scratch_dir, venv_in};
+        let repo = scratch_dir("list-venv");
+        let store = venv_in(&repo).store().store_dir();
+        std::fs::create_dir_all(&store).unwrap();
+        let record = serde_json::json!({
+            "name": "alpha", "version": "1.0", "display_name": null, "installed_at": 0,
+            "target": "venv", "files": [], "skipped_hooks": ["PostInstall=b.vi"],
+        });
+        std::fs::write(store.join("alpha.json"), record.to_string()).unwrap();
+
+        let sink = Recorded::default();
+        let (installed, in_venv) = list(&env_on(&sink, &repo)).unwrap();
+        assert_eq!(installed.len(), 1);
+        assert!(in_venv);
+        let selected = sink
+            .events()
+            .iter()
+            .filter(|e| matches!(e, Event::VenvSelected { .. }))
+            .count();
+        assert_eq!(selected, 1, "one destination() call");
+        std::fs::remove_dir_all(&repo).ok();
     }
 }
