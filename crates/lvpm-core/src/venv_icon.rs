@@ -8,13 +8,15 @@
 //! venvs differ and one venv keeps its colour. No letter: at taskbar sizes it
 //! was unreadable, and the colour alone tells venvs apart.
 
+// The icon is drawn only on Windows; elsewhere its helpers are compiled but unused.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use crate::venv::Venv;
 use anyhow::Result;
 use std::path::PathBuf;
 
 /// Sizes written to the `.ico`: what Explorer, the taskbar and Alt+Tab ask for
 /// at 100–200 % scaling.
-#[cfg_attr(not(windows), allow(dead_code))]
 const SIZES: [u32; 5] = [16, 24, 32, 48, 256];
 
 /// Badge colours, as RGB: saturated, and none of them near LabVIEW's yellow.
@@ -87,7 +89,6 @@ pub fn or_labviews(v: &Venv) -> (PathBuf, Option<String>) {
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 fn badge_diameter(size: u32) -> u32 {
     (size / 2).max(9)
 }

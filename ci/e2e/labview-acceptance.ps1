@@ -59,8 +59,8 @@ while (-not (Test-NetConnection 127.0.0.1 -Port $port -InformationLevel Quiet -W
     Start-Sleep 5
 }
 
-$binary = Get-ChildItem "$src\target\debug\deps\acceptance-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $binary) { Fail "no acceptance test binary under $src\target\debug\deps" }
+$binary = Get-Item "$src\target\acceptance.exe" -ErrorAction SilentlyContinue
+if (-not $binary) { Fail "no acceptance test binary at $src\target\acceptance.exe" }
 $env:LVPM_TEST_LABVIEW = '1'; $env:LVPM_TEST_ONLY_LABVIEW = '1'; $env:LVPM_TEST_LABVIEW_HEADLESS = '1'
 $ErrorActionPreference = 'Continue'
 $log = (& $binary.FullName 2>&1 | ForEach-Object { "$_" } | Out-String)
