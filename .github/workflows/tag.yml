@@ -12,9 +12,11 @@ on:
   push:
     branches: [main]
 
-# One tag at a time; a running one is never cancelled.
+# One run per commit: a shared group would cancel a pending run when a newer
+# merge queues, and the newer run would tag the wrong commit. Two runs cannot
+# both push one tag, and guard skips once it exists.
 concurrency:
-  group: tag-release
+  group: tag-release-${{ github.sha }}
   cancel-in-progress: false
 
 permissions:

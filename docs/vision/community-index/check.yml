@@ -107,17 +107,24 @@ jobs:
         if: steps.parents.outputs.verdict == '' && vars.LVPM_GIT_REV == ''
         working-directory: ${{ runner.temp }}
         run: |
-          archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
           base="https://github.com/ThatsTheEnd/lvpm/releases/download/v${LVPM_VERSION}"
+          # Releases after 0.27.0 name the archive by target; earlier ones by version.
+          archive=lvpm-x86_64-unknown-linux-gnu.tar.gz
+          if curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/$archive.sha256"; then
+            grep -F "$archive" "$archive.sha256" > sums
+          else
+            archive="lvpm-${LVPM_VERSION}-linux-x64.tar.gz"
+            curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
+            grep -F "  $archive" SHA256SUMS > sums
+          fi
           if [ -n "$LVPM_SHA256" ]; then
-            curl --fail --silent --show-error --location --remote-name "$base/$archive"
             echo "$LVPM_SHA256  $archive" | sha256sum -c
           else
-            curl --fail --silent --show-error --location --remote-name "$base/$archive" --remote-name "$base/SHA256SUMS"
-            grep -F "  $archive" SHA256SUMS | sha256sum --check
+            sha256sum --check sums
           fi
-          mkdir lvpm-bin
-          tar -xzf "$archive" -C lvpm-bin lvpm
+          mkdir unpacked lvpm-bin
+          tar -xzf "$archive" -C unpacked
+          find unpacked -type f -name lvpm -exec mv {} lvpm-bin/ \;
           echo "$RUNNER_TEMP/lvpm-bin" >> "$GITHUB_PATH"
       - name: Build lvpm from a commit
         if: steps.parents.outputs.verdict == '' && vars.LVPM_GIT_REV != ''

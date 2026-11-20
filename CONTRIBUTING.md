@@ -148,7 +148,8 @@ push tag `v<version>`. The tag starts [release.yml](.github/workflows/release.ym
 which [dist](https://axodotdev.github.io/cargo-dist/) generates from
 `dist-workspace.toml`: it builds and publishes release `v<version>` with the
 Windows zip, a per-user MSI (`wix/main.wxs`), the Linux tar.gz and a
-`.sha256` per file. Once the version is tagged, every other merge stops at
+`.sha256` per file. [mark-prerelease.yml](.github/workflows/mark-prerelease.yml)
+then marks a 0.x release a pre-release, which dist does not. Once the version is tagged, every other merge stops at
 tag.yml's guard and releases nothing. After a change to `dist-workspace.toml`,
 run `dist generate` to rewrite release.yml; `dist plan` shows what a tag would
 publish. On a PR, release.yml only runs `dist plan`.
