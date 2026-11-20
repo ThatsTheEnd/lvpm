@@ -26,7 +26,7 @@
 | `lvpm cache add <path>`                              | Import a `.vip`, `.ogp` or `.lvpkg`, or every one in a folder, into the cache ([Package sources](#package-sources)) |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
 | `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
-| `lvpm venv create` / `status` / `remove`             | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
+| `lvpm venv create` / `status` / `remove` / `shortcut` | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
 | `lvpm launch [<lvproj>] [--no-check]`                | Start a LabVIEW on the project's venv                                                                                                        |
 | `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
@@ -652,6 +652,15 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
   a pointer to `lvpm sync`. `--no-check` starts anyway. The check does not
   hash files, so an edited file passes; dev and group packages are not
   checked.
+- `lvpm venv shortcut [<lvproj>]` writes a Windows shortcut,
+  `<project> (LabVIEW <year> <bits>-bit).lnk`, that runs
+  `lvpm --project <repo> launch [<lvproj>]` with the venv's icon. It goes in
+  the project folder; `--desktop` puts it on the desktop, and `--out PATH`
+  takes a `.lnk` path or a folder. It runs `lvpm`, not `LabVIEW.exe`: a
+  shortcut cannot set the venv's temp directory and would skip the check
+  above. When a launch from it fails, its console stays open until you press
+  Enter. It records the full path of the `lvpm.exe` that wrote it, so write
+  it again if you move lvpm.
 - When the LabVIEW installation has its own copy of a venv package (from
   VIPM, `lvpm install --global` or by hand), LabVIEW loads that copy instead.
   lvpm warns about it after an install into the venv, at `lvpm launch` and in
@@ -677,6 +686,35 @@ ship the same menu file with different contents refuse the merge and leave
 the published addon as it was. The package name `venv-palettes` is reserved.
 `lvpm launch` refuses a venv whose merged addon no longer matches its
 packages; `lvpm sync` rebuilds it.
+
+#### Window titles, icon and taskbar
+
+On Windows, `launch` also starts a small hidden `lvpm` beside the venv
+LabVIEW. It keeps the project folder's name in the window titles, so a venv
+IDE and your primary one (or two venvs) can be told apart:
+
+```text
+MyProject.lvproj - Project Explorer [MyProject]
+Main.vi Front Panel on MyProject.lvproj/My Computer [MyProject] *
+```
+
+It tags the Getting Started window, Project Explorer, front panels, block
+diagrams and class or library windows; dialogs and palettes keep their
+titles. LabVIEW rewrites a title on every edit and save, and the watcher
+puts the tag back straight after. LabVIEW's `*` for unsaved changes stays
+where LabVIEW shows it. The watcher reacts to window events only and exits
+with its LabVIEW. The `venv.title` setting moves the name to the front
+(`start`) or turns it off (`off`), for a tool that finds LabVIEW's windows by
+their exact title.
+
+The same watcher gives the windows the venv's icon, LabVIEW's own with a
+coloured disc in the upper right, and a taskbar button of their own. The
+colour comes from the project folder's name. lvpm writes the icon to
+`.lv-venvenv.ico` at each launch and for `venv shortcut`. Each venv's
+windows get the app id `lvpm.venv.<hash of the project path>`, so the venv's
+LabVIEW has its own taskbar button. *Pin to taskbar* on it pins
+`lvpm --project <repo> launch`, with the venv's icon and name. A LabVIEW on
+the venv started another way than `lvpm launch` gets none of this.
 
 Two things follow from LabVIEW reading an addon's contents at launch:
 
@@ -1589,6 +1627,7 @@ value is kept and turns the file's list off. Precedence, highest first:
 | `LVPM_CONFIG_CACHE` | `%LOCALAPPDATA%\lvpm\cache` (Linux: `$XDG_CACHE_HOME/lvpm/cache`, else `~/.cache/lvpm/cache`) | Where the cache DB, feed bodies, and imported package archives live |
 | `LVPM_CONFIG_SOURCES_LOCAL` | Empty | Local package directories (`.vip`, `.ogp`, `.lvpkg`); separate paths with `;` on Windows or `:` on Linux |
 | `LVPM_CONFIG_VENV_DIR` | `.lv-venv` | Project-relative venv directory (or an absolute path) |
+| `LVPM_CONFIG_VENV_TITLE` | `end` | Where `lvpm launch` puts the venv's name in LabVIEW's window titles (Windows): `end`, `start` or `off` ([Window titles, icon and taskbar](#window-titles-icon-and-taskbar)) |
 | `LVPM_CONFIG_HOOKS_RUN` | Empty | Packages whose install hooks may run in an install outside a project ([Install hooks](#install-hooks)); separate names with commas or spaces |
 
 ```powershell
@@ -1597,6 +1636,7 @@ lvpm config get sources.local
 lvpm config set sources.local                 # clear configured local sources
 lvpm config set venv.dir .venv
 lvpm config get venv.dir
+lvpm config set venv.title start              # [MyProject] Main.vi Front Panel ...
 lvpm config set hooks.run pilot_a pilot_b     # replaces the list; no names clears it
 lvpm config get hooks.run
 # Or set LVPM_CONFIG_SOURCES_LOCAL for this shell; it overrides config.toml.

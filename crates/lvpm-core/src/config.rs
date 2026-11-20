@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const DEFAULT_VENV_DIR: &str = ".lv-venv";
 
 /// The keys `config set` and `config get` accept, as the errors list them.
-const SUPPORTED_KEYS: &str = "cache, hooks.run, sources.local, venv.dir";
+const SUPPORTED_KEYS: &str = "cache, hooks.run, sources.local, venv.dir, venv.title";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -25,6 +25,48 @@ pub struct Config {
     pub local_sources: Vec<PathBuf>,
     /// Project-relative venv directory, unless configured as an absolute path.
     pub venv_dir: PathBuf,
+    /// Where `lvpm launch` puts the venv's name in LabVIEW's window titles.
+    pub venv_title: TitlePosition,
+}
+
+/// Where the venv's name goes in a venv LabVIEW's window titles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TitlePosition {
+    /// `[name] x.vi Front Panel …`
+    Start,
+    /// `x.vi Front Panel … [name]`, before LabVIEW's `*` when there is one.
+    #[default]
+    End,
+    /// Titles are left as LabVIEW writes them.
+    Off,
+}
+
+impl TitlePosition {
+    pub const VALUES: &str = "end, start, off";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TitlePosition::Start => "start",
+            TitlePosition::End => "end",
+            TitlePosition::Off => "off",
+        }
+    }
+}
+
+impl std::str::FromStr for TitlePosition {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "start" => Ok(TitlePosition::Start),
+            "end" => Ok(TitlePosition::End),
+            "off" => Ok(TitlePosition::Off),
+            _ => bail!(
+                "venv.title {s:?}: expected one of {}",
+                TitlePosition::VALUES
+            ),
+        }
+    }
 }
 
 pub fn load() -> Result<Config> {
@@ -57,6 +99,7 @@ struct SourcesConfig {
 #[serde(default)]
 struct VenvConfig {
     dir: Option<String>,
+    title: Option<String>,
 }
 
 fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Config> {
@@ -79,11 +122,18 @@ fn resolve(file: &FileConfig, env: impl Fn(&str) -> Option<String>) -> Result<Co
     let venv_dir = env_value(&env, "venv.dir")
         .or_else(|| file.venv.dir.clone().filter(|v| !v.is_empty()))
         .unwrap_or_else(|| DEFAULT_VENV_DIR.to_string());
+    let venv_title = match env_value(&env, "venv.title")
+        .or_else(|| file.venv.title.clone().filter(|v| !v.is_empty()))
+    {
+        Some(v) => v.parse()?,
+        None => TitlePosition::default(),
+    };
     Ok(Config {
         cache,
         hooks_run,
         local_sources,
         venv_dir: PathBuf::from(venv_dir),
+        venv_title,
     })
 }
 
@@ -116,8 +166,16 @@ fn apply(file: &mut FileConfig, key: &str, values: &[String], cwd: &Path) -> Res
                 .collect();
         }
         "venv.dir" if values.len() == 1 => file.venv.dir = Some(values[0].clone()),
+        "venv.title" if values.len() == 1 => {
+            let pos: TitlePosition = values[0].parse()?;
+            file.venv.title = Some(pos.as_str().to_string())
+        }
         "cache" => bail!("`config set cache` expects one value"),
         "venv.dir" => bail!("`config set venv.dir` expects one value"),
+        "venv.title" => bail!(
+            "`config set venv.title` expects one value: {}",
+            TitlePosition::VALUES
+        ),
         _ => bail!("unknown config key {key:?}; supported keys: {SUPPORTED_KEYS}"),
     }
     Ok(())
@@ -133,6 +191,7 @@ pub fn get(cfg: &Config, key: &str) -> Result<Vec<String>> {
             .map(|p| p.to_string_lossy().into_owned())
             .collect()),
         "venv.dir" => Ok(vec![cfg.venv_dir.to_string_lossy().into_owned()]),
+        "venv.title" => Ok(vec![cfg.venv_title.as_str().to_string()]),
         _ => bail!("unknown config key {key:?}; supported keys: {SUPPORTED_KEYS}"),
     }
 }
@@ -206,6 +265,30 @@ fn default_cache() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn venv_title_defaults_to_end_reads_the_environment_first_and_refuses_others() {
+        let file = FileConfig {
+            venv: VenvConfig {
+                dir: None,
+                title: Some("start".into()),
+            },
+            ..FileConfig::default()
+        };
+        let none = |_: &str| None;
+        assert_eq!(
+            resolve(&FileConfig::default(), none).unwrap().venv_title,
+            TitlePosition::End
+        );
+        assert_eq!(
+            resolve(&file, none).unwrap().venv_title,
+            TitlePosition::Start
+        );
+        let env = |k: &str| (k == "LVPM_CONFIG_VENV_TITLE").then(|| "off".to_string());
+        assert_eq!(resolve(&file, env).unwrap().venv_title, TitlePosition::Off);
+        let bad = |k: &str| (k == "LVPM_CONFIG_VENV_TITLE").then(|| "middle".to_string());
+        assert!(resolve(&file, bad).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -247,6 +330,7 @@ mod tests {
                 local: vec!["packages-a".into()],
             },
             venv: VenvConfig {
+                title: None,
                 dir: Some(".from-file".into()),
             },
         };
@@ -362,7 +446,7 @@ mod tests {
 
     #[test]
     fn config_get_hooks_run_lists_the_names_and_unknown_keys_list_the_supported_ones() {
-        let keys = "supported keys: cache, hooks.run, sources.local, venv.dir";
+        let keys = "supported keys: cache, hooks.run, sources.local, venv.dir, venv.title";
         let cfg = resolve(&file_running(&["a", "b"]), |_| None).unwrap();
         assert_eq!(get(&cfg, "hooks.run").unwrap(), ["a", "b"]);
         let why = get(&cfg, "hooks.allow").unwrap_err().to_string();

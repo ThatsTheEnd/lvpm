@@ -2,7 +2,7 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::events::Event;
-use lvpm_core::ops::venv_cmd::VenvStatus;
+use lvpm_core::ops::venv_cmd::{ShortcutWritten, VenvStatus};
 use lvpm_core::project;
 use lvpm_core::shadow::Shadowed;
 use lvpm_core::venv::Venv;
@@ -71,6 +71,15 @@ pub fn status(status: Option<&VenvStatus>, searched_from: &Path) -> String {
     )
 }
 
+/// What `lvpm venv shortcut` prints.
+pub fn shortcut(written: &ShortcutWritten) -> String {
+    format!(
+        "wrote {}\n  runs           lvpm {}\n",
+        written.path.display(),
+        written.arguments
+    )
+}
+
 /// The warning for venv packages LabVIEW `year`'s installation has its own
 /// copy of, with the fix for each; empty when there are none.
 fn shadow_warning(year: u32, shadowed: &[Shadowed]) -> String {
@@ -116,6 +125,7 @@ pub(super) fn render(r: &mut Renderer, event: &Event) {
             Stream::Err,
             &format!("VI Server port {from} is reserved by Windows now; this venv uses port {to}"),
         ),
+        Event::VenvWindowsWarning { why } => r.line(Stream::Err, &format!("warning: {why}")),
         Event::VenvShadowed {
             labview_year,
             packages,
@@ -214,6 +224,21 @@ mod tests {
              \x20 oglib        7.1\n\
              \x20 fix: uninstall the others from LabVIEW 2026 with the tool that installed them (VIPM)\n\
              \x20 fix: lvpm uninstall oglib --global --labview-version 2026\n"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_says_where_it_went_and_what_it_runs() {
+        let written = ShortcutWritten {
+            path: PathBuf::from("proj").join("proj (LabVIEW 2026 64-bit).lnk"),
+            arguments: "--project \"proj\" launch --pause-on-error".into(),
+        };
+        assert_eq!(
+            shortcut(&written),
+            format!(
+                "wrote {}\n  runs           lvpm --project \"proj\" launch --pause-on-error\n",
+                written.path.display()
+            )
         );
     }
 

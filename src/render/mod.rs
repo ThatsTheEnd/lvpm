@@ -147,7 +147,8 @@ impl Renderer {
             Event::VenvManifestWritten { .. }
             | Event::VenvRemoved { .. }
             | Event::VenvPortMoved { .. }
-            | Event::VenvShadowed { .. } => venv::render(self, event),
+            | Event::VenvShadowed { .. }
+            | Event::VenvWindowsWarning { .. } => venv::render(self, event),
             Event::LockHashing { .. }
             | Event::GitHubListed { .. }
             | Event::RequirementUnresolved { .. }

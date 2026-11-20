@@ -62,6 +62,9 @@ pub enum Event {
     VenvPortMoved { from: u16, to: u16 },
     /// LabVIEW `labview_year`'s installation has its own copy of these venv
     /// packages, and loads that copy instead ([`crate::shadow`]). Never empty.
+    /// `launch` or `venv shortcut` could not give the venv's LabVIEW
+    /// windows (or the shortcut) all they should have; the launch goes on.
+    VenvWindowsWarning { why: String },
     VenvShadowed {
         labview_year: u32,
         packages: Vec<crate::shadow::Shadowed>,

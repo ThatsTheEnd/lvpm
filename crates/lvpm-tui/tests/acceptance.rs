@@ -99,6 +99,7 @@ impl TuiWorld {
 
     pub fn builder(&self) -> EnvBuilder {
         let config = Config {
+            venv_title: Default::default(),
             cache: self.scratch.path().join("cache"),
             hooks_run: Vec::new(),
             local_sources: Vec::new(),

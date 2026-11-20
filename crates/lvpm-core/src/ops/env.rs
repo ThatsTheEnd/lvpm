@@ -454,6 +454,7 @@ mod tests {
             hooks_run: Vec::new(),
             local_sources: Vec::new(),
             venv_dir: PathBuf::from(".lv-venv"),
+            venv_title: Default::default(),
         }
     }
 

@@ -80,6 +80,7 @@ pub(crate) fn scratch_dir(tag: &str) -> PathBuf {
 /// hands every event to `sink`.
 pub(crate) fn env_on<'a>(sink: &'a dyn EventSink, cwd: &Path) -> OpEnv<'a> {
     let config = Config {
+        venv_title: Default::default(),
         cache: PathBuf::from("cache"),
         hooks_run: Vec::new(),
         local_sources: Vec::new(),

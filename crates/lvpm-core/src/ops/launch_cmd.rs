@@ -5,7 +5,7 @@
 
 use super::env::{Destination, OpEnv};
 use super::sync::{Selection, plan_sync};
-use crate::events::SyncStep;
+use crate::events::{Event, SyncStep};
 use crate::install::{self, Manifest};
 use crate::launch;
 use crate::lockfile::{self, Lockfile};
@@ -71,13 +71,66 @@ pub fn launch(env: &OpEnv, lvproj: Option<&Path>, ini: &[String], check: bool) -
         None => None,
     };
     let ini = launch::write_ini(&venv, &ini_overrides)?;
-    launch::spawn(&venv, &ini, lvproj.as_deref(), env.sink)?;
+    let child = launch::spawn(&venv, &ini, lvproj.as_deref(), env.sink)?;
+    start_watcher(env, &venv, child.id());
     Ok(Launched {
         venv,
         ini,
         lvproj,
         ini_overrides,
     })
+}
+
+/// Start the hidden `lvpm title-watch` beside the LabVIEW with process id
+/// `pid` (see [`crate::watcher`]): it keeps the venv's name in the window
+/// titles and gives the windows the venv's taskbar group and icon. Never
+/// fails the launch: what could not be done is a warning. Windows only.
+fn start_watcher(env: &OpEnv, v: &Venv, pid: u32) {
+    if !cfg!(windows) {
+        return;
+    }
+    let warn = |why: String| env.sink.emit(Event::VenvWindowsWarning { why });
+    let pos = env.config.venv_title;
+    let name = v
+        .repo
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "venv".into());
+    let tag = format!("[{name}]");
+    // The taskbar group is always on; its icon is the venv's badged one.
+    let (icon, plain) = crate::venv_icon::or_labviews(v);
+    if let Some(why) = plain {
+        warn(format!("taskbar pin gets LabVIEW's plain icon: {why}"));
+    }
+    let relaunch = match crate::shortcut::relaunch_command(v) {
+        Ok(cmd) => cmd,
+        Err(e) => return warn(format!("no taskbar group for the venv: {e:#}")),
+    };
+    let started = std::env::current_exe().and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["title-watch", "--pid", &pid.to_string(), "--tag", &tag])
+            .args(["--position", pos.as_str()])
+            .args([
+                "--app-id",
+                &crate::shortcut::app_id(v),
+                "--relaunch",
+                &relaunch,
+            ])
+            .arg("--relaunch-icon")
+            .arg(&icon)
+            .args(["--relaunch-name", &crate::shortcut::display_name(v)]);
+        #[cfg(windows)]
+        {
+            // lvpm is a console program: without this, its watcher would
+            // open a console window of its own for LabVIEW's lifetime.
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
+        }
+        launch::spawn_detached(&mut cmd)
+    });
+    if let Err(e) = started {
+        warn(format!("could not start the window title watcher: {e}"));
+    }
 }
 
 /// Refuse to start on a venv that does not hold what the bound manifest's

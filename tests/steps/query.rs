@@ -405,6 +405,7 @@ async fn runs_with_empty_cache(world: &mut CliWorld, command: String) {
 async fn core_reads_details(world: &mut CliWorld, name: String) {
     let sink = RecordingSink::default();
     let config = Config {
+        venv_title: Default::default(),
         cache: world.sandbox.cache_dir(),
         hooks_run: Vec::new(),
         local_sources: vec![world.sandbox.root().join(LOCAL_PACKAGES_DIR)],

@@ -35,15 +35,18 @@ pub mod released;
 pub mod relink;
 pub mod sbom;
 pub mod shadow;
+pub mod shortcut;
 pub mod spec;
 pub mod target;
 pub mod timefmt;
 pub mod venv;
+pub mod venv_icon;
 pub mod verify;
 pub mod version;
 pub mod vipc;
 pub mod vipm_interop;
 pub mod viserver;
+pub mod watcher;
 
 // The lock workflow, and the operations a front end calls with the events and
 // cancellation they report and honour.

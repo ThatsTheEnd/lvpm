@@ -936,6 +936,7 @@ alpha = \"1.0\"
                 hooks_run: Vec::new(),
                 local_sources: vec![self.root.join("packages")],
                 venv_dir: PathBuf::from(".lv-venv"),
+                venv_title: Default::default(),
             };
             let mut env = OpEnv::new(sink, config, Vec::new(), self.root.clone());
             env.flags.prefix = Some(self.root.join("dest"));

@@ -4,12 +4,13 @@
 //! asks the user, and says what the answer was to [`remove`] (AC-K6).
 
 use super::env::OpEnv;
+use crate::events::Event;
 use crate::paths;
 use crate::venv::{self, Venv};
 use crate::{install, launch};
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Create the venv of the project the command is run in, or of `--project`,
 /// and bind it to a LabVIEW: `--labview-version`, else the manifest's.
@@ -166,4 +167,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&elsewhere);
     }
+}
+
+/// A shortcut `venv shortcut` wrote.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShortcutWritten {
+    pub path: PathBuf,
+    /// The command line after `lvpm.exe`.
+    pub arguments: String,
+}
+
+/// Write a Windows shortcut that runs `lvpm launch` on the venv: to `out`
+/// (a `.lnk` path, or a folder), else the desktop, else the project folder.
+pub fn shortcut(
+    env: &OpEnv,
+    lvproj: Option<&Path>,
+    desktop: bool,
+    out: Option<&Path>,
+) -> Result<ShortcutWritten> {
+    let v = existing(env)?;
+    let lvproj = match lvproj {
+        Some(p) => {
+            let p = crate::paths::resolve(&env.cwd, p);
+            anyhow::ensure!(p.is_file(), "no such project file: {}", p.display());
+            Some(p)
+        }
+        None => None,
+    };
+    let name = crate::shortcut::file_name(&v, lvproj.as_deref());
+    let path = match (out.map(|p| crate::paths::resolve(&env.cwd, p)), desktop) {
+        (Some(p), _) if p.is_dir() => p.join(&name),
+        (Some(p), _) => p.with_extension("lnk"),
+        (None, true) => crate::shortcut::desktop()?.join(&name),
+        (None, false) => v.repo.join(&name),
+    };
+    let (icon, plain) = crate::venv_icon::or_labviews(&v);
+    if let Some(why) = plain {
+        env.sink.emit(Event::VenvWindowsWarning {
+            why: format!("shortcut gets LabVIEW's plain icon: {why}"),
+        });
+    }
+    crate::shortcut::create(&v, lvproj.as_deref(), &path, &icon)?;
+    Ok(ShortcutWritten {
+        arguments: crate::shortcut::arguments(&v, lvproj.as_deref()),
+        path,
+    })
 }
