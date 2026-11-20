@@ -460,10 +460,15 @@ pub(crate) fn unpack_to(
         dependencies: crate::dependency::package_dependency_names(&[], spec.requires.as_deref()),
         skipped_hooks: match roots.venv() {
             Some(_) => declared_hooks(spec),
-            // PreInstall has run by now, PostInstall runs after the relink
-            // pass and is recorded here only if it fails, and the uninstall
+            // PreInstall has run by now. PostInstall is owed from this copy
+            // until it has run after the relink pass, so an install that stops
+            // in between leaves it listed for `lvpm run-hooks`. The uninstall
             // hooks wait for `lvpm uninstall` in the copies extracted above.
             // An install that skips a package's hooks has `apply` record them.
+            None if roots.target.is_some() && post_install_vi.is_some() => declared_hooks(spec)
+                .into_iter()
+                .filter(|h| h.starts_with("PostInstall="))
+                .collect(),
             None => Vec::new(),
         },
         relinked: false,
@@ -551,6 +556,14 @@ pub fn mark_hook_skipped(roots: &Roots, name: &str, hook: &str) -> Result<()> {
         return Ok(());
     }
     m.skipped_hooks.push(hook.to_string());
+    write_manifest(roots, &m)
+}
+
+/// Record that `hook` has run: the record stops listing it as not run.
+pub fn mark_hook_ran(roots: &Roots, name: &str, hook: crate::events::HookKind) -> Result<()> {
+    let mut m = read_manifest(roots, name)?;
+    let prefix = format!("{}=", hook.name());
+    m.skipped_hooks.retain(|h| !h.starts_with(&prefix));
     write_manifest(roots, &m)
 }
 
@@ -661,6 +674,25 @@ mod tests {
         assert!(safe_relative("/etc/passwd").is_err());
         assert!(safe_relative(r"C:\windows\system32\evil.dll").is_err());
         assert!(safe_relative("vi.lib/addons/ok.llb").is_ok());
+    }
+
+    #[test]
+    fn a_hook_that_ran_is_no_longer_listed_and_the_others_stay() {
+        use crate::events::HookKind;
+        let dir = std::env::temp_dir().join(format!("lvpm-hook-ran-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let roots = Roots::scratch(&dir);
+        std::fs::create_dir_all(manifest_path(&roots, "p").parent().unwrap()).unwrap();
+        let record = r#"{"name":"p","version":"1","display_name":null,"installed_at":0,"target":"t",
+            "files":[],"skipped_hooks":["PostInstall=a.vi","PreUninstall=b.vi"]}"#;
+        let m: Manifest = serde_json::from_str(record).unwrap();
+        write_manifest(&roots, &m).unwrap();
+
+        mark_hook_ran(&roots, "p", HookKind::PostInstall).unwrap();
+
+        let m = read_manifest(&roots, "p").unwrap();
+        assert_eq!(m.skipped_hooks, ["PreUninstall=b.vi"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An archive whose only member is `spec`, holding `text`, deflated.
