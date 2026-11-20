@@ -1293,7 +1293,8 @@ fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
         }
         Cmd::List => {
             let installed = ops::query::list(&env)?;
-            Report::new(render::query::list(&installed), &installed)
+            let in_venv = env.roots()?.venv().is_some();
+            Report::new(render::query::list(&installed, in_venv), &installed)
         }
         Cmd::Search { query, all: true } => {
             let catalog = ops::query::catalog(&env, query.as_deref())?;

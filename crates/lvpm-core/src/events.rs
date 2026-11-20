@@ -872,8 +872,6 @@ pub enum UnrunReason {
     /// The install predates the extraction of uninstall hooks: nothing on disk
     /// to run.
     InstalledBeforeUninstallHooks,
-    /// Hooks act on a LabVIEW installation, and a venv is not one.
-    VenvRunsNoHooks,
     /// The record lists a hook as skipped: an install hook that did not run
     /// (nothing allowed it, headless, or it failed) leaves the uninstall hooks
     /// off, until `lvpm run-hooks` runs it.
