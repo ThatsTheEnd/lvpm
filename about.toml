@@ -1,0 +1,40 @@
+# cargo-about: generates THIRD-PARTY-LICENSES.txt, the notices of the crates
+# built into lvpm, which the release ships (dist-workspace.toml, wix/main.wxs).
+#
+#   cargo about generate --locked -o THIRD-PARTY-LICENSES.txt about.hbs
+#
+# The release runs that before each build (.github/build-setup.yml); the file
+# is not in git. Run it locally to build an MSI or check the output.
+
+# The licenses lvpm's dependencies may use. A new dependency under any other
+# license fails generation, so it gets looked at before it ships.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+    "bzip2-1.0.6",
+    "CDLA-Permissive-2.0",
+    # The resolver: pubgrub, version-ranges, priority-queue (as in uv). MPL-2.0
+    # is per-file copyleft: shipping them unmodified only asks for the notice
+    # and a pointer to their source, which this file gives.
+    "MPL-2.0",
+]
+
+# The release targets (dist-workspace.toml).
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+
+# Only what is built into the shipped executable.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Crates whose license files cargo-about cannot read on its own.
+workarounds = ["rustls"]

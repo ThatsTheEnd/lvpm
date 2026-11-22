@@ -106,10 +106,42 @@ impl Manifest {
     }
 }
 
+/// Which tree of the merged palette addon a palette file belongs to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PaletteTree {
+    /// `<menus>`: the Functions and Controls palette trees.
+    #[default]
+    #[serde(rename = "menus")]
+    Menus,
+    /// `.mnu` files under `<vi.lib>/addons`, the Addons palette. Several
+    /// packages share a category folder there (`addons\HSE`), and LabVIEW
+    /// shows only one addon's copy of a folder.
+    #[serde(rename = "vi.lib/addons")]
+    Addons,
+}
+
+impl PaletteTree {
+    /// The tree's folder, relative to an addon root.
+    pub fn dir(self) -> &'static str {
+        match self {
+            PaletteTree::Menus => "menus",
+            PaletteTree::Addons => "vi.lib/addons",
+        }
+    }
+
+    fn is_menus(&self) -> bool {
+        *self == PaletteTree::Menus
+    }
+}
+
 /// One of a venv package's menu files, kept outside the mounted addons.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaletteFile {
+    /// Relative to the tree's folder.
     pub relative: String,
+    /// Absent in records from before `vi.lib/addons` palettes were merged.
+    #[serde(default, skip_serializing_if = "PaletteTree::is_menus")]
+    pub tree: PaletteTree,
 }
 
 /// What an install *would* do. Produced first so `--dry-run` and the real run
@@ -641,8 +673,10 @@ pub fn uninstall(roots: &Roots, name: &str) -> Result<(usize, Manifest)> {
         }
         let mut d = p.parent().map(Path::to_path_buf);
         while let Some(dir) = d {
-            // Never prune the LabVIEW install dir itself or anything above it.
-            if dir == stop_at || dir.parent().is_none() {
+            // Never prune the LabVIEW install dir itself or anything above it,
+            // nor the venv: palette contributions live outside the package's
+            // addon, so `stop_at` is not among their ancestors.
+            if dir == stop_at || Some(dir.as_path()) == roots.venv() || dir.parent().is_none() {
                 break;
             }
             dirs.push(dir.clone());

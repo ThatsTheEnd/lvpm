@@ -3,6 +3,7 @@
 [![Release](https://github.com/ThatsTheEnd/lvpm/actions/workflows/tag.yml/badge.svg?branch=main)](https://github.com/ThatsTheEnd/lvpm/actions/workflows/tag.yml)
 [![Docs](https://github.com/ThatsTheEnd/lvpm/actions/workflows/docs.yml/badge.svg?branch=main)](https://thatstheend.github.io/lvpm/)
 [![Latest release](https://img.shields.io/github/v/release/ThatsTheEnd/lvpm?include_prereleases&sort=semver)](https://github.com/ThatsTheEnd/lvpm/releases)
+[![Downloads](https://img.shields.io/github/downloads/ThatsTheEnd/lvpm/total)](https://github.com/ThatsTheEnd/lvpm/releases)
 [![Rust](https://img.shields.io/badge/rust-stable%20%C2%B7%20edition%202024-orange?logo=rust)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue)](docs/install.md)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)

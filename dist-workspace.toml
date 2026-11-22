@@ -28,6 +28,12 @@ allow-dirty = ["msi"]
 # Pull requests only check that the release plan still works; pr.yml is what
 # tests them.
 pr-run-mode = "plan"
+# THIRD-PARTY-LICENSES.txt carries the notices of the crates built into lvpm,
+# which their licenses ask a binary distribution to include; lvpm's own
+# LICENSE-* files dist adds by itself. It is not in git: release.yml generates
+# it with cargo-about before each build (.github/build-setup.yml, about.toml).
+include = ["THIRD-PARTY-LICENSES.txt"]
+github-build-setup = "../build-setup.yml"
 
 # NI's LabVIEW Linux images run Ubuntu 22.04; a binary built against a newer
 # glibc than theirs may not start there.

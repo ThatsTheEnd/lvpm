@@ -166,13 +166,20 @@ fn catalog_row(e: &Entry) -> String {
     printable(row)
 }
 
-pub fn list(installed: &[Manifest]) -> String {
+/// In a venv PreInstall and the uninstall hooks never run, so a record naming
+/// them as skipped says nothing worth printing; only PostInstall is listed.
+pub fn list(installed: &[Manifest], in_venv: bool) -> String {
     if installed.is_empty() {
         return "lvpm has installed nothing into this target\n".to_string();
     }
     installed
         .iter()
         .map(|m| {
+            let skipped: Vec<&String> = m
+                .skipped_hooks
+                .iter()
+                .filter(|h| !in_venv || h.starts_with("PostInstall="))
+                .collect();
             format!(
                 "{:<52} {:<14} {:>5} files  {:<12}{}\n",
                 m.name,
@@ -183,13 +190,10 @@ pub fn list(installed: &[Manifest]) -> String {
                 } else {
                     "NOT relinked"
                 },
-                if m.skipped_hooks.is_empty() {
+                if skipped.is_empty() {
                     String::new()
                 } else {
-                    format!(
-                        "  (hooks skipped: {})",
-                        super::hooks::hook_names(&m.skipped_hooks)
-                    )
+                    format!("  (hooks skipped: {})", super::hooks::hook_names(skipped))
                 }
             )
         })
@@ -276,7 +280,10 @@ mod tests {
     fn no_installations_and_no_hits_and_nothing_installed_are_each_said_so() {
         assert_eq!(targets(&[]), "no LabVIEW installations detected\n");
         assert_eq!(search("zzz", &[]), "no packages matching \"zzz\"\n");
-        assert_eq!(list(&[]), "lvpm has installed nothing into this target\n");
+        assert_eq!(
+            list(&[], false),
+            "lvpm has installed nothing into this target\n"
+        );
     }
 
     #[test]
@@ -477,14 +484,17 @@ mod tests {
 
     #[test]
     fn a_listed_package_says_whether_it_is_relinked_and_which_hooks_were_skipped() {
-        let text = list(&[
-            manifest("alpha", true, &[]),
-            manifest(
-                "beta",
-                false,
-                &["PostInstall=C:\\build\\Post.vi", "PreInstall=x"],
-            ),
-        ]);
+        let text = list(
+            &[
+                manifest("alpha", true, &[]),
+                manifest(
+                    "beta",
+                    false,
+                    &["PostInstall=C:\\build\\Post.vi", "PreInstall=x"],
+                ),
+            ],
+            false,
+        );
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(
@@ -494,6 +504,20 @@ mod tests {
         );
         assert!(
             lines[1].ends_with("NOT relinked  (hooks skipped: PostInstall, PreInstall)"),
+            "{}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn a_venv_lists_only_the_skipped_post_install() {
+        let only_unrunnable = manifest("alpha", true, &["PreInstall=a", "PostUninstall=b"]);
+        let with_post = manifest("beta", true, &["PreInstall=a", "PostInstall=b"]);
+        let text = list(&[only_unrunnable, with_post], true);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(!lines[0].contains("hooks skipped"), "{}", lines[0]);
+        assert!(
+            lines[1].ends_with("(hooks skipped: PostInstall)"),
             "{}",
             lines[1]
         );
