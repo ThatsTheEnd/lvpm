@@ -1028,6 +1028,21 @@ fn post_install_hooks(env: &OpEnv, session: &mut InstallSession, opts: &InstallO
     session.close_hook_connection();
 }
 
+/// Rebuild a venv's merged palette addon, and say so when it changed.
+pub(crate) fn merge_palettes(env: &OpEnv, v: &crate::venv::Venv) -> Result<()> {
+    let merged = crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+    if let Some(m) = merged {
+        env.sink.emit(Event::PalettesMerged {
+            files: m.files,
+            packages: m.packages,
+            moved: m.moved,
+            dir_mnu: m.dir_mnu,
+            restart: crate::launch::is_running(v),
+        });
+    }
+    Ok(())
+}
+
 /// Palettes and menus last, after the hooks: a hook is free to write more
 /// palette files of its own. Not for a venv: its LabVIEW is started fresh on
 /// launch and builds them from the overlay then.
@@ -1036,7 +1051,7 @@ fn refresh_palettes(env: &OpEnv, session: &InstallSession, applied: &Applied) ->
     // the one merged menu addon its packages share.
     if let Some(v) = session.venv() {
         if !applied.dry_run {
-            crate::palette::reconcile(&v.store()).context("merging the venv's palettes")?;
+            merge_palettes(env, v)?;
         }
         return Ok(());
     }

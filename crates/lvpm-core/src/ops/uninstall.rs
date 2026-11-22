@@ -156,7 +156,7 @@ fn staged_hook_path(dir: &Path, package: &str) -> PathBuf {
 /// Why the record's uninstall hooks were not run, read from the record alone.
 /// A skipped entry whose VI the record does not hold is from before uninstall
 /// hooks were extracted; one with its VI was extracted and never allowed.
-fn unrun_reason(m: &install::Manifest, in_venv: bool) -> UnrunReason {
+fn unrun_reason(m: &install::Manifest) -> UnrunReason {
     let held_back_by_install_hook =
         m.hook_skipped(HookKind::PreInstall) || m.hook_skipped(HookKind::PostInstall);
     let nothing_extracted = [
@@ -165,9 +165,7 @@ fn unrun_reason(m: &install::Manifest, in_venv: bool) -> UnrunReason {
     ]
     .iter()
     .any(|(kind, vi)| m.hook_skipped(*kind) && vi.is_none());
-    if in_venv {
-        UnrunReason::VenvRunsNoHooks
-    } else if held_back_by_install_hook {
+    if held_back_by_install_hook {
         UnrunReason::InstallHookSkipped
     } else if nothing_extracted {
         UnrunReason::InstalledBeforeUninstallHooks
@@ -370,11 +368,12 @@ pub fn uninstall_one(env: &OpEnv, session: &mut InstallSession, package: &str) -
     })
     .collect();
     // A scratch tree has no LabVIEW: no hook runs there, so none is held back.
-    if !unrun.is_empty() && roots.target.is_some() {
+    // A venv never runs uninstall hooks: nothing to say about that.
+    if !unrun.is_empty() && roots.target.is_some() && !in_venv {
         env.sink.emit(Event::UninstallHooksNotRun {
             package: m.name.clone(),
             hooks: unrun,
-            reason: unrun_reason(&m, in_venv),
+            reason: unrun_reason(&m),
             // `run-hooks` runs only a PostInstall; a package without one stays
             // off until it is reinstalled with its hooks allowed.
             run_hooks_helps: m.post_install_vi.is_some(),
@@ -881,7 +880,7 @@ mod tests {
     }
 
     #[test]
-    fn a_venv_with_a_skipped_record_says_a_venv_runs_no_hooks() {
+    fn a_venv_says_nothing_about_the_uninstall_hooks_it_never_runs() {
         use crate::ops::testing::{Recorded, env_on, scratch_dir, venv_in};
         let repo = scratch_dir("venv-skipped");
         let venv = venv_in(&repo);
@@ -906,9 +905,7 @@ mod tests {
 
         let events = sink.events();
         assert_eq!(started(&events), []);
-        let said = not_run(&events);
-        assert_eq!(said.len(), 1, "{events:?}");
-        assert_eq!(said[0].2, UnrunReason::VenvRunsNoHooks);
+        assert_eq!(not_run(&events).len(), 0, "{events:?}");
         let _ = std::fs::remove_dir_all(&repo);
     }
 

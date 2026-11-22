@@ -102,3 +102,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           overwrite: true
+
+  # Fails a pull request that adds a dependency under a license about.toml
+  # does not accept, before a release would.
+  notices:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Install cargo-about
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Generate THIRD-PARTY-LICENSES.txt
+        run: cargo about generate --locked -o THIRD-PARTY-LICENSES.txt about.hbs

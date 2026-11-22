@@ -1,0 +1,14 @@
+# Steps dist puts into release.yml before each build (dist-workspace.toml,
+# github-build-setup).
+#
+# THIRD-PARTY-LICENSES.txt is not in git: each release generates it from the
+# Cargo.lock it builds, so it always lists exactly the crates in the binary.
+# dist packs it into the archives and the MSI (dist-workspace.toml `include`,
+# wix/main.wxs). See about.toml.
+- name: Install cargo-about
+  uses: taiki-e/install-action@v2
+  with:
+    tool: cargo-about
+- name: Generate THIRD-PARTY-LICENSES.txt
+  shell: bash
+  run: cargo about generate --locked -o THIRD-PARTY-LICENSES.txt about.hbs

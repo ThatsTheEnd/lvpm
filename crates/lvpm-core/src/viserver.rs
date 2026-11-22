@@ -37,7 +37,7 @@ use std::time::Duration;
 /// Read a `key=value` token out of a target's `LabVIEW.ini` (`labview.conf`
 /// on Linux — see [`LvTarget::ini`]).
 fn ini_token(target: &LvTarget, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(target.ini()).ok()?;
+    let text = crate::launch::read_ini_file(&target.ini()).ok()?;
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(key)
