@@ -223,6 +223,9 @@ pub fn install(env: &OpEnv, package: Option<&str>, opts: &InstallOptions) -> Res
         hook_allow: HookAllow::for_command(&env.config, None),
         ..opts.clone()
     };
+    if !opts.dry_run {
+        dest.refuse_running_labview()?;
+    }
     let mut session = InstallSession::new(dest);
     let applied = apply(env, &mut session, &plan, opts)?;
     finish(env, &mut session, &applied, opts)

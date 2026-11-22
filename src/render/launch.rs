@@ -2,7 +2,9 @@
 
 use super::{Renderer, Stream};
 use lvpm_core::events::Event;
+use lvpm_core::launch::Closed;
 use lvpm_core::ops::launch_cmd::Launched;
+use lvpm_core::venv::Venv;
 
 /// What `lvpm launch` prints once LabVIEW is started.
 pub fn launched(launched: &Launched) -> String {
@@ -21,6 +23,23 @@ pub fn launched(launched: &Launched) -> String {
         text.push_str(&format!("  opening        {}\n", p.display()));
     }
     text
+}
+
+/// What `lvpm close` prints.
+pub fn closed(venv: &Venv, closed: Closed) -> String {
+    match closed {
+        Closed::NotRunning => format!(
+            "no LabVIEW is running on {}
+",
+            venv.dir.display()
+        ),
+        Closed::Quit { pid } => format!(
+            "closed {} (pid {pid}) on {}
+",
+            venv.target.label(),
+            venv.dir.display()
+        ),
+    }
 }
 
 pub(super) fn render(r: &mut Renderer, event: &Event) {

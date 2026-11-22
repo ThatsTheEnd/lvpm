@@ -470,6 +470,35 @@ pub fn check(env: &OpEnv) -> Result<(), LockError> {
     }
 }
 
+/// The CycloneDX SBOM of the project's locked `[dependencies]`, as `lvpm
+/// build` puts in a package (see [`crate::sbom`]). Refuses as [`check`] does
+/// when the lock is missing or out of date; a project with no
+/// `[dependencies]` needs no lock and lists nothing. Writes nothing.
+pub fn sbom(env: &OpEnv) -> Result<String, LockError> {
+    let (manifest_path, project) = find_manifest(env)?;
+    let lock = match project.dependencies.is_empty() {
+        true => None,
+        false => {
+            check(env)?;
+            Some(read_lock(
+                &manifest_path.with_file_name(lockfile::FILE_NAME),
+            )?)
+        }
+    };
+    let folder = || {
+        let dir = manifest_path.parent().and_then(|dir| dir.file_name());
+        dir.map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let subject = crate::sbom::Subject {
+        name: project.name.clone().unwrap_or_else(folder),
+        version: project.version.clone().unwrap_or_default(),
+        // shortcut: a library project is typed `application` too; read [distribution] if a consumer minds.
+        kind: crate::sbom::Kind::Application,
+    };
+    Ok(crate::sbom::cyclonedx(lock.as_ref(), subject))
+}
+
 /// [`OpEnv::load_index`], with a load that was cancelled, or whose pinned OCI
 /// packages could not be listed, told apart from one that failed.
 ///
@@ -2473,6 +2502,22 @@ caraya = \"*\"
             "this = is [not a lock",
             "an unreadable lock is reported, not replaced"
         );
+    }
+
+    #[test]
+    fn sbom_lists_the_locked_packages_and_needs_a_current_lock() {
+        let project = ProjectDir::new("sbom", MANIFEST, &[("gamma", "1.0", "23.0", "")]);
+        let sink = Recorder::default();
+        assert!(matches!(
+            sbom(&project.env(&sink)).unwrap_err(),
+            LockError::NoLock { .. }
+        ));
+        lock(&project.env(&sink)).unwrap();
+
+        let bom: serde_json::Value =
+            serde_json::from_str(&sbom(&project.env(&sink)).unwrap()).unwrap();
+        assert_eq!(bom["bomFormat"], "CycloneDX");
+        assert_eq!(bom["components"][0]["bom-ref"], "gamma@1.0");
     }
 
     #[test]

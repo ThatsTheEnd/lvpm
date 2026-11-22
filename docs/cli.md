@@ -120,8 +120,9 @@ at once.
 ### 5. `start` and `launch`
 
 `start` starts the target's LabVIEW and waits for VI Server; `launch`
-starts the venv's and can open a project. Once item 1 lands, both act on the
-same destination.
+starts the venv's and can open a project, and `close` quits what `launch`
+started. Both help texts say which is for what. Once item 1 lands, both act
+on the same destination.
 
 Proposed: one command, `launch [<lvproj>] [--wait SECS]`. With `--wait` it
 blocks until VI Server answers, which is what `start` does. `start` stays

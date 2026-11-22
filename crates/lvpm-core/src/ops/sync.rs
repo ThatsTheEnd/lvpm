@@ -209,6 +209,7 @@ pub fn sync(env: &OpEnv, opts: &SyncOptions) -> Result<(), SyncError> {
         });
         return Ok(());
     }
+    dest.refuse_running_labview()?;
 
     let planned = fetch_locked(env, project, &plan.wanted)?;
     // The project's own lines allow hooks; a dependency's manifest never does.
@@ -2781,5 +2782,32 @@ beta = \"*\"
         for package in ["alpha", "beta"] {
             assert!(install::is_installed(&venv.store(), package), "{package}");
         }
+    }
+
+    #[test]
+    fn a_labview_open_on_the_venv_refuses_the_sync_before_a_file_is_written() {
+        use crate::ops::testing::{labview_2026, venv_in, vip_in};
+        let scratch = Scratch::new("running");
+        vip_in(
+            &scratch.folder(),
+            "alpha",
+            "1.0",
+            "",
+            &["alpha/a.vi"],
+            false,
+        );
+        scratch.write_manifest(&["alpha"]);
+        let venv = venv_in(&scratch.root);
+        let _held = std::net::TcpListener::bind(("127.0.0.1", venv.port)).unwrap();
+        let mut env = scratch.env(&NullSink, vec![scratch.folder()]);
+        env.targets = vec![labview_2026()];
+
+        let why = sync(&env, &SyncOptions::default()).unwrap_err().to_string();
+
+        assert!(
+            why.starts_with("a LabVIEW is already running or starting on this venv"),
+            "{why}"
+        );
+        assert!(!install::is_installed(&venv.store(), "alpha"));
     }
 }

@@ -201,6 +201,12 @@ fn progress_lines(package: &str, progress: &Progress) -> Vec<Line<'static>> {
         })
         .collect();
     lines.push(Line::raw(""));
+    if let (None, Some((step, since))) = (&progress.outcome, &progress.activity) {
+        let secs = since.elapsed().as_secs();
+        lines.push(Line::raw(format!("  now: {step}  ({secs} s)")));
+        lines.push(Line::raw("  L shows every step so far."));
+        lines.push(Line::raw(""));
+    }
     let end = match &progress.outcome {
         None if progress.refused || !progress.cancellable() => {
             "Cancel is no longer possible: package files are being written.".into()

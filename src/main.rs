@@ -223,8 +223,12 @@ enum Cmd {
     Tui,
     /// List detected LabVIEW installations.
     Targets,
-    /// Start the selected LabVIEW and wait until its VI Server answers.
-    /// Already running: reports the port and does nothing.
+    /// Start an installed LabVIEW as it is, with its own LabVIEW.ini and no
+    /// venv, and wait until its VI Server answers: for scripts and CI that
+    /// drive it over VI Server. Already running: reports the port and does nothing.
+    ///
+    /// Pick it with --labview-version. To work on a project, use `lvpm launch`:
+    /// it starts LabVIEW on the project's venv, so the venv's packages load.
     Start {
         /// Seconds to wait for the VI Server to come up.
         #[arg(long, default_value_t = 120)]
@@ -513,8 +517,11 @@ enum Cmd {
         dir: Option<PathBuf>,
     },
     /// Start LabVIEW on the project's venv, optionally opening a project file.
+    /// Returns once LabVIEW is started; `lvpm close` quits it.
     ///
-    /// LabVIEW reads the venv's contents when it starts, so a LabVIEW that
+    /// Unlike `lvpm start`, which runs an installation as it is, this LabVIEW
+    /// gets the venv's own ini: the venv's packages mounted, and a VI Server
+    /// port, temp and cache folders of its own. LabVIEW reads the venv's contents when it starts, so a LabVIEW that
     /// was already open on it needs a fresh launch to see newly installed
     /// packages.
     Launch {
@@ -533,6 +540,27 @@ enum Cmd {
         /// a shortcut stays up long enough to read it.
         #[arg(long, hide = true)]
         pause_on_error: bool,
+    },
+    /// Quit the LabVIEW that `lvpm launch` started on the project's venv,
+    /// as File » Exit does: LabVIEW asks about unsaved changes itself.
+    ///
+    /// Only that LabVIEW: one open on another venv, or the installation's
+    /// own, stays. Nothing running: says so and succeeds. Windows only.
+    Close {
+        /// Seconds to wait for LabVIEW to exit.
+        #[arg(long, default_value_t = 60)]
+        wait: u64,
+    },
+    /// Print the CycloneDX SBOM of the packages lvpm.lock locks for
+    /// [dependencies], as `lvpm build` puts in a package: each with its
+    /// version, SHA-256 and source. Dev and group packages are left out.
+    ///
+    /// Needs a current lvpm.lock (`lvpm lock` makes one); reads no source and
+    /// installs nothing.
+    Sbom {
+        /// Write it to this file instead of printing it.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
     },
     /// Keep a tag in the window titles of one LabVIEW until it exits.
     /// Started hidden by `launch`; see the `venv.title` setting.
@@ -1273,6 +1301,30 @@ fn dispatch(cli: &Cli, mut env: OpEnv<'_>) -> Result<Report> {
         } => {
             let launched = ops::launch_cmd::launch(&env, lvproj.as_deref(), ini_keys, !no_check)?;
             Ok(Report::said(render::launch::launched(&launched), "launch"))
+        }
+        Cmd::Sbom { output } => {
+            let text = ops::lock::sbom(&env).map_err(|why| anyhow!(render::lock::error(&why)))?;
+            let bom: serde_json::Value = serde_json::from_str(&text)?;
+            match output {
+                None => Report::new(text, bom),
+                Some(path) => {
+                    let path = env.cwd.join(path);
+                    std::fs::write(&path, &text)
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    Report::new(
+                        format!(
+                            "wrote {}
+",
+                            path.display()
+                        ),
+                        json!({ "path": path }),
+                    )
+                }
+            }
+        }
+        Cmd::Close { wait } => {
+            let (venv, closed) = ops::launch_cmd::close(&env, *wait)?;
+            Ok(Report::said(render::launch::closed(&venv, closed), "close"))
         }
         Cmd::Lock {
             check,
