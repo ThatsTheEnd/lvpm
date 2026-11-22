@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.27.0...v0.28.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* --manifest vipm.toml is refused, and a venv created from a vipm.toml must be removed and created again after the import.
+
+### Features
+
+* merge upstream lvpm 0.3.1 (720822b) and port its changes ([#134](https://github.com/ThatsTheEnd/lvpm/issues/134)) ([c01b7a5](https://github.com/ThatsTheEnd/lvpm/commit/c01b7a57656a0cf1e270c37e5a4d8df337693525))
+* merge upstream lvpm main and port its features ([#132](https://github.com/ThatsTheEnd/lvpm/issues/132)) ([6abcd63](https://github.com/ThatsTheEnd/lvpm/commit/6abcd63bd08d3c0ae080784d1dcc71a0f46d76fc))
+
 ## [0.27.0](https://github.com/ThatsTheEnd/lvpm/compare/v0.26.0...v0.27.0) (2026-11-12)
 
 
