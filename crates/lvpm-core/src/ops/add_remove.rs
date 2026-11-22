@@ -384,6 +384,9 @@ fn commit(
         });
         return Ok(());
     }
+    if !plan.is_empty() {
+        dest.refuse_running_labview()?;
+    }
 
     let planned = fetch_locked(env, &edit.project, &plan.wanted)?;
     let lock_text = lock.to_toml()?;

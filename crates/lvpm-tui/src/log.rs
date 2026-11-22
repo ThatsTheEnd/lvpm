@@ -76,6 +76,29 @@ pub fn line(event: &Event) -> Option<String> {
                 progress::reason(*reason)
             )
         }
+        Event::ArchiveFetching { name, version } => format!("downloading {name} {version}"),
+        Event::ResaveStarting => {
+            "starting the venv's LabVIEW for the resave (about a minute per package)".into()
+        }
+        Event::ResaveStarted {
+            package,
+            position,
+            total,
+        } => format!("resaving {package} in the venv's LabVIEW ({position}/{total})"),
+        Event::ResaveDone {
+            package,
+            saved,
+            took,
+        } => format!("  {package}: {saved} files resaved in {} s", took.as_secs()),
+        Event::ResaveSkipped {
+            package, labview, ..
+        } => format!("{package} is saved in LabVIEW {labview} already: no resave"),
+        Event::ResaveFailed { package, error, .. } => {
+            format!("{package}: the resave failed: {error}")
+        }
+        Event::ResaveStartFailed { error, .. } => {
+            format!("the venv's LabVIEW did not start for the resave: {error}")
+        }
         Event::IndexesLoading | Event::PlannedWrites { .. } => return None,
         // shortcut: the other events are logged as core names them; give
         // them words as the screens that cause them come.

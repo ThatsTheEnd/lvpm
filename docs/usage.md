@@ -26,10 +26,12 @@
 | `lvpm cache refresh`                                 | Fetch the package indexes again and re-read the local folders, so the next command sees new versions ([Refreshing the index cache](#refreshing-the-index-cache)) |
 | `lvpm cache add <path>`                              | Import a `.vip`, `.ogp` or `.lvpkg`, or every one in a folder, into the cache ([Package sources](#package-sources)) |
 | `lvpm refresh`                                       | Rebuild palettes and the File/Tools/Help menus from disk (`install` does this itself)                                                        |
-| `lvpm start`                                         | Start the selected LabVIEW and wait until its VI Server answers                                                                              |
+| `lvpm start --labview-version <YYYY>`                | Start that LabVIEW installation as it is (its own `LabVIEW.ini`, no venv) and wait until its VI Server answers, for scripts that drive it; to work on a project use `lvpm launch` |
 | `lvpm venv create` / `status` / `remove` / `shortcut` | Manage the project's venv (see [Per-project dependencies](#per-project-dependencies-venvs))                                                  |
-| `lvpm launch [<lvproj>] [--no-check]`                | Start a LabVIEW on the project's venv                                                                                                        |
+| `lvpm launch [<lvproj>] [--no-check]`                | Start a LabVIEW on the project's venv, with the venv's packages mounted; returns without waiting for VI Server                               |
+| `lvpm close [--wait <SECS>]`                         | Quit the LabVIEW `lvpm launch` started on this project's venv, as File » Exit does (LabVIEW asks about unsaved changes); other LabVIEWs stay open. Windows only |
 | `lvpm build`                                         | Check the library's members as `lvpm check` does, then package the library as `dist/<name>-<version>.lvpkg`, from `[distribution]`; `--no-check` skips the check ([Building a package](#building-a-package)). Then build the application `[application]` names in the venv's LabVIEW and write its SBOM; `--package` or `--app` builds one kind only ([Building an application](#building-an-application)) |
+| `lvpm sbom [-o <file>]`                             | Print, or write to `<file>`, the CycloneDX 1.5 SBOM of the `[dependencies]` `lvpm.lock` locks: the one `lvpm build` puts in a package, each package with its version, SHA-256 and source. Needs a current lock; dev and group packages are left out |
 | `lvpm publish --to <folder>`                         | Copy the built package into a folder feed; a published file is never replaced ([Publishing a package](#publishing-a-package))                |
 | `lvpm publish --to oci://host/prefix`                 | Push the built package to an OCI registry as `<prefix>/<name>:<version>`; a published tag is never replaced ([OCI registries](#oci-registries)) |
 | `lvpm check [DIR]`                                   | Read every VI under `DIR` (the project by default) without LabVIEW and name each one saved in a newer LabVIEW than `labview`, with compiled code not separated, or with a link to a file that is not there or into a package the manifest does not let that VI use, or that lvpm cannot read as a LabVIEW resource file; exits 1 when it finds any ([Checking a project](#checking-a-project)) |
@@ -678,6 +680,15 @@ $ lvpm launch MyProject.lvproj    # a LabVIEW that sees the venv
   a pointer to `lvpm sync`. `--no-check` starts anyway. The check does not
   hash files, so an edited file passes; dev and group packages are not
   checked.
+- `lvpm close` quits the LabVIEW that `lvpm launch` started on this venv, and
+  only that one, so with several venvs open (git worktrees, say) you need not
+  guess which window is whose. It asks LabVIEW to quit as File » Exit does:
+  LabVIEW asks about unsaved changes, and nothing is killed. It waits up to
+  `--wait` seconds (60) for LabVIEW to exit and fails if it has not, which is
+  what a save dialog left open looks like. Nothing running is not an error.
+  Windows only.
+- `lvpm start` is not for a venv: it starts an installation's LabVIEW as it
+  is, with its own `LabVIEW.ini`, for scripts that drive it over VI Server.
 - `lvpm venv shortcut [<lvproj>]` writes a Windows shortcut,
   `<project> (LabVIEW <year> <bits>-bit).lnk`, that runs
   `lvpm --project <repo> launch [<lvproj>]` with the venv's icon. It goes in
@@ -753,8 +764,11 @@ Two things follow from LabVIEW reading an addon's contents at launch:
 
 - After `lvpm install`, a LabVIEW already open on the venv cannot see the new
   files. Restart it with `lvpm launch`. For the same reason the resave (and the
-  relink, with `--relink`) runs in a LabVIEW that lvpm starts fresh on the venv, and is refused while one
-  is already open there.
+  relink, with `--relink`) runs in a LabVIEW that lvpm starts fresh on the venv.
+  So `install`, `sync`, `add` and `remove` refuse, before they write anything,
+  while a LabVIEW is open on the venv: close it (`lvpm close`) and run the
+  command again. A command with nothing to change in the venv, and a dry run,
+  go ahead.
 - The real installation always wins over the overlay: a package installed
   both globally and in the venv loads from the global copy, whatever its
   version. Keep the target installation clean of what the venv provides.

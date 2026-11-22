@@ -58,7 +58,7 @@ pub fn launch(env: &OpEnv, lvproj: Option<&Path>, ini: &[String], check: bool) -
     if launch::is_running(&venv) {
         bail!(
             "a LabVIEW is already running or starting on this venv (VI Server port {}) — open the \
-             project from that window, or close it and launch again",
+             project from that window, or close it (`lvpm close`) and launch again",
             venv.port
         );
     }
@@ -79,6 +79,16 @@ pub fn launch(env: &OpEnv, lvproj: Option<&Path>, ini: &[String], check: bool) -
         lvproj,
         ini_overrides,
     })
+}
+
+/// Quit the LabVIEW running on the project's venv, waiting up to `wait`
+/// seconds for it to exit; see [`launch::close`].
+pub fn close(env: &OpEnv, wait: u64) -> Result<(Venv, launch::Closed)> {
+    let Destination::Venv(venv) = env.destination()? else {
+        bail!("close needs a venv: run it inside a project that has one, or pass --project <DIR>");
+    };
+    let closed = launch::close(&venv, std::time::Duration::from_secs(wait))?;
+    Ok((venv, closed))
 }
 
 /// Start the hidden `lvpm title-watch` beside the LabVIEW with process id

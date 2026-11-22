@@ -275,6 +275,49 @@ fn recorded_labview(pid_file: &Path) -> Option<u32> {
 #[cfg(windows)]
 use win::is_live_labview;
 
+/// What [`close`] found on a venv.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closed {
+    /// No LabVIEW was running on it.
+    NotRunning,
+    /// The LabVIEW with this pid quit.
+    Quit { pid: u32 },
+}
+
+/// Ask the LabVIEW lvpm started on `v` to quit, as File » Exit does, and wait
+/// up to `wait` for it to exit. LabVIEW asks about unsaved changes itself;
+/// nothing is killed. Windows only: elsewhere lvpm cannot tell its LabVIEW.
+pub fn close(v: &Venv, wait: Duration) -> Result<Closed> {
+    let Some(pid) = recorded_labview(&v.pid_path()) else {
+        ensure!(
+            !is_listening(v.port),
+            "something answers on this venv's VI Server port {} but it is no LabVIEW lvpm started here; close it by hand",
+            v.port
+        );
+        return Ok(Closed::NotRunning);
+    };
+    ask_to_quit(pid)?;
+    let started = Instant::now();
+    while is_live_labview(pid) {
+        ensure!(
+            started.elapsed() < wait,
+            "LabVIEW (pid {pid}) is still open after {} s: it may be asking whether to save changes. Answer it, or close LabVIEW by hand",
+            wait.as_secs()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = std::fs::remove_file(v.pid_path());
+    Ok(Closed::Quit { pid })
+}
+
+#[cfg(windows)]
+use win::ask_to_quit;
+
+#[cfg(not(windows))]
+fn ask_to_quit(_pid: u32) -> Result<()> {
+    anyhow::bail!("lvpm close works on Windows only")
+}
+
 #[cfg(not(windows))]
 fn is_live_labview(_pid: u32) -> bool {
     false
@@ -370,6 +413,45 @@ mod win {
     const HANDLE_FLAG_INHERIT: u32 = 0x1;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const STILL_ACTIVE: u32 = 259;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumWindows(proc_: unsafe extern "system" fn(RawHandle, isize) -> i32, l: isize) -> i32;
+        fn GetWindowThreadProcessId(hwnd: RawHandle, pid: *mut u32) -> u32;
+        fn GetClassNameW(hwnd: RawHandle, buf: *mut u16, len: i32) -> i32;
+        fn PostMessageW(hwnd: RawHandle, msg: u32, wparam: usize, lparam: isize) -> i32;
+    }
+    const WM_CLOSE: u32 = 0x0010;
+
+    /// Post `WM_CLOSE` to the `LVFrame` window of `pid`: LabVIEW's hidden
+    /// main window, whose close is File » Exit (measured on LabVIEW 2026).
+    pub fn ask_to_quit(pid: u32) -> anyhow::Result<()> {
+        unsafe extern "system" fn on_window(hwnd: RawHandle, l: isize) -> i32 {
+            // SAFETY: `l` is the `(pid, posted)` pair below, alive for the whole EnumWindows call.
+            let (pid, posted) = unsafe { &mut *(l as *mut (u32, bool)) };
+            let mut owner = 0u32;
+            let mut buf = [0u16; 16];
+            // SAFETY: plain Win32 calls; a stale handle makes them fail, and the buffer's size travels with it.
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut owner);
+                let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+                if owner == *pid
+                    && String::from_utf16_lossy(&buf[..len.max(0) as usize]) == "LVFrame"
+                {
+                    *posted |= PostMessageW(hwnd, WM_CLOSE, 0, 0) != 0;
+                }
+            }
+            1
+        }
+        let mut state = (pid, false);
+        // SAFETY: `on_window` matches WNDENUMPROC and `state` outlives the call.
+        unsafe { EnumWindows(on_window, &mut state as *mut _ as isize) };
+        anyhow::ensure!(
+            state.1,
+            "LabVIEW (pid {pid}) has no main window to close yet; try again once it has started"
+        );
+        Ok(())
+    }
 
     /// Is `pid` a running `LabVIEW.exe`?
     pub fn is_live_labview(pid: u32) -> bool {
@@ -569,7 +651,7 @@ pub fn ensure_instance(
 pub(crate) fn refuse_running(v: &Venv) -> Result<()> {
     ensure!(
         !is_running(v),
-        "a LabVIEW is already running or starting on this venv (VI Server port {}) — close it first.\n\
+        "a LabVIEW is already running or starting on this venv (VI Server port {}) — close it first (`lvpm close`).\n\
          LabVIEW reads an addon's contents when it starts, so a LabVIEW that was \
          running before the last sync or install does not see it.",
         v.port
@@ -759,5 +841,19 @@ mod tests {
         std::fs::write(&f, std::process::id().to_string()).unwrap();
         assert_eq!(recorded_labview(&f), None);
         let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn close_finds_nothing_to_quit_and_refuses_a_stranger_on_the_port() {
+        let repo = std::env::temp_dir().join(format!("lvpm-close-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let v = crate::ops::testing::venv_in(&repo);
+        assert_eq!(close(&v, Duration::ZERO).unwrap(), Closed::NotRunning);
+        let _held = TcpListener::bind(("127.0.0.1", v.port)).unwrap();
+        let why = close(&v, Duration::ZERO).unwrap_err().to_string();
+        assert!(why.contains("no LabVIEW lvpm started here"), "{why}");
+        drop(_held);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 }

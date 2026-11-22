@@ -3,6 +3,7 @@
 
 use crate::worker::Outcome;
 use lvpm_core::events::{Event, Phase, SkipReason};
+use std::time::Instant;
 
 /// The phases in the order an install goes through them.
 pub const PHASES: [Phase; 7] = [
@@ -75,10 +76,16 @@ pub struct Progress {
     pub cancelling: bool,
     /// A cancel was asked for after files were written.
     pub refused: bool,
+    /// The step under way, as the log words it, and since when.
+    pub activity: Option<(String, Instant)>,
 }
 
 impl Progress {
     pub fn add(&mut self, event: &Event) {
+        // An indented log line is a detail of the step above it, not a step.
+        if let Some(line) = crate::log::line(event).filter(|line| !line.starts_with(' ')) {
+            self.activity = Some((line, Instant::now()));
+        }
         match event {
             Event::PhaseStarted { phase } => {
                 let at = index(*phase);
@@ -205,6 +212,22 @@ mod tests {
         assert!(progress.cancellable(), "a dry run writes nothing");
         progress.add(&replacing(false));
         assert!(!progress.cancellable());
+    }
+
+    #[test]
+    fn the_activity_is_the_last_step_and_not_its_details() {
+        let mut progress = Progress::default();
+        progress.add(&Event::ResaveStarted {
+            package: "alpha".into(),
+            position: 2,
+            total: 3,
+        });
+        progress.add(&Event::PackageDone {
+            files: 4,
+            dry_run: false,
+        });
+        let (step, _) = progress.activity.unwrap();
+        assert_eq!(step, "resaving alpha in the venv's LabVIEW (2/3)");
     }
 
     #[test]

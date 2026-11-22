@@ -103,6 +103,16 @@ impl Destination {
             Destination::Global(r) | Destination::Scratch(r) => r.target.as_ref(),
         }
     }
+
+    /// Fails when a LabVIEW is running or starting on the venv: an install
+    /// there resaves in a LabVIEW of its own, and one already open would not
+    /// see the new files. Checked before anything is written.
+    pub fn refuse_running_labview(&self) -> Result<()> {
+        match self {
+            Destination::Venv(v) => crate::launch::refuse_running(v),
+            Destination::Global(_) | Destination::Scratch(_) => Ok(()),
+        }
+    }
 }
 
 impl<'a> OpEnv<'a> {
